@@ -893,6 +893,36 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
         {"iv_iterations", t.reimply_stage_iv[s]},
         {"elapsed_ns", t.reimply_stage_ns[s]}};
   }
+  const auto &cb = t.reimply_candidate_batch;
+  const Json candidate_batch = {
+      {"screen_proposals", cb.screen_proposals},
+      {"screen_seeds", cb.screen_seeds},
+      {"fast_continuations", cb.fast_continuations},
+      {"allocation_refusals", cb.allocation_refusals},
+      {"proof_allocation_refusals", cb.proof_allocation_refusals},
+      {"collection_allocation_fallbacks", cb.collection_allocation_fallbacks},
+      {"setup_allocation_fallbacks", cb.setup_allocation_fallbacks},
+      {"complete_scalar_fallbacks", cb.complete_scalar_fallbacks},
+      {"vector_packs", cb.vector_packs},
+      {"vector_lanes", cb.vector_lanes},
+      {"vector_admitted", cb.vector_admitted},
+      {"scalar_fallbacks", cb.scalar_fallbacks},
+      {"scalar_admitted", cb.scalar_admitted},
+      {"proof_floor_preparations", cb.proof_floor_preparations},
+      {"proof_floor_hits", cb.proof_floor_hits},
+      {"continuation_floor_preparations", cb.continuation_floor_preparations},
+      {"continuation_floor_hits", cb.continuation_floor_hits},
+      {"publication_floor_preparations", cb.publication_floor_preparations},
+      {"publication_floor_hits", cb.publication_floor_hits},
+      {"setup_ns", cb.setup_ns},
+      {"proposal_ns", cb.proposal_ns},
+      {"continuation_ns", cb.continuation_ns},
+      {"inclusive_ns", cb.inclusive_ns},
+      {"proof_ns", cb.proof_ns},
+      {"vector_ns", cb.vector_ns},
+      {"scalar_ns", cb.scalar_ns},
+      {"floor_ns", cb.floor_ns},
+      {"finalization_ns", cb.finalization_ns}};
   return {{"wall_us", t.wall_us}, {"deam_us", t.deam_us}, {"solve_us", t.solve_us},
           {"project_us", t.project_us}, {"price_us", t.price_us},
           {"certify_us", t.certify_us}, {"calendar_us", t.calendar_us},
@@ -908,6 +938,9 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_price_rejections", t.reimply_price_rejections},
           {"reimply_fast_attempts", t.reimply_fast_attempts},
           {"reimply_fast_roots", t.reimply_fast_roots},
+          {"reimply_candidate_batch_calls", t.reimply_candidate_batch_calls},
+          {"reimply_candidate_batch_requests", t.reimply_candidate_batch_requests},
+          {"reimply_candidate_batch", candidate_batch},
           {"reimply_candidate_attempts", t.reimply_fast_attempts},
           {"reimply_candidate_roots", t.reimply_fast_roots},
           {"reimply_proposal_stops", t.reimply_proposal_stops},
@@ -2258,6 +2291,12 @@ Json seed_target_provenance() {
   return {{"cmake_option", "ATX_VOL_EMPIRICAL_VECTOR_SEEDS"}, {"enabled", empirical},
       {"target_kernel", empirical ? "VectorReferenceEmpirical" : "ScalarReference"},
       {"scalar_audit_reference", "AndersenLakeReference"},
+      {"candidate_proof_batch", {
+          {"cmake_option", "ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS"},
+          {"enabled", reimply_candidate_batch_enabled()},
+          {"target_kernel", reimply_candidate_batch_enabled()
+              ? "VectorReferenceEmpirical" : "ScalarReference"},
+          {"scope", "Final raw-price publication only; original Screen/Fast proposals and scalar floor/chord"}}},
       {"scope", empirical ? "Isolated empirical target tier; scalar floor/chord retained"
                            : "Default scalar target/floor/chord proof"}};
 }

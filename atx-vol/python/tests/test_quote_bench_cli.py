@@ -2949,3 +2949,50 @@ def test_native_seed_target_tier_matches_linked_library_and_policy_provenance(bi
         if expected == "ScalarReference":
             assert timing["reimply_seed_vector_requests"] == 0
             assert sum(retries.values()) == 0
+
+
+def test_native_candidate_proof_batch_has_explicit_build_tier_and_complete_counts(binary, tmp_path):
+    source, policy = tmp_path / "quotes.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        original = list(csv.DictReader(stream))
+    puts = [dict(row, row_id=str(int(row["row_id"]) + 1000), is_call="0",
+                 bid=str(float(row["bid"]) + float(row["strike"]) - 100),
+                 ask=str(float(row["ask"]) + float(row["strike"]) - 100)) for row in original]
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(original[0]))
+        writer.writeheader()
+        writer.writerows(original + puts)
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+        "graded": {"certificate": "box", "certificate_box_half_ticks": 0.0,
+                   "cold_fit": "joint_feasible_mid"},
+        "serve": {"floor_price_only": True, "metadata": True},
+        "profiles": [{"name": name, "base": name, "reimply_price_cap": .001,
+                      "reimply_spread_fraction": .01}
+                     for name in ("dense", "ordinary", "sparse")]}))
+    result = invoke(binary, source, tmp_path / "out.csv", "--policy", str(policy), "--timing-detail")
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    tier = report["policy_definition"]["research_build"]["candidate_proof_batch"]
+    assert tier == report["bench"]["build_info"]["cold_seed_target"]["candidate_proof_batch"]
+    enabled = os.environ.get("ATX_QUOTE_BENCH_CANDIDATE_BATCH", "0") == "1"
+    assert tier["cmake_option"] == "ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS"
+    assert tier["enabled"] is enabled
+    assert tier["target_kernel"] == ("VectorReferenceEmpirical" if enabled else "ScalarReference")
+    (entry,) = report["graded_stats"]["slices"]
+    assert entry["method"] == "joint_feasible_mid"
+    timing = entry["timing"]
+    assert timing["reimply_candidate_attempts"] > 0
+    work = timing["reimply_candidate_batch"]
+    assert all(type(value) is int and value >= 0 for value in work.values())
+    if enabled:
+        assert timing["reimply_candidate_batch_calls"] == 1
+        assert timing["reimply_candidate_batch_requests"] == timing["reimply_candidate_attempts"]
+        assert work["screen_proposals"] == timing["reimply_candidate_attempts"]
+        assert work["screen_seeds"] > 0
+        assert work["vector_admitted"] + work["scalar_admitted"] <= work["screen_seeds"]
+        assert work["finalization_ns"] >= work["inclusive_ns"] > 0
+    else:
+        assert timing["reimply_candidate_batch_calls"] == 0
+        assert timing["reimply_candidate_batch_requests"] == 0
+        assert work["screen_proposals"] == 0

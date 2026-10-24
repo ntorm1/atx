@@ -63,7 +63,11 @@ struct RawPriceDraftResult {
 // publishes Success with all node prices served off that curve. Every original row
 // remains unadmitted ProjectedPrice with market_iv NaN. On any failure no public fit
 // is returned; the surface caller can atomically fall back to its existing policy.
+// Explicit non-Compiled modes are private comparison controls, never a public
+// fit policy. Compiled consults the default-off research build selection.
+enum class FinalPriceCandidateMode { Compiled, Scalar, BatchScalarProof, BatchVectorProof };
 [[nodiscard]] Result<QuoteSliceFit> finalize_raw_price_draft(
-    RawPriceDraft &&draft, const QuoteSliceConfig &config);
+    RawPriceDraft &&draft, const QuoteSliceConfig &config,
+    FinalPriceCandidateMode candidate_mode = FinalPriceCandidateMode::Compiled);
 
 } // namespace atx::vol::detail

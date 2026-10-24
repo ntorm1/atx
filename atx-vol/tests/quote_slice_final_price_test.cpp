@@ -21,6 +21,7 @@
 #include "atx/vol/api/simd/cpu.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "fitting/reimply_seed_mode.hpp"
 #include "pricing/american_iv_search.hpp"
 
 namespace atx::vol {
@@ -275,6 +276,8 @@ TEST(QuoteSliceFinalPrice, OrdinaryCandidatesShareExactFloorWithinFinalization) 
   }();
   ASSERT_TRUE(fit) << fit.error().to_string();
   const auto stage = static_cast<std::size_t>(timing::ReimplyStage::PriceCandidate);
+  EXPECT_EQ(publication.result().reimply_candidate_batch_calls,
+            reimply_candidate_batch_enabled() ? 1u : 0u);
   EXPECT_EQ(publication.result().reimply_stage_calls[stage], expected.size());
   EXPECT_LT(publication.result().reimply_stage_al[stage], unshared_solves);
   ASSERT_EQ(fit->rows.size(), expected.size());
@@ -282,6 +285,98 @@ TEST(QuoteSliceFinalPrice, OrdinaryCandidatesShareExactFloorWithinFinalization) 
     EXPECT_EQ(fit->rows[i].evaluation_status, QuoteSliceEvaluationStatus::Success);
     EXPECT_EQ(std::bit_cast<std::uint64_t>(fit->rows[i].fitted_iv),
               std::bit_cast<std::uint64_t>(expected[i]));
+  }
+}
+
+TEST(QuoteSliceFinalPrice, DeferredCandidatesPreserveEveryFinalPriceStatusAndIv) {
+  using Mode = detail::FinalPriceCandidateMode;
+  const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
+  for (const double yield : {.01, -.01}) {
+    const QuoteSliceMarket market{100, .5, .5, .04, yield, 0};
+    const auto quotes = final_price_quotes(market);
+    const auto config = final_price_config(false);
+    namespace timing = counters::fit_timing;
+    timing::ChainRecorder scalar_work;
+    auto scalar = [&] {
+      auto draft = projected_draft(market, quotes, config);
+      const timing::ChainScope scope(&scalar_work);
+      return detail::finalize_raw_price_draft(std::move(draft), config, Mode::Scalar);
+    }();
+    ASSERT_TRUE(scalar);
+    ASSERT_GT(scalar_work.result().reimply_fast_attempts, 0u);
+    for (const auto mode : {Mode::BatchScalarProof, Mode::BatchVectorProof}) {
+      timing::ChainRecorder batch_work;
+      auto batch = [&] {
+        auto draft = projected_draft(market, quotes, config);
+        const timing::ChainScope scope(&batch_work);
+        return detail::finalize_raw_price_draft(std::move(draft), config, mode);
+      }();
+      ASSERT_TRUE(batch);
+      EXPECT_EQ(batch_work.result().reimply_candidate_batch_calls, 1u);
+      EXPECT_EQ(batch_work.result().reimply_candidate_batch_requests,
+                scalar_work.result().reimply_fast_attempts);
+      EXPECT_EQ(batch_work.result().reimply_fast_attempts, scalar_work.result().reimply_fast_attempts);
+      EXPECT_EQ(batch_work.result().reimply_fast_roots, scalar_work.result().reimply_fast_roots);
+      EXPECT_EQ(batch_work.result().reimply_uncached, scalar_work.result().reimply_uncached);
+      ASSERT_EQ(batch->rows.size(), quotes.size());
+      for (std::size_t i = 0; i < quotes.size(); ++i) {
+        EXPECT_EQ(batch->rows[i].evaluation_status, scalar->rows[i].evaluation_status);
+        EXPECT_EQ(batch->rows[i].price_only_reason, scalar->rows[i].price_only_reason);
+        EXPECT_EQ(bits(batch->rows[i].fitted_price), bits(scalar->rows[i].fitted_price));
+        EXPECT_EQ(bits(batch->rows[i].fitted_iv), bits(scalar->rows[i].fitted_iv));
+        const auto answer = query_quote_slice(*batch, quotes[i].strike, quotes[i].side);
+        ASSERT_TRUE(answer);
+        EXPECT_EQ(answer->status, batch->rows[i].evaluation_status);
+        EXPECT_EQ(bits(answer->price), bits(batch->rows[i].fitted_price));
+        EXPECT_EQ(bits(answer->volatility), bits(batch->rows[i].fitted_iv));
+      }
+    }
+  }
+}
+
+TEST(QuoteSliceFinalPrice, DeferredCandidateRefusalsResumeTypedSearchAndKeepFloorRows) {
+  using Mode = detail::FinalPriceCandidateMode;
+  namespace timing = counters::fit_timing;
+  const QuoteSliceMarket market{100, .5, .5, 0, 0, 0};
+  auto quotes = final_price_quotes(market);
+  quotes.push_back({10, Side::Call, 90, 90}); // zero raw budget, reported FloorVol
+  quotes.push_back({10, Side::Put, 0, 2e-8});
+  auto config = final_price_config(false);
+  config.reimply_price_cap = 1e-12; // deliberately sends rejected proofs to typed Search
+  timing::ChainRecorder scalar_work;
+  auto scalar = [&] {
+    auto draft = projected_draft(market, quotes, config);
+    const timing::ChainScope scope(&scalar_work);
+    return detail::finalize_raw_price_draft(std::move(draft), config, Mode::Scalar);
+  }();
+  ASSERT_TRUE(scalar);
+  ASSERT_LT(scalar_work.result().reimply_fast_roots, scalar_work.result().reimply_fast_attempts);
+  for (const auto mode : {Mode::BatchScalarProof, Mode::BatchVectorProof}) {
+    timing::ChainRecorder batch_work;
+    auto batch = [&] {
+      auto draft = projected_draft(market, quotes, config);
+      const timing::ChainScope scope(&batch_work);
+      return detail::finalize_raw_price_draft(std::move(draft), config, mode);
+    }();
+    ASSERT_TRUE(batch);
+    EXPECT_EQ(batch_work.result().reimply_fast_attempts, scalar_work.result().reimply_fast_attempts);
+    EXPECT_EQ(batch_work.result().reimply_fast_roots, scalar_work.result().reimply_fast_roots);
+    EXPECT_GT(batch_work.result().reimply_candidate_batch.fast_continuations, 0u);
+    const auto search = static_cast<unsigned>(timing::ReimplyStage::Search);
+    EXPECT_EQ(batch_work.result().reimply_stage_calls[search], scalar_work.result().reimply_stage_calls[search]);
+    ASSERT_EQ(batch->rows.size(), quotes.size());
+    const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
+    for (std::size_t i = 0; i < quotes.size(); ++i) {
+      const auto &a = batch->rows[i];
+      const auto &b = scalar->rows[i];
+      EXPECT_EQ(a.evaluation_status, b.evaluation_status);
+      EXPECT_EQ(a.price_only_reason, b.price_only_reason);
+      EXPECT_EQ(bits(a.fitted_price), bits(b.fitted_price));
+      EXPECT_EQ(bits(a.fitted_iv), bits(b.fitted_iv));
+      EXPECT_EQ(bits(a.iv_lower), bits(b.iv_lower));
+      EXPECT_EQ(bits(a.iv_upper), bits(b.iv_upper));
+    }
+    EXPECT_EQ(batch->rows[quotes.size() - 2].price_only_reason, QuoteSlicePriceOnlyReason::FloorVol);
   }
 }
 
@@ -301,6 +396,10 @@ TEST(QuoteSliceFinalPrice, RejectsUnprojectedCorruptOrReconfiguredDrafts) {
   auto changed = projected_draft(market, quotes, config);
   config.reimply_price_cap *= 2;
   EXPECT_FALSE(detail::finalize_raw_price_draft(std::move(changed), config));
+  config.reimply_price_cap *= .5;
+  auto invalid_mode = projected_draft(market, quotes, config);
+  EXPECT_FALSE(detail::finalize_raw_price_draft(std::move(invalid_mode), config,
+      static_cast<detail::FinalPriceCandidateMode>(255)));
 }
 
 TEST(QuoteSliceFinalPrice, NativeAvx2FinalTargetsKeepColdPriceAccuracyAndCachedQueryMetadata) {
@@ -318,8 +417,9 @@ TEST(QuoteSliceFinalPrice, NativeAvx2FinalTargetsKeepColdPriceAccuracyAndCachedQ
   ASSERT_TRUE(fit) << fit.error().to_string();
   EXPECT_GT(publication.result().reimply_batch_avx2_calls, 0u);
   EXPECT_EQ(publication.result().reimply_batch_hits + publication.result().reimply_economic_roots +
-                publication.result().reimply_cold_seed_hits,
+                publication.result().reimply_cold_seed_hits + publication.result().reimply_seed_vector_hits,
             publication.result().reimply_batch_lanes);
+  RecordProperty("prepared_vector_hits", publication.result().reimply_seed_vector_hits);
   EXPECT_GT(publication.result().reimply_economic_roots, 0u);
   deam_iv_memo_clear();
   timing::ChainRecorder queries;

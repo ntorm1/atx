@@ -336,6 +336,12 @@ if(ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
 endif()
 
 # ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------
+option(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS "Research-only batched empirical candidate proofs" OFF)
+if(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS)
+    set_property(SOURCE src/fitting/quote_slice.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS=1)
+endif()
+
 # All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
 # AVX2+FMA intrinsics and get the ISA enabled PER-FILE (NOT library-wide) so the
 # rest of atx-vol stays baseline x86-64 and the binary loads on any CPU. Runtime

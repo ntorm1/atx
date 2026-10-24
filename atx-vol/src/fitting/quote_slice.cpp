@@ -9,9 +9,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <optional>
 #include <span>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "atx/vol/api/pricing/american_iv.hpp"
@@ -33,6 +35,7 @@
 #include "fitting/slice_channel.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the hand-off and the fast path
 #include "pricing/american_iv_premium.hpp"
+#include "pricing/american_iv_candidate_batch.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_sigma_q_family.hpp"
 
@@ -43,6 +46,14 @@ IvPriceSeedKernel reimply_seed_kernel() noexcept {
   return IvPriceSeedKernel::VectorReferenceEmpirical;
 #else
   return IvPriceSeedKernel::ScalarReference;
+#endif
+}
+
+bool reimply_candidate_batch_enabled() noexcept {
+#if defined(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS)
+  return true;
+#else
+  return false;
 #endif
 }
 
@@ -1301,6 +1312,11 @@ struct ReimplyPriceTarget {
   Side side = Side::Call;
   double price = std::numeric_limits<double>::quiet_NaN();
 };
+
+void identify_final_reimplied_targets(const QuoteSliceFit &fit,
+    std::span<const ReimplyPriceTarget> targets,
+    std::span<const IvPremiumPrepared> prepared, detail::FinalPriceCandidateMode mode,
+    std::vector<detail::VolIdentification> &ids);
 
 // Only work that publication will consume. PriceOnly calendar rows keep their status,
 // but their changed price still needs the fresh reason/interval produced by align_with_query.
@@ -2958,7 +2974,16 @@ Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
 }
 
 Result<QuoteSliceFit> detail::finalize_raw_price_draft(
-    RawPriceDraft &&draft, const QuoteSliceConfig &config) {
+    RawPriceDraft &&draft, const QuoteSliceConfig &config,
+    FinalPriceCandidateMode candidate_mode) {
+  if (candidate_mode != FinalPriceCandidateMode::Compiled &&
+      candidate_mode != FinalPriceCandidateMode::Scalar &&
+      candidate_mode != FinalPriceCandidateMode::BatchScalarProof &&
+      candidate_mode != FinalPriceCandidateMode::BatchVectorProof)
+    return Err(ErrorCode::InvalidArgument, "raw price finalization: invalid candidate mode");
+  if (candidate_mode == FinalPriceCandidateMode::Compiled)
+    candidate_mode = reimply_candidate_batch_enabled()
+        ? FinalPriceCandidateMode::BatchVectorProof : FinalPriceCandidateMode::Scalar;
   ATX_TRY_VOID(validate_final_price_draft(draft, config));
   QuoteSliceFit fit = std::move(draft.prepared);
   fit.prices = std::move(draft.projected);
@@ -2979,14 +3004,10 @@ Result<QuoteSliceFit> detail::finalize_raw_price_draft(
   {
     const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Certify);
     const auto prepared = prepare_reimplied_targets(fit, targets);
-    IvPriceSeedFloorCache floor_cache;
-    for (std::size_t i = 0; i < targets.size(); ++i) {
-      const auto &target = targets[i];
-      ids.push_back(detail::reimplied_vol(fit, target.strike, target.side, target.price,
-          QuoteSliceFloorPolicy::PriceOnly, prepared_at(prepared, i), &floor_cache));
+    identify_final_reimplied_targets(fit, targets, prepared, candidate_mode, ids);
+    for (const auto &id : ids)
       fit.diagnostics.final_price_identified_nodes +=
-          ids.back().status == QuoteSliceEvaluationStatus::Success ? 1u : 0u;
-    }
+          id.status == QuoteSliceEvaluationStatus::Success ? 1u : 0u;
   }
   const auto observations = final_price_observations(fit, draft, ids, config);
   fit.diagnostics.final_price_observations = observations.size();
@@ -4124,7 +4145,78 @@ VolIdentification floor_vol(const QuoteSliceFit &fit, double strike, Side side, 
   return id;
 }
 
-VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
+namespace {
+// Owned synchronous continuation: no borrowed lane, envelope or floor state.
+// The prefix has already consumed every native/direct-seed route exactly once.
+struct PendingReimply {
+  IvPriceCandidateRequest request;
+  IvOpts options;
+  std::array<std::uint64_t, 15> model;
+};
+using ReimplyStep = std::variant<VolIdentification, PendingReimply>;
+
+VolIdentification reimplied_search_tail(const QuoteSliceFit &fit,
+    const IvPriceCandidateRequest &request, const IvOpts &opts) {
+  const double price = request.price, strike = request.K, q_effective = request.q;
+  const Side side = request.side;
+  const VolIdentification unidentified;
+  const IvSearchResult search = [&] {
+    const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Search);
+    return american_implied_vol_search(price, fit.market.spot, strike, fit.market.variance_years,
+                                       fit.diagnostics.effective_rate, q_effective, side, opts);
+  }();
+  const IvResult &answer = search.answer;
+  if (answer.status == IvStatus::Ok && positive(answer.iv)) {
+    return at_vol_floor(answer.iv) ? floor_vol(fit, strike, side, price)
+                                   : identified(answer.iv);
+  }
+  if (answer.status != IvStatus::NonMonotoneRegion) return unidentified;
+  if (auto *const counts = counters::fit_timing::current_counts()) {
+    ++counts->reimply_search_nonmonotone;
+  }
+  // Search already computed the plain candidate before refusing it. Classify that
+  // exact value without repeating the inversion; it remains an unidentified IV.
+  const auto &root = search.rejected_candidate;
+  if (!root || !positive(*root)) return unidentified;
+  if (at_vol_floor(*root)) return floor_vol(fit, strike, side, price);
+  VolIdentification id;
+  if (on_plateau(fit, strike, side, price, q_effective, *root)) {
+    id.reason = QuoteSlicePriceOnlyReason::FlatExerciseRegion;
+    id.iv_lower = 0.0;
+    id.iv_upper = plateau_edge(fit, strike, side, price, q_effective, *root);
+  } else {
+    id.reason = QuoteSlicePriceOnlyReason::LowVega;
+  }
+  return id;
+}
+
+void record_reimplied_candidate(const IvPriceCandidateStats &stats, bool accepted) noexcept {
+  if (auto *const counts = counters::fit_timing::current_counts()) {
+    ++counts->reimply_fast_attempts;
+    counts->reimply_fast_roots += accepted ? 1u : 0u;
+    counts->reimply_proposal_stops += stats.stopped_early ? 1u : 0u;
+    counts->reimply_proposal_roots += stats.accepted_early ? 1u : 0u;
+    counts->reimply_proposal_retries += stats.retried_full_search ? 1u : 0u;
+    counts->reimply_screen_attempts += stats.screen_attempted ? 1u : 0u;
+    counts->reimply_screen_stops += stats.screen_stopped_early ? 1u : 0u;
+    counts->reimply_screen_roots += stats.screen_accepted ? 1u : 0u;
+  }
+}
+
+std::optional<double> scalar_reimplied_candidate(const PendingReimply &pending,
+    IvPriceSeedFloorCache *floor_cache) {
+  const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceCandidate);
+  const auto &r = pending.request;
+  IvPriceCandidateStats stats;
+  const bool counted = counters::fit_timing::current_counts() != nullptr;
+  const auto result = american_implied_vol_price_candidate(r.price, r.S, r.K, r.T,
+      r.r, r.q, r.side, pending.options, r.budget, counted ? &stats : nullptr,
+      IvPriceProposalKernel::ScreenThenFast, floor_cache);
+  record_reimplied_candidate(stats, result.has_value());
+  return result;
+}
+
+ReimplyStep begin_reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
     QuoteSliceFloorPolicy policy, const IvPremiumPrepared *prepared,
     IvPriceSeedFloorCache *floor_cache) {
   const double q_effective = effective_yield(fit, calendar_yield_at(fit, strike));
@@ -4237,57 +4329,25 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
         }
       }
     }
-    const auto candidate = [&] {
-      const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceCandidate);
-      auto *const counts = counters::fit_timing::current_counts();
-      if (counts != nullptr) ++counts->reimply_fast_attempts;
-      IvPriceCandidateStats stats;
-      const auto result = american_implied_vol_price_candidate(price, fit.market.spot, strike,
-          fit.market.variance_years, fit.diagnostics.effective_rate, q_effective, side, opts, *budget,
-          counts != nullptr ? &stats : nullptr, IvPriceProposalKernel::ScreenThenFast, floor_cache);
-      if (counts != nullptr) {
-        counts->reimply_proposal_stops += stats.stopped_early ? 1u : 0u;
-        counts->reimply_proposal_roots += stats.accepted_early ? 1u : 0u;
-        counts->reimply_proposal_retries += stats.retried_full_search ? 1u : 0u;
-        counts->reimply_screen_attempts += stats.screen_attempted ? 1u : 0u;
-        counts->reimply_screen_stops += stats.screen_stopped_early ? 1u : 0u;
-        counts->reimply_screen_roots += stats.screen_accepted ? 1u : 0u;
-      }
-      return result;
-    }();
-    if (candidate) {
-      if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_fast_roots;
-      return identified(*candidate);
-    }
+    return PendingReimply{{price, fit.market.spot, strike, fit.market.variance_years,
+        fit.diagnostics.effective_rate, q_effective, *budget, side}, opts,
+        reimply_model_key(fit)};
   }
-  const IvSearchResult search = [&] {
-    const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Search);
-    return american_implied_vol_search(price, fit.market.spot, strike, fit.market.variance_years,
-                                       fit.diagnostics.effective_rate, q_effective, side, opts);
-  }();
-  const IvResult &answer = search.answer;
-  if (answer.status == IvStatus::Ok && positive(answer.iv)) {
-    return at_vol_floor(answer.iv) ? floor_vol(fit, strike, side, price)
-                                   : identified(answer.iv);
-  }
-  if (answer.status != IvStatus::NonMonotoneRegion) return unidentified;
-  if (auto *const counts = counters::fit_timing::current_counts()) {
-    ++counts->reimply_search_nonmonotone;
-  }
-  // Search already computed the plain candidate before refusing it. Classify that
-  // exact value without repeating the inversion; it remains an unidentified IV.
-  const auto &root = search.rejected_candidate;
-  if (!root || !positive(*root)) return unidentified;
-  if (at_vol_floor(*root)) return floor_vol(fit, strike, side, price);
-  VolIdentification id;
-  if (on_plateau(fit, strike, side, price, q_effective, *root)) {
-    id.reason = QuoteSlicePriceOnlyReason::FlatExerciseRegion;
-    id.iv_lower = 0.0;
-    id.iv_upper = plateau_edge(fit, strike, side, price, q_effective, *root);
-  } else {
-    id.reason = QuoteSlicePriceOnlyReason::LowVega;
-  }
-  return id;
+  return reimplied_search_tail(fit, {price, fit.market.spot, strike, fit.market.variance_years,
+      fit.diagnostics.effective_rate, q_effective, 0.0, side}, opts);
+}
+
+} // namespace
+
+VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
+    QuoteSliceFloorPolicy policy, const IvPremiumPrepared *prepared,
+    IvPriceSeedFloorCache *floor_cache) {
+  const auto step = begin_reimplied_vol(fit, strike, side, price, policy, prepared, floor_cache);
+  if (const auto *const done = std::get_if<VolIdentification>(&step)) return *done;
+  const auto &pending = std::get<PendingReimply>(step);
+  if (const auto candidate = scalar_reimplied_candidate(pending, floor_cache))
+    return identified(*candidate);
+  return reimplied_search_tail(fit, pending.request, pending.options);
 }
 
 std::optional<ServedIdentification> identify_served(const QuoteSliceFit &fit, double strike,
@@ -4316,6 +4376,151 @@ std::optional<ServedIdentification> identify_served(const QuoteSliceFit &fit, do
 }
 
 } // namespace detail
+
+namespace {
+
+void record_candidate_batch(const IvPriceCandidateBatchStats &stats) noexcept {
+  auto *const c = counters::fit_timing::current_counts();
+  if (c == nullptr) return;
+  ++c->reimply_candidate_batch_calls;
+  c->reimply_candidate_batch_requests += counters::fit_timing::detail::saturate(stats.requests);
+  auto &w = c->reimply_candidate_batch;
+  w.screen_proposals += stats.screen_proposals;
+  w.screen_seeds += stats.screen_seeds;
+  w.fast_continuations += stats.fast_continuations;
+  w.allocation_refusals += stats.allocation_refusals;
+  w.proof_allocation_refusals += stats.proof.allocation_refusals;
+  w.setup_allocation_fallbacks += stats.setup_allocation_fallbacks;
+  w.complete_scalar_fallbacks += stats.complete_scalar_fallbacks;
+  w.vector_packs += stats.proof.vector_packs;
+  w.vector_lanes += stats.proof.vector_lanes;
+  w.vector_admitted += stats.proof.vector_admitted;
+  w.scalar_fallbacks += stats.proof.scalar_fallbacks;
+  w.scalar_admitted += stats.proof.scalar_admitted;
+  w.proof_floor_preparations += stats.proof.floor_preparations;
+  w.proof_floor_hits += stats.proof.floor_hits;
+  w.continuation_floor_preparations += stats.continuation_floor_preparations;
+  w.continuation_floor_hits += stats.continuation_floor_hits;
+  w.setup_ns += stats.setup_ns;
+  w.proposal_ns += stats.proposal_ns;
+  w.continuation_ns += stats.continuation_ns;
+  w.inclusive_ns += stats.inclusive_ns;
+  w.proof_ns += stats.proof.inclusive_ns;
+  w.vector_ns += stats.proof.vector_ns;
+  w.scalar_ns += stats.proof.scalar_ns;
+  w.floor_ns += stats.proof.floor_ns;
+}
+
+void identify_final_reimplied_targets(const QuoteSliceFit &fit,
+    std::span<const ReimplyPriceTarget> targets,
+    std::span<const IvPremiumPrepared> prepared, detail::FinalPriceCandidateMode mode,
+    std::vector<detail::VolIdentification> &ids) {
+  namespace ft = counters::fit_timing;
+  auto *const counts = ft::current_counts();
+  const auto start = counts != nullptr ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
+  { // include all pending/scratch and operation-local floor destruction
+    IvPriceSeedFloorCache publication_floor;
+    const auto scalar = [&] {
+      ids.clear();
+      for (std::size_t i = 0; i < targets.size(); ++i) {
+        const auto &t = targets[i];
+        ids.push_back(detail::reimplied_vol(fit, t.strike, t.side, t.price,
+            QuoteSliceFloorPolicy::PriceOnly, prepared_at(prepared, i), &publication_floor));
+      }
+    };
+    std::vector<detail::PendingReimply> pending;
+    std::vector<IvPriceCandidateRequest> requests;
+    std::vector<IvPriceCandidateResult> results;
+    std::vector<std::size_t> indices;
+    bool batch = mode != detail::FinalPriceCandidateMode::Scalar;
+    if (batch) {
+      try {
+        // Acquire every outer buffer before any prefix/seed/inverse work. A
+        // failure can run the unchanged scalar operation without replaying work.
+        pending.resize(targets.size());
+        requests.resize(targets.size());
+        results.resize(targets.size());
+        indices.resize(targets.size());
+      } catch (const std::bad_alloc &) {
+        batch = false;
+        if (counts != nullptr) ++counts->reimply_candidate_batch.collection_allocation_fallbacks;
+      }
+    }
+    if (!batch) {
+      scalar();
+    } else {
+      ids.resize(targets.size()); // caller reserved this capacity before entry
+      std::size_t n = 0;
+      for (std::size_t i = 0; i < targets.size(); ++i) {
+        const auto &t = targets[i];
+        const auto step = detail::begin_reimplied_vol(fit, t.strike, t.side, t.price,
+            QuoteSliceFloorPolicy::PriceOnly, prepared_at(prepared, i), &publication_floor);
+        if (const auto *const done = std::get_if<detail::VolIdentification>(&step)) {
+          ids[i] = *done;
+        } else {
+          pending[n] = std::get<detail::PendingReimply>(step);
+          requests[n] = pending[n].request;
+          indices[n++] = i;
+        }
+      }
+      if (n != 0) {
+        // All records originate in this one immutable fit, hence share the exact
+        // same options. Each still owns its target, q, budget and full model key.
+        const auto kernel = mode == detail::FinalPriceCandidateMode::BatchVectorProof
+            ? IvPriceSeedKernel::VectorReferenceEmpirical : IvPriceSeedKernel::ScalarReference;
+        IvPriceCandidateBatchStats stats;
+        bool applied = false;
+        {
+          const detail::ReimplyWorkScope work(ft::ReimplyStage::PriceCandidate);
+          // This legacy stage counts candidate requests, not vector API calls.
+          if (counts != nullptr)
+            counts->reimply_stage_calls[static_cast<unsigned>(ft::ReimplyStage::PriceCandidate)] +=
+                ft::detail::saturate(n - 1);
+          applied = american_implied_vol_price_candidate_batch(std::span(requests).first(n),
+              pending[0].options, kernel, std::span(results).first(n), stats, counts != nullptr);
+        }
+        if (applied) record_candidate_batch(stats);
+        for (std::size_t j = 0; j < n; ++j) {
+          const auto &p = pending[j];
+          const auto &t = targets[indices[j]];
+          const auto budget = reimply_price_budget(fit, t.strike, t.side);
+          const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+          // No unbound result can become a published IV. This synchronous owner
+          // never exposes mutable pending records or borrowed prepared pointers.
+          if (p.model != reimply_model_key(fit) || !budget ||
+              bits(p.request.K) != bits(t.strike) || p.request.side != t.side ||
+              bits(p.request.price) != bits(t.price) || bits(p.request.budget) != bits(*budget) ||
+              bits(p.request.q) != bits(effective_yield(fit, calendar_yield_at(fit, t.strike)))) {
+            ids[indices[j]] = detail::VolIdentification{};
+            continue;
+          }
+          std::optional<double> sigma;
+          if (applied) {
+            sigma = results[j].sigma;
+            detail::record_reimplied_candidate(results[j].stats, sigma.has_value());
+          } else {
+            // Shape/mode refusal happens before proposals; retain the original
+            // complete candidate and typed Search tail without rerunning prefix.
+            sigma = detail::scalar_reimplied_candidate(p, &publication_floor);
+          }
+          ids[indices[j]] = sigma ? detail::identified(*sigma)
+              : detail::reimplied_search_tail(fit, p.request, p.options);
+        }
+      }
+    }
+    if (counts != nullptr) {
+      counts->reimply_candidate_batch.publication_floor_preparations += publication_floor.preparations();
+      counts->reimply_candidate_batch.publication_floor_hits += publication_floor.hits();
+    }
+  }
+  if (counts != nullptr)
+    counts->reimply_candidate_batch.finalization_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count());
+}
+
+} // namespace
 
 Result<QuoteSliceQuery> query_quote_slice(const QuoteSliceFit &fit, double strike, Side side) {
   if (!positive(strike) || !valid_side(side)) {
