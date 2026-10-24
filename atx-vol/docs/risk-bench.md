@@ -147,8 +147,13 @@ lanes; `SpiderRockStoreReal.LoadsBucket1000`, env `ATX_VOL_SPIDERROCK_STORE`):
 
 | load | wall | rows kept | dropped |
 |---|---|---|---|
-| uncapped | 1.50 s | 1,936,090 of 2,082,476 | null 908, bad 0, non-American 114,149, non-standard root 31,329; 32,115 kept rows with a NULL / sentinel vendor cell; 5,955 underliers |
-| top-100 | 1.37 s (+ state build 33 ms) | 367,664 (= marks) | non-selected 1,569,334; 1,912 ExpiryCarry rows; 59 uids with pv_divs > 0 |
+| uncapped | 1.50–2.73 s | 1,936,090 of 2,082,476 | null 908, bad 0, non-American 114,149, non-standard root 31,329; 32,115 kept rows with a NULL / sentinel vendor cell; 5,955 underliers |
+| top-100 | 1.37–2.26 s (+ state build 30–50 ms) | 367,664 (= marks) | non-selected 1,569,334; 1,912 ExpiryCarry rows; 59 uids with pv_divs > 0 |
+
+(Ranges over runs on the shared host.) The full benchmark book selects on this bucket
+with no shortfall: 100 underliers, 10,000 option legs (204,339 eligible contracts),
+100 share legs, ≥ 8 expiries and both sides per underlier
+(`RiskBenchBookReal.SelectsFullBookOnBucket1000`).
 
 ## The synthetic store
 
