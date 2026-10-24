@@ -250,6 +250,31 @@ void fill_meta(const MarketStateWriteInput &in, sf::Meta &m) {
   put_text(m.bucket_et, in.bucket_et);
 }
 
+// Size every column once: growing them by doubling would fault in roughly twice the
+// pages (the encode cost of a large state is mostly first-touch page faults).
+void reserve_columns(const MarketStateStorage &s, Encoded &out) {
+  std::size_t marks = 0;
+  std::size_t carry = 0;
+  std::size_t divs = 0;
+  for (const auto &m : s.marks) marks += m.sigma.size();
+  for (const UnderlierState &u : s.underliers) {
+    carry += u.term_carry.size();
+    divs += u.cash_divs.size();
+  }
+  out.rows.reserve(s.underliers.size());
+  out.carry.reserve(carry);
+  out.divs.reserve(divs);
+  out.strike.reserve(marks);
+  out.expiry.reserve(marks);
+  out.side.reserve(marks);
+  out.sigma.reserve(marks);
+  if (out.meta.has_vendor_price != 0u) out.vprice.reserve(marks);
+  if (out.meta.has_vendor_delta != 0u) out.vdelta.reserve(marks);
+  if (out.meta.has_extras != 0u) {
+    for (auto &col : out.extras) col.reserve(marks);
+  }
+}
+
 [[nodiscard]] PersistResult<Encoded> encode_rows(const MarketStateWriteInput &in) {
   const MarketStateStorage &s = *in.storage;
   Encoded out;
@@ -267,6 +292,7 @@ void fill_meta(const MarketStateWriteInput &in, sf::Meta &m) {
   std::vector<std::pair<std::uint32_t, std::size_t>> marks_of;
   for (std::size_t i = 0; i < s.marks.size(); ++i) marks_of.emplace_back(s.marks[i].uid, i);
   std::sort(marks_of.begin(), marks_of.end());
+  reserve_columns(s, out);
   for (const std::size_t ui : order) {
     const UnderlierState &u = s.underliers[ui];
     sf::UnderlierRow row{};
