@@ -57,7 +57,10 @@ inline constexpr std::string_view kRiskRunSalt = "ATXVRR01";
 enum class SealDurability : std::uint8_t { Publish = 0, Flush = 1 };
 
 struct RiskRunOptions {
-  std::uint64_t segment_bytes{64ull << 20};
+  // Seal threshold. 16 MiB (was 64 MiB; ruling 2026-10-24): the Publish seal's <= 80 ms
+  // latency contract holds at 16 MiB on the reference host and not at 64 MiB, where the
+  // OS's cached write of a ~70 MB file alone takes ~80 ms (docs/persist-history.md).
+  std::uint64_t segment_bytes{16ull << 20};
   bool frames{true};
   bool buckets{true};
   std::int64_t created_unix_ns{0};

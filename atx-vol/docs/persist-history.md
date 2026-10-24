@@ -40,8 +40,8 @@ Accepted deviations from the design (ruling 2026-10-24):
 ## Risk run — recorded frames, explains and VaR
 
 `RiskRunWriter` records a `RiskStream` (or any producer of `RiskFrame` / `ExplainResult` /
-`HistoricalVarResult`) into a directory of immutable segments (sealed at `segment_bytes`, 64 MiB
-by default); `RiskRunArchive` reopens it with zero-copy column spans plus owned
+`HistoricalVarResult`) into a directory of immutable segments (sealed at `segment_bytes`, 16 MiB
+by default — see the seal table below); `RiskRunArchive` reopens it with zero-copy column spans plus owned
 materializations; `compact_risk_run` merges the segments bit-exactly, optionally into the
 zstd + byte-shuffle cold tier.
 
@@ -105,7 +105,7 @@ atx-vol-history-store timeline build --db <SurfaceDb root> --out <store root> [-
 atx-vol-history-store timeline inspect <store root>
 atx-vol-history-store timeline bench --out C:\atx-cache\persist\p2 [--uids 100 --days 22 --buckets 11]
 atx-vol-history-store riskrun inspect <run dir>
-atx-vol-history-store riskrun bench --out C:\atx-cache\persist\p2 [--legs 10000 --steps 64 --segment-mib 64]
+atx-vol-history-store riskrun bench --out C:\atx-cache\persist\p2 [--legs 10000 --steps 64 --segment-mib 16]
 ```
 
 `--out` is required for the bench verbs (no absolute default is compiled in; the umbrella
@@ -150,9 +150,12 @@ split frames one segment image with P1's `build_persist_file`, then writes it bo
 | 32 MiB (~36 MB) | 77–113 ms, median 90 | 74–92 ms, median 86 | 22 / 32 / 41 ms |
 | 16 MiB (~18 MB) | 23–48 ms, median 29 | 34–62 ms, median 36.5 | 10 / 7 / 18 ms |
 
-The 80 ms target applies to the Publish seal. At the 64 MiB default it is not met on this host:
-the floor is P1's framing (46–66 ms for 70 MB: a copy plus two CRC passes) plus the OS's cached
-write of a new 70 MB file (~80 ms, i.e. ~0.9 GB/s; Python's raw `WriteFile` of 70 MB measures
-78–92 ms on the same disk). The flush adds little on this NVMe (Flush seals 0–12 ms slower). The
-cached write is non-linear (7 ms for 18 MB, 32 ms for 36 MB, 80 ms for 70 MB), so the target holds
-at 16 MiB segments (median 29 ms). See the lane report for the ruling this needs.
+This table is the trade-off behind the **16 MiB default** (ruling 2026-10-24; it was 64 MiB).
+The <= 80 ms contract is for the Publish seal, and 64 MiB segments cannot meet it on this host. The
+floor is P1's framing (46–66 ms for 70 MB: a copy plus two CRC passes) plus the OS's cached write
+of a new 70 MB file (~80 ms, about 0.9 GB/s; Python's raw `WriteFile` of 70 MB measures 78–92 ms on
+the same disk). The flush adds little on this NVMe (Flush seals 0–12 ms slower). The cached write
+grows faster than the file (7 ms for 18 MB, 32 ms for 36 MB, 80 ms for 70 MB), so 16 MiB segments
+meet the target (median 29 ms). The cost is more segments (11 instead of 3 for the 64-step run)
+and a slower reopen (5.5 ms instead of 2.4 ms); compaction merges them afterwards. The latency is
+reported by the bench, never asserted by a test: on a loaded host it is evidence, not a gate.

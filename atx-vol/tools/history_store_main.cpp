@@ -9,7 +9,7 @@
 //                                          [--buckets 11] [--json <file>]
 //   atx-vol-history-store riskrun  inspect <run dir>
 //   atx-vol-history-store riskrun  bench   --out <dir> [--legs 10000] [--steps 64]
-//                                          [--segment-mib 64] [--json <file>]
+//                                          [--segment-mib 16] [--json <file>]
 //
 // Bench outputs are written under --out (required; the lane used C:\atx-cache\persist\p2);
 // a path under C:\atx-data is refused (that store is read-only). Every bench JSON carries
@@ -1151,7 +1151,7 @@ struct RiskRunReport {
   std::size_t legs{0};
   std::size_t unique{0};
   std::size_t steps{0};
-  std::uint64_t segment_mib{64};
+  std::uint64_t segment_mib{16};
   RunMeasure run;       // streaming seals Publish (the default), finish() Flush
   RunMeasure run_flush; // every seal Flush
   ReadMeasure read;
@@ -1251,7 +1251,8 @@ struct RiskRunReport {
   fs::create_directories(out, ec);
   RiskRunReport r;
   r.steps = static_cast<std::size_t>(a.num("steps", 64));
-  r.segment_mib = static_cast<std::uint64_t>(std::max(1LL, a.num("segment-mib", 64)));
+  const auto default_mib = static_cast<long long>(RiskRunOptions{}.segment_bytes >> 20);
+  r.segment_mib = static_cast<std::uint64_t>(std::max(1LL, a.num("segment-mib", default_mib)));
   const std::uint64_t segment_bytes = r.segment_mib << 20;
   const CpuSample cpu0 = cpu_sample();
   const RiskBook book = synth_book(static_cast<std::size_t>(a.num("legs", 10000)));

@@ -366,7 +366,7 @@ TEST(PersistRiskRun, AppendSealsSegmentsAtThreshold) {
   ASSERT_TRUE(a.has_value());
   expect_archive_matches(*a, rec);
 
-  // The default 64 MiB threshold keeps the whole run in one segment.
+  // The default 16 MiB threshold keeps this small run in one segment.
   const fs::path big = fresh_dir("big");
   (void)record_run(market, big, RiskRunOptions{});
   EXPECT_EQ(manifest_size(big), 1u);

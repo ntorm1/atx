@@ -14,7 +14,8 @@ builds the view over the same bytes as the partition, so history views are bit-e
 construction; `SurfaceTimelineStore::build_from_surface_db` merges SurfaceDb partitions into period
 generations and `collect()` feeds `project_series` (bit-equal to owned surfaces). `RiskRunWriter`
 records RiskFrame / ExplainResult / HistoricalVarResult steps into immutable `seg-*.atxrr`
-segments behind a manifest, each seal at a `SealDurability` (`RiskRunOptions::seal_durability`,
+segments (`segment_bytes`, default 16 MiB) behind a manifest, each seal at a `SealDurability`
+(`RiskRunOptions::seal_durability`,
 default `Publish` = temp + rename, no flush; `finish_durability`, default `Flush` = Publish +
 FlushFileBuffers). `RiskRunArchive` reopens them zero-copy and adds `step_info` /
 `materialize_frame` / `materialize_explain` / `n_var` / `var` (owned, validated copies);

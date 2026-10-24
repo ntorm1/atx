@@ -111,7 +111,7 @@ then explain k-1 -> k); otherwise it opens an explain-only step. The rows must b
 in explain order (option legs in book order, then share legs; an option-only explain is allowed)
 with matching ids / uids / kinds — anything else is `InvalidArgument`. `append_var(v)` records a
 `HistoricalVarResult` against the last step (or none). A segment is sealed when a NEW step would
-start while the staged bytes have reached `segment_bytes`, and on `finish()`; a writer destroyed
+start while the staged bytes have reached `segment_bytes` (16 MiB by default), and on `finish()`; a writer destroyed
 without `finish()` publishes nothing it had not sealed. `create` refuses a directory that already
 holds a run (`AlreadyExists`), `segment_bytes == 0` and an unknown `SealDurability`.
 
