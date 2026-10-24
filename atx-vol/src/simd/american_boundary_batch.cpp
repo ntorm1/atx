@@ -5,6 +5,7 @@
 
 #include "american_boundary_avx2.hpp"
 #include "american_greeks_avx2.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 #include <limits>
 
@@ -177,6 +178,8 @@ void greeks_scalar_lane(const double* S, const double* K, const double* T,
     } else {
         const double kNaN = std::numeric_limits<double>::quiet_NaN();
         out[i] = AmericanGreeks{kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN};
+        atx::vol::detail::mark_american_greek_fields(out[i], GreekFieldMask::All,
+                                                   AmericanGreekReason::Nonfinite);
     }
 }
 
@@ -201,6 +204,8 @@ void zero_unrequested(AmericanGreeks& gp, bool need_vega, bool need_rho,
     if (!need_charm) {
         gp.charm = 0.0;
     }
+    atx::vol::detail::narrow_american_greek_request(gp,
+        atx::vol::detail::american_greek_request(need_vega, need_rho, need_charm));
 }
 
 } // namespace

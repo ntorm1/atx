@@ -23,6 +23,7 @@
 #include "pricing/american_detail.hpp"
 #include "simd/american_greeks_avx2.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
@@ -2830,6 +2831,35 @@ TEST(AmericanGreekMetadata, ColdScalarPreparedAndSimdStampActualRequests) {
                                            std::nullopt, false, false, false);
   ASSERT_TRUE(fallback);
   check(*fallback, base);
+}
+
+TEST(AmericanGreekMetadata, PublicSimdWrappersNarrowScalarPatchesAndStampFailures) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  using atx::vol::simd::SimdIsa;
+  constexpr auto base = GreekFieldMask::Price | GreekFieldMask::Delta |
+                        GreekFieldMask::Gamma | GreekFieldMask::Theta;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const auto batch = side == Side::Put ? atx::vol::simd::american_put_greeks_batch
+                                         : atx::vol::simd::american_call_greeks_batch;
+    for (const SimdIsa isa : {SimdIsa::ForceScalar, SimdIsa::ForceAvx2}) {
+      constexpr double K=100., T=.5, sigma=.2, r=0., q=0.; // forces the scalar patch
+      for (const double S : {100., -1.}) {
+        AmericanGreeks g;
+        (void)batch(&S, &K, &T, &sigma, &r, &q, 1, std::nullopt, &g, isa, false, false, false);
+        EXPECT_EQ(g.requested, base);
+        EXPECT_EQ(g.supported, S > 0. ? base : GreekFieldMask::None);
+        for (unsigned i = 0; i < 9; ++i) {
+          const auto bit = static_cast<GreekFieldMask>(1u << i);
+          EXPECT_EQ(g.reasons[i], !atx::vol::has_field(base, bit)
+              ? AmericanGreekReason::NotRequested : S > 0.
+              ? AmericanGreekReason::ComputedEstimate : AmericanGreekReason::Nonfinite);
+        }
+        if (S > 0.) EXPECT_TRUE(std::isfinite(g.price));
+        else EXPECT_TRUE(std::isnan(g.price));
+      }
+    }
+  }
 }
 
 } // namespace
