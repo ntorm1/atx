@@ -1435,6 +1435,39 @@ TEST(QuoteSliceChannel, NativePriceOnlyNodeQueriesPreserveTheirPublishedInterval
   EXPECT_EQ(queries.result().al_price_calls, 0u);
 }
 
+TEST(QuoteSliceChannel, NativePublishedIdentificationRejectsChangedPriceOnlyMask) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto fit = fit_quote_slice(c.market, c.quotes, native_repair_config());
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  // Preserve an earlier PriceOnly admission even though this repaired ATM price
+  // has an identifiable root. The public bit can subsequently be edited by a caller.
+  const auto nodes = fit->prices->nodes();
+  const auto at = std::lower_bound(nodes.begin(), nodes.end(), 100.0,
+      [](const AmericanPriceNode &node, double strike) { return node.strike < strike; });
+  ASSERT_NE(at, nodes.end());
+  const auto node = static_cast<std::size_t>(at - nodes.begin());
+  fit->price_only_nodes.assign(nodes.size(), 0u);
+  fit->price_only_nodes[node] = 2u;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].strike == 100.0 && c.quotes[i].side == Side::Put) {
+      fit->rows[i].evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
+      fit->rows[i].fitted_iv = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  const AmericanPriceSlice floor = shifted_slice(*fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  const auto held = query_quote_slice(*fit, 100.0, Side::Put);
+  ASSERT_TRUE(held);
+  ASSERT_EQ(held->status, QuoteSliceEvaluationStatus::PriceOnly);
+  fit->price_only_nodes[node] = 0u;
+  const auto released = query_quote_slice(*fit, 100.0, Side::Put);
+  ASSERT_TRUE(released);
+  EXPECT_EQ(released->status, QuoteSliceEvaluationStatus::Success);
+  EXPECT_TRUE(std::isfinite(released->volatility));
+  EXPECT_EQ(released->price, held->price);
+}
+
 TEST(QuoteSliceChannel, RejectsAnInvalidRepairOrDominanceConfiguration) {
   const auto c = chain(0.5, 0.25, 0.0, 0.02);
   const std::vector<Chain> one{c};

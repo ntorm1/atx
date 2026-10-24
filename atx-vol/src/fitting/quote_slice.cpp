@@ -38,6 +38,7 @@ struct QuoteSliceReimplyContext {
     double strike = 0.0;
     double price = 0.0;
     double q = 0.0;
+    bool price_only = false;
     detail::VolIdentification id;
   };
   std::shared_ptr<const DeAmSigmaFamilies> families;
@@ -1730,7 +1731,9 @@ void remember_reimplied_nodes(QuoteSliceFit &fit, std::span<const QuoteSliceQuot
     id.iv_upper = row.iv_upper;
     context->identified[node->node][quotes[i].side == Side::Call ? 0u : 1u] =
         QuoteSliceReimplyContext::Identification{quotes[i].strike, row.fitted_price,
-            effective_yield(fit, calendar_yield_at(fit, quotes[i].strike)), id};
+            effective_yield(fit, calendar_yield_at(fit, quotes[i].strike)),
+            node->node < fit.price_only_nodes.size() &&
+                (fit.price_only_nodes[node->node] & node->bit) != 0u, id};
   }
   fit.reimply_context = std::move(context);
 }
@@ -3308,7 +3311,10 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
     const auto node = node_side(fit.prices->nodes(), strike, side);
     if (node && node->node < context.identified.size()) {
       const auto &entry = context.identified[node->node][side == Side::Call ? 0u : 1u];
+      const bool price_only = node->node < fit.price_only_nodes.size() &&
+          (fit.price_only_nodes[node->node] & node->bit) != 0u;
       if (entry && entry->strike == strike &&
+          entry->price_only == price_only &&
           std::bit_cast<std::uint64_t>(entry->price) == std::bit_cast<std::uint64_t>(price) &&
           std::bit_cast<std::uint64_t>(entry->q) == std::bit_cast<std::uint64_t>(q_effective) &&
           context.model == reimply_model_key(fit)) return entry->id;
