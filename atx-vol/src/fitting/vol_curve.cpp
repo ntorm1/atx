@@ -14,6 +14,7 @@
 #include "fitting/dense_slice_price.hpp" // safe_call_price (shared w/ dense_slice.cpp)
 #include "fitting/essvi_calib.hpp"       // essvi_fit_slice
 #include "fitting/resid_basis.hpp"        // exact runtime residual-basis count
+#include "fitting/shape_blend.hpp"       // detail::shape_blend_anchor / shape_blend_w
 #include "fitting/svi_calib.hpp"         // svi_fit_slice, svi_project_mm
 
 namespace atx::vol {
@@ -458,6 +459,114 @@ double CurveSurface::iv(double k_log, double T, Bracket resolved) const noexcept
   }
   return std::sqrt(wk / T);
 }
+
+// ── TenorInterp-aware overloads (risk-engine sprint 2026-10-24) ──────────────
+//
+// TotalVariance forwards to the untouched two-argument / bracketed overloads, so
+// the default path cannot drift; ShapeBlend replaces only the interior blend.
+
+double CurveSurface::w(double k_log, double T, TenorInterp interp) const noexcept {
+  if (slices_.empty() || !(T > 0.0)) {
+    return kNaN;
+  }
+  return w(k_log, T, bracket(T), interp);
+}
+
+double CurveSurface::iv(double k_log, double T, TenorInterp interp) const noexcept {
+  const double wk = w(k_log, T, interp);
+  if (!(wk > 0.0) || !(T > 0.0)) {
+    return kNaN;
+  }
+  return std::sqrt(wk / T);
+}
+
+double CurveSurface::w(double k_log, double T, Bracket resolved,
+                       TenorInterp interp) const noexcept {
+  switch (interp) {
+  case TenorInterp::TotalVariance:
+    return w(k_log, T, resolved);
+  case TenorInterp::ShapeBlend:
+    return w_shape_blend(k_log, T, resolved);
+  }
+  return kNaN; // out-of-range enumerator value
+}
+
+double CurveSurface::iv(double k_log, double T, Bracket resolved,
+                        TenorInterp interp) const noexcept {
+  const double wk = w(k_log, T, resolved, interp);
+  if (!(wk > 0.0) || !(T > 0.0)) {
+    return kNaN;
+  }
+  return std::sqrt(wk / T);
+}
+
+double CurveSurface::w_shape_blend(double k_log, double T, Bracket resolved) const noexcept {
+  // Every single-slice case (exact pillar, short-end scaling, long-end flat) and
+  // every malformed bracket is the TotalVariance answer verbatim.
+  if (slices_.empty() || !(T > 0.0) || resolved.lo >= slices_.size() ||
+      resolved.hi >= slices_.size() || resolved.lo > resolved.hi ||
+      !(resolved.upper_weight >= 0.0 && resolved.upper_weight <= 1.0) ||
+      resolved.is_single_slice() || T < slices_.front()->T()) {
+    return w(k_log, T, resolved);
+  }
+  const IVolCurve &lo = *slices_[resolved.lo];
+  const IVolCurve &hi = *slices_[resolved.hi];
+  const detail::ShapeBlendAnchor anchor = detail::shape_blend_anchor(
+      k_log, T, lo.T(), hi.T(), resolved.upper_weight, lo.w(0.0), hi.w(0.0));
+  if (!anchor.usable) {
+    return w(k_log, T, resolved);
+  }
+  const double blended = detail::shape_blend_w(anchor, lo.w(anchor.k_lo), hi.w(anchor.k_hi));
+  return std::isnan(blended) ? w(k_log, T, resolved) : blended;
+}
+
+namespace detail {
+
+ShapeBlendAnchor shape_blend_anchor(double k_log, double T_q, double T_lo, double T_hi,
+                                    double upper_weight, double w_lo0, double w_hi0) noexcept {
+  ShapeBlendAnchor a;
+  if (!(T_lo > 0.0) || !(T_hi > 0.0) || !(T_q > 0.0)) {
+    return a;
+  }
+  if (!(std::isfinite(w_lo0) && w_lo0 > 0.0) || !(std::isfinite(w_hi0) && w_hi0 > 0.0)) {
+    return a;
+  }
+  // The ATM anchor is the TotalVariance blend at k = 0, written in the same
+  // expression shape as CurveSurface::w so ATM agrees to rounding.
+  const double w_atm_q = (1.0 - upper_weight) * w_lo0 + upper_weight * w_hi0;
+  if (!(std::isfinite(w_atm_q) && w_atm_q > 0.0)) {
+    return a;
+  }
+  const double atm_q = std::sqrt(w_atm_q / T_q);
+  if (!(std::isfinite(atm_q) && atm_q > 0.0)) {
+    return a;
+  }
+  a.T_lo = T_lo;
+  a.T_hi = T_hi;
+  a.T_q = T_q;
+  a.ww_hi = upper_weight;
+  a.atm_lo = std::sqrt(w_lo0 / T_lo);
+  a.atm_hi = std::sqrt(w_hi0 / T_hi);
+  a.atm_q = atm_q;
+  const double z = k_log / (atm_q * std::sqrt(T_q));
+  a.k_lo = z * a.atm_lo * std::sqrt(T_lo);
+  a.k_hi = z * a.atm_hi * std::sqrt(T_hi);
+  a.usable = true;
+  return a;
+}
+
+double shape_blend_w(const ShapeBlendAnchor &a, double w_lo_k, double w_hi_k) noexcept {
+  if (!a.usable || !(std::isfinite(w_lo_k) && w_lo_k >= 0.0) ||
+      !(std::isfinite(w_hi_k) && w_hi_k >= 0.0)) {
+    return kNaN;
+  }
+  const double m_lo = std::sqrt(w_lo_k / a.T_lo) / a.atm_lo;
+  const double m_hi = std::sqrt(w_hi_k / a.T_hi) / a.atm_hi;
+  const double sigma_q = a.atm_q * ((1.0 - a.ww_hi) * m_lo + a.ww_hi * m_hi);
+  return sigma_q * sigma_q * a.T_q;
+}
+
+} // namespace detail
 
 double CurveSurface::forward_at(double T) const noexcept {
   if (slices_.empty()) {

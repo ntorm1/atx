@@ -12,6 +12,7 @@
 #include "atx/vol/api/fitting/vol_surface.hpp"   // EssviParams, SviParams, essvi_total_w, svi_total_w
 #include "backtest/laned_greek_run.hpp"      // WS-P1v: the shared laned analytic-Greek batch driver
 #include "backtest/term_carry.hpp"            // interpolate_positive_log, coherent_q_eff
+#include "fitting/shape_blend.hpp"            // detail::shape_blend_* (shared with CurveSurface)
 
 #include "atx/core/error.hpp"
 
@@ -692,6 +693,30 @@ double PricedSurfaceView::surface_w(double k_log, double T, Bracket resolved) co
   return (1.0 - resolved.upper_weight) * wlo + resolved.upper_weight * whi;
 }
 
+double PricedSurfaceView::surface_w_shape_blend(double k_log, double T,
+                                                Bracket resolved) const noexcept {
+  // Mirrors CurveSurface::w_shape_blend: every single-slice case and every
+  // malformed bracket is surface_w's TotalVariance answer verbatim; the interior
+  // blend runs through the SAME out-of-line detail::shape_blend_* core, so the
+  // view and its owner agree bit-for-bit.
+  if (n_slices_ == 0 || !(T > 0.0) || resolved.lo >= n_slices_ || resolved.hi >= n_slices_ ||
+      resolved.lo > resolved.hi ||
+      !(resolved.upper_weight >= 0.0 && resolved.upper_weight <= 1.0) ||
+      resolved.is_single_slice() || T < col_T_[0]) {
+    return surface_w(k_log, T, resolved);
+  }
+  const detail::ShapeBlendAnchor anchor =
+      detail::shape_blend_anchor(k_log, T, col_T_[resolved.lo], col_T_[resolved.hi],
+                                 resolved.upper_weight, slice_w(resolved.lo, 0.0),
+                                 slice_w(resolved.hi, 0.0));
+  if (!anchor.usable) {
+    return surface_w(k_log, T, resolved);
+  }
+  const double blended = detail::shape_blend_w(anchor, slice_w(resolved.lo, anchor.k_lo),
+                                               slice_w(resolved.hi, anchor.k_hi));
+  return std::isnan(blended) ? surface_w(k_log, T, resolved) : blended;
+}
+
 PricedSurfaceView::ResolvedSurfacePoint
 PricedSurfaceView::resolve_with_carry(double K, double T, ForwardCarry fc) const noexcept {
   return resolve_with_carry_and_bracket(K, T, fc, surface_bracket(T));
@@ -760,6 +785,40 @@ PricedSurfaceView::ResolvedSurfacePoint PricedSurfaceView::resolve(double K,
 double PricedSurfaceView::iv(double K, double T) const noexcept {
   const ResolvedSurfacePoint p = resolve(K, T);
   return p.valid ? p.sigma : kNaN;
+}
+
+double PricedSurfaceView::iv(double K, double T, TenorInterp interp) const noexcept {
+  switch (interp) {
+  case TenorInterp::TotalVariance:
+    return iv(K, T);
+  case TenorInterp::ShapeBlend: {
+    if (!valid_query(K, T) || n_slices_ == 0) {
+      return kNaN;
+    }
+    const double k_log = std::log(K / interp_forward(T).forward);
+    const double w = surface_w_shape_blend(k_log, T, surface_bracket(T));
+    return (w > 0.0 && T > 0.0) ? std::sqrt(w / T) : kNaN; // == CurveSurface::iv
+  }
+  }
+  return kNaN; // out-of-range enumerator value
+}
+
+bool PricedSurfaceView::moneyness_extrapolated(double K, double T) const noexcept {
+  if (!valid_query(K, T) || n_slices_ == 0) {
+    return false;
+  }
+  const double k_log = std::log(K / interp_forward(T).forward);
+  const Bracket bracket = surface_bracket(T);
+  // Only SplineVol overrides IVolCurve::is_extrapolated (its record stores the
+  // data-supported z range); every other kind answers false on the owned path too.
+  const auto slice_says = [this, k_log](std::size_t i) noexcept {
+    if (static_cast<VolCurveKind>(col_kind_[i]) != VolCurveKind::SplineVol) {
+      return false;
+    }
+    const IVolCurve *curve = heavy_curve(i);
+    return curve != nullptr && curve->is_extrapolated(k_log);
+  };
+  return slice_says(bracket.lo) || slice_says(bracket.hi);
 }
 
 double PricedSurfaceView::total_variance(double K, double T) const noexcept {

@@ -261,6 +261,20 @@ public:
   // the override path.
   [[nodiscard]] double iv(double K, double T) const noexcept;
 
+  // `iv(K, T)` under an explicit maturity-interpolation mode (additive, risk-engine
+  // sprint 2026-10-24). Same k = ln(K / F(T)), same domain and tenor extrapolation;
+  // `TotalVariance` IS `iv(K, T)` (forwarded, bit-identical); `ShapeBlend` reads the
+  // surface through `CurveSurface::iv(k, T, TenorInterp::ShapeBlend)` (see there).
+  [[nodiscard]] double iv(double K, double T, TenorInterp interp) const noexcept;
+
+  // BEST-EFFORT moneyness provenance: true iff a slice bracketing T (both for an
+  // interior T, the single serving slice otherwise) reports
+  // `IVolCurve::is_extrapolated(k)` at k = ln(K / F(T)) — i.e. the query sits in a
+  // data-free wing of a data-driven curve (SplineVol today). Parametric kinds
+  // (eSSVI / SVI / C8) and the dense/linear kinds never assert it, so `false` means
+  // "no curve said so", not "inside the quoted range". False for an invalid K / T.
+  [[nodiscard]] bool moneyness_extrapolated(double K, double T) const noexcept;
+
   // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / extrapolation
   // semantics as `iv` above.
   [[nodiscard]] double total_variance(double K, double T) const noexcept;

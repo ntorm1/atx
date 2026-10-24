@@ -340,6 +340,12 @@ public:
   }
 
   [[nodiscard]] double iv(double K, double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(iv(K, T)); }
+  [[nodiscard]] double iv(double K, double T, TenorInterp interp) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(iv(K, T, interp));
+  }
+  [[nodiscard]] bool moneyness_extrapolated(double K, double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(moneyness_extrapolated(K, T));
+  }
   [[nodiscard]] double total_variance(double K, double T) const noexcept {
     ATX_VOL_SURFACE_REF_FWD(total_variance(K, T));
   }
