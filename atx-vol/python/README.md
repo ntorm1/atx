@@ -14,6 +14,19 @@
 - the backtest engine (`Clock`, `RunConfig`, `run_backtest`) with the recorded
   series and the run's signals exposed as NumPy arrays
 - backtest analytics: `tearsheet` plus the deterministic TSV exports
+- the quote-slice fit (`fit_quote_slice`) with its r5/r6 outputs: surface grade, served
+  call floor, withheld nodes / gaps / served price, carry curve, serving record
+- ATXVFA fit archives: `FitArchive` / `FitArchiveSeries` readers with zero-copy numpy
+  views, `FitArchiveWriter` and typed `FitArchiveError` refusals
+- serving records and the live serve book (`build_serve_record`, `ServeBook`,
+  `ServeBookReader.serve_chain`) with every answer's typed status, route, tier and
+  certificate
+- A1 served analytics: hedge Greeks, scenario matrices, P&L attribution and dated-cash
+  scenarios, each carrying its `AnalyticsDeclaration`
+- the Andersen-Lake exercise-region classifier and D1's discrete-dividend batch as NumPy
+  batches
+
+What is and is not bound, header by header: `docs/binding-coverage.md`.
 
 Not the swap lane. `BacktestResult`'s `swap_pv` and `swap_pnl`, and the eight
 `swap_explain_*` P&L-attribution columns, have no binding and are not reachable
@@ -125,10 +138,42 @@ The build uses scikit-build-core, CMake, Ninja, clang-cl, and pybind11. It reuse
 the monorepo's `build-rel/vcpkg_installed` or `build/vcpkg_installed` tree when
 present and otherwise lets vcpkg install the manifest dependencies.
 
-### Iterating on the extension only
+**Measured 2026-10-23 (lane PY), first wheel from this recipe in months:** built and
+imported, `__version__ == 1.1.0 ==` the wheel metadata, 501 s for `pip wheel` with
+`CMAKE_BUILD_PARALLEL_LEVEL=4`, shared `vcpkg_installed`, FetchContent cloned from the
+local mirrors, ccache warm (an unqualified log fact from a shared box). Two notes from
+that run. `--no-build-isolation` used the user-site scikit-build-core 0.12.2 and
+pybind11 3.0.4 instead of downloading them. And to look at the built wheel without
+replacing your working install, install it with `--target <dir>` and import it with the
+scikit-build **editable finder stripped** from `sys.meta_path`: that finder outranks
+`sys.path`, so a plain `sys.path.insert` still imports the editable checkout.
 
-When you only need `_core` (which is all `atx-vol/tests/CMakeLists.txt`'s
-`atx-vol-python` ctest lane consumes), skip packaging and drive CMake directly.
+### The in-tree build: `-DATX_VOL_PYTHON=ON` (the gate)
+
+The monorepo builds `_core` itself when configured with `ATX_VOL_PYTHON=ON` (default
+OFF, so nothing changes for anyone else). The target is `atx-vol-python-core`; it is
+built from the same TU list as the wheel (`cmake/atxvol_core.cmake`, one list for both
+builds) and stages the module plus its vcpkg DLL closure into `src/atxvol/`. With the
+option on, the `atx-vol-python` ctest runs the suite with `--expect-core`: an
+unimportable or stale `_core` is a failure, never a skip.
+
+```powershell
+powershell scripts\atx-build.ps1 configure -Preset vol-rel -DATX_VOL_PYTHON=ON `
+  -DPython3_EXECUTABLE="C:/Program Files/Python312/python.exe" `
+  -Dpybind11_DIR=<python -m pybind11 --cmakedir>
+powershell scripts\atx-build.ps1 build atx-vol-python-core -Preset vol-rel -Jobs 4
+powershell scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-python$"
+```
+
+The ctest driver (`tests/_ctest_pytest_driver.py`) runs the suite in two processes,
+because `_core`'s vcpkg Arrow and pyarrow's Arrow cannot share one (see the known
+limitation at the end): modules that import `atxvol` run in-process, the rest in a child
+interpreter with `atxvol` made unimportable.
+
+### Iterating on the extension only, without the monorepo build
+
+When you only need `_core` and are not using the in-tree option above, skip
+packaging and drive CMake directly.
 Configure measured at 14.3 s against a populated dependency tree:
 
 ```powershell
@@ -551,6 +596,86 @@ result.validate()           # raises if any column length disagrees
 `tearsheet` and both TSV writers validate their input and raise `ValueError` on
 a ragged result rather than reading out of bounds.
 
+## Reading fit archives (ATXVFA)
+
+The sprint's fitted-surface archives (`storage/fit_archive*.hpp`, format spec
+`atx-vol/docs/storage/ARCHIVE_FORMAT.md`) open read-only:
+
+```python
+with av.FitArchive.open(path, mode=av.FitArchiveOpenMode.MAPPED,
+                        verify=av.FitArchiveVerify.FULL) as archive:
+    archive.symbols()                                  # ["SPY", ...]
+    i = archive.find_fit("SPY", snapshot_ns, expiry_day)  # index or None
+    record = archive.fit(i)                            # a COPY: status, market, diagnostics
+    rows = archive.quote_rows(i)                       # structured read-only numpy VIEW
+    nodes = archive.price_nodes(i)                     # (strike, call, put) view
+    fit = archive.decode_fit(i)                        # QuoteSliceFit, bit-identical
+    curve = archive.decode_curve(i)                    # FittedVolCurve: curve.iv(k_array)
+```
+
+- **Lifetime.** Record accessors return copies. Pool accessors (`quote_rows`,
+  `price_nodes`, `curve_payload`, `moved_nodes`, `price_only_nodes`, `dividends`,
+  `carry_curve`) return **zero-copy, read-only** numpy views whose base holds a share of
+  the archive: a view stays valid after `close()` (a mapped file stays mapped until the
+  last view dies). After `close()` the archive itself raises `ValueError` on every call.
+- **Refusals.** Every refusal raises `FitArchiveError`, a subclass of `AtxError`, carrying
+  `status` (`ArchiveStatus`), `section` / `section_name`, `detail` and the nearest
+  `code` (`ErrorCode`), so `except AtxError` dispatch keeps working.
+- **Series.** `FitArchiveSeries.open(directory)` routes `find_fit` to
+  `(segment, index)`; `append_fit_archive_segment` publishes a writer's records as the next
+  segment (sequences start at 1); `compact_fit_archive_series` merges segments.
+- `FitArchiveWriter` (`add_fit`, `finish` -> bytes, `write_file`) exists for tests and
+  small research archives; production archives come from the C++ tools.
+
+## Serving records and the serve book
+
+`build_serve_record(fit, policy)` turns a certified `QuoteSliceFit` (one that carries a
+price slice) into an immutable `SliceServeRecord`. `record.serve(ServeRequest(...))` and
+`record.implied_vol(ServeIvRequest(...))` always answer; a refusal is a typed
+`ServeStatus` with a `ServeRoute` (`REFIT`, `REBUILD`, `COLD_PATH`) and NaN numbers, never
+an exception. Each answer states its error: `certificate_class` + `certificate_usd`, the
+`sampled` flag (an estimate, never certified), and for a price-only node its
+`price_only_reason` and IV interval.
+
+`ServeBook` publishes records by expiry id in versions. `book.reader()` gives one
+thread's handle, and `reader.serve_chain(spot, now_ns, expiry_id, strike, side, tier,
+tier_max)` serves a whole chain from ONE pinned version. It returns numpy columns
+(`price`, `delta`, `gamma`, `vega`, `theta`, `tick_status`) plus every
+`ServedChainStatement` field as a column (`status`, `route`, `tier`,
+`certificate_class`, `certificate_usd`, `sampled`, `price_only_reason`, `iv_lower`,
+`iv_upper`, ...). Enum columns hold enum values: `av.ServeStatus(int(cols["status"][i]))`.
+A reader keeps the book's state alive by itself. `serve_build(book, key, fit)` builds and
+publishes in two phases. The book's async rebuild callback is **not** bound (a Python
+callable on the book's worker threads would need the GIL), so `request_rebuild` answers
+`NO_REBUILD`.
+
+## Served analytics (A1)
+
+Over a `ServeBook`: `hedge_greeks(reader, HedgeGreeksRequest(...))`,
+`served_scenarios(book, positions, ScenarioSpec)`,
+`served_attribution(book, positions, ServedMove, spec)`, plus
+`cash_dividend_scenarios(contracts, spot_rel, vol_abs, time_years)` on D1's lattice.
+Every answer carries an `AnalyticsDeclaration` (book version, expiry id, record digests,
+model, hedge convention, clock) and a typed `AnalyticsStatus`. `ESTIMATE` (a sampled
+input) and `REFUSED` are statuses; a refused number is NaN. Scenario cells are numpy
+arrays shaped `(n_spot, n_vol, n_time)` in the C++ `[spot][vol][time]` order, and the
+exclusion counts gain a trailing axis of length `len(ScenarioExclusion)`.
+`HedgeConvention.REFITTED_SURFACE` serves the price with every Greek NaN and
+`REQUIRES_REFIT` (a refit per bump is the fitter's job, not a read). `ServedSession` and
+the common-model European outputs are not bound yet (see the coverage doc).
+
+## Exercise region and the discrete-dividend batch
+
+`andersen_lake_classified(_batch)` prices under an explicit `AlExerciseRegion` rule and
+returns the `AlExerciseClass` with the solved boundary. `KERNEL_FLOOR` is bit-identical to
+`american_price` / `american_price_batch(isa=FORCE_SCALAR)`. `INTRINSIC` prices the
+exercise plateau at intrinsic exactly. `classify_exercise_region(_batch)` reproduces the
+class from a boundary. `DiscreteDivBatch` is D1's schedule-grouped cash-dividend pricer:
+`prepare([(S, T, r, q, [(tau, amount), ...]), ...])`, then `price` / `implied_vol` /
+`greeks` over numpy columns tagged by group index. Per-contract outcomes are typed
+(`DiscreteDivBatchOutcome`: `PRICED`, `PRICE_ONLY`, `REFUSED_INPUT`, `REFUSED_RANGE`,
+`REFUSED_BUDGET`, `REFUSED_GROUP`); only a malformed call raises.
+
 ## Errors, batch status, and the GIL
 
 Functions returning `atx::core::Result<T>` raise `atxvol.AtxError` on failure.
@@ -694,6 +819,15 @@ Two consequences, and the second is the one that bites:
   `atxvol/chain.py` documents and enforces this ordering for callers that reach
   chain data through it; `tests/test_chain.py` was written the wrong way round
   first and failed to collect, which is how this was found.
+
+**MEASURED UPDATE, 2026-10-23 (lane PY) — both orders fail again.** With vcpkg Arrow
+24.0.0 in `_core` and the user-site pyarrow 18.0.0, the first gated run of the suite in
+months showed `import pyarrow` failing after `import atxvol` ("DLL load failed while
+importing lib: The specified procedure could not be found"), so the "atxvol first"
+ordering above no longer works. `atxvol/chain.py` now imports `pyarrow.parquet` lazily
+(inside `load_chain` only), so importing `atxvol` alone never loads pyarrow. The ctest
+driver runs the pyarrow-using tests in a separate interpreter. The separate-process
+workaround below is again the only one.
 
 **Known real fixes (neither implemented yet):**
 - A `delvewheel`-style repair step on the built wheel/extension that renames the
