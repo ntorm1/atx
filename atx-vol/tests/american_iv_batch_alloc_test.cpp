@@ -20,6 +20,7 @@
 #include "atx/vol/api/simd/cpu.hpp"
 #include "pricing/american_iv_batch.hpp"
 #include "pricing/american_iv_candidate_capture.hpp"
+#include "pricing/american_iv_candidate_batch.hpp"
 #include "pricing/american_sigma_q_family.hpp"
 #include "support/alloc_counter.hpp"
 
@@ -28,6 +29,67 @@ namespace {
 
 namespace sq = sigma_q_family_detail;
 namespace ib = iv_batch;
+
+TEST(IvCandidateBatchAlloc, ScratchAllocationRefusalRunsEveryOriginalCallOnce) {
+  const auto price = andersen_lake(773., 780., 1./365., .35, .045, .01, Side::Put);
+  ASSERT_TRUE(price);
+  const std::array<IvPriceCandidateRequest, 2> requests{{
+      {*price, 773., 780., 1./365., .045, .01, .001, Side::Put},
+      {10., -100., 100., 1., .05, 0., .001, Side::Put}}};
+  const auto expected = american_implied_vol_price_candidate(*price,
+      773., 780., 1./365., .045, .01, Side::Put, IvOpts{}, .001);
+  ASSERT_TRUE(expected);
+  EXPECT_FALSE(american_implied_vol_price_candidate(10., -100., 100., 1., .05,
+      0., Side::Put, IvOpts{}, .001));
+  for (std::size_t ordinal = 1; ordinal <= 3; ++ordinal) {
+    std::array<IvPriceCandidateResult, 2> out;
+    IvPriceCandidateBatchStats stats;
+    testkit::alloc_counter_arm();
+    testkit::alloc_counter_fail_once_at(ordinal);
+    const bool applied = american_implied_vol_price_candidate_batch(requests, IvOpts{},
+        IvPriceSeedKernel::VectorReferenceEmpirical, out, stats);
+    const auto attempts = testkit::alloc_counter_disarm();
+    ASSERT_TRUE(applied);
+    EXPECT_GE(attempts, ordinal);
+    ASSERT_TRUE(out[0].sigma);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(*out[0].sigma),
+              std::bit_cast<std::uint64_t>(*expected));
+    EXPECT_FALSE(out[1].sigma);
+    EXPECT_EQ(stats.requests, 2u);
+    EXPECT_EQ(stats.setup_allocation_fallbacks, 1u);
+    EXPECT_EQ(stats.complete_scalar_fallbacks, 2u);
+    EXPECT_EQ(stats.screen_proposals, 0u); // this is the separately counted full fallback
+    EXPECT_EQ(stats.proof.requests, 0u);
+  }
+}
+
+TEST(IvCandidateBatchAlloc, ScreenAndResumedFastAllocationFailuresRemainPerCall) {
+  const std::array<IvPriceCandidateRequest, 1> requests{{
+      {10., -100., 100., 1., .05, 0., .001, Side::Put}}};
+  EXPECT_FALSE(american_implied_vol_price_candidate(10., -100., 100., 1., .05,
+      0., Side::Put, IvOpts{}, .001));
+  // Three scratch allocations precede the actual error-message allocations:
+  // Screen's error is fourth, and its resumed Fast error is fifth.
+  for (const std::size_t ordinal : {4u, 5u}) {
+    std::array<IvPriceCandidateResult, 1> out;
+    IvPriceCandidateBatchStats stats;
+    testkit::alloc_counter_arm();
+    testkit::alloc_counter_fail_once_at(ordinal);
+    const bool applied = american_implied_vol_price_candidate_batch(requests, IvOpts{},
+        IvPriceSeedKernel::VectorReferenceEmpirical, out, stats);
+    const auto attempts = testkit::alloc_counter_disarm();
+    EXPECT_TRUE(applied);
+    EXPECT_EQ(attempts, ordinal);
+    EXPECT_FALSE(out[0].sigma);
+    EXPECT_TRUE(out[0].allocation_refused);
+    EXPECT_TRUE(out[0].stats.screen_attempted);
+    EXPECT_EQ(stats.requests, 1u);
+    EXPECT_EQ(stats.screen_proposals, 1u);
+    EXPECT_EQ(stats.screen_seeds, 0u);
+    EXPECT_EQ(stats.allocation_refusals, 1u);
+    EXPECT_EQ(stats.fast_continuations, ordinal == 4 ? 0u : 1u);
+  }
+}
 
 TEST(IvCandidateCaptureAlloc, EscapingAllocationFailureRecordsOnlyAttemptedPhase) {
   research::IvPriceCandidateTrace trace;

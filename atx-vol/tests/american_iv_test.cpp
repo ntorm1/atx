@@ -29,6 +29,7 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_seed_batch.hpp"
+#include "pricing/american_iv_candidate_batch.hpp"
 #include "pricing/american_iv_candidate_trace.hpp"
 #include "pricing/american_iv_candidate_capture.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
@@ -5043,4 +5044,176 @@ TEST(AmericanIvCandidateCapture, ExhaustedOrUnclosedCacheOwnershipCannotBecomeEv
     research::IvCandidateCaptureScope second(capture);
     EXPECT_FALSE(second.attached());
   }
+}
+
+namespace {
+void expect_candidate_stats(const atx::vol::IvPriceCandidateStats &a,
+                            const atx::vol::IvPriceCandidateStats &b) {
+  EXPECT_EQ(a.stopped_early, b.stopped_early);
+  EXPECT_EQ(a.accepted_early, b.accepted_early);
+  EXPECT_EQ(a.retried_full_search, b.retried_full_search);
+  EXPECT_EQ(a.screen_attempted, b.screen_attempted);
+  EXPECT_EQ(a.screen_stopped_early, b.screen_stopped_early);
+  EXPECT_EQ(a.screen_accepted, b.screen_accepted);
+}
+}
+
+TEST(AmericanIvCandidateBatch, ScreenProofBatchKeepsBothSidesAndEveryTail) {
+  using namespace atx::vol;
+  std::vector<IvPriceCandidateRequest> requests;
+  for (const auto side : {Side::Call, Side::Put})
+    for (const double days : {1., 2.})
+      for (const double strike : {770., 773., 780.})
+        requests.push_back({cold_al(773., strike, days/365., .35, .045, .01, side),
+                            773., strike, days/365., .045, .01, .001, side});
+  requests.push_back({cold_al(773., 780., 2./365., .35, .045, -.01, Side::Call),
+                      773., 780., 2./365., .045, -.01, .001, Side::Call});
+  requests.push_back(requests[0]); // partial pack after unsupported scope
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  for (const auto mode : {IvPriceSeedKernel::ScalarReference,
+                         IvPriceSeedKernel::VectorReferenceEmpirical}) {
+    std::vector<IvPriceCandidateResult> results(requests.size());
+    IvPriceCandidateBatchStats stats;
+    ASSERT_TRUE(american_implied_vol_price_candidate_batch(requests, opts, mode,
+        results, stats, true));
+    EXPECT_EQ(stats.requests, requests.size());
+    EXPECT_EQ(stats.screen_proposals, requests.size());
+    EXPECT_EQ(stats.screen_seeds, requests.size());
+    EXPECT_EQ(stats.fast_continuations, 0u);
+    EXPECT_EQ(stats.proof.requests, requests.size());
+    EXPECT_EQ(stats.proof.vector_admitted + stats.proof.scalar_admitted, requests.size());
+    if (mode == IvPriceSeedKernel::VectorReferenceEmpirical && simd::use_avx2()) {
+      EXPECT_GT(stats.proof.vector_admitted, 0u);
+      EXPECT_GT(stats.proof.scalar_fallbacks, 0u);
+    }
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+      const auto &r = requests[i];
+      IvPriceCandidateStats original_stats;
+      const auto original = american_implied_vol_price_candidate(r.price, r.S, r.K,
+          r.T, r.r, r.q, r.side, opts, r.budget, &original_stats);
+      ASSERT_TRUE(original);
+      ASSERT_TRUE(results[i].sigma);
+      EXPECT_TRUE(same_double(*original, *results[i].sigma));
+      expect_candidate_stats(results[i].stats, original_stats);
+    }
+    EXPECT_GE(stats.inclusive_ns, stats.setup_ns + stats.proposal_ns +
+              stats.continuation_ns + stats.proof.inclusive_ns);
+  }
+}
+
+TEST(AmericanIvCandidateBatch, ResumedFastChainPreservesRefusalsAndCompleteRetries) {
+  using namespace atx::vol;
+  std::vector<IvPriceCandidateRequest> requests;
+  for (const double budget : {.001, 1e-6, 1e-10, 1e-12}) {
+    requests.push_back({152.01331004092836, 773., 925., 2.257885694503784,
+                        .0515890046954155, .00582131263777355, budget, Side::Put});
+    requests.push_back({708.0004269712528, 773., 65., .9224853515625,
+                        .04965313524007797, .008097793258072, budget, Side::Call});
+    requests.push_back({cold_al(773., 780., 1./365., .35, .045, .01, Side::Put),
+                        773., 780., 1./365., .045, .01, budget, Side::Put});
+  }
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  std::size_t retries = 0, recovered = 0, refused = 0, resumed_accepted = 0;
+  for (const auto proposal : {IvPriceProposalKernel::Fast, IvPriceProposalKernel::ScreenThenFast})
+    for (const auto proof : {IvPriceSeedKernel::ScalarReference,
+                            IvPriceSeedKernel::VectorReferenceEmpirical}) {
+      std::vector<IvPriceCandidateResult> results(requests.size());
+      IvPriceCandidateBatchStats stats;
+      ASSERT_TRUE(american_implied_vol_price_candidate_batch(requests, opts, proof,
+          results, stats, false, proposal));
+      EXPECT_EQ(stats.requests, requests.size());
+      for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto &r = requests[i];
+        IvPriceCandidateStats original_stats;
+        const auto original = american_implied_vol_price_candidate(r.price, r.S, r.K,
+            r.T, r.r, r.q, r.side, opts, r.budget, &original_stats, proposal);
+        EXPECT_EQ(results[i].sigma.has_value(), original.has_value());
+        if (original && results[i].sigma) EXPECT_TRUE(same_double(*original, *results[i].sigma));
+        expect_candidate_stats(results[i].stats, original_stats);
+        retries += results[i].stats.retried_full_search;
+        recovered += results[i].stats.retried_full_search && results[i].sigma.has_value();
+        refused += !results[i].sigma;
+        resumed_accepted += results[i].stats.screen_attempted &&
+            !results[i].stats.screen_accepted && results[i].sigma.has_value();
+      }
+      EXPECT_GT(stats.fast_continuations, 0u);
+    }
+  EXPECT_GT(retries, 0u);
+  EXPECT_GT(recovered, 0u);
+  EXPECT_GT(refused, 0u);
+  EXPECT_GT(resumed_accepted, 0u);
+}
+
+TEST(AmericanIvCandidateBatch, InvalidControlsAndShapeCannotPublishStaleAnswers) {
+  using namespace atx::vol;
+  const std::array<IvPriceCandidateRequest, 2> requests{{
+      {10., 100., 100., 1., .05, .01, 0., Side::Put},
+      {10., -100., 100., 1., .05, .01, .001, Side::Put}}};
+  std::array<IvPriceCandidateResult, 2> out;
+  IvPriceCandidateBatchStats stats;
+  out[0].sigma = .4;
+  EXPECT_FALSE(american_implied_vol_price_candidate_batch(requests, IvOpts{},
+      IvPriceSeedKernel::ScalarReference, std::span(out).first(1), stats));
+  EXPECT_FALSE(out[0].sigma);
+  EXPECT_FALSE(american_implied_vol_price_candidate_batch(requests, IvOpts{},
+      static_cast<IvPriceSeedKernel>(255), out, stats));
+  EXPECT_TRUE(american_implied_vol_price_candidate_batch({}, IvOpts{},
+      IvPriceSeedKernel::ScalarReference, {}, stats));
+  EXPECT_EQ(stats.requests, 0u);
+  ASSERT_TRUE(american_implied_vol_price_candidate_batch(requests, IvOpts{},
+      IvPriceSeedKernel::VectorReferenceEmpirical, out, stats));
+  EXPECT_EQ(stats.requests, 2u);
+  EXPECT_FALSE(out[0].sigma);
+  EXPECT_FALSE(out[0].stats.screen_attempted);
+  EXPECT_FALSE(out[1].sigma);
+  EXPECT_TRUE(out[1].stats.screen_attempted);
+  EXPECT_EQ(stats.screen_proposals, 1u);
+}
+
+TEST(AmericanIvCandidateBatch, ExplicitColdOptionsStayScalarAndInverseWorkIsNotRepeated) {
+  using namespace atx::vol;
+  namespace led = counters::ledger;
+  IvOpts opts;
+  auto exact = al_fast_profile(std::nullopt);
+  exact.profile = AlProfile::Reference;
+  exact.n_collocation = 16;
+  exact.n_quadrature = 32;
+  exact.n_quad_price = 64;
+  exact.max_newton_iter = 8;
+  exact.tol = 1e-12;
+  opts.al_opts = exact;
+  std::vector<IvPriceCandidateRequest> requests;
+  for (const auto side : {Side::Call, Side::Put})
+    for (const double strike : {770., 773., 780.}) {
+      const auto target = andersen_lake(773., strike, 2./365., .35, .045, .01, side, exact);
+      ASSERT_TRUE(target);
+      requests.push_back({*target, 773., strike, 2./365., .045, .01, .001, side});
+    }
+  std::vector<IvPriceCandidateResult> out(requests.size());
+  IvPriceCandidateBatchStats stats;
+  const auto before = led::snapshot();
+  ASSERT_TRUE(american_implied_vol_price_candidate_batch(requests, opts,
+      IvPriceSeedKernel::VectorReferenceEmpirical, out, stats));
+  const auto staged = led::snapshot() - before;
+  const auto old_begin = led::snapshot();
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const auto &r = requests[i];
+    IvPriceCandidateStats original_stats;
+    const auto original = american_implied_vol_price_candidate(r.price, r.S, r.K,
+        r.T, r.r, r.q, r.side, opts, r.budget, &original_stats);
+    ASSERT_TRUE(original);
+    ASSERT_TRUE(out[i].sigma);
+    EXPECT_TRUE(same_double(*original, *out[i].sigma));
+    expect_candidate_stats(out[i].stats, original_stats);
+    EXPECT_EQ(out[i].screen_proof.origin, IvPriceSeedOrigin::ScalarReference);
+    EXPECT_EQ(out[i].screen_proof.retry, IvPriceSeedRetry::UnsupportedScope);
+  }
+  const auto original_work = led::snapshot() - old_begin;
+  EXPECT_EQ(staged.get(led::Solve::IvNewtonIters), original_work.get(led::Solve::IvNewtonIters));
+  EXPECT_GT(staged.get(led::Solve::IvNewtonIters), 0u);
+  EXPECT_EQ(stats.proof.scalar_admitted, requests.size());
+  EXPECT_EQ(stats.proof.vector_packs, 0u);
+  EXPECT_EQ(stats.fast_continuations, 0u);
 }

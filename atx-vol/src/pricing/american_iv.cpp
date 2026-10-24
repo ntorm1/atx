@@ -21,6 +21,7 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_seed_batch.hpp"
+#include "pricing/american_iv_candidate_batch.hpp"
 #include "pricing/american_iv_candidate_trace.hpp"
 #ifdef ATX_VOL_CAPTURE_PRICE_CANDIDATES
 #include "pricing/american_iv_candidate_capture.hpp"
@@ -3321,6 +3322,79 @@ private:
   std::uint64_t preparations_, hits_;
 };
 
+bool price_candidate_controls_valid(const IvOpts &opts, double max_price_error,
+                                    IvPriceProposalKernel proposal_kernel) noexcept {
+  return max_price_error > 0.0 && std::isfinite(max_price_error) &&
+      opts.method == AmericanMethod::AndersenLake && opts.correction == nullptr &&
+      opts.warm_start == 0.0 && opts.price_tol == 0.0 &&
+      (proposal_kernel == IvPriceProposalKernel::Fast ||
+       proposal_kernel == IvPriceProposalKernel::ScreenThenFast);
+}
+
+template <class Observation>
+Result<double> price_candidate_screen_proposal(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
+    Observation &observation) {
+  if (stats != nullptr) stats->screen_attempted = true;
+  const std::optional<AlOpts> screen = al_screen_opts();
+  PriceProposal proposal{0.25 * max_price_error, false};
+  auto candidate = observation.invoke(CandidatePhase::ScreenProposal, screen,
+      std::nullopt, &proposal.stopped, [&] {
+        return american_implied_vol_impl(price, S, K, T, r, q, side,
+            opts.method, opts.tol, opts.max_iter, screen, opts.correction,
+            0.0, 0.0, nullptr, &proposal);
+      });
+  if (stats != nullptr) stats->screen_stopped_early = proposal.stopped;
+  return candidate;
+}
+
+template <class Observation>
+std::optional<double> price_candidate_fast_observed(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
+    IvPriceSeedFloorCache *floor_cache, Observation &observation) {
+  IvOpts seed = opts;
+  seed.al_opts = al_fast_profile(opts.al_opts);
+  seed.refuse_non_monotone = false;
+  // An evaluated warm Fast residual only proposes sigma. Reserve most of the
+  // budget for cold-map differences; the exact target helper decides acceptance.
+  // If that check refuses, repeat the original complete Fast search unchanged.
+  PriceProposal proposal{0.25 * max_price_error, false};
+  const auto early = observation.invoke(CandidatePhase::FastProposal, seed.al_opts,
+      std::nullopt, &proposal.stopped, [&] {
+        return american_implied_vol_impl(price, S, K, T, r, q, side,
+            seed.method, seed.tol, seed.max_iter, seed.al_opts, seed.correction,
+            seed.warm_start, seed.price_tol, nullptr, &proposal);
+      });
+  if (stats != nullptr) stats->stopped_early = proposal.stopped;
+  if (early && *early > kIvMin && std::isfinite(*early)) {
+    if (const auto answer = observation.invoke(CandidatePhase::FastProof, opts.al_opts,
+            *early, nullptr, [&] {
+              return american_implied_vol_price_seed(price, S, K, T, r, q, side,
+                  opts, max_price_error, *early, floor_cache);
+            })) {
+      if (stats != nullptr) stats->accepted_early = proposal.stopped;
+      return observation.finish(answer, CandidateOutcome::Accepted);
+    }
+  }
+  if (!proposal.stopped) return observation.finish(std::nullopt, CandidateOutcome::Refused);
+  if (stats != nullptr) stats->retried_full_search = true;
+  const IvResult candidate = observation.invoke(CandidatePhase::CompleteFast, seed.al_opts,
+      std::nullopt, nullptr, [&] {
+        return search_typed(price, S, K, T, r, q, side, seed);
+      });
+  if (candidate.status != IvStatus::Ok || !(candidate.iv > kIvMin) ||
+      !std::isfinite(candidate.iv))
+    return observation.finish(std::nullopt, CandidateOutcome::Refused);
+  const auto answer = observation.invoke(CandidatePhase::RetryProof, opts.al_opts,
+      candidate.iv, nullptr, [&] {
+        return american_implied_vol_price_seed(price, S, K, T, r, q, side, opts,
+            max_price_error, candidate.iv, floor_cache);
+      });
+  return observation.finish(answer, answer ? CandidateOutcome::Accepted : CandidateOutcome::Refused);
+}
+
 template <class Observation>
 std::optional<double> price_candidate_observed(
     double price, double S, double K, double T, double r, double q, Side side,
@@ -3328,24 +3402,12 @@ std::optional<double> price_candidate_observed(
     IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache,
     Observation &observation) noexcept {
   if (stats != nullptr) *stats = {};
-  if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
-      opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
-      opts.warm_start != 0.0 || opts.price_tol != 0.0 ||
-      (proposal_kernel != IvPriceProposalKernel::Fast &&
-       proposal_kernel != IvPriceProposalKernel::ScreenThenFast))
+  if (!price_candidate_controls_valid(opts, max_price_error, proposal_kernel))
     return observation.finish(std::nullopt, CandidateOutcome::InvalidControls);
   try {
     if (proposal_kernel == IvPriceProposalKernel::ScreenThenFast) {
-      if (stats != nullptr) stats->screen_attempted = true;
-      const std::optional<AlOpts> screen = al_screen_opts();
-      PriceProposal proposal{0.25 * max_price_error, false};
-      const auto candidate = observation.invoke(CandidatePhase::ScreenProposal, screen,
-          std::nullopt, &proposal.stopped, [&] {
-            return american_implied_vol_impl(price, S, K, T, r, q, side,
-                opts.method, opts.tol, opts.max_iter, screen, opts.correction,
-                0.0, 0.0, nullptr, &proposal);
-          });
-      if (stats != nullptr) stats->screen_stopped_early = proposal.stopped;
+      const auto candidate = price_candidate_screen_proposal(price, S, K, T, r, q,
+          side, opts, max_price_error, stats, observation);
       if (candidate && *candidate > kIvMin && std::isfinite(*candidate)) {
         if (const auto answer = observation.invoke(CandidatePhase::ScreenProof, opts.al_opts,
                 *candidate, nullptr, [&] {
@@ -3356,48 +3418,10 @@ std::optional<double> price_candidate_observed(
           return observation.finish(answer, CandidateOutcome::Accepted);
         }
       }
-      // Screen is only a proposal map. Failure, a refused early stop, or full
-      // Screen convergence that misses the cold budget all retain the Fast chain.
+      // A refused Screen proof resumes the same original Fast chain.
     }
-    IvOpts seed = opts;
-    seed.al_opts = al_fast_profile(opts.al_opts);
-    seed.refuse_non_monotone = false;
-    // An evaluated warm Fast residual only proposes sigma. Reserve most of the
-    // budget for cold-map differences; the exact target helper decides acceptance.
-    // If that check refuses, repeat the original complete Fast search unchanged.
-    PriceProposal proposal{0.25 * max_price_error, false};
-    const auto early = observation.invoke(CandidatePhase::FastProposal, seed.al_opts,
-        std::nullopt, &proposal.stopped, [&] {
-          return american_implied_vol_impl(price, S, K, T, r, q, side,
-              seed.method, seed.tol, seed.max_iter, seed.al_opts, seed.correction,
-              seed.warm_start, seed.price_tol, nullptr, &proposal);
-        });
-    if (stats != nullptr) stats->stopped_early = proposal.stopped;
-    if (early && *early > kIvMin && std::isfinite(*early)) {
-      if (const auto answer = observation.invoke(CandidatePhase::FastProof, opts.al_opts,
-              *early, nullptr, [&] {
-                return american_implied_vol_price_seed(price, S, K, T, r, q, side,
-                    opts, max_price_error, *early, floor_cache);
-              })) {
-        if (stats != nullptr) stats->accepted_early = proposal.stopped;
-        return observation.finish(answer, CandidateOutcome::Accepted);
-      }
-    }
-    if (!proposal.stopped) return observation.finish(std::nullopt, CandidateOutcome::Refused);
-    if (stats != nullptr) stats->retried_full_search = true;
-    const IvResult candidate = observation.invoke(CandidatePhase::CompleteFast, seed.al_opts,
-        std::nullopt, nullptr, [&] {
-          return search_typed(price, S, K, T, r, q, side, seed);
-        });
-    if (candidate.status != IvStatus::Ok || !(candidate.iv > kIvMin) ||
-        !std::isfinite(candidate.iv))
-      return observation.finish(std::nullopt, CandidateOutcome::Refused);
-    const auto answer = observation.invoke(CandidatePhase::RetryProof, opts.al_opts,
-        candidate.iv, nullptr, [&] {
-          return american_implied_vol_price_seed(price, S, K, T, r, q, side, opts,
-              max_price_error, candidate.iv, floor_cache);
-        });
-    return observation.finish(answer, answer ? CandidateOutcome::Accepted : CandidateOutcome::Refused);
+    return price_candidate_fast_observed(price, S, K, T, r, q, side, opts,
+        max_price_error, stats, floor_cache, observation);
   } catch (const std::bad_alloc &) {
     return observation.finish(std::nullopt, CandidateOutcome::AllocationFailure);
   }
@@ -3420,6 +3444,105 @@ std::optional<double> american_implied_vol_price_candidate(
   NoCandidateObservation observation;
   return price_candidate_observed(price, S, K, T, r, q, side, opts, max_price_error,
       stats, proposal_kernel, floor_cache, observation);
+}
+
+bool american_implied_vol_price_candidate_batch(
+    std::span<const IvPriceCandidateRequest> requests, const IvOpts &opts,
+    IvPriceSeedKernel proof_kernel, std::span<IvPriceCandidateResult> out,
+    IvPriceCandidateBatchStats &stats, bool timed, IvPriceProposalKernel proposal_kernel) {
+  const auto now = [&] { return timed ? CandidateClock::now() : CandidateClock::time_point{}; };
+  const auto started = now();
+  stats = {};
+  for (auto &value : out) value = {};
+  if (out.size() != requests.size() ||
+      (proof_kernel != IvPriceSeedKernel::ScalarReference &&
+       proof_kernel != IvPriceSeedKernel::VectorReferenceEmpirical)) return false;
+  stats.requests = requests.size();
+  if (requests.empty()) return true;
+  {
+    std::vector<IvPriceSeedRequest> seeds;
+    std::vector<IvPriceSeedResult> proofs;
+    std::vector<std::size_t> indices;
+    bool scratch_ready = true;
+    try {
+      // All scratch is acquired before the first proposal. A setup refusal
+      // cannot repeat an already executed inverse or discard a partial batch.
+      seeds.resize(requests.size());
+      proofs.resize(requests.size());
+      indices.resize(requests.size());
+    } catch (const std::bad_alloc &) {
+      scratch_ready = false;
+      ++stats.setup_allocation_fallbacks;
+    }
+    if (timed) stats.setup_ns = candidate_elapsed(started);
+    IvPriceSeedFloorCache continuation_floor;
+    NoCandidateObservation observation;
+    if (!scratch_ready) {
+      const auto begin = now();
+      for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto &r = requests[i];
+        out[i].sigma = price_candidate_observed(r.price, r.S, r.K, r.T, r.r, r.q,
+            r.side, opts, r.budget, &out[i].stats, proposal_kernel,
+            &continuation_floor, observation);
+        ++stats.complete_scalar_fallbacks;
+      }
+      if (timed) stats.continuation_ns += candidate_elapsed(begin);
+    } else {
+      std::size_t count = 0;
+      for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto &r = requests[i];
+        if (!price_candidate_controls_valid(opts, r.budget, proposal_kernel) ||
+            proposal_kernel != IvPriceProposalKernel::ScreenThenFast) continue;
+        ++stats.screen_proposals;
+        const auto begin = now();
+        try {
+          const auto seed = price_candidate_screen_proposal(r.price, r.S, r.K, r.T,
+              r.r, r.q, r.side, opts, r.budget, &out[i].stats, observation);
+          if (seed && *seed > kIvMin && std::isfinite(*seed)) {
+            seeds[count] = {r.price, r.S, r.K, r.T, r.r, r.q, *seed, r.budget, r.side};
+            indices[count++] = i;
+          }
+        } catch (const std::bad_alloc &) {
+          out[i].allocation_refused = true;
+          ++stats.allocation_refusals;
+        }
+        if (timed) stats.proposal_ns += candidate_elapsed(begin);
+      }
+      stats.screen_seeds = count;
+      if (!american_implied_vol_price_seed_batch(std::span(seeds).first(count), opts,
+          proof_kernel, std::span(proofs).first(count), stats.proof, timed)) return false;
+      for (std::size_t j = 0; j < count; ++j) {
+        auto &answer = out[indices[j]];
+        answer.screen_proof = proofs[j];
+        if (proofs[j].sigma) {
+          answer.sigma = proofs[j].sigma;
+          answer.stats.screen_accepted = true;
+        }
+      }
+      for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto &r = requests[i];
+        auto &answer = out[i];
+        if (answer.sigma || answer.allocation_refused ||
+            !price_candidate_controls_valid(opts, r.budget, proposal_kernel)) continue;
+        ++stats.fast_continuations;
+        const auto begin = now();
+        try {
+          // Preserve Screen stats and resume after its proof. This is the same
+          // Fast body used by the ordinary call, including complete retries.
+          answer.sigma = price_candidate_fast_observed(r.price, r.S, r.K, r.T, r.r,
+              r.q, r.side, opts, r.budget, &answer.stats, &continuation_floor, observation);
+        } catch (const std::bad_alloc &) {
+          answer.allocation_refused = true;
+          ++stats.allocation_refusals;
+        }
+        if (timed) stats.continuation_ns += candidate_elapsed(begin);
+      }
+    }
+    stats.continuation_floor_preparations = continuation_floor.preparations();
+    stats.continuation_floor_hits = continuation_floor.hits();
+  } // include both floor-owner and scratch destruction
+  if (timed) stats.inclusive_ns = candidate_elapsed(started);
+  return true;
 }
 
 std::optional<double> research::american_implied_vol_price_candidate_traced(
