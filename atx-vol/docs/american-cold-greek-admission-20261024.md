@@ -134,3 +134,5 @@ complete five-point regime evidence matches the existing SIMD path. This small
 extra forward-evaluation cost is disclosed; no Greek latency measurement was
 performed for this component. A fresh metadata-aware corpus receipt is separate
 from these correctness tests.
+
+The [complete715 metadata-aware rerun](american-greek-admission-corpus-20261024.md) now confirms every price/status, reference stencil and family output unchanged: all25,740 requests retained,22 new crossing refusals and562 exact exercised-value corrections. No continuation estimate changed; short-time errors remain unqualified.
