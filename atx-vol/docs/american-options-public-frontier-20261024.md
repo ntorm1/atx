@@ -1,13 +1,15 @@
 # American equity options: public frontier and reproducible comparator plan
 
 Research frozen 2026-10-24. The original source review and experiment plan below
-precede the first executable comparison. That follow-up is now measured in
-[the pinned public American-put report](public-american-comparison-20261024.md):
-252 common-domain and 357 diagnostic contracts, with exact setup clocks and
-failure coverage. QuantLib, independent general-American accuracy, cash-dividend
-and Greek qualification remain outstanding. The latest complete SPY release
-candidate takes 1.406041 s in one quiet fresh process and passes all thirteen
-correctness gates with the explicit two-row identification review; see
+precede the executable comparisons. Follow-ups now measure both
+[the pinned public American-put implementation](public-american-comparison-20261024.md)
+and [official QuantLib fixed-point profiles](quantlib-american-frontier-20261024.md)
+on 252 common-domain and 357 diagnostic contracts, with setup clocks and complete
+failure coverage. Independent general-American accuracy, cash-dividend and Greek
+qualification remain open. The latest complete SPY release candidate takes
+1.0305445 s median across three quiet fresh processes (range 1.0288362–1.0897724 s)
+and passes all thirteen correctness gates with the explicit two-row
+identification review; see
 [current acceptance](spy-cold-acceptance-r7.md). Historical evidence below retains
 its original scope. The experiments do not widen the approved monetary budget.
 
@@ -27,7 +29,7 @@ scenarios, and a complete arbitrage-checked market fit are different products.
 
 ## 1. Current evidence and unchanged SPY contract
 
-The latest completed independent audit at this research cutoff is source
+The historical independent audit at the original research cutoff is source
 `0a5b2bc1acfe0d0cc45caa0e9aa0a5925fb386ff`. Its separate one-core development
 fit took **13.0317839 seconds**. This is neither a ThinLTO qualification nor a
 100-process subsecond result. The actual API audit passed all twelve correctness

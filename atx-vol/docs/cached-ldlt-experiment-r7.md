@@ -1,7 +1,9 @@
 # Cached LDLT experiment: not promoted
 
-This branch preserves an unsuccessful performance experiment against the approved
-`6808691e` joint-projection profile. It must not be integrated as a performance
+Research commit `55d6403c`, retained on
+`feat/vol-r7-cached-ldlt-experiment-20261024`, preserves an unsuccessful
+performance experiment against the approved `6808691e` joint-projection profile.
+Only this report is integrated; the prototype is not a production performance
 improvement. Constraints, objective, stopping rule and final certificates remain
 unchanged. No production speed or subsecond claim follows from these results.
 

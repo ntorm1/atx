@@ -69,7 +69,9 @@ remain 435 failures of target/budget and 61 failures of target/budget/edge. The
 This is an attribution measurement, not a qualified latency result or a reason
 to add the retry to production.
 
-The existing cold Screen fallback remains necessary for these requests. A future
+The existing strict native route accepts all 496 of these requests, with 466
+requiring a subsequent cold price-budget check. Screen is a later fallback only
+when preceding routes fail; its 700 attempts are a different population. A future
 region-specific envelope would require its own mathematical error argument,
 identity/domain checks, cold-reference regressions, and measured whole-fit benefit.
 This study provides no evidence for loosening the envelope, changing the native

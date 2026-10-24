@@ -71,3 +71,26 @@ retains every mesh, residual and refusal. The source was uncommitted during this
 pilot and is pinned by file hashes in the receipt. Test logs are
 `independent-pde-red.log` and `independent-pde-green-v3.log` under the same r7
 root. This pilot is not a public pricing-speed benchmark.
+
+## Long-expiry refinement follow-up
+
+The second frozen run refines the two difficult groups `g044` and `g047` (14 puts)
+to 32,769 spatial nodes and 4,096 time steps, with 49,153 nodes in the wider-domain
+control. All six grids per group complete. Maximum empirical indicators fall to
+$0.0000251924 and $0.0000230051. They remain too large to establish the tighter
+comparison's $0.000005 reference allowance for every contract.
+
+The fine PDE values differ from QuantLib highPrecision by less than $0.000002
+on these 14 puts, and from the refined ATX values by approximately $0.00000545
+through $0.0000179. This independent-method agreement is useful evidence, but
+does not establish a rigorous error interval or resolve the whole corpus. In
+particular, `g044` at spot 70 has an empirical indicator of $0.000000209 while
+its difference from QuantLib is $0.000000654. The indicator is not an upper bound
+on inter-method disagreement. The earlier unresolved labels remain unchanged.
+
+Receipts are in `independent-pde-long-vol-refine-v2/` under the same evidence
+root, pinned to clean source `7f93b987535d5ad548e249b3149a9a35e0c3ef74` and the
+recorded individual Python-file hashes. The source includes the strict boolean
+and string input guards. Each group retains all prices, policy iterations,
+complementarity residuals and time/space/domain refinements. Roughly 152 seconds
+per group is offline reference-generation cost, not a production latency claim.

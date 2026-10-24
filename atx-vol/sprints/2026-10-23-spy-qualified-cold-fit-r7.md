@@ -656,3 +656,50 @@ bounded-candidate refusals. The calendar ordering/cached-factor experiments did
 not beat the existing solver and stay unpromoted. Public Greek validity repair
 and independent reference refinement continue separately. No default promotion,
 main merge, full Greek/cash qualification or worldwide speed claim is made.
+
+
+## Qualification update: validity and rejected experiments (2026-10-24)
+
+The latest measured complete-fit release remains 1.0305445 seconds median,
+1.0288362?1.0897724 seconds across three quiet fresh processes; it is not yet
+subsecond-qualified. The approved price contract remains min($0.001/share,
+1% of the original raw spread), with unchanged full coverage and arbitrage gates.
+
+Public sigma-only Greek validity is repaired in integrated source a23f50cb:
+near-edge gamma/theta/charm now carry typed refusals, while prices remain unchanged.
+Root integration passes all19 focused Greek tests, the direct/detached/chain/shock
+zero-allocation test, and owning PCH-off compilation. The frozen715-contract
+continuous-carry derivative corpus and separate model-versus-served-map runner
+are the next accuracy gate. The price budget does not define a Greek tolerance.
+
+Measured exclusions narrow the next performance work. Alternative QP orderings
+increase symbolic work; cached factorization has no reliable latency gain. Changing
+the tensor builder from AVX2 Reference to scalar Fast also has no reliable gain.
+All496 rejected economic family proposals have intervals wider than the allowed
+budget; moving the candidate or retrying the scalar bound recovers none. All496
+are nevertheless served by strict native inversion, with466 additional cold
+price-budget checks. The700 Screen attempts are a separate later population.
+The current work targets repeated invariant geometry and duplicate cold proof
+work, preserving the original proof and fallback on every refusal.
+
+Independent continuous-carry PDE refinement on14 selected difficult puts now
+agrees with QuantLib highPrecision within $0.000001947. Empirical refinement
+indicators still reach $0.0000252; those indicators are not rigorous bounds and
+all previously unresolved reference labels remain unchanged. See the hashed
+cross-method comparison in independent-pde-long-vol-refine-v2/.
+
+Cash-dividend work starts from the existing D0/D1 implementation, not a blank
+reference project: exact-event PDE plus trinomial reference, corrected cubic
+splice, event-aware routes and prepared price/IV/Greek batches already exist.
+The existing22,009-contract D1 report records all price outputs and16,076 IVs,
+781 genuine price-only rows,938 inconsistent-range refusals,6 budget failures,
+and4,208 without two-sided markets. Historical load-contended timings are not a
+new release qualification. Next gates are rescoring under explicit monetary
+price tolerances, preserving event/model conventions and reference uncertainty,
+then comparing amortized rollback/family or PDE methods at equal accuracy.
+See atx-vol/docs/american-cash-dividend-reference.md section11 and the HFT support
+matrix. Continuous-yield substitution cannot qualify dated-cash output.
+
+Production default promotion, main merge,100-process cold-fit qualification,
+full archive persistence and broad price/Greek/cash frontier qualification remain
+open. Every rejected experiment is retained with source and evidence hashes.
