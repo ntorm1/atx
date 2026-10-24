@@ -449,7 +449,11 @@ TEST(SurfaceDbManifest, RoundTrip_Empty) {
   EXPECT_EQ(m->header().partition_count, 0u);
 }
 
-TEST(SurfaceDbManifest, LegacyV1ZeroReservedPolicyUsesSafeV2Defaults) {
+// ATXVDB02 (docs/atxvsa2-format.md §10). Revision 0 (ATXVDB01) decoded an all-zero
+// policy block as "legacy, use safe defaults"; ATXVDB02 has named policy fields and
+// no legacy decode, so a zeroed policy block (outputs = 0 is not an enumerator) is a
+// corrupt record. Ruling: the fall-back-to-defaults path is gone.
+TEST(SurfaceDbManifest, ZeroPolicyFieldsAreRefusedNotDefaulted) {
   SymbolFitConfig configured;
   configured.surface_policy.quality_mode = FitQualityMode::Accuracy;
   configured.surface_policy.outputs = SurfaceOutputs::Risk;
@@ -459,22 +463,83 @@ TEST(SurfaceDbManifest, LegacyV1ZeroReservedPolicyUsesSafeV2Defaults) {
 
   DbManifestHeader header{};
   std::memcpy(&header, bytes->data(), sizeof header);
-  const std::size_t reserved_offset =
-      static_cast<std::size_t>(header.symbols_offset) + offsetof(DbSymbolRecord, reserved);
-  std::memset(bytes->data() + reserved_offset, 0, 32);
+  const std::size_t policy_offset = static_cast<std::size_t>(header.symbols_offset) +
+                                    offsetof(DbSymbolRecord, policy_quality_mode);
+  // The four policy bytes plus the whole (absent) provenance block, through the end
+  // of the record: exactly what revision 0 called the zero-reserved legacy form.
+  std::memset(bytes->data() + policy_offset, 0,
+              sizeof(DbSymbolRecord) - offsetof(DbSymbolRecord, policy_quality_mode));
   restamp_crcs(*bytes);
+  const auto opened = DbManifest::open(std::move(*bytes));
+  ASSERT_FALSE(opened.has_value()) << "a zero policy block must not decode to defaults";
+  EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
+}
 
-  auto manifest = DbManifest::open(std::move(*bytes));
-  ASSERT_TRUE(manifest.has_value());
-  auto legacy = manifest->find_symbol("SPY");
-  ASSERT_TRUE(legacy.has_value());
-  EXPECT_EQ(legacy->surface_policy.quality_mode, FitQualityMode::Balanced);
-  EXPECT_EQ(legacy->surface_policy.outputs, SurfaceOutputs::MarketMarkAndRisk);
-  EXPECT_EQ(legacy->surface_policy.risk_admission, RiskAdmission::Required);
-  EXPECT_EQ(legacy->surface_policy.fallback, SurfaceFallback::LastKnownGood);
-  auto legacy_provenance = manifest->find_symbol_provenance("SPY");
-  ASSERT_TRUE(legacy_provenance.has_value());
-  EXPECT_FALSE(legacy_provenance->has_value());
+// A revision-0 manifest is refused by name, after nothing but the magic compare, so
+// the operator learns WHICH format they hold rather than reading "bad magic".
+TEST(SurfaceDbManifest, RefusesThePriorManifestMagicByName) {
+  auto bytes = write_db_manifest({{DbSymbolEntry{"SPY", {}}}}, {});
+  ASSERT_TRUE(bytes.has_value());
+  std::memcpy(bytes->data(), "ATXVDB01", 8);
+  restamp_crcs(*bytes);
+  const auto opened = DbManifest::open(std::move(*bytes));
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(opened.error().to_string().find("ATXVDB01"), std::string::npos)
+      << opened.error().to_string();
+}
+
+// ATXVDB01 had no slot for `source_generation` and dropped it on every write (audit
+// finding: manifest provenance lost a field the archive kept). ATXVDB02 names it.
+TEST(SurfaceDbManifest, ProvenanceSourceGenerationRoundTrips) {
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Balanced;
+  provenance.state = SurfaceState::Healthy;
+  provenance.validation.validation_id = 77u;
+  provenance.source_generation = 0x5EED'0000'0042ull;
+  provenance.served_generation = 3;
+  auto bytes = write_db_manifest({{DbSymbolEntry{"SPY", SymbolFitConfig{}, provenance}}}, {});
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto m = DbManifest::open(std::move(*bytes));
+  ASSERT_TRUE(m.has_value()) << m.error().to_string();
+  auto got = m->find_symbol_provenance("SPY");
+  ASSERT_TRUE(got.has_value());
+  ASSERT_TRUE(got->has_value());
+  EXPECT_EQ((*got)->source_generation, provenance.source_generation);
+  EXPECT_EQ((*got)->served_generation, provenance.served_generation);
+  EXPECT_EQ((*got)->validation.validation_id, provenance.validation.validation_id);
+}
+
+// Every byte of the manifest is either a named field or a validated zero: a stray
+// non-zero byte in the header's reserved tail, or a partition record's flags, is
+// refused even with both CRCs restamped (canonical form, docs §10).
+TEST(SurfaceDbManifest, RefusesNonZeroReservedAndFlagsUnderValidCrcs) {
+  const std::vector<DbSymbolEntry> syms{DbSymbolEntry{"SPY", {}}};
+  const std::vector<DbPartitionInfo> parts{
+      DbPartitionInfo{"2026-07-10", 1, 4096, 1720569600000000000LL}};
+  auto bytes = write_db_manifest(syms, parts);
+  ASSERT_TRUE(bytes.has_value());
+  {
+    auto same = *bytes;
+    restamp_crcs(same);
+    ASSERT_TRUE(DbManifest::open(std::move(same)).has_value()) << "restamp must be faithful";
+  }
+  {
+    auto bad = *bytes;
+    bad[offsetof(DbManifestHeader, reserved)] = std::byte{0x01};
+    restamp_crcs(bad);
+    EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
+  }
+  {
+    auto bad = *bytes;
+    DbManifestHeader h{};
+    std::memcpy(&h, bad.data(), sizeof h);
+    bad[static_cast<std::size_t>(h.partitions_offset) + offsetof(DbPartitionRecord, flags)] =
+        std::byte{0x01};
+    restamp_crcs(bad);
+    EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
+  }
 }
 
 TEST(SurfaceDbManifest, Write_RejectsDuplicateAndInvalid) {
@@ -503,7 +568,7 @@ TEST(SurfaceDbManifest, Open_RejectsCorruption) {
   }
   {
     auto bad = *bytes;
-    bad[100] ^= std::byte{0x01}; // header reserved => header CRC
+    bad[100] ^= std::byte{0x01}; // header payload_crc32c => checksum mismatch
     EXPECT_EQ(DbManifest::open(std::move(bad)).error().code(), ErrorCode::ParseError);
   }
   {
@@ -931,11 +996,12 @@ TEST(SurfaceDbPartition, SessionTsFastPathPreservesErrorTaxonomy) {
   std::filesystem::remove_all(root);
 }
 
-// S5: map_surface serves a zero-copy view over a SHARED per-partition mapping —
-// two loads of the same partition (even for different symbols) reuse one mapping
-// (cache hit), and the view prices bit-identically to the source surface.
-TEST(SurfaceDbPartition, ViewCacheSharesOneMappingAcrossLoads) {
-  const auto root = test_root("part_viewcache_hit");
+// SER 2026-10-23 (docs/atxvsa2-format.md §10): map_surface is a POINT READ. The
+// partition view cache is gone; each LoadedSurface owns exactly its own record's
+// verified bytes, so two loads from one partition hold two independent backings,
+// and each view prices bit-identically to its source surface.
+TEST(SurfaceDbPartition, MapSurfaceIsAPointReadOwningOnlyItsRecord) {
+  const auto root = test_root("part_point_read");
   auto db = SurfaceDb::create(root.string());
   ASSERT_TRUE(db.has_value());
 
@@ -948,21 +1014,92 @@ TEST(SurfaceDbPartition, ViewCacheSharesOneMappingAcrossLoads) {
   auto b = db->map_surface("2026-07-10", "msft");
   ASSERT_TRUE(a.has_value()) << a.error().to_string();
   ASSERT_TRUE(b.has_value()) << b.error().to_string();
-  // Same partition => one shared mapping (the cache-hit invariant).
-  EXPECT_EQ(a->partition.get(), b->partition.get());
-  // Zero-copy views price bit-identically to the source surfaces.
+  ASSERT_NE(a->backing, nullptr);
+  ASSERT_NE(b->backing, nullptr);
+  EXPECT_NE(a->backing.get(), b->backing.get()) << "no shared partition buffer";
   EXPECT_EQ((*a)->kind_at(0), VolCurveKind::Essvi);
   expect_theo_bit_identical(s1, **a);
   EXPECT_EQ((*b)->kind_at(0), VolCurveKind::ConvexDense);
   expect_theo_bit_identical(s2, **b);
+
+  // load_surface is the same point read, reconstructed into the same bits.
+  auto owned = db->load_surface("2026-07-10", "MSFT");
+  ASSERT_TRUE(owned.has_value()) << owned.error().to_string();
+  expect_theo_bit_identical(s2, *owned);
   std::filesystem::remove_all(root);
 }
 
-// S5: rewriting a partition in place changes its F6 content identity, so the next
-// map_surface EVICTS the stale mapping and serves the NEW bytes — while an
-// already-returned view stays valid (it co-owns the old mapping).
-TEST(SurfaceDbPartition, ViewCacheEvictsOnPartitionRewrite) {
-  const auto root = test_root("part_viewcache_evict");
+// No mapping or handle outlives a point read: with a view held, the partition can be
+// rewritten, dropped and its file removed, and the held view keeps pricing from its
+// own bytes. (Under the revision-0 cache a mapped partition could block the Windows
+// rename that a republish needs.)
+TEST(SurfaceDbPartition, HeldPointReadViewPinsNoFile) {
+  const auto root = test_root("part_point_read_unpinned");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto v1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const std::vector<SurfaceArchiveItem> items1{{"AAPL", &v1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items1).has_value());
+
+  auto held = db->map_surface("2026-07-10", "aapl");
+  ASSERT_TRUE(held.has_value()) << held.error().to_string();
+  const auto file = root / "partitions" / "2026-07-10.atxvsa";
+  ASSERT_TRUE(std::filesystem::exists(file));
+
+  ASSERT_TRUE(db->drop_partition("2026-07-10").has_value());
+  EXPECT_FALSE(std::filesystem::exists(file)) << "drop must unlink while a view is held";
+  EXPECT_EQ(db->map_surface("2026-07-10", "aapl").error().code(), ErrorCode::NotFound);
+  expect_theo_bit_identical(v1, **held);
+  std::filesystem::remove_all(root);
+}
+
+// A record whose bytes rotted is refused by the point read (its CRC is verified over
+// every byte) — never served — and its sibling, whose bytes the read never touches,
+// is still served.
+TEST(SurfaceDbPartition, MapSurfaceRefusesARottedRecordAndServesItsSibling) {
+  const auto root = test_root("part_point_read_rot");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
+  const auto s2 = make_essvi(/*uid=*/2, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+
+  std::uint64_t victim = 0;
+  {
+    auto arch = db->open_partition("2026-07-10");
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    const auto e = arch->find("AAPL");
+    ASSERT_TRUE(e.has_value());
+    victim = e->surface_offset + e->surface_size - 1; // last payload byte
+  }
+  const auto file = root / "partitions" / "2026-07-10.atxvsa";
+  {
+    std::fstream io{file, std::ios::binary | std::ios::in | std::ios::out};
+    ASSERT_TRUE(io.is_open());
+    io.seekg(static_cast<std::streamoff>(victim));
+    char c = 0;
+    io.read(&c, 1);
+    c = static_cast<char>(c ^ 0x5A);
+    io.seekp(static_cast<std::streamoff>(victim));
+    io.write(&c, 1);
+    ASSERT_TRUE(io.good());
+  }
+  const auto rotted = db->map_surface("2026-07-10", "aapl");
+  ASSERT_FALSE(rotted.has_value()) << "a rotted record must never be served";
+  EXPECT_EQ(rotted.error().code(), ErrorCode::ParseError);
+  EXPECT_EQ(db->load_surface("2026-07-10", "aapl").error().code(), ErrorCode::ParseError);
+  auto sibling = db->map_surface("2026-07-10", "msft");
+  ASSERT_TRUE(sibling.has_value()) << sibling.error().to_string();
+  expect_theo_bit_identical(s2, **sibling);
+  std::filesystem::remove_all(root);
+}
+
+// Rewriting a partition while a view is held: the rewrite publishes (nothing pins
+// the file), the next map_surface serves the NEW bytes, and the held view keeps
+// pricing the OLD surface from the record bytes it owns.
+TEST(SurfaceDbPartition, MapSurfaceServesARewriteWhileAnOldViewIsHeld) {
+  const auto root = test_root("part_point_read_rewrite");
   auto db = SurfaceDb::create(root.string());
   ASSERT_TRUE(db.has_value());
 
@@ -974,7 +1111,6 @@ TEST(SurfaceDbPartition, ViewCacheEvictsOnPartitionRewrite) {
   ASSERT_TRUE(loaded1.has_value()) << loaded1.error().to_string();
   EXPECT_EQ((*loaded1)->kind_at(0), VolCurveKind::Essvi);
   expect_theo_bit_identical(v1, **loaded1);
-  const SurfaceArchiveV2 *old_mapping = loaded1->partition.get();
 
   // Rewrite the SAME key with a DIFFERENT-kind surface (new content identity).
   const auto v2 = make_convex(/*uid=*/1, /*n_slices=*/2, /*n_nodes=*/40);
@@ -983,134 +1119,12 @@ TEST(SurfaceDbPartition, ViewCacheEvictsOnPartitionRewrite) {
 
   auto loaded2 = db->map_surface("2026-07-10", "aapl");
   ASSERT_TRUE(loaded2.has_value()) << loaded2.error().to_string();
-  // A fresh mapping was opened (the stale one was evicted on rewrite).
-  EXPECT_NE(loaded2->partition.get(), old_mapping);
-  // The remapped view reflects the NEW content, not the stale surface.
+  EXPECT_NE(loaded2->backing.get(), loaded1->backing.get());
+  // The new read reflects the NEW content, not the stale surface.
   EXPECT_EQ((*loaded2)->kind_at(0), VolCurveKind::ConvexDense);
   expect_theo_bit_identical(v2, **loaded2);
-  // The old view co-owns its old mapping, so it is still valid post-rewrite.
+  // The old view owns its old record bytes, so it is still valid post-rewrite.
   expect_theo_bit_identical(v1, **loaded1);
-  std::filesystem::remove_all(root);
-}
-
-// S5 LRU bound (Important-1 fix): the view cache holds each partition's FULL
-// bytes resident, so it MUST be capacity-bounded or the B1 hot loop (~135 daily
-// partitions) grows RSS unboundedly. With a cap of 2, sweeping 3 distinct
-// partitions never keeps more than 2 mappings resident.
-TEST(SurfaceDbPartition, ViewCacheBoundsResidentEntriesToCapacity) {
-  const auto root = test_root("part_viewcache_cap");
-  SurfaceDbCreateOpts copts;
-  copts.partition_cache_capacity = 2;
-  auto db = SurfaceDb::create(root.string(), copts);
-  ASSERT_TRUE(db.has_value());
-  EXPECT_EQ(db->partition_cache_stats().capacity, 2u);
-
-  const std::array<const char *, 3> keys{"2026-07-01", "2026-07-02", "2026-07-03"};
-  for (std::size_t i = 0; i < keys.size(); ++i) {
-    const auto s = make_essvi(/*uid=*/static_cast<std::uint32_t>(i + 1), /*n_slices=*/2);
-    const std::vector<SurfaceArchiveItem> items{{"AAPL", &s}};
-    ASSERT_TRUE(db->write_partition(keys[i], items).has_value());
-  }
-  // Access all three; resident must never exceed the cap of 2.
-  for (const char *key : keys) {
-    auto m = db->map_surface(key, "aapl");
-    ASSERT_TRUE(m.has_value()) << m.error().to_string();
-    EXPECT_LE(db->partition_cache_stats().resident, 2u);
-  }
-  // After touching 3 distinct partitions with cap 2, exactly 2 stay resident.
-  EXPECT_EQ(db->partition_cache_stats().resident, 2u);
-  std::filesystem::remove_all(root);
-}
-
-// S5 LRU order: the LEAST-recently-USED partition is evicted first, and a
-// map_surface HIT refreshes recency (so a re-read protects an entry from
-// eviction). Proven by pointer identity of the shared mapping: a retained
-// partition returns the SAME SurfaceArchiveV2*, an evicted one is reopened
-// fresh (a DIFFERENT pointer). The two held LoadedSurfaces pin the old object
-// addresses so a fresh open cannot alias them (no ABA).
-TEST(SurfaceDbPartition, ViewCacheEvictsLeastRecentlyUsedFirst) {
-  const auto root = test_root("part_viewcache_lru");
-  SurfaceDbCreateOpts copts;
-  copts.partition_cache_capacity = 2;
-  auto db = SurfaceDb::create(root.string(), copts);
-  ASSERT_TRUE(db.has_value());
-
-  const std::array<const char *, 3> keys{"2026-07-01", "2026-07-02", "2026-07-03"};
-  for (std::size_t i = 0; i < keys.size(); ++i) {
-    const auto s = make_essvi(/*uid=*/static_cast<std::uint32_t>(i + 1), /*n_slices=*/2);
-    const std::vector<SurfaceArchiveItem> items{{"AAPL", &s}};
-    ASSERT_TRUE(db->write_partition(keys[i], items).has_value());
-  }
-
-  auto a1 = db->map_surface(keys[0], "aapl"); // resident {P1}
-  ASSERT_TRUE(a1.has_value());
-  const SurfaceArchiveV2 *p1 = a1->partition.get();
-  auto a2 = db->map_surface(keys[1], "aapl"); // resident {P1, P2}
-  ASSERT_TRUE(a2.has_value());
-  const SurfaceArchiveV2 *p2 = a2->partition.get();
-
-  // Re-read P1: a HIT that refreshes P1 to most-recently-used, so P2 becomes the
-  // LRU victim (not P1).
-  auto a1b = db->map_surface(keys[0], "aapl");
-  ASSERT_TRUE(a1b.has_value());
-  EXPECT_EQ(a1b->partition.get(), p1); // same mapping — cache hit
-
-  // Insert P3: exceeds cap 2, so the LRU (P2) is evicted; P1 survives.
-  auto a3 = db->map_surface(keys[2], "aapl"); // resident {P1, P3}
-  ASSERT_TRUE(a3.has_value());
-  EXPECT_EQ(db->partition_cache_stats().resident, 2u);
-
-  // P1 is still cached => SAME pointer (a hit, not a reopen).
-  auto a1c = db->map_surface(keys[0], "aapl");
-  ASSERT_TRUE(a1c.has_value());
-  EXPECT_EQ(a1c->partition.get(), p1) << "least-recently-used eviction removed the wrong entry";
-
-  // P2 was evicted => a fresh mapping (DIFFERENT pointer). a2 still pins the old
-  // P2 object, so the new open cannot reuse its address.
-  auto a2b = db->map_surface(keys[1], "aapl");
-  ASSERT_TRUE(a2b.has_value());
-  EXPECT_NE(a2b->partition.get(), p2) << "expected LRU P2 to have been evicted and reopened";
-  std::filesystem::remove_all(root);
-}
-
-// S5 co-ownership under CAPACITY eviction (distinct from the rewrite-eviction
-// case above): when an entry is LRU-evicted to honor the cap, a caller still
-// holding its LoadedSurface must keep pricing correctly — the backing buffer
-// dies only when the last co-owner drops, never at eviction.
-TEST(SurfaceDbPartition, ViewCacheEvictedViewStaysValidWhenHeld) {
-  const auto root = test_root("part_viewcache_evict_held");
-  SurfaceDbCreateOpts copts;
-  copts.partition_cache_capacity = 1; // one resident entry => next distinct load evicts
-  auto db = SurfaceDb::create(root.string(), copts);
-  ASSERT_TRUE(db.has_value());
-
-  const auto v1 = make_essvi(/*uid=*/1, /*n_slices=*/3);
-  const std::vector<SurfaceArchiveItem> items1{{"AAPL", &v1}};
-  ASSERT_TRUE(db->write_partition("2026-07-01", items1).has_value());
-  const auto v2 = make_convex(/*uid=*/2, /*n_slices=*/2, /*n_nodes=*/40);
-  const std::vector<SurfaceArchiveItem> items2{{"AAPL", &v2}};
-  ASSERT_TRUE(db->write_partition("2026-07-02", items2).has_value());
-
-  auto loaded1 = db->map_surface("2026-07-01", "aapl");
-  ASSERT_TRUE(loaded1.has_value()) << loaded1.error().to_string();
-  const SurfaceArchiveV2 *old_mapping = loaded1->partition.get();
-  EXPECT_EQ(db->partition_cache_stats().resident, 1u);
-
-  // Load a DIFFERENT partition: with cap 1, this evicts P1's mapping from the
-  // cache. loaded1 still co-owns it.
-  auto loaded2 = db->map_surface("2026-07-02", "aapl");
-  ASSERT_TRUE(loaded2.has_value()) << loaded2.error().to_string();
-  EXPECT_EQ(db->partition_cache_stats().resident, 1u);
-
-  // The evicted-but-held view is still valid and prices bit-identically to v1.
-  expect_theo_bit_identical(v1, **loaded1);
-
-  // Confirm P1 really was evicted (not merely still present): reopening it now
-  // yields a FRESH mapping — a different pointer — since loaded1 pins the old one.
-  auto reopened = db->map_surface("2026-07-01", "aapl");
-  ASSERT_TRUE(reopened.has_value()) << reopened.error().to_string();
-  EXPECT_NE(reopened->partition.get(), old_mapping);
-  expect_theo_bit_identical(v1, **reopened);
   std::filesystem::remove_all(root);
 }
 
@@ -1607,7 +1621,7 @@ namespace {
 //
 //   1. A manifest holding ONE symbol. There, "find the record for S" is trivially
 //      the same answer for any search algorithm, so the fold value it produces is
-//      the value the bisect must reproduce. The fold covers the record's 256
+//      the value the bisect must reproduce. The fold covers the record's 264
 //      encoded bytes and every config here is unique, so a bisect landing on a
 //      neighbour cannot collide by accident -- but this oracle runs the SAME
 //      `std::lower_bound` under the same `cmp_key`, so it cannot by itself
