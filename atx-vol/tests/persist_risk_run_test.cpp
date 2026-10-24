@@ -273,7 +273,8 @@ void expect_var_equal(const HistoricalVarResult &a, const HistoricalVarResult &b
     EXPECT_TRUE(same_pod(a.points[i].tail_mean, b.points[i].tail_mean));
   }
   EXPECT_EQ(a.n_admitted, b.n_admitted);
-  EXPECT_EQ(std::bit_cast<std::uint64_t>(a.reference_pv), std::bit_cast<std::uint64_t>(b.reference_pv));
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(a.reference_pv),
+            std::bit_cast<std::uint64_t>(b.reference_pv));
 }
 
 [[nodiscard]] std::size_t manifest_size(const fs::path &dir) {
@@ -400,8 +401,9 @@ TEST(PersistRiskRun, AppendSealsSegmentsAtThreshold) {
   // Writer refusals: a second writer on a live run directory, a frame of another
   // book, and any append after finish().
   RiskStream stream(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
-  EXPECT_EQ(RiskRunWriter::create(tiny.string(), stream.prepared(), RiskRunOptions{}).error().status,
-            PersistStatus::AlreadyExists);
+  EXPECT_EQ(
+      RiskRunWriter::create(tiny.string(), stream.prepared(), RiskRunOptions{}).error().status,
+      PersistStatus::AlreadyExists);
   const fs::path fresh = fresh_dir("refuse");
   auto w = RiskRunWriter::create(fresh.string(), stream.prepared(), RiskRunOptions{});
   ASSERT_TRUE(w.has_value());
@@ -416,8 +418,9 @@ TEST(PersistRiskRun, AppendSealsSegmentsAtThreshold) {
   EXPECT_EQ(w->finish().error().status, PersistStatus::InvalidArgument);
   RiskRunOptions zero;
   zero.segment_bytes = 0;
-  EXPECT_EQ(RiskRunWriter::create(fresh_dir("zero").string(), stream.prepared(), zero).error().status,
-            PersistStatus::InvalidArgument);
+  EXPECT_EQ(
+      RiskRunWriter::create(fresh_dir("zero").string(), stream.prepared(), zero).error().status,
+      PersistStatus::InvalidArgument);
 }
 
 TEST(PersistRiskRun, CrashBetweenSegmentAndManifestIsInvisible) {

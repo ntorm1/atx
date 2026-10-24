@@ -5,14 +5,14 @@
 //   atx-vol-history-store timeline build   --db <SurfaceDb root> --out <store root>
 //                                          [--keys k1,k2,...] [--created-unix-ns N]
 //   atx-vol-history-store timeline inspect <store root>
-//   atx-vol-history-store timeline bench   [--out <dir>] [--uids 100] [--days 22]
+//   atx-vol-history-store timeline bench   --out <dir> [--uids 100] [--days 22]
 //                                          [--buckets 11] [--json <file>]
 //   atx-vol-history-store riskrun  inspect <run dir>
-//   atx-vol-history-store riskrun  bench   [--out <dir>] [--legs 10000] [--steps 64]
+//   atx-vol-history-store riskrun  bench   --out <dir> [--legs 10000] [--steps 64]
 //                                          [--json <file>]
 //
-// Bench outputs are written under --out (default C:\atx-cache\persist\p2); a path under
-// C:\atx-data is refused (that store is read-only). Every bench JSON carries
+// Bench outputs are written under --out (required; the lane used C:\atx-cache\persist\p2);
+// a path under C:\atx-data is refused (that store is read-only). Every bench JSON carries
 // schema_version, the host CPU busy fraction sampled over the run and the --preset
 // label the caller passes (the binary cannot know its own preset). Timings are wall
 // clock (steady_clock); synthetic inputs are deterministic.
@@ -78,7 +78,6 @@ using namespace atx::vol; // NOLINT(google-build-using-namespace): tool main
 using Clock = std::chrono::steady_clock;
 
 constexpr int kSchemaVersion = 1;
-constexpr std::string_view kDefaultOut = "C:/atx-cache/persist/p2";
 
 [[nodiscard]] double seconds_since(Clock::time_point t0) {
   return std::chrono::duration<double>(Clock::now() - t0).count();
@@ -165,11 +164,31 @@ struct Args {
 
 // Refuse any output under the read-only licensed store (lane rule, persist D11).
 [[nodiscard]] bool under_data_root(const fs::path &p) {
-  std::string s = fs::absolute(p).lexically_normal().generic_string();
-  std::transform(s.begin(), s.end(), s.begin(), [](char c) {
-    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-  });
-  return s.rfind("c:/atx-data", 0) == 0;
+  const auto lower = [](std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
+      return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+    });
+    return s;
+  };
+  const std::string s = lower(fs::absolute(p).lexically_normal().generic_string());
+  const std::string root = lower("C:/atx-data");
+  return s == root || s.rfind(root + "/", 0) == 0;
+}
+
+// The output root of a bench verb. --out is required: no absolute default is baked
+// into the binary (lane outputs go under the artifact cache, e.g. its persist/p2), and
+// the licensed store is refused.
+[[nodiscard]] std::optional<fs::path> bench_out(const Args &a) {
+  const std::string out = a.get("out", "");
+  if (out.empty()) {
+    std::fprintf(stderr, "error: --out <dir> is required\n");
+    return std::nullopt;
+  }
+  if (under_data_root(out)) {
+    std::fprintf(stderr, "error: refusing to write under C:\\atx-data\n");
+    return std::nullopt;
+  }
+  return fs::path{out};
 }
 
 [[nodiscard]] int fail(const char *what, const PersistError &e) {
@@ -227,7 +246,8 @@ void write_text(const fs::path &path, const std::string &text) {
   const std::string db_root = a.get("db", "");
   const std::string out = a.get("out", "");
   if (db_root.empty() || out.empty()) {
-    std::fprintf(stderr, "usage: timeline build --db <SurfaceDb root> --out <store root> [--keys ...]\n");
+    std::fprintf(stderr, "usage: timeline build --db <SurfaceDb root> --out <store root> "
+                         "[--keys ...]\n");
     return 2;
   }
   if (under_data_root(out)) {
@@ -288,7 +308,8 @@ void write_text(const fs::path &path, const std::string &text) {
 [[nodiscard]] PricedSurface synth_surface(std::uint32_t uid, std::int64_t ts_ns, int snapshot) {
   const double x = static_cast<double>(snapshot);
   const double u = static_cast<double>(uid);
-  const double S = (40.0 + 7.5 * static_cast<double>(uid % 37)) * (1.0 + 0.01 * std::sin(0.37 * x + u));
+  const double S =
+      (40.0 + 7.5 * static_cast<double>(uid % 37)) * (1.0 + 0.01 * std::sin(0.37 * x + u));
   const double r = 0.043;
   const double q = 0.01 + 0.0005 * static_cast<double>(uid % 9);
   const bool heavy = uid % 5 == 0;
@@ -356,8 +377,8 @@ struct SynthDb {
 };
 
 // days x buckets ATXVSA2 partitions of `uids` surfaces in a fresh SurfaceDb.
-[[nodiscard]] std::optional<SynthDb> make_synth_db(const fs::path &root, std::uint32_t uids, int days,
-                                                   int buckets) {
+[[nodiscard]] std::optional<SynthDb> make_synth_db(const fs::path &root, std::uint32_t uids,
+                                                   int days, int buckets) {
   std::error_code ec;
   fs::remove_all(root, ec);
   auto db = SurfaceDb::create(root.string());
@@ -401,127 +422,134 @@ struct SynthDb {
     return std::bit_cast<std::uint64_t>(x) == std::bit_cast<std::uint64_t>(y);
   };
   return a.status == b.status && eq(a.leg.K, b.leg.K) && eq(a.iv, b.iv) && eq(a.mark, b.mark) &&
-         eq(a.delta, b.delta) && eq(a.greeks.gamma, b.greeks.gamma) && eq(a.greeks.vega, b.greeks.vega);
+         eq(a.delta, b.delta) && eq(a.greeks.gamma, b.greeks.gamma) &&
+         eq(a.greeks.vega, b.greeks.vega);
 }
 
-[[nodiscard]] int timeline_bench(const Args &a) {
-  const fs::path out = a.get("out", kDefaultOut);
-  if (under_data_root(out)) {
-    std::fprintf(stderr, "error: refusing to write under C:\\atx-data\n");
-    return 2;
+// A fixed LCG for the lookup mixes: the same sequence on every run.
+struct Lcg {
+  std::uint64_t state{0x9E3779B97F4A7C15ull};
+  std::uint64_t operator()() noexcept {
+    state = state * 6364136223846793005ull + 1442695040888963407ull;
+    return state >> 33u;
   }
-  const auto uids = static_cast<std::uint32_t>(a.num("uids", 100));
-  const auto days = static_cast<int>(a.num("days", 22));
-  const auto buckets = static_cast<int>(a.num("buckets", 11));
-  const CpuSample cpu0 = cpu_sample();
-  const fs::path db_root = out / "timeline-bench-db";
-  const fs::path store = out / "timeline-bench-store";
-  auto synth = make_synth_db(db_root, uids, days, buckets);
-  if (!synth) {
-    std::fprintf(stderr, "error: synthetic SurfaceDb build failed\n");
-    return 1;
-  }
-  auto db = SurfaceDb::open(db_root.string());
-  if (!db) return 1;
-  std::error_code ec;
-  fs::remove_all(store, ec);
-  const auto tb = Clock::now();
-  auto built = SurfaceTimelineStore::build_from_surface_db(*db, synth->keys, store.string(),
-                                                           1792000000000000000LL);
-  const double build_s = seconds_since(tb);
-  if (!built) return fail("build", built.error());
-  const std::uint64_t store_bytes = dir_bytes(store);
+};
 
-  // Open the store and one period file directly (range / view are per-file calls).
-  const auto to = Clock::now();
-  auto st = SurfaceTimelineStore::open(store.string());
-  const double open_s = seconds_since(to);
-  if (!st) return fail("open store", st.error());
-  auto dir = PersistDirectory::open(store.string());
-  if (!dir) return fail("manifest", dir.error());
-  auto tl = SurfaceTimeline::open(dir->path(dir->entries().front()));
-  if (!tl) return fail("open period", tl.error());
+constexpr std::int64_t kTsMin = std::numeric_limits<std::int64_t>::min();
+constexpr std::int64_t kTsMax = std::numeric_limits<std::int64_t>::max();
 
-  // range(): per-call cost, timed in batches of 64 lookups.
-  std::uint64_t lcg = 0x9E3779B97F4A7C15ull;
-  const auto next = [&lcg]() {
-    lcg = lcg * 6364136223846793005ull + 1442695040888963407ull;
-    return lcg >> 33u;
-  };
-  const auto all = tl->range(1, std::numeric_limits<std::int64_t>::min(),
-                             std::numeric_limits<std::int64_t>::max());
-  std::vector<double> range_ns;
-  std::size_t sink = 0;
+// range(): per-call cost, timed in batches of 64 one-day lookups.
+[[nodiscard]] std::vector<double> range_bench(const SurfaceTimeline &timeline, std::uint32_t uids,
+                                              Lcg &next, std::size_t &sink) {
+  const auto all = timeline.range(1, kTsMin, kTsMax);
+  std::vector<double> ns;
   for (int s = 0; s < 4000; ++s) {
     const auto t0 = Clock::now();
     for (int k = 0; k < 64; ++k) {
       const auto uid = static_cast<std::uint32_t>(1 + next() % uids);
       const std::int64_t lo = all[next() % all.size()].ts_ns;
-      sink += tl->range(uid, lo, lo + 86'400'000'000'000LL).size();
+      sink += timeline.range(uid, lo, lo + 86'400'000'000'000LL).size();
     }
-    range_ns.push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count() / 64.0);
+    ns.push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count() / 64.0);
   }
-  // view(): per call, parametric (eSSVI) and heavy (ConvexDense) records apart.
-  std::vector<double> view_param_us;
-  std::vector<double> view_heavy_us;
+  return ns;
+}
+
+// view(): per call, parametric (eSSVI) and heavy (ConvexDense: every 5th uid) apart.
+struct ViewTimes {
+  std::vector<double> param_us;
+  std::vector<double> heavy_us;
+};
+
+[[nodiscard]] std::optional<ViewTimes> view_bench(const SurfaceTimeline &timeline,
+                                                  std::uint32_t uids, Lcg &next,
+                                                  std::size_t &sink) {
+  ViewTimes out;
   for (int s = 0; s < 4000; ++s) {
     const auto uid = static_cast<std::uint32_t>(1 + next() % uids);
-    const auto r = tl->range(uid, std::numeric_limits<std::int64_t>::min(),
-                             std::numeric_limits<std::int64_t>::max());
+    const auto r = timeline.range(uid, kTsMin, kTsMax);
     const TimelineEntry &e = r[next() % r.size()];
     const auto t0 = Clock::now();
-    auto v = tl->view(e);
+    auto v = timeline.view(e);
     const double us = std::chrono::duration<double, std::micro>(Clock::now() - t0).count();
-    if (!v) return fail("view", v.error());
+    if (!v) {
+      (void)fail("view", v.error());
+      return std::nullopt;
+    }
     sink += v->n_slices();
-    (uid % 5 == 0 ? view_heavy_us : view_param_us).push_back(us);
+    (uid % 5 == 0 ? out.heavy_us : out.param_us).push_back(us);
   }
+  return out;
+}
 
-  // project_series over every snapshot of one uid: timeline views vs owned surfaces.
-  struct ProjectRow {
-    std::uint32_t uid;
-    std::size_t refs;
-    double timeline_s;
-    double owned_s;
-    bool bit_equal;
-  };
+// project_series over every snapshot of one uid: timeline views vs owned surfaces.
+struct ProjectRow {
+  std::uint32_t uid{0};
+  std::size_t refs{0};
+  double timeline_s{0.0};
+  double owned_s{0.0};
+  bool bit_equal{false};
+};
+
+[[nodiscard]] std::optional<ProjectRow> project_bench(const SurfaceTimelineStore &store,
+                                                      const SurfaceDb &db,
+                                                      const std::vector<std::string> &keys,
+                                                      std::uint32_t uid) {
+  std::vector<PricedSurfaceView> views;
+  std::vector<SurfaceRef> refs;
+  std::vector<std::int64_t> ts;
+  if (auto n = store.collect(uid, kTsMin, kTsMax, views, refs, ts); !n) {
+    (void)fail("collect", n.error());
+    return std::nullopt;
+  }
+  std::vector<PricedSurface> owned;
+  owned.reserve(keys.size());
+  for (const std::string &key : keys) {
+    auto s = db.load_surface(key, symbol_of(uid));
+    if (!s) return std::nullopt;
+    owned.push_back(std::move(*s));
+  }
+  std::vector<SurfaceRef> owned_refs;
+  for (const PricedSurface &s : owned) owned_refs.emplace_back(&s);
+  const TheoContract spec{uid, MaturitySpec::years_of(0.25), StrikeCoord::log_moneyness(-0.05),
+                          Side::Put, 100.0};
+  std::vector<ResolvedTheo> rt(refs.size());
+  std::vector<ResolvedTheo> ro(refs.size());
+  std::vector<double> tt;
+  std::vector<double> to;
+  for (int rep = 0; rep < 5; ++rep) {
+    auto t0 = Clock::now();
+    if (!project_series(spec, refs, ts, ProjectionPolicy{}, rt)) return std::nullopt;
+    tt.push_back(seconds_since(t0));
+    t0 = Clock::now();
+    if (!project_series(spec, owned_refs, ts, ProjectionPolicy{}, ro)) return std::nullopt;
+    to.push_back(seconds_since(t0));
+  }
+  bool equal = true;
+  for (std::size_t k = 0; k < rt.size(); ++k) equal = equal && same_theo(rt[k], ro[k]);
+  return ProjectRow{uid, refs.size(), quantile(tt, 0.5), quantile(to, 0.5), equal};
+}
+
+struct TimelineReport {
+  std::uint32_t uids{0};
+  int days{0};
+  int buckets{0};
+  std::size_t partitions{0};
+  std::size_t entries{0};
+  std::uint64_t partition_bytes{0};
+  double partition_write_s{0.0};
+  std::uint64_t store_bytes{0};
+  std::size_t periods{0};
+  double build_s{0.0};
+  double open_s{0.0};
+  std::vector<double> range_ns;
+  ViewTimes views;
   std::vector<ProjectRow> project;
-  for (const std::uint32_t uid : {1u, 5u}) {
-    std::vector<PricedSurfaceView> views;
-    std::vector<SurfaceRef> refs;
-    std::vector<std::int64_t> ts;
-    auto n = st->collect(uid, std::numeric_limits<std::int64_t>::min(),
-                         std::numeric_limits<std::int64_t>::max(), views, refs, ts);
-    if (!n) return fail("collect", n.error());
-    std::vector<PricedSurface> owned;
-    owned.reserve(synth->keys.size());
-    for (const std::string &key : synth->keys) {
-      auto s = db->load_surface(key, symbol_of(uid));
-      if (!s) return 1;
-      owned.push_back(std::move(*s));
-    }
-    std::vector<SurfaceRef> owned_refs;
-    for (const PricedSurface &s : owned) owned_refs.emplace_back(&s);
-    const TheoContract spec{uid, MaturitySpec::years_of(0.25), StrikeCoord::log_moneyness(-0.05),
-                            Side::Put, 100.0};
-    std::vector<ResolvedTheo> rt(refs.size());
-    std::vector<ResolvedTheo> ro(refs.size());
-    std::vector<double> tt;
-    std::vector<double> too;
-    for (int rep = 0; rep < 5; ++rep) {
-      auto t0 = Clock::now();
-      if (!project_series(spec, refs, ts, ProjectionPolicy{}, rt)) return 1;
-      tt.push_back(seconds_since(t0));
-      t0 = Clock::now();
-      if (!project_series(spec, owned_refs, ts, ProjectionPolicy{}, ro)) return 1;
-      too.push_back(seconds_since(t0));
-    }
-    bool equal = true;
-    for (std::size_t k = 0; k < rt.size(); ++k) equal = equal && same_theo(rt[k], ro[k]);
-    project.push_back(ProjectRow{uid, refs.size(), quantile(tt, 0.5), quantile(too, 0.5), equal});
-  }
-  const double busy = busy_fraction(cpu0, cpu_sample());
+  double busy{0.0};
+  std::size_t sink{0};
+};
 
+[[nodiscard]] std::string timeline_json(TimelineReport &r, const std::string &preset) {
   std::string json = "{\n  \"schema_version\": " + std::to_string(kSchemaVersion) +
                      ",\n  \"kind\": \"persist-history-timeline-synthetic\",\n";
   std::array<char, 2048> b{};
@@ -533,16 +561,17 @@ struct SynthDb {
       "\"build_mb_s\": %.1f,\n  \"store_open_ms\": %.3f,\n  \"range_ns_p50\": %.1f, "
       "\"range_ns_p99\": %.1f,\n  \"view_param_us_p50\": %.2f, \"view_param_us_p99\": %.2f,\n"
       "  \"view_heavy_us_p50\": %.2f, \"view_heavy_us_p99\": %.2f,\n",
-      a.get("preset", "unknown").c_str(), busy, uids, days, buckets, synth->keys.size(), *built,
-      static_cast<unsigned long long>(synth->partition_bytes), synth->write_s,
-      static_cast<unsigned long long>(store_bytes), dir->entries().size(), build_s,
-      static_cast<double>(store_bytes) / 1e6 / build_s, open_s * 1e3, quantile(range_ns, 0.5),
-      quantile(range_ns, 0.99), quantile(view_param_us, 0.5), quantile(view_param_us, 0.99),
-      quantile(view_heavy_us, 0.5), quantile(view_heavy_us, 0.99));
+      preset.c_str(), r.busy, r.uids, r.days, r.buckets, r.partitions, r.entries,
+      static_cast<unsigned long long>(r.partition_bytes), r.partition_write_s,
+      static_cast<unsigned long long>(r.store_bytes), r.periods, r.build_s,
+      static_cast<double>(r.store_bytes) / 1e6 / r.build_s, r.open_s * 1e3,
+      quantile(r.range_ns, 0.5), quantile(r.range_ns, 0.99), quantile(r.views.param_us, 0.5),
+      quantile(r.views.param_us, 0.99), quantile(r.views.heavy_us, 0.5),
+      quantile(r.views.heavy_us, 0.99));
   json += b.data();
   json += "  \"project_series\": [";
-  for (std::size_t i = 0; i < project.size(); ++i) {
-    const ProjectRow &p = project[i];
+  for (std::size_t i = 0; i < r.project.size(); ++i) {
+    const ProjectRow &p = r.project[i];
     std::snprintf(b.data(), b.size(),
                   "%s\n    {\"uid\": %u, \"kind\": \"%s\", \"refs\": %zu, \"timeline_ms\": %.3f, "
                   "\"owned_ms\": %.3f, \"ratio\": %.3f, \"bit_equal\": %s}",
@@ -551,7 +580,63 @@ struct SynthDb {
                   p.bit_equal ? "true" : "false");
     json += b.data();
   }
-  json += "\n  ],\n  \"sink\": " + std::to_string(sink % 7) + "\n}\n";
+  json += "\n  ],\n  \"sink\": " + std::to_string(r.sink % 7) + "\n}\n";
+  return json;
+}
+
+[[nodiscard]] int timeline_bench(const Args &a) {
+  const auto out_dir = bench_out(a);
+  if (!out_dir) return 2;
+  const fs::path &out = *out_dir;
+  TimelineReport r;
+  r.uids = static_cast<std::uint32_t>(a.num("uids", 100));
+  r.days = static_cast<int>(a.num("days", 22));
+  r.buckets = static_cast<int>(a.num("buckets", 11));
+  const CpuSample cpu0 = cpu_sample();
+  const fs::path db_root = out / "timeline-bench-db";
+  const fs::path store = out / "timeline-bench-store";
+  auto synth = make_synth_db(db_root, r.uids, r.days, r.buckets);
+  if (!synth) {
+    std::fprintf(stderr, "error: synthetic SurfaceDb build failed\n");
+    return 1;
+  }
+  auto db = SurfaceDb::open(db_root.string());
+  if (!db) return 1;
+  std::error_code ec;
+  fs::remove_all(store, ec);
+  const auto tb = Clock::now();
+  auto built = SurfaceTimelineStore::build_from_surface_db(*db, synth->keys, store.string(),
+                                                           1792000000000000000LL);
+  r.build_s = seconds_since(tb);
+  if (!built) return fail("build", built.error());
+  r.partitions = synth->keys.size();
+  r.entries = *built;
+  r.partition_bytes = synth->partition_bytes;
+  r.partition_write_s = synth->write_s;
+  r.store_bytes = dir_bytes(store);
+
+  // Open the store and one period file directly (range / view are per-file calls).
+  const auto to = Clock::now();
+  auto st = SurfaceTimelineStore::open(store.string());
+  r.open_s = seconds_since(to);
+  if (!st) return fail("open store", st.error());
+  auto dir = PersistDirectory::open(store.string());
+  if (!dir) return fail("manifest", dir.error());
+  r.periods = dir->entries().size();
+  auto timeline = SurfaceTimeline::open(dir->path(dir->entries().front()));
+  if (!timeline) return fail("open period", timeline.error());
+  Lcg next;
+  r.range_ns = range_bench(*timeline, r.uids, next, r.sink);
+  auto views = view_bench(*timeline, r.uids, next, r.sink);
+  if (!views) return 1;
+  r.views = std::move(*views);
+  for (const std::uint32_t uid : {1u, 5u}) {
+    auto row = project_bench(*st, *db, synth->keys, uid);
+    if (!row) return 1;
+    r.project.push_back(*row);
+  }
+  r.busy = busy_fraction(cpu0, cpu_sample());
+  const std::string json = timeline_json(r, a.get("preset", "unknown"));
   std::fputs(json.c_str(), stdout);
   write_text(a.get("json", (out / "bench-timeline-synthetic.json").string()), json);
   return 0;
@@ -577,12 +662,14 @@ struct SynthDb {
               "bytes", "codec");
   for (std::size_t s = 0; s < r->n_segments(); ++s) {
     const risk_run::RiskRunMeta &m = r->meta(s);
-    const PersistSectionEntry *price = r->segment(s).entry(
-        risk_run::type_of(risk_run::Section::FrameF64) + static_cast<std::uint32_t>(RiskFrameColumn::Price));
+    const PersistSectionEntry *price =
+        r->segment(s).entry(risk_run::type_of(risk_run::Section::FrameF64) +
+                            static_cast<std::uint32_t>(RiskFrameColumn::Price));
+    using ull = unsigned long long;
     std::printf("%-4zu %-10llu %-10llu %8llu %8llu %12llu %-6s\n", s,
-                static_cast<unsigned long long>(m.first_step), static_cast<unsigned long long>(m.n_steps),
-                static_cast<unsigned long long>(m.n_frames), static_cast<unsigned long long>(m.n_explain_rows),
-                static_cast<unsigned long long>(r->segment(s).header().file_size),
+                static_cast<ull>(m.first_step), static_cast<ull>(m.n_steps),
+                static_cast<ull>(m.n_frames), static_cast<ull>(m.n_explain_rows),
+                static_cast<ull>(r->segment(s).header().file_size),
                 price != nullptr && price->codec != 0u ? "zstd" : "none");
   }
   return 0;
@@ -603,7 +690,8 @@ struct SynthDb {
       for (std::size_t k = 0; k < per; ++k) {
         for (const Side side : {Side::Call, Side::Put}) {
           const double K = 50.0 + static_cast<double>(u) * 5.0 + static_cast<double>(k) * 0.5;
-          legs.push_back(OptionLeg{id, u, K, expiry, side, (id % 2 == 0 ? -1.0 : 1.0) * static_cast<double>(id % 7 + 1), 100.0});
+          const double qty = (id % 2 == 0 ? -1.0 : 1.0) * static_cast<double>(id % 7 + 1);
+          legs.push_back(OptionLeg{id, u, K, expiry, side, qty, 100.0});
           ++id;
         }
       }
@@ -627,7 +715,8 @@ void fill_frame(RiskFrame &f, const PreparedRiskBook &p, std::size_t step, std::
   f.book_logical_id = p.book_logical_id();
   for (std::size_t c = 0; c < kRiskFrameColumnCount; ++c) {
     std::vector<double> &col = f.*risk_run::kFrameMembers[c];
-    for (std::size_t i = 0; i < col.size(); ++i) col[i] = wiggle(i + 977 * c, step, 0.01 * static_cast<double>(c + 1));
+    const double amp = 0.01 * static_cast<double>(c + 1);
+    for (std::size_t i = 0; i < col.size(); ++i) col[i] = wiggle(i + 977 * c, step, amp);
   }
   std::fill(f.route.begin(), f.route.end(), RiskRoute::Family);
   std::fill(f.flags.begin(), f.flags.end(), RiskFlags{0});
@@ -659,7 +748,8 @@ void fill_explain(ExplainResult &r, const PreparedRiskBook &p, std::size_t step,
   }
   for (std::size_t c = 0; c < kRiskExplainColumnCount; ++c) {
     std::vector<double> &col = r.*risk_run::kExplainMembers[c];
-    for (std::size_t i = 0; i < col.size(); ++i) col[i] = wiggle(i + 131 * c, step, 0.5 * static_cast<double>(c + 1));
+    const double amp = 0.5 * static_cast<double>(c + 1);
+    for (std::size_t i = 0; i < col.size(); ++i) col[i] = wiggle(i + 131 * c, step, amp);
   }
   std::fill(r.route_base.begin(), r.route_base.end(), RiskRoute::Family);
   std::fill(r.route_shifted.begin(), r.route_shifted.end(), RiskRoute::Family);
@@ -667,6 +757,20 @@ void fill_explain(ExplainResult &r, const PreparedRiskBook &p, std::size_t step,
   r.by_uid.clear();
   for (const std::uint32_t u : p.uids()) r.by_uid.push_back(ExplainBucket{u, 0, ExplainTotals{}});
   r.total.pnl_total = wiggle(step, 0, 1000.0);
+}
+
+// Section inputs re-framing every section of `f` through `codec` / `filter` / `level`.
+[[nodiscard]] std::optional<std::vector<PersistSectionInput>>
+reframe_inputs(const PersistFile &f, PersistCodec codec, PersistFilter filter, int level) {
+  std::vector<PersistSectionInput> in;
+  for (const PersistSectionEntry &e : f.sections()) {
+    auto bytes = f.section(e.type);
+    if (!bytes) return std::nullopt;
+    in.push_back(PersistSectionInput{e.type, e.type_major, e.type_minor,
+                                     static_cast<PersistDType>(e.dtype), e.element_stride, true,
+                                     codec, filter, level, *bytes});
+  }
+  return in;
 }
 
 struct SealSplit {
@@ -679,19 +783,13 @@ struct SealSplit {
 // path: what a seal costs, split into its in-memory and its durable halves.
 [[nodiscard]] SealSplit seal_split(const PersistFile &f, const fs::path &scratch) {
   SealSplit s;
-  std::vector<PersistSectionInput> in;
-  for (const PersistSectionEntry &e : f.sections()) {
-    auto bytes = f.section(e.type);
-    if (!bytes) return s;
-    in.push_back(PersistSectionInput{e.type, e.type_major, e.type_minor, static_cast<PersistDType>(e.dtype),
-                                     e.element_stride, true, PersistCodec::None, PersistFilter::None, 3,
-                                     *bytes});
-  }
+  auto in = reframe_inputs(f, PersistCodec::None, PersistFilter::None, 3);
+  if (!in) return s;
   PersistFileInfo info;
   info.kind = PersistKind::RiskRun;
   info.schema_fingerprint = f.header().schema_fingerprint;
   const auto t0 = Clock::now();
-  auto image = build_persist_file(in, info);
+  auto image = build_persist_file(*in, info);
   s.build_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   if (!image) return s;
   s.bytes = image->size();
@@ -713,7 +811,8 @@ struct RunMeasure {
   std::uint64_t bytes{0};
 };
 
-[[nodiscard]] std::optional<RunMeasure> write_synth_run(const fs::path &dir, const PreparedRiskBook &p,
+[[nodiscard]] std::optional<RunMeasure> write_synth_run(const fs::path &dir,
+                                                         const PreparedRiskBook &p,
                                                          std::size_t steps) {
   std::error_code ec;
   fs::remove_all(dir, ec);
@@ -754,17 +853,12 @@ struct RunMeasure {
 // Total size of `segment` re-framed with every section through zstd at `level`, with
 // or without the byte shuffle (informational: the ± shuffle question of persist D9).
 [[nodiscard]] std::uint64_t reframed_size(const PersistFile &f, int level, PersistFilter filter) {
-  std::vector<PersistSectionInput> in;
-  for (const PersistSectionEntry &e : f.sections()) {
-    auto bytes = f.section(e.type);
-    if (!bytes) return 0;
-    in.push_back(PersistSectionInput{e.type, e.type_major, e.type_minor, static_cast<PersistDType>(e.dtype),
-                                     e.element_stride, true, PersistCodec::Zstd, filter, level, *bytes});
-  }
+  auto in = reframe_inputs(f, PersistCodec::Zstd, filter, level);
+  if (!in) return 0;
   PersistFileInfo info;
   info.kind = PersistKind::RiskRun;
   info.schema_fingerprint = f.header().schema_fingerprint;
-  auto image = build_persist_file(in, info, 4);
+  auto image = build_persist_file(*in, info, 4);
   return image ? image->size() : 0u;
 }
 
@@ -776,7 +870,8 @@ struct CompactMeasure {
 };
 
 [[nodiscard]] std::optional<CompactMeasure> compact_copy(const fs::path &src, const fs::path &dst,
-                                                         PersistCodec codec, int level, std::string label) {
+                                                         PersistCodec codec, int level,
+                                                         std::string label) {
   std::error_code ec;
   fs::remove_all(dst, ec);
   fs::copy(src, dst, fs::copy_options::recursive, ec);
@@ -794,6 +889,24 @@ struct CompactMeasure {
   return CompactMeasure{std::move(label), d->entries().front().file_size, s, reopen};
 }
 
+// The run at `src` compacted three ways (none, zstd-1 and zstd-3, both shuffled), each
+// on its own copy `<out>/<prefix><label>`.
+[[nodiscard]] std::optional<std::vector<CompactMeasure>>
+compact_all(const fs::path &src, const fs::path &out, std::string_view prefix) {
+  std::vector<CompactMeasure> all;
+  for (const auto &[codec, level, label] : {std::tuple{PersistCodec::None, 3, "none"},
+                                            std::tuple{PersistCodec::Zstd, 1, "zstd-1+shuffle"},
+                                            std::tuple{PersistCodec::Zstd, 3, "zstd-3+shuffle"}}) {
+    auto c = compact_copy(src, out / (std::string(prefix) + label), codec, level, label);
+    if (!c) {
+      std::fprintf(stderr, "error: compaction %s failed\n", label);
+      return std::nullopt;
+    }
+    all.push_back(*c);
+  }
+  return all;
+}
+
 // The 11-state RiskStream over a synthetic SpiderRock day, recorded: recording
 // overhead per step and the bit-equality of the reopened totals.
 struct StreamMeasure {
@@ -806,6 +919,51 @@ struct StreamMeasure {
   std::vector<CompactMeasure> compact;
 };
 
+// One owned market state per bucket of the synthetic SpiderRock day (`state` views
+// `storage`, so each lives behind a stable pointer).
+struct OwnedState {
+  MarketStateStorage storage;
+  MarketState state;
+};
+
+[[nodiscard]] std::optional<std::vector<std::unique_ptr<OwnedState>>>
+load_stream_states(const fs::path &root, const SyntheticSpiderRockSpec &spec,
+                   UnderlierTable &table) {
+  SpiderRockStoreSpec rspec;
+  rspec.store_root = root.string();
+  rspec.date = spec.date;
+  std::vector<std::unique_ptr<OwnedState>> states;
+  for (const std::string &bucket : spec.buckets_et) {
+    auto b = load_spiderrock_bucket(rspec, bucket, table);
+    if (!b) return std::nullopt;
+    auto st = market_state_from_bucket(*b, TimeSpec{});
+    if (!st) return std::nullopt;
+    auto o = std::make_unique<OwnedState>();
+    o->storage = std::move(*st);
+    auto ms = make_market_state(o->storage);
+    if (!ms) return std::nullopt;
+    o->state = std::move(*ms);
+    states.push_back(std::move(o));
+  }
+  return states;
+}
+
+// Every listed option of `first` (signed sizes alternate) plus one share hedge per uid.
+[[nodiscard]] RiskBook stream_book(const MarketStateStorage &first) {
+  std::vector<OptionLeg> legs;
+  std::vector<ShareLeg> shares;
+  std::uint64_t id = 1;
+  for (const MarketStateStorage::MarksColumns &m : first.marks) {
+    for (std::size_t i = 0; i < m.strike.size(); ++i) {
+      const double qty = static_cast<double>(id % 5 + 1) * (id % 2 == 0 ? -1.0 : 1.0);
+      legs.push_back(OptionLeg{id, m.uid, m.strike[i], m.expiry_ns[i], m.side[i], qty, 100.0});
+      ++id;
+    }
+    shares.push_back(ShareLeg{1'000'000 + m.uid, m.uid, -50.0});
+  }
+  return RiskBook::create(legs, shares).value();
+}
+
 [[nodiscard]] std::optional<StreamMeasure> stream_bench(const fs::path &out) {
   const fs::path root = out / "riskrun-stream-store";
   std::error_code ec;
@@ -816,47 +974,21 @@ struct StreamMeasure {
   spec.n_strikes = 10;
   spec.seed = 3;
   if (!write_synthetic_spiderrock_store(spec, root.string())) return std::nullopt;
-  SpiderRockStoreSpec rspec;
-  rspec.store_root = root.string();
-  rspec.date = spec.date;
   UnderlierTable table;
-  struct Owned {
-    MarketStateStorage storage;
-    MarketState state;
-  };
-  std::vector<std::unique_ptr<Owned>> states;
-  for (const std::string &bucket : spec.buckets_et) {
-    auto b = load_spiderrock_bucket(rspec, bucket, table);
-    if (!b) return std::nullopt;
-    auto st = market_state_from_bucket(*b, TimeSpec{});
-    if (!st) return std::nullopt;
-    auto o = std::make_unique<Owned>();
-    o->storage = std::move(*st);
-    auto ms = make_market_state(o->storage);
-    if (!ms) return std::nullopt;
-    o->state = std::move(*ms);
-    states.push_back(std::move(o));
-  }
-  std::vector<OptionLeg> legs;
-  std::vector<ShareLeg> shares;
-  std::uint64_t id = 1;
-  for (const MarketStateStorage::MarksColumns &m : states.front()->storage.marks) {
-    for (std::size_t i = 0; i < m.strike.size(); ++i) {
-      legs.push_back(OptionLeg{id, m.uid, m.strike[i], m.expiry_ns[i], m.side[i],
-                               static_cast<double>(id % 5 + 1) * (id % 2 == 0 ? -1.0 : 1.0), 100.0});
-      ++id;
-    }
-    shares.push_back(ShareLeg{1'000'000 + m.uid, m.uid, -50.0});
-  }
-  const RiskBook book = RiskBook::create(legs, shares).value();
+  auto loaded = load_stream_states(root, spec, table);
+  if (!loaded || loaded->empty()) return std::nullopt;
+  const std::vector<std::unique_ptr<OwnedState>> &states = *loaded;
+  const RiskBook book = stream_book(states.front()->storage);
   StreamMeasure sm;
-  sm.legs = legs.size() + shares.size();
+  sm.legs = book.n_option_legs() + book.n_share_legs();
   sm.states = states.size();
   const fs::path dir = out / "riskrun-stream-run";
   fs::remove_all(dir, ec);
   RiskStream stream(book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
   auto w = RiskRunWriter::create(dir.string(), stream.prepared(), RiskRunOptions{});
-  if (!w || !stream.start(states[0]->state) || !w->append_frame(stream.current())) return std::nullopt;
+  if (!w || !stream.start(states[0]->state) || !w->append_frame(stream.current())) {
+    return std::nullopt;
+  }
   std::vector<double> step_ms;
   std::vector<double> rec_ms;
   std::vector<ExplainTotals> live;
@@ -882,147 +1014,205 @@ struct StreamMeasure {
   sm.step_ms_p50 = quantile(step_ms, 0.5);
   sm.record_ms_p50 = quantile(rec_ms, 0.5);
   sm.run_bytes = dir_bytes(dir);
-  for (const auto &[codec, level, label] :
-       {std::tuple{PersistCodec::None, 3, "none"}, std::tuple{PersistCodec::Zstd, 1, "zstd-1+shuffle"},
-        std::tuple{PersistCodec::Zstd, 3, "zstd-3+shuffle"}}) {
-    auto c = compact_copy(dir, out / ("riskrun-stream-" + std::string(label)), codec, level, label);
-    if (!c) return std::nullopt;
-    sm.compact.push_back(*c);
-  }
+  auto compact = compact_all(dir, out, "riskrun-stream-");
+  if (!compact) return std::nullopt;
+  sm.compact = std::move(*compact);
   return sm;
 }
 
-[[nodiscard]] int riskrun_bench(const Args &a) {
-  const fs::path out = a.get("out", kDefaultOut);
-  if (under_data_root(out)) {
-    std::fprintf(stderr, "error: refusing to write under C:\\atx-data\n");
-    return 2;
+// Warm reopen cost, then the cost of a column span of the reopened run.
+struct ReadMeasure {
+  std::vector<double> reopen_ms;
+  double first_touch_us{0.0};
+  std::vector<double> span_ns;
+};
+
+[[nodiscard]] std::optional<ReadMeasure> read_bench(const fs::path &dir, std::size_t steps,
+                                                    std::size_t &sink) {
+  ReadMeasure m;
+  for (int i = 0; i < 7; ++i) {
+    const auto t0 = Clock::now();
+    auto r = RiskRunArchive::open(dir.string());
+    m.reopen_ms.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+    if (!r) {
+      (void)fail("reopen", r.error());
+      return std::nullopt;
+    }
   }
+  auto archive = RiskRunArchive::open(dir.string());
+  if (!archive) {
+    (void)fail("open", archive.error());
+    return std::nullopt;
+  }
+  const auto t_first = Clock::now();
+  sink += archive->frame(RiskFrameColumn::Price, 1).size();
+  m.first_touch_us = std::chrono::duration<double, std::micro>(Clock::now() - t_first).count();
+  for (int s = 0; s < 2000; ++s) {
+    const auto t0 = Clock::now();
+    for (int k = 0; k < 16; ++k) {
+      const auto at = static_cast<std::size_t>(s + k);
+      sink += archive->frame(RiskFrameColumn::Price, at % steps).size();
+      sink += archive->explain(RiskExplainColumn::PnlTotal, 1 + at % (steps - 1)).size();
+    }
+    const double ns = std::chrono::duration<double, std::nano>(Clock::now() - t0).count();
+    m.span_ns.push_back(ns / 32.0);
+  }
+  return m;
+}
+
+// ± shuffle on the merged uncompressed segment, and the seal attribution: framing a
+// 64 MiB-class image in memory (build_persist_file: copy + section / file CRCs) vs
+// publishing it (write + FlushFileBuffers + rename), on one of the run's own segments.
+struct ShuffleSplit {
+  std::array<std::uint64_t, 4> bytes{}; // zstd-1, zstd-1+shuffle, zstd-3, zstd-3+shuffle
+  SealSplit split;
+};
+
+[[nodiscard]] std::optional<ShuffleSplit> shuffle_split_bench(const fs::path &out,
+                                                              const fs::path &run) {
+  const PersistOpenOptions read_full{false, PersistVerify::Full, false, 0};
+  auto merged = risk_run::Reader::open((out / "riskrun-bench-none").string(), read_full);
+  if (!merged) {
+    (void)fail("reader", merged.error());
+    return std::nullopt;
+  }
+  ShuffleSplit s;
+  const PersistFile &f = merged->segment(0);
+  s.bytes[0] = reframed_size(f, 1, PersistFilter::None);
+  s.bytes[1] = reframed_size(f, 1, PersistFilter::ByteShuffle);
+  s.bytes[2] = reframed_size(f, 3, PersistFilter::None);
+  s.bytes[3] = reframed_size(f, 3, PersistFilter::ByteShuffle);
+  auto first = risk_run::Reader::open(run.string(), read_full);
+  if (!first) {
+    (void)fail("reader", first.error());
+    return std::nullopt;
+  }
+  s.split = seal_split(first->segment(0), out / "seal-split.atxrr");
+  return s;
+}
+
+struct RiskRunReport {
+  std::size_t legs{0};
+  std::size_t unique{0};
+  std::size_t steps{0};
+  RunMeasure run;
+  ReadMeasure read;
+  std::vector<CompactMeasure> compact;
+  ShuffleSplit shuffle;
+  StreamMeasure stream;
+  double busy{0.0};
+  std::size_t sink{0};
+};
+
+// The compaction rows, the ± shuffle ratios and the recorded-stream block.
+[[nodiscard]] std::string compaction_json(const RiskRunReport &r) {
+  std::array<char, 1024> b{};
+  std::string json;
+  const double plain = static_cast<double>(r.compact.front().bytes);
+  for (std::size_t i = 0; i < r.compact.size(); ++i) {
+    const CompactMeasure &c = r.compact[i];
+    std::snprintf(b.data(), b.size(),
+                  "%s\n    {\"codec\": \"%s\", \"bytes\": %llu, \"ratio\": %.3f, "
+                  "\"compact_s\": %.3f, \"reopen_ms\": %.2f}",
+                  i == 0 ? "" : ",", c.label.c_str(), static_cast<unsigned long long>(c.bytes),
+                  plain / static_cast<double>(c.bytes), c.compact_s, c.reopen_ms);
+    json += b.data();
+  }
+  const auto ratio = [&](std::size_t k) {
+    return plain / static_cast<double>(r.shuffle.bytes[k]);
+  };
+  std::snprintf(b.data(), b.size(),
+                "\n  ],\n  \"zstd_shuffle_ratio\": {\"zstd1\": %.3f, \"zstd1_shuffle\": %.3f, "
+                "\"zstd3\": %.3f, \"zstd3_shuffle\": %.3f},\n",
+                ratio(0), ratio(1), ratio(2), ratio(3));
+  json += b.data();
+  const StreamMeasure &s = r.stream;
+  const double splain = static_cast<double>(s.compact.front().bytes);
+  std::snprintf(b.data(), b.size(),
+                "  \"stream\": {\"states\": %zu, \"legs\": %zu, \"step_ms_p50\": %.3f, "
+                "\"record_ms_p50\": %.3f, \"totals_bit_equal\": %s, \"run_bytes\": %llu, "
+                "\"zstd1_ratio\": %.3f, \"zstd3_ratio\": %.3f},\n",
+                s.states, s.legs, s.step_ms_p50, s.record_ms_p50,
+                s.totals_bit_equal ? "true" : "false", static_cast<unsigned long long>(s.run_bytes),
+                splain / static_cast<double>(s.compact[1].bytes),
+                splain / static_cast<double>(s.compact[2].bytes));
+  json += b.data();
+  return json;
+}
+
+[[nodiscard]] std::string riskrun_json(RiskRunReport &r, const std::string &preset) {
+  std::string json = "{\n  \"schema_version\": " + std::to_string(kSchemaVersion) +
+                     ",\n  \"kind\": \"persist-history-riskrun-synthetic\",\n";
+  std::array<char, 2048> b{};
+  std::snprintf(
+      b.data(), b.size(),
+      "  \"preset\": \"%s\",\n  \"host_cpu_busy\": %.3f,\n  \"legs\": %zu, \"unique\": %zu, "
+      "\"steps\": %zu,\n  \"append_ms_p50\": %.3f, \"append_ms_p99\": %.3f,\n  \"seal_ms\": [",
+      preset.c_str(), r.busy, r.legs, r.unique, r.steps, quantile(r.run.append_ms, 0.5),
+      quantile(r.run.append_ms, 0.99));
+  json += b.data();
+  for (std::size_t i = 0; i < r.run.seal_ms.size(); ++i) {
+    std::snprintf(b.data(), b.size(), "%s%.2f", i == 0 ? "" : ", ", r.run.seal_ms[i]);
+    json += b.data();
+  }
+  const SealSplit &split = r.shuffle.split;
+  std::snprintf(
+      b.data(), b.size(),
+      "], \"finish_ms\": %.2f, \"first_append_ms\": %.2f,\n"
+      "  \"seal_split\": {\"segment_bytes\": %llu, "
+      "\"build_ms\": %.2f, \"publish_fsync_ms\": %.2f},\n"
+      "  \"segments\": %zu, \"run_bytes\": %llu, \"bytes_per_step\": %.0f,\n"
+      "  \"reopen_ms_p50\": %.3f, \"column_first_touch_us\": %.1f, \"column_span_ns_p50\": %.1f,\n"
+      "  \"compaction\": [",
+      r.run.finish_ms, r.run.first_append_ms, static_cast<unsigned long long>(split.bytes),
+      split.build_ms, split.publish_ms, r.run.segments,
+      static_cast<unsigned long long>(r.run.bytes),
+      static_cast<double>(r.run.bytes) / static_cast<double>(r.steps),
+      quantile(r.read.reopen_ms, 0.5), r.read.first_touch_us, quantile(r.read.span_ns, 0.5));
+  json += b.data();
+  json += compaction_json(r);
+  json += "  \"sink\": " + std::to_string(r.sink % 7) + "\n}\n";
+  return json;
+}
+
+[[nodiscard]] int riskrun_bench(const Args &a) {
+  const auto out_dir = bench_out(a);
+  if (!out_dir) return 2;
+  const fs::path &out = *out_dir;
   std::error_code ec;
   fs::create_directories(out, ec);
-  const auto n_legs = static_cast<std::size_t>(a.num("legs", 10000));
-  const auto steps = static_cast<std::size_t>(a.num("steps", 64));
+  RiskRunReport r;
+  r.steps = static_cast<std::size_t>(a.num("steps", 64));
   const CpuSample cpu0 = cpu_sample();
-  const RiskBook book = synth_book(n_legs);
+  const RiskBook book = synth_book(static_cast<std::size_t>(a.num("legs", 10000)));
   auto prepared = PreparedRiskBook::create(book);
   if (!prepared) return 1;
+  r.legs = book.n_option_legs() + book.n_share_legs();
+  r.unique = prepared->n_unique();
   const fs::path dir = out / "riskrun-bench-run";
-  auto run = write_synth_run(dir, *prepared, steps);
+  auto run = write_synth_run(dir, *prepared, r.steps);
   if (!run) {
     std::fprintf(stderr, "error: synthetic run failed\n");
     return 1;
   }
-  // Reopen (warm) and column-span cost.
-  std::vector<double> reopen_ms;
-  for (int i = 0; i < 7; ++i) {
-    const auto t0 = Clock::now();
-    auto r = RiskRunArchive::open(dir.string());
-    reopen_ms.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
-    if (!r) return fail("reopen", r.error());
-  }
-  auto archive = RiskRunArchive::open(dir.string());
-  if (!archive) return fail("open", archive.error());
-  auto t_first = Clock::now();
-  std::size_t sink = archive->frame(RiskFrameColumn::Price, 1).size();
-  const double first_touch_us = std::chrono::duration<double, std::micro>(Clock::now() - t_first).count();
-  std::vector<double> span_ns;
-  for (int s = 0; s < 2000; ++s) {
-    const auto t0 = Clock::now();
-    for (int k = 0; k < 16; ++k) {
-      sink += archive->frame(RiskFrameColumn::Price, static_cast<std::size_t>(s + k) % steps).size();
-      sink += archive->explain(RiskExplainColumn::PnlTotal, 1 + static_cast<std::size_t>(s + k) % (steps - 1)).size();
-    }
-    span_ns.push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count() / 32.0);
-  }
-  std::vector<CompactMeasure> compact;
-  for (const auto &[codec, level, label] :
-       {std::tuple{PersistCodec::None, 3, "none"}, std::tuple{PersistCodec::Zstd, 1, "zstd-1+shuffle"},
-        std::tuple{PersistCodec::Zstd, 3, "zstd-3+shuffle"}}) {
-    auto c = compact_copy(dir, out / ("riskrun-bench-" + std::string(label)), codec, level, label);
-    if (!c) {
-      std::fprintf(stderr, "error: compaction %s failed\n", label);
-      return 1;
-    }
-    compact.push_back(*c);
-  }
-  // ± shuffle on the merged uncompressed segment, and the seal attribution: framing a
-  // 64 MiB-class image in memory (build_persist_file: copy + section / file CRCs) vs
-  // publishing it (write + FlushFileBuffers + rename), on one of the run's own segments.
-  std::array<std::uint64_t, 4> shuffle_bytes{};
-  SealSplit split;
-  {
-    auto r = risk_run::Reader::open((out / "riskrun-bench-none").string(),
-                                    PersistOpenOptions{false, PersistVerify::Full, false, 0});
-    if (!r) return fail("reader", r.error());
-    shuffle_bytes[0] = reframed_size(r->segment(0), 1, PersistFilter::None);
-    shuffle_bytes[1] = reframed_size(r->segment(0), 1, PersistFilter::ByteShuffle);
-    shuffle_bytes[2] = reframed_size(r->segment(0), 3, PersistFilter::None);
-    shuffle_bytes[3] = reframed_size(r->segment(0), 3, PersistFilter::ByteShuffle);
-    auto first = risk_run::Reader::open(dir.string(), PersistOpenOptions{false, PersistVerify::Full, false, 0});
-    if (!first) return fail("reader", first.error());
-    split = seal_split(first->segment(0), out / "seal-split.atxrr");
-  }
+  r.run = std::move(*run);
+  auto read = read_bench(dir, r.steps, r.sink);
+  if (!read) return 1;
+  r.read = std::move(*read);
+  auto compact = compact_all(dir, out, "riskrun-bench-");
+  if (!compact) return 1;
+  r.compact = std::move(*compact);
+  auto shuffle = shuffle_split_bench(out, dir);
+  if (!shuffle) return 1;
+  r.shuffle = *shuffle;
   auto stream = stream_bench(out);
   if (!stream) {
     std::fprintf(stderr, "error: stream bench failed\n");
     return 1;
   }
-  const double busy = busy_fraction(cpu0, cpu_sample());
-  const double plain = static_cast<double>(compact.front().bytes);
-
-  std::string json = "{\n  \"schema_version\": " + std::to_string(kSchemaVersion) +
-                     ",\n  \"kind\": \"persist-history-riskrun-synthetic\",\n";
-  std::array<char, 4096> b{};
-  std::snprintf(
-      b.data(), b.size(),
-      "  \"preset\": \"%s\",\n  \"host_cpu_busy\": %.3f,\n  \"legs\": %zu, \"unique\": %zu, "
-      "\"steps\": %zu,\n  \"append_ms_p50\": %.3f, \"append_ms_p99\": %.3f,\n  \"seal_ms\": [",
-      a.get("preset", "unknown").c_str(), busy, book.n_option_legs() + book.n_share_legs(),
-      prepared->n_unique(), steps, quantile(run->append_ms, 0.5), quantile(run->append_ms, 0.99));
-  json += b.data();
-  for (std::size_t i = 0; i < run->seal_ms.size(); ++i) {
-    std::snprintf(b.data(), b.size(), "%s%.2f", i == 0 ? "" : ", ", run->seal_ms[i]);
-    json += b.data();
-  }
-  std::snprintf(
-      b.data(), b.size(),
-      "], \"finish_ms\": %.2f, \"first_append_ms\": %.2f,\n  \"seal_split\": {\"segment_bytes\": %llu, "
-      "\"build_ms\": %.2f, \"publish_fsync_ms\": %.2f},\n"
-      "  \"segments\": %zu, \"run_bytes\": %llu, \"bytes_per_step\": %.0f,\n"
-      "  \"reopen_ms_p50\": %.3f, \"column_first_touch_us\": %.1f, \"column_span_ns_p50\": %.1f,\n"
-      "  \"compaction\": [",
-      run->finish_ms, run->first_append_ms, static_cast<unsigned long long>(split.bytes),
-      split.build_ms, split.publish_ms, run->segments, static_cast<unsigned long long>(run->bytes),
-      static_cast<double>(run->bytes) / static_cast<double>(steps), quantile(reopen_ms, 0.5),
-      first_touch_us, quantile(span_ns, 0.5));
-  json += b.data();
-  for (std::size_t i = 0; i < compact.size(); ++i) {
-    const CompactMeasure &c = compact[i];
-    std::snprintf(b.data(), b.size(),
-                  "%s\n    {\"codec\": \"%s\", \"bytes\": %llu, \"ratio\": %.3f, \"compact_s\": %.3f, "
-                  "\"reopen_ms\": %.2f}",
-                  i == 0 ? "" : ",", c.label.c_str(), static_cast<unsigned long long>(c.bytes),
-                  plain / static_cast<double>(c.bytes), c.compact_s, c.reopen_ms);
-    json += b.data();
-  }
-  std::snprintf(b.data(), b.size(),
-                "\n  ],\n  \"zstd_shuffle_ratio\": {\"zstd1\": %.3f, \"zstd1_shuffle\": %.3f, "
-                "\"zstd3\": %.3f, \"zstd3_shuffle\": %.3f},\n",
-                plain / static_cast<double>(shuffle_bytes[0]), plain / static_cast<double>(shuffle_bytes[1]),
-                plain / static_cast<double>(shuffle_bytes[2]), plain / static_cast<double>(shuffle_bytes[3]));
-  json += b.data();
-  const double splain = static_cast<double>(stream->compact.front().bytes);
-  std::snprintf(b.data(), b.size(),
-                "  \"stream\": {\"states\": %zu, \"legs\": %zu, \"step_ms_p50\": %.3f, "
-                "\"record_ms_p50\": %.3f, \"totals_bit_equal\": %s, \"run_bytes\": %llu, "
-                "\"zstd1_ratio\": %.3f, \"zstd3_ratio\": %.3f},\n",
-                stream->states, stream->legs, stream->step_ms_p50, stream->record_ms_p50,
-                stream->totals_bit_equal ? "true" : "false",
-                static_cast<unsigned long long>(stream->run_bytes),
-                splain / static_cast<double>(stream->compact[1].bytes),
-                splain / static_cast<double>(stream->compact[2].bytes));
-  json += b.data();
-  json += "  \"sink\": " + std::to_string(sink % 7) + "\n}\n";
+  r.stream = std::move(*stream);
+  r.busy = busy_fraction(cpu0, cpu_sample());
+  const std::string json = riskrun_json(r, a.get("preset", "unknown"));
   std::fputs(json.c_str(), stdout);
   write_text(a.get("json", (out / "bench-riskrun-synthetic.json").string()), json);
   return 0;
@@ -1030,7 +1220,8 @@ struct StreamMeasure {
 
 [[nodiscard]] int usage() {
   std::fprintf(stderr,
-               "atx-vol-history-store timeline build|inspect|bench ... | riskrun inspect|bench ...\n"
+               "atx-vol-history-store timeline build|inspect|bench ... | "
+               "riskrun inspect|bench ...\n"
                "  (see the header of tools/history_store_main.cpp)\n");
   return 2;
 }

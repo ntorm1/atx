@@ -76,7 +76,8 @@ TEST(PersistSurfaceTimeline, NoAllocationOnRangeLookup) {
   constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
   constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
   for (const bool mapped : {true, false}) {
-    for (const PersistVerify v : {PersistVerify::Framing, PersistVerify::Lazy, PersistVerify::Full}) {
+    for (const PersistVerify v :
+         {PersistVerify::Framing, PersistVerify::Lazy, PersistVerify::Full}) {
       PersistOpenOptions o;
       o.mapped = mapped;
       o.verify = v;

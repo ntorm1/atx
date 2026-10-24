@@ -67,7 +67,8 @@ static_assert(slot(Section::Meta) == 0 && slot(Section::VarPoints) == kSectionCo
 constexpr std::uint8_t kMaxRoute = static_cast<std::uint8_t>(RiskRoute::Refused);
 constexpr std::uint8_t kMaxStatus = static_cast<std::uint8_t>(RiskLaneStatus::Refused);
 
-template <class T> [[nodiscard]] std::span<const std::byte> bytes_of(const std::vector<T> &v) noexcept {
+template <class T>
+[[nodiscard]] std::span<const std::byte> bytes_of(const std::vector<T> &v) noexcept {
   return std::as_bytes(std::span<const T>{v});
 }
 
@@ -179,8 +180,9 @@ struct SegmentParts {
   return build_persist_file(in, info, n_threads);
 }
 
-void set_book_parts(SegmentParts &p, std::span<const std::byte> legs, std::span<const std::byte> unique,
-                    std::span<const std::byte> uids, std::span<const std::byte> ids) noexcept {
+void set_book_parts(SegmentParts &p, std::span<const std::byte> legs,
+                    std::span<const std::byte> unique, std::span<const std::byte> uids,
+                    std::span<const std::byte> ids) noexcept {
   p.bytes[slot(Section::BookLegs)] = legs;
   p.bytes[slot(Section::BookUnique)] = unique;
   p.bytes[slot(Section::BookUids)] = uids;
@@ -438,7 +440,9 @@ struct WriterCore {
       return persist_error(S::InvalidArgument, type_of(Section::LegIds), rows);
     }
     for (const auto col : kExplainMembers) {
-      if ((r.*col).size() != rows) return persist_error(S::InvalidArgument, type_of(Section::ExplainF64));
+      if ((r.*col).size() != rows) {
+        return persist_error(S::InvalidArgument, type_of(Section::ExplainF64));
+      }
     }
     if (r.uid.size() != rows || r.kind.size() != rows || r.route_base.size() != rows ||
         r.route_shifted.size() != rows || r.flags.size() != rows || r.status.size() != rows ||
@@ -574,7 +578,8 @@ struct SegmentView {
 };
 
 template <class T>
-[[nodiscard]] PersistOutcome bind_section(const PersistFile &f, Section s, std::span<const T> &out) noexcept {
+[[nodiscard]] PersistOutcome bind_section(const PersistFile &f, Section s,
+                                          std::span<const T> &out) noexcept {
   auto v = f.typed<T>(type_of(s));
   if (!v) return tl::unexpected(v.error());
   out = *v;
@@ -590,7 +595,9 @@ template <class T>
   const std::uint64_t fs_ = frames ? m.n_frames * m.n_share_legs : 0u;
   if (!frames && m.n_frames != 0u) return persist_error(S::RecordInvalid, type_of(Section::Meta));
   for (std::uint32_t c = 0; c < kRiskFrameColumnCount; ++c) {
-    if (v.count(Section::FrameF64, c) != fu) return persist_error(S::IndexBounds, type_of(Section::FrameF64) + c);
+    if (v.count(Section::FrameF64, c) != fu) {
+      return persist_error(S::IndexBounds, type_of(Section::FrameF64) + c);
+    }
   }
   const std::pair<Section, std::uint64_t> frame_cols[] = {
       {Section::FrameRoute, fu},   {Section::FrameFlags, fu},     {Section::FrameStatus, fu},
@@ -635,6 +642,36 @@ template <class T>
   return {};
 }
 
+// The VaR index tiles the VaR frame / point columns in order; reserved bytes are zero.
+[[nodiscard]] PersistOutcome check_var(const SegmentView &v) noexcept {
+  std::uint64_t vf = 0;
+  std::uint64_t vp = 0;
+  for (std::size_t i = 0; i < v.vars.size(); ++i) {
+    const RiskRunVar &r = v.vars[i];
+    if (r.frame_begin != vf || r.point_begin != vp || r.reserved != 0u) {
+      return persist_error(S::RecordInvalid, type_of(Section::VarIndex), i);
+    }
+    vf += r.frame_count;
+    vp += r.point_count;
+    if (vf > v.var_frames.size() || vp > v.var_points.size()) {
+      return persist_error(S::IndexBounds, type_of(Section::VarIndex), i);
+    }
+  }
+  if (vf != v.var_frames.size() || vp != v.var_points.size()) {
+    return persist_error(S::IndexBounds, type_of(Section::VarIndex));
+  }
+  for (std::size_t i = 0; i < v.var_frames.size(); ++i) {
+    const RiskRunVarFrame &f = v.var_frames[i];
+    const bool dirty = std::any_of(f.reserved.begin(), f.reserved.end(),
+                                   [](std::uint8_t b) { return b != 0u; });
+    if (f.admitted > 1u || dirty) {
+      return persist_error(S::RecordInvalid, type_of(Section::VarFrames), i);
+    }
+  }
+  return {};
+}
+
+// The steps tile the frame / explain / bucket columns in order, then the VaR index.
 [[nodiscard]] PersistOutcome check_steps(const SegmentView &v) noexcept {
   const RiskRunMeta &m = v.meta;
   const std::uint64_t n_legs = std::uint64_t{m.n_option_legs} + m.n_share_legs;
@@ -666,41 +703,24 @@ template <class T>
     if (buid > v.by_uid.size() || bexp > v.by_expiry.size()) {
       return persist_error(S::IndexBounds, type_of(Section::BucketsByUid), i);
     }
-    for (const RiskRunBucket &b : v.by_uid.subspan(static_cast<std::size_t>(s.bucket_uid_begin), s.n_bucket_uid)) {
-      if (b.step != s.step) return persist_error(S::RecordInvalid, type_of(Section::BucketsByUid), i);
+    for (const RiskRunBucket &b :
+         v.by_uid.subspan(static_cast<std::size_t>(s.bucket_uid_begin), s.n_bucket_uid)) {
+      if (b.step != s.step) {
+        return persist_error(S::RecordInvalid, type_of(Section::BucketsByUid), i);
+      }
     }
     for (const RiskRunBucket &b :
          v.by_expiry.subspan(static_cast<std::size_t>(s.bucket_expiry_begin), s.n_bucket_expiry)) {
-      if (b.step != s.step) return persist_error(S::RecordInvalid, type_of(Section::BucketsByExpiry), i);
+      if (b.step != s.step) {
+        return persist_error(S::RecordInvalid, type_of(Section::BucketsByExpiry), i);
+      }
     }
   }
   if (frame != m.n_frames || row != m.n_explain_rows || buid != v.by_uid.size() ||
       bexp != v.by_expiry.size()) {
     return persist_error(S::IndexBounds, type_of(Section::Steps));
   }
-  std::uint64_t vf = 0;
-  std::uint64_t vp = 0;
-  for (std::size_t i = 0; i < v.vars.size(); ++i) {
-    const RiskRunVar &r = v.vars[i];
-    if (r.frame_begin != vf || r.point_begin != vp || r.reserved != 0u) {
-      return persist_error(S::RecordInvalid, type_of(Section::VarIndex), i);
-    }
-    vf += r.frame_count;
-    vp += r.point_count;
-    if (vf > v.var_frames.size() || vp > v.var_points.size()) {
-      return persist_error(S::IndexBounds, type_of(Section::VarIndex), i);
-    }
-  }
-  if (vf != v.var_frames.size() || vp != v.var_points.size()) {
-    return persist_error(S::IndexBounds, type_of(Section::VarIndex));
-  }
-  for (std::size_t i = 0; i < v.var_frames.size(); ++i) {
-    const RiskRunVarFrame &f = v.var_frames[i];
-    if (f.admitted > 1u || std::any_of(f.reserved.begin(), f.reserved.end(), [](std::uint8_t b) { return b != 0u; })) {
-      return persist_error(S::RecordInvalid, type_of(Section::VarFrames), i);
-    }
-  }
-  return {};
+  return check_var(v);
 }
 
 [[nodiscard]] PersistResult<SegmentView> open_segment(const std::string &path,
@@ -715,21 +735,30 @@ template <class T>
   SegmentView v{std::move(*f)};
   if (PersistOutcome ok = v.file.check_schema(kSchema); !ok) return tl::unexpected(ok.error());
   std::span<const RiskRunMeta> meta;
-  if (PersistOutcome ok = bind_section(v.file, Section::Meta, meta); !ok) return tl::unexpected(ok.error());
-  if (meta.size() != 1u) return persist_error(S::SectionStride, type_of(Section::Meta), meta.size());
+  if (PersistOutcome ok = bind_section(v.file, Section::Meta, meta); !ok) {
+    return tl::unexpected(ok.error());
+  }
+  if (meta.size() != 1u) {
+    return persist_error(S::SectionStride, type_of(Section::Meta), meta.size());
+  }
   v.meta = meta.front();
   const RiskRunMeta &m = v.meta;
   if ((m.flags & ~(kRunFrames | kRunBuckets)) != 0u ||
       std::any_of(m.reserved.begin(), m.reserved.end(), [](std::uint64_t x) { return x != 0u; })) {
     return persist_error(S::RecordInvalid, type_of(Section::Meta));
   }
+  const PersistFile &pf = v.file;
   for (const PersistOutcome ok :
-       {bind_section(v.file, Section::Steps, v.steps), bind_section(v.file, Section::StepTotals, v.totals),
-        bind_section(v.file, Section::BucketsByUid, v.by_uid), bind_section(v.file, Section::BucketsByExpiry, v.by_expiry),
-        bind_section(v.file, Section::VarIndex, v.vars), bind_section(v.file, Section::VarFrames, v.var_frames),
-        bind_section(v.file, Section::VarPoints, v.var_points), bind_section(v.file, Section::BookLegs, v.legs),
-        bind_section(v.file, Section::BookUnique, v.unique), bind_section(v.file, Section::BookUids, v.uids),
-        bind_section(v.file, Section::LegIds, v.leg_ids)}) {
+       {bind_section(pf, Section::Steps, v.steps), bind_section(pf, Section::StepTotals, v.totals),
+        bind_section(pf, Section::BucketsByUid, v.by_uid),
+        bind_section(pf, Section::BucketsByExpiry, v.by_expiry),
+        bind_section(pf, Section::VarIndex, v.vars),
+        bind_section(pf, Section::VarFrames, v.var_frames),
+        bind_section(pf, Section::VarPoints, v.var_points),
+        bind_section(pf, Section::BookLegs, v.legs),
+        bind_section(pf, Section::BookUnique, v.unique),
+        bind_section(pf, Section::BookUids, v.uids),
+        bind_section(pf, Section::LegIds, v.leg_ids)}) {
     if (!ok) return tl::unexpected(ok.error());
   }
   if (v.steps.size() != m.n_steps || v.totals.size() != m.n_steps || v.vars.size() != m.n_var) {
@@ -741,8 +770,10 @@ template <class T>
   return v;
 }
 
-template <class T> [[nodiscard]] bool same_bytes(std::span<const T> a, std::span<const T> b) noexcept {
-  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
+template <class T>
+[[nodiscard]] bool same_bytes(std::span<const T> a, std::span<const T> b) noexcept {
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
 }
 
 struct ReaderCore {
@@ -752,7 +783,8 @@ struct ReaderCore {
 
   [[nodiscard]] PersistOutcome add(SegmentView v, std::size_t ordinal) {
     const RiskRunMeta &m = v.meta;
-    if (m.segment_ordinal != ordinal || m.first_step != step_ref.size() || m.first_var != var_ref.size()) {
+    if (m.segment_ordinal != ordinal || m.first_step != step_ref.size() ||
+        m.first_var != var_ref.size()) {
       return persist_error(S::SegmentMismatch, type_of(Section::Meta), ordinal);
     }
     if (segs.empty()) {
@@ -764,14 +796,19 @@ struct ReaderCore {
       const RiskRunMeta &f = first.meta;
       if (m.book_fingerprint != f.book_fingerprint || m.n_option_legs != f.n_option_legs ||
           m.n_share_legs != f.n_share_legs || m.n_unique != f.n_unique || m.n_uids != f.n_uids ||
-          m.flags != f.flags || !same_bytes(v.legs, first.legs) || !same_bytes(v.unique, first.unique) ||
-          !same_bytes(v.uids, first.uids) || !same_bytes(v.leg_ids, first.leg_ids)) {
+          m.flags != f.flags || !same_bytes(v.legs, first.legs) ||
+          !same_bytes(v.unique, first.unique) || !same_bytes(v.uids, first.uids) ||
+          !same_bytes(v.leg_ids, first.leg_ids)) {
         return persist_error(S::SegmentMismatch, type_of(Section::BookLegs), ordinal);
       }
     }
     const auto seg = static_cast<std::uint32_t>(segs.size());
-    for (std::size_t i = 0; i < v.steps.size(); ++i) step_ref.emplace_back(seg, static_cast<std::uint32_t>(i));
-    for (std::size_t i = 0; i < v.vars.size(); ++i) var_ref.emplace_back(seg, static_cast<std::uint32_t>(i));
+    for (std::size_t i = 0; i < v.steps.size(); ++i) {
+      step_ref.emplace_back(seg, static_cast<std::uint32_t>(i));
+    }
+    for (std::size_t i = 0; i < v.vars.size(); ++i) {
+      var_ref.emplace_back(seg, static_cast<std::uint32_t>(i));
+    }
     segs.push_back(std::move(v));
     return {};
   }
@@ -788,7 +825,8 @@ struct ReaderCore {
   }
 };
 
-[[nodiscard]] PersistResult<ReaderCore> open_core(std::string_view dir, const PersistOpenOptions &options) {
+[[nodiscard]] PersistResult<ReaderCore> open_core(std::string_view dir,
+                                                  const PersistOpenOptions &options) {
   auto d = PersistDirectory::open(dir);
   if (!d) return tl::unexpected(d.error());
   if (d->entries().empty()) return persist_error(S::NotFound);
@@ -807,8 +845,8 @@ struct ReaderCore {
 }
 
 template <class E>
-[[nodiscard]] PersistOutcome copy_enum(std::span<const std::uint8_t> src, std::uint8_t max, std::uint32_t section,
-                                       std::vector<E> &out) {
+[[nodiscard]] PersistOutcome copy_enum(std::span<const std::uint8_t> src, std::uint8_t max,
+                                       std::uint32_t section, std::vector<E> &out) {
   out.resize(src.size());
   for (std::size_t i = 0; i < src.size(); ++i) {
     if (src[i] > max) return persist_error(S::RecordInvalid, section, i);
@@ -818,11 +856,13 @@ template <class E>
 }
 
 template <class T>
-[[nodiscard]] PersistResult<std::span<const T>> rows(const SegmentView &v, std::uint32_t type,
-                                                     std::uint64_t begin, std::uint64_t n) noexcept {
+[[nodiscard]] PersistResult<std::span<const T>>
+rows(const SegmentView &v, std::uint32_t type, std::uint64_t begin, std::uint64_t n) noexcept {
   auto col = v.file.typed<T>(type);
   if (!col) return tl::unexpected(col.error());
-  if (begin > col->size() || n > col->size() - begin) return persist_error(S::IndexBounds, type, begin);
+  if (begin > col->size() || n > col->size() - begin) {
+    return persist_error(S::IndexBounds, type, begin);
+  }
   return col->subspan(static_cast<std::size_t>(begin), static_cast<std::size_t>(n));
 }
 
@@ -835,8 +875,8 @@ template <class T>
   RiskFrame f;
   f.ts_ns = s.ts_ns;
   f.book_logical_id = s.book_logical_id;
-  f.needs = RiskNeeds{(s.flags & kStepNeedsSecondOrder) != 0u, (s.flags & kStepNeedsRho) != 0u,
-                      (s.flags & kStepNeedsCharm) != 0u};
+  f.needs = RiskNeeds{(s.flags & kStepNeedsSecondOrder) != 0u,
+                      (s.flags & kStepNeedsRho) != 0u, (s.flags & kStepNeedsCharm) != 0u};
   f.counters = s.counters;
   const std::uint64_t ru = s.frame_index * m.n_unique;
   for (std::uint32_t col = 0; col < kRiskFrameColumnCount; ++col) {
@@ -846,7 +886,8 @@ template <class T>
   }
   auto route = rows<std::uint8_t>(v, type_of(Section::FrameRoute), ru, m.n_unique);
   if (!route) return tl::unexpected(route.error());
-  if (PersistOutcome ok = copy_enum(*route, kMaxRoute, type_of(Section::FrameRoute), f.route); !ok) {
+  if (PersistOutcome ok = copy_enum(*route, kMaxRoute, type_of(Section::FrameRoute), f.route);
+      !ok) {
     return tl::unexpected(ok.error());
   }
   auto flags = rows<std::uint32_t>(v, type_of(Section::FrameFlags), ru, m.n_unique);
@@ -854,7 +895,9 @@ template <class T>
   f.flags.assign(flags->begin(), flags->end());
   auto status = rows<std::uint8_t>(v, type_of(Section::FrameStatus), ru, m.n_unique);
   if (!status) return tl::unexpected(status.error());
-  if (PersistOutcome ok = copy_enum(*status, kMaxStatus, type_of(Section::FrameStatus), f.status); !ok) {
+  if (PersistOutcome ok =
+          copy_enum(*status, kMaxStatus, type_of(Section::FrameStatus), f.status);
+      !ok) {
     return tl::unexpected(ok.error());
   }
   // Per-uid and per-share rows of this frame.
@@ -866,7 +909,8 @@ template <class T>
       {Section::FrameShareMark, &f.share_mark}};
   for (const auto &[sec, out] : f64) {
     const bool per_uid = sec != Section::FrameShareMark;
-    auto x = rows<double>(v, type_of(sec), per_uid ? ri : rs, per_uid ? m.n_uids : m.n_share_legs);
+    auto x =
+        rows<double>(v, type_of(sec), per_uid ? ri : rs, per_uid ? m.n_uids : m.n_share_legs);
     if (!x) return tl::unexpected(x.error());
     out->assign(x->begin(), x->end());
   }
@@ -874,7 +918,8 @@ template <class T>
       {Section::FrameUidStatus, &f.uid_status}, {Section::FrameShareStatus, &f.share_status}};
   for (const auto &[sec, out] : u8) {
     const bool per_uid = sec == Section::FrameUidStatus;
-    auto x = rows<std::uint8_t>(v, type_of(sec), per_uid ? ri : rs, per_uid ? m.n_uids : m.n_share_legs);
+    auto x = rows<std::uint8_t>(v, type_of(sec), per_uid ? ri : rs,
+                                per_uid ? m.n_uids : m.n_share_legs);
     if (!x) return tl::unexpected(x.error());
     if (PersistOutcome ok = copy_enum(*x, kMaxStatus, type_of(sec), *out); !ok) {
       return tl::unexpected(ok.error());
@@ -890,9 +935,12 @@ template <class T>
   return out;
 }
 
-[[nodiscard]] PersistResult<ExplainResult> materialize_explain_of(const ReaderCore &c, std::size_t step) {
+[[nodiscard]] PersistResult<ExplainResult> materialize_explain_of(const ReaderCore &c,
+                                                                  std::size_t step) {
   const auto a = c.at(step);
-  if (a.step == nullptr || (a.step->flags & kStepHasExplain) == 0u) return persist_error(S::NotFound);
+  if (a.step == nullptr || (a.step->flags & kStepHasExplain) == 0u) {
+    return persist_error(S::NotFound);
+  }
   const SegmentView &v = *a.seg;
   const RiskRunStep &s = *a.step;
   const std::size_t n = s.explain_rows;
@@ -917,20 +965,25 @@ template <class T>
   for (const auto &[sec, out] : routes) {
     auto x = rows<std::uint8_t>(v, type_of(sec), s.explain_row, n);
     if (!x) return tl::unexpected(x.error());
-    if (PersistOutcome ok = copy_enum(*x, kMaxRoute, type_of(sec), *out); !ok) return tl::unexpected(ok.error());
+    if (PersistOutcome ok = copy_enum(*x, kMaxRoute, type_of(sec), *out); !ok) {
+      return tl::unexpected(ok.error());
+    }
   }
   auto flags = rows<std::uint32_t>(v, type_of(Section::ExplainFlags), s.explain_row, n);
   if (!flags) return tl::unexpected(flags.error());
   r.flags.assign(flags->begin(), flags->end());
   auto status = rows<std::uint8_t>(v, type_of(Section::ExplainStatus), s.explain_row, n);
   if (!status) return tl::unexpected(status.error());
-  if (PersistOutcome ok = copy_enum(*status, kMaxStatus, type_of(Section::ExplainStatus), r.status); !ok) {
+  if (PersistOutcome ok =
+          copy_enum(*status, kMaxStatus, type_of(Section::ExplainStatus), r.status);
+      !ok) {
     return tl::unexpected(ok.error());
   }
   r.total = v.totals[a.local];
-  r.by_uid = buckets_of(v.by_uid.subspan(static_cast<std::size_t>(s.bucket_uid_begin), s.n_bucket_uid));
-  r.by_expiry =
-      buckets_of(v.by_expiry.subspan(static_cast<std::size_t>(s.bucket_expiry_begin), s.n_bucket_expiry));
+  r.by_uid =
+      buckets_of(v.by_uid.subspan(static_cast<std::size_t>(s.bucket_uid_begin), s.n_bucket_uid));
+  r.by_expiry = buckets_of(
+      v.by_expiry.subspan(static_cast<std::size_t>(s.bucket_expiry_begin), s.n_bucket_expiry));
   r.excluded_count = s.excluded_count;
   r.excluded_premium = s.excluded_premium;
   r.n_pivot_groups = s.n_pivot_groups;
@@ -947,16 +1000,18 @@ template <class T>
   const RiskRunVar &row = v.vars[l];
   HistoricalVarResult out;
   out.frames.reserve(static_cast<std::size_t>(row.frame_count));
-  for (const RiskRunVarFrame &f :
-       v.var_frames.subspan(static_cast<std::size_t>(row.frame_begin), static_cast<std::size_t>(row.frame_count))) {
-    out.frames.push_back(HistoricalVarFrame{f.base_ts_ns, f.shifted_ts_ns, f.totals, f.n_legs_resolved,
-                                            f.n_legs_unresolved, f.admitted != 0u});
+  for (const RiskRunVarFrame &f : v.var_frames.subspan(static_cast<std::size_t>(row.frame_begin),
+                                                       static_cast<std::size_t>(row.frame_count))) {
+    out.frames.push_back(HistoricalVarFrame{f.base_ts_ns, f.shifted_ts_ns, f.totals,
+                                            f.n_legs_resolved, f.n_legs_unresolved,
+                                            f.admitted != 0u});
   }
   out.points.reserve(static_cast<std::size_t>(row.point_count));
-  for (const RiskRunVarPoint &p :
-       v.var_points.subspan(static_cast<std::size_t>(row.point_begin), static_cast<std::size_t>(row.point_count))) {
+  for (const RiskRunVarPoint &p : v.var_points.subspan(static_cast<std::size_t>(row.point_begin),
+                                                       static_cast<std::size_t>(row.point_count))) {
     out.points.push_back(HistoricalVarPoint{p.confidence, p.value_at_risk, p.expected_shortfall,
-                                            static_cast<std::size_t>(p.tail_scenarios), p.tail_mean});
+                                            static_cast<std::size_t>(p.tail_scenarios),
+                                            p.tail_mean});
   }
   out.n_admitted = static_cast<std::size_t>(row.n_admitted);
   out.reference_pv = row.reference_pv;
@@ -967,7 +1022,9 @@ template <class T>
                                                std::size_t step) noexcept {
   const auto col = static_cast<std::uint32_t>(column);
   const auto a = c.at(step);
-  if (a.step == nullptr || col >= kRiskFrameColumnCount || (a.step->flags & kStepHasFrame) == 0u) return {};
+  if (a.step == nullptr || col >= kRiskFrameColumnCount || (a.step->flags & kStepHasFrame) == 0u) {
+    return {};
+  }
   auto r = rows<double>(*a.seg, type_of(Section::FrameF64) + col,
                         a.step->frame_index * a.seg->meta.n_unique, a.seg->meta.n_unique);
   return r ? *r : std::span<const double>{};
@@ -977,7 +1034,8 @@ template <class T>
                                                  std::size_t step) noexcept {
   const auto col = static_cast<std::uint32_t>(column);
   const auto a = c.at(step);
-  if (a.step == nullptr || col >= kRiskExplainColumnCount || (a.step->flags & kStepHasExplain) == 0u) {
+  if (a.step == nullptr || col >= kRiskExplainColumnCount ||
+      (a.step->flags & kStepHasExplain) == 0u) {
     return {};
   }
   auto r = rows<double>(*a.seg, type_of(Section::ExplainF64) + col, a.step->explain_row,
@@ -989,7 +1047,8 @@ template <class T>
 
 std::string segment_key(std::uint64_t ordinal) {
   std::array<char, 24> buf{};
-  const int n = std::snprintf(buf.data(), buf.size(), "%012llu", static_cast<unsigned long long>(ordinal));
+  const int n =
+      std::snprintf(buf.data(), buf.size(), "%012llu", static_cast<unsigned long long>(ordinal));
   return std::string(buf.data(), n > 0 ? static_cast<std::size_t>(n) : 0u);
 }
 
@@ -1014,7 +1073,9 @@ std::size_t Reader::n_steps() const noexcept { return impl_ ? impl_->core.step_r
 std::size_t Reader::n_segments() const noexcept { return impl_ ? impl_->core.segs.size() : 0u; }
 std::size_t Reader::n_var() const noexcept { return impl_ ? impl_->core.var_ref.size() : 0u; }
 // Precondition (documented, asserted by every caller's bound): segment < n_segments().
-const RiskRunMeta &Reader::meta(std::size_t segment) const noexcept { return impl_->core.segs[segment].meta; }
+const RiskRunMeta &Reader::meta(std::size_t segment) const noexcept {
+  return impl_->core.segs[segment].meta;
+}
 const PersistFile &Reader::segment(std::size_t segment) const noexcept {
   return impl_->core.segs[segment].file;
 }
@@ -1022,7 +1083,8 @@ const RiskRunStep *Reader::step(std::size_t step) const noexcept {
   return impl_ ? impl_->core.at(step).step : nullptr;
 }
 std::span<const RiskRunLeg> Reader::legs() const noexcept {
-  return impl_ && !impl_->core.segs.empty() ? impl_->core.segs.front().legs : std::span<const RiskRunLeg>{};
+  return impl_ && !impl_->core.segs.empty() ? impl_->core.segs.front().legs
+                                            : std::span<const RiskRunLeg>{};
 }
 std::span<const std::uint64_t> Reader::leg_ids() const noexcept {
   return impl_ && !impl_->core.segs.empty() ? impl_->core.segs.front().leg_ids
@@ -1088,9 +1150,11 @@ template <std::size_t N> void put_name(std::array<char, N> &a, std::string_view 
 // which is why this one rewrite lives here.
 [[nodiscard]] PersistOutcome publish_compacted(std::string_view dir,
                                                std::span<const PersistManifestEntry> seen,
-                                               std::span<const std::byte> image, std::uint32_t records) {
+                                               std::span<const std::byte> image,
+                                               std::uint32_t records) {
   const fs::path root{std::string(dir)};
-  auto lock = atx::vol::detail::WriterLock::acquire((root / std::string(kPersistLockFileName)).string());
+  const fs::path lock_path = root / std::string(kPersistLockFileName);
+  auto lock = atx::vol::detail::WriterLock::acquire(lock_path.string());
   if (!lock) {
     return persist_error(lock.error().code() == ErrorCode::Unavailable ? S::Busy : S::IoError);
   }
@@ -1147,12 +1211,96 @@ template <std::size_t N> void put_name(std::array<char, N> &a, std::string_view 
   info.ts_max_ns = e.ts_max_ns;
   auto manifest = build_persist_file(std::span{&in, 1}, info);
   if (!manifest) return tl::unexpected(manifest.error());
-  return persist_detail::replace_file((root / std::string(kPersistManifestFileName)).string(), *manifest);
+  const fs::path manifest_path = root / std::string(kPersistManifestFileName);
+  return persist_detail::replace_file(manifest_path.string(), *manifest);
 }
 
 [[nodiscard]] bool is_book_slot(std::size_t i) noexcept {
-  return i == slot(Section::BookLegs) || i == slot(Section::BookUnique) || i == slot(Section::BookUids) ||
-         i == slot(Section::LegIds);
+  return i == slot(Section::BookLegs) || i == slot(Section::BookUnique) ||
+         i == slot(Section::BookUids) || i == slot(Section::LegIds);
+}
+
+using MergedSections = std::array<std::vector<std::byte>, kSectionCount>;
+
+// Row counts of the columns merged so far: a later segment's step and VaR indices
+// are re-based by them.
+struct MergeOffsets {
+  std::uint64_t frames{0};
+  std::uint64_t explain_rows{0};
+  std::uint64_t bucket_uid{0};
+  std::uint64_t bucket_expiry{0};
+  std::uint64_t var_frames{0};
+  std::uint64_t var_points{0};
+};
+
+// Append schema slot `i` of segment `f` to `out`, re-basing step and VaR indices.
+[[nodiscard]] PersistOutcome merge_section(const PersistFile &f, std::size_t i,
+                                           const MergeOffsets &o, std::vector<std::byte> &out) {
+  auto b = f.section(kSchema[i].type);
+  if (!b) return tl::unexpected(b.error());
+  if (i == slot(Section::Steps)) {
+    std::vector<RiskRunStep> steps = rows_from_bytes<RiskRunStep>(*b);
+    for (RiskRunStep &st : steps) {
+      if (st.frame_index != kNone64) st.frame_index += o.frames;
+      if (st.explain_row != kNone64) st.explain_row += o.explain_rows;
+      st.bucket_uid_begin += o.bucket_uid;
+      st.bucket_expiry_begin += o.bucket_expiry;
+    }
+    append_rows(out, steps);
+  } else if (i == slot(Section::VarIndex)) {
+    std::vector<RiskRunVar> vars = rows_from_bytes<RiskRunVar>(*b);
+    for (RiskRunVar &v : vars) {
+      v.frame_begin += o.var_frames;
+      v.point_begin += o.var_points;
+    }
+    append_rows(out, vars);
+  } else {
+    out.insert(out.end(), b->begin(), b->end());
+  }
+  return {};
+}
+
+// Concatenate every segment of `reader` into one segment's sections (the book once)
+// and describe the merged segment (meta, time range) in `p`, which borrows `merged`.
+[[nodiscard]] PersistOutcome merge_segments(const Reader &reader, MergedSections &merged,
+                                            SegmentParts &p) {
+  MergeOffsets o;
+  p.ts_min_ns = std::numeric_limits<std::int64_t>::max();
+  p.ts_max_ns = std::numeric_limits<std::int64_t>::min();
+  for (std::size_t s = 0; s < reader.n_segments(); ++s) {
+    const PersistFile &f = reader.segment(s);
+    const RiskRunMeta &m = reader.meta(s);
+    if (m.n_steps > 0u) {
+      p.ts_min_ns = std::min(p.ts_min_ns, f.header().ts_min_ns);
+      p.ts_max_ns = std::max(p.ts_max_ns, f.header().ts_max_ns);
+    }
+    for (std::size_t i = 0; i < kSectionCount; ++i) {
+      if (i == slot(Section::Meta) || (is_book_slot(i) && s > 0)) continue;
+      if (PersistOutcome ok = merge_section(f, i, o, merged[i]); !ok) return ok;
+    }
+    // Every section is present (check_schema at open), so entry() is never null.
+    o.frames += m.n_frames;
+    o.explain_rows += m.n_explain_rows;
+    o.bucket_uid += f.entry(type_of(Section::BucketsByUid))->element_count;
+    o.bucket_expiry += f.entry(type_of(Section::BucketsByExpiry))->element_count;
+    o.var_frames += f.entry(type_of(Section::VarFrames))->element_count;
+    o.var_points += f.entry(type_of(Section::VarPoints))->element_count;
+  }
+  RiskRunMeta &m = p.meta;
+  m = reader.meta(0);
+  m.first_step = 0;
+  m.n_steps = reader.n_steps();
+  m.first_var = 0;
+  m.n_var = reader.n_var();
+  m.segment_ordinal = 0;
+  m.n_frames = o.frames;
+  m.n_explain_rows = o.explain_rows;
+  if (m.n_steps == 0u) {
+    p.ts_min_ns = 0;
+    p.ts_max_ns = 0;
+  }
+  for (std::size_t i = 0; i < kSectionCount; ++i) p.bytes[i] = merged[i];
+  return {};
 }
 
 } // namespace
@@ -1169,9 +1317,12 @@ RiskRunWriter::RiskRunWriter(RiskRunWriter &&) noexcept = default;
 RiskRunWriter &RiskRunWriter::operator=(RiskRunWriter &&) noexcept = default;
 RiskRunWriter::~RiskRunWriter() = default;
 
-PersistResult<RiskRunWriter> RiskRunWriter::create(std::string_view dir, const PreparedRiskBook &book,
+PersistResult<RiskRunWriter> RiskRunWriter::create(std::string_view dir,
+                                                   const PreparedRiskBook &book,
                                                    const RiskRunOptions &options) {
-  if (dir.empty() || options.segment_bytes == 0u) return persist_error(PersistStatus::InvalidArgument);
+  if (dir.empty() || options.segment_bytes == 0u) {
+    return persist_error(PersistStatus::InvalidArgument);
+  }
   // A run directory has one writer for its whole life: refuse one that already holds
   // a run (a resumed run would need the book identity check of the reader).
   auto existing = PersistDirectory::open(dir);
@@ -1214,17 +1365,22 @@ RiskRunArchive::RiskRunArchive(RiskRunArchive &&) noexcept = default;
 RiskRunArchive &RiskRunArchive::operator=(RiskRunArchive &&) noexcept = default;
 RiskRunArchive::~RiskRunArchive() = default;
 
-PersistResult<RiskRunArchive> RiskRunArchive::open(std::string_view dir, const PersistOpenOptions &options) {
+PersistResult<RiskRunArchive> RiskRunArchive::open(std::string_view dir,
+                                                   const PersistOpenOptions &options) {
   auto reader = risk_run::Reader::open(dir, options);
   if (!reader) return tl::unexpected(reader.error());
   return RiskRunArchive{std::make_unique<Impl>(Impl{std::move(*reader)})};
 }
 
-std::size_t RiskRunArchive::n_steps() const noexcept { return impl_ ? impl_->reader.n_steps() : 0u; }
-std::span<const double> RiskRunArchive::frame(RiskFrameColumn column, std::size_t step) const noexcept {
+std::size_t RiskRunArchive::n_steps() const noexcept {
+  return impl_ ? impl_->reader.n_steps() : 0u;
+}
+std::span<const double> RiskRunArchive::frame(RiskFrameColumn column,
+                                              std::size_t step) const noexcept {
   return impl_ ? impl_->reader.frame(column, step) : std::span<const double>{};
 }
-std::span<const double> RiskRunArchive::explain(RiskExplainColumn column, std::size_t step) const noexcept {
+std::span<const double> RiskRunArchive::explain(RiskExplainColumn column,
+                                                std::size_t step) const noexcept {
   return impl_ ? impl_->reader.explain(column, step) : std::span<const double>{};
 }
 const ExplainTotals *RiskRunArchive::totals(std::size_t step) const noexcept {
@@ -1238,87 +1394,31 @@ std::span<const std::uint64_t> RiskRunArchive::leg_ids() const noexcept {
 
 PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec codec, int level) {
   using namespace risk_run; // NOLINT(google-build-using-namespace): this TU's own detail
-  if (codec != PersistCodec::None && codec != PersistCodec::Zstd) return persist_error(S::InvalidArgument);
-  if (codec == PersistCodec::Zstd && (level < 1 || level > 19)) return persist_error(S::InvalidArgument);
+  if (codec != PersistCodec::None && codec != PersistCodec::Zstd) {
+    return persist_error(S::InvalidArgument);
+  }
+  if (codec == PersistCodec::Zstd && (level < 1 || level > 19)) {
+    return persist_error(S::InvalidArgument);
+  }
   auto seen = PersistDirectory::open(dir);
   if (!seen) return tl::unexpected(seen.error());
   // Read every byte, verified, into memory (Read mode: no mapping is held on a file
   // the manifest is about to stop naming).
   auto reader = Reader::open(dir, PersistOpenOptions{false, PersistVerify::Full, false, 0});
   if (!reader) return tl::unexpected(reader.error());
-  const std::size_t n_segments = reader->n_segments();
-
-  std::array<std::vector<std::byte>, kSectionCount> merged;
-  std::uint64_t frames = 0;
-  std::uint64_t rows_ = 0;
-  std::uint64_t buid = 0;
-  std::uint64_t bexp = 0;
-  std::uint64_t vframes = 0;
-  std::uint64_t vpoints = 0;
+  MergedSections merged;
   SegmentParts p;
-  p.ts_min_ns = std::numeric_limits<std::int64_t>::max();
-  p.ts_max_ns = std::numeric_limits<std::int64_t>::min();
-  for (std::size_t s = 0; s < n_segments; ++s) {
-    const PersistFile &f = reader->segment(s);
-    const RiskRunMeta &m = reader->meta(s);
-    if (m.n_steps > 0u) {
-      p.ts_min_ns = std::min(p.ts_min_ns, f.header().ts_min_ns);
-      p.ts_max_ns = std::max(p.ts_max_ns, f.header().ts_max_ns);
-    }
-    for (std::size_t i = 0; i < kSectionCount; ++i) {
-      if (i == slot(Section::Meta) || (is_book_slot(i) && s > 0)) continue;
-      auto b = f.section(kSchema[i].type);
-      if (!b) return tl::unexpected(b.error());
-      if (i == slot(Section::Steps)) {
-        std::vector<RiskRunStep> steps = rows_from_bytes<RiskRunStep>(*b);
-        for (RiskRunStep &st : steps) {
-          if (st.frame_index != kNone64) st.frame_index += frames;
-          if (st.explain_row != kNone64) st.explain_row += rows_;
-          st.bucket_uid_begin += buid;
-          st.bucket_expiry_begin += bexp;
-        }
-        append_rows(merged[i], steps);
-      } else if (i == slot(Section::VarIndex)) {
-        std::vector<RiskRunVar> vars = rows_from_bytes<RiskRunVar>(*b);
-        for (RiskRunVar &v : vars) {
-          v.frame_begin += vframes;
-          v.point_begin += vpoints;
-        }
-        append_rows(merged[i], vars);
-      } else {
-        merged[i].insert(merged[i].end(), b->begin(), b->end());
-      }
-    }
-    frames += m.n_frames;
-    rows_ += m.n_explain_rows;
-    buid += f.entry(type_of(Section::BucketsByUid))->element_count;
-    bexp += f.entry(type_of(Section::BucketsByExpiry))->element_count;
-    vframes += f.entry(type_of(Section::VarFrames))->element_count;
-    vpoints += f.entry(type_of(Section::VarPoints))->element_count;
+  if (PersistOutcome ok = merge_segments(*reader, merged, p); !ok) {
+    return tl::unexpected(ok.error());
   }
-  const RiskRunMeta &first = reader->meta(0);
-  RiskRunMeta &m = p.meta;
-  m = first;
-  m.first_step = 0;
-  m.n_steps = reader->n_steps();
-  m.first_var = 0;
-  m.n_var = reader->n_var();
-  m.segment_ordinal = 0;
-  m.n_frames = frames;
-  m.n_explain_rows = rows_;
-  if (m.n_steps == 0u) {
-    p.ts_min_ns = 0;
-    p.ts_max_ns = 0;
-  }
-  for (std::size_t i = 0; i < kSectionCount; ++i) p.bytes[i] = merged[i];
   auto image = build_segment(p, codec, codec == PersistCodec::None ? 3 : level, 4);
   if (!image) return tl::unexpected(image.error());
   const auto records = static_cast<std::uint32_t>(
-      std::min<std::uint64_t>(m.n_steps, std::numeric_limits<std::uint32_t>::max()));
+      std::min<std::uint64_t>(p.meta.n_steps, std::numeric_limits<std::uint32_t>::max()));
   if (PersistOutcome ok = publish_compacted(dir, seen->entries(), *image, records); !ok) {
     return tl::unexpected(ok.error());
   }
-  return n_segments;
+  return reader->n_segments();
 }
 
 } // namespace atx::vol

@@ -218,7 +218,9 @@ struct LoadedPartition {
   p.size = static_cast<std::size_t>(f->size());
   p.buffer.resize((p.size + 7u) / 8u);
   std::byte *dst = std::as_writable_bytes(std::span<std::uint64_t>{p.buffer}).data();
-  if (atx::core::Status st = f->read_at(0, dst, p.size); !st) return from_core(st.error(), kRecordsSection);
+  if (atx::core::Status st = f->read_at(0, dst, p.size); !st) {
+    return from_core(st.error(), kRecordsSection);
+  }
   return p;
 }
 
@@ -243,7 +245,9 @@ struct RecordItem {
                                                             std::vector<RecordItem> &out) {
   auto arch = SurfaceArchiveV2::open_borrowed(bytes, nullptr);
   if (!arch) return from_core(arch.error(), kRecordsSection);
-  if (atx::core::Status st = arch->validate_all(); !st) return from_core(st.error(), kRecordsSection);
+  if (atx::core::Status st = arch->validate_all(); !st) {
+    return from_core(st.error(), kRecordsSection);
+  }
   const std::uint64_t fp = identity_fingerprint(arch->identity());
   for (const ArchiveV2DirEntry &e : arch->entries()) {
     // validate_all proved this extent lies inside `bytes` and frames one record.
@@ -251,7 +255,8 @@ struct RecordItem {
                                    static_cast<std::size_t>(e.surface_size));
     ArchiveV2SurfaceHeader h;
     std::memcpy(&h, rec.data(), sizeof h);
-    if (h.n_slices > std::numeric_limits<std::uint16_t>::max() || h.symbol_len > kArchiveSymbolMax) {
+    if (h.n_slices > std::numeric_limits<std::uint16_t>::max() ||
+        h.symbol_len > kArchiveSymbolMax) {
       return persist_error(S::RecordInvalid, kRecordsSection, e.surface_offset);
     }
     RecordItem it;
@@ -279,39 +284,45 @@ struct ImageInfo {
   std::int64_t created_unix_ns{0};
 };
 
-// Frame `items` into one period image (sorted here; (uid, ts) must be unique and a
-// uid must name ONE ticker across the period).
-[[nodiscard]] PersistResult<std::vector<std::byte>> build_image(std::vector<RecordItem> items,
-                                                                const ImageInfo &info) {
-  if (items.empty()) return persist_error(S::InvalidArgument);
+// The index of one period: entries in (uid, ts) order, the uid directory, the ticker
+// strings and the Records section length.
+struct TimelineIndex {
+  std::vector<TimelineEntry> entries;
+  std::vector<TimelineUid> dir;
+  std::string strings;
+  std::uint64_t records_bytes{0};
+};
+
+// Sort `items` by (uid, ts) and lay out the index: (uid, ts) unique, ONE ticker per uid,
+// records on the 64-byte grid in entry order (so a uid's history is contiguous on disk).
+[[nodiscard]] PersistResult<TimelineIndex> index_items(std::vector<RecordItem> &items) {
   std::sort(items.begin(), items.end(), [](const RecordItem &a, const RecordItem &b) {
     return a.uid != b.uid ? a.uid < b.uid : a.ts_ns < b.ts_ns;
   });
-  std::vector<TimelineEntry> entries(items.size());
-  std::vector<TimelineUid> dir;
-  std::string strings;
+  TimelineIndex ix;
+  ix.entries.resize(items.size());
   std::uint64_t at = 0;
   for (std::size_t i = 0; i < items.size(); ++i) {
     const RecordItem &it = items[i];
     if (i > 0 && items[i - 1].uid == it.uid && items[i - 1].ts_ns == it.ts_ns) {
       return persist_error(S::DuplicateKey, kEntriesSection, it.uid);
     }
-    if (dir.empty() || dir.back().uid != it.uid) {
-      if (strings.size() + it.ticker.size() > std::numeric_limits<std::uint32_t>::max()) {
+    if (ix.dir.empty() || ix.dir.back().uid != it.uid) {
+      if (ix.strings.size() + it.ticker.size() > std::numeric_limits<std::uint32_t>::max()) {
         return persist_error(S::InvalidArgument, kStringsSection);
       }
-      dir.push_back(TimelineUid{it.uid, 0, i, static_cast<std::uint32_t>(strings.size()),
-                                static_cast<std::uint32_t>(it.ticker.size())});
-      strings.append(it.ticker);
-    } else if (std::string_view{strings}.substr(dir.back().ticker_offset, dir.back().ticker_len) !=
-               it.ticker) {
+      ix.dir.push_back(TimelineUid{it.uid, 0, i, static_cast<std::uint32_t>(ix.strings.size()),
+                                   static_cast<std::uint32_t>(it.ticker.size())});
+      ix.strings.append(it.ticker);
+    } else if (std::string_view{ix.strings}.substr(ix.dir.back().ticker_offset,
+                                                   ix.dir.back().ticker_len) != it.ticker) {
       // One uid, two tickers: the uid space of the sources disagrees, and a history
       // keyed on uid would silently splice two underliers together.
       return persist_error(S::RecordInvalid, kStringsSection, it.uid);
     }
-    ++dir.back().entry_count;
+    ++ix.dir.back().entry_count;
     at = detail::align_up(at, kRecordAlign);
-    TimelineEntry &e = entries[i];
+    TimelineEntry &e = ix.entries[i];
     e.uid = it.uid;
     e.n_slices = it.n_slices;
     e.flags = it.kind_bits;
@@ -323,21 +334,32 @@ struct ImageInfo {
     at += it.record.size();
   }
   if (at > std::numeric_limits<std::size_t>::max()) return persist_error(S::InvalidArgument);
-  std::vector<std::byte> records(static_cast<std::size_t>(at));
+  ix.records_bytes = at;
+  return ix;
+}
+
+// Frame `items` into one period image.
+[[nodiscard]] PersistResult<std::vector<std::byte>> build_image(std::vector<RecordItem> items,
+                                                                const ImageInfo &info) {
+  if (items.empty()) return persist_error(S::InvalidArgument);
+  auto index = index_items(items);
+  if (!index) return tl::unexpected(index.error());
+  const TimelineIndex &ix = *index;
+  std::vector<std::byte> records(static_cast<std::size_t>(ix.records_bytes));
   for (std::size_t i = 0; i < items.size(); ++i) {
-    std::memcpy(records.data() + entries[i].record_offset, items[i].record.data(),
+    std::memcpy(records.data() + ix.entries[i].record_offset, items[i].record.data(),
                 items[i].record.size());
   }
   TimelineMeta meta;
-  meta.n_entries = entries.size();
-  meta.records_bytes = at;
+  meta.n_entries = ix.entries.size();
+  meta.records_bytes = ix.records_bytes;
   meta.ts_min_ns = std::numeric_limits<std::int64_t>::max();
   meta.ts_max_ns = std::numeric_limits<std::int64_t>::min();
-  for (const TimelineEntry &e : entries) {
+  for (const TimelineEntry &e : ix.entries) {
     meta.ts_min_ns = std::min(meta.ts_min_ns, e.ts_ns);
     meta.ts_max_ns = std::max(meta.ts_max_ns, e.ts_ns);
   }
-  meta.n_uids = static_cast<std::uint32_t>(dir.size());
+  meta.n_uids = static_cast<std::uint32_t>(ix.dir.size());
   meta.n_sources = info.n_sources;
   meta.source_fingerprint = info.source_fingerprint;
 
@@ -350,10 +372,13 @@ struct ImageInfo {
                                PersistCodec::None, PersistFilter::None, 3, b};
   };
   const PersistSectionInput inputs[] = {
-      pod(kMetaSection, static_cast<std::uint32_t>(sizeof(TimelineMeta)), std::as_bytes(std::span{&meta, 1})),
-      pod(kUidSection, static_cast<std::uint32_t>(sizeof(TimelineUid)), std::as_bytes(std::span{dir})),
-      blob(kStringsSection, std::as_bytes(std::span{strings.data(), strings.size()})),
-      pod(kEntriesSection, static_cast<std::uint32_t>(sizeof(TimelineEntry)), std::as_bytes(std::span{entries})),
+      pod(kMetaSection, static_cast<std::uint32_t>(sizeof(TimelineMeta)),
+          std::as_bytes(std::span{&meta, 1})),
+      pod(kUidSection, static_cast<std::uint32_t>(sizeof(TimelineUid)),
+          std::as_bytes(std::span{ix.dir})),
+      blob(kStringsSection, std::as_bytes(std::span{ix.strings.data(), ix.strings.size()})),
+      pod(kEntriesSection, static_cast<std::uint32_t>(sizeof(TimelineEntry)),
+          std::as_bytes(std::span{ix.entries})),
       blob(kRecordsSection, std::span<const std::byte>{records}),
   };
   PersistFileInfo fi;
@@ -408,7 +433,8 @@ template <class T>
   const PersistSectionEntry *e = f.entry(kRecordsSection);
   if (e == nullptr) return persist_error(S::MissingSection, kRecordsSection);
   if (e->codec != static_cast<std::uint8_t>(PersistCodec::None)) return f.section(kRecordsSection);
-  return f.bytes().subspan(static_cast<std::size_t>(e->offset), static_cast<std::size_t>(e->length));
+  return f.bytes().subspan(static_cast<std::size_t>(e->offset),
+                           static_cast<std::size_t>(e->length));
 }
 
 // Structural pass over the index: O(n_entries), touches no record byte.
@@ -435,7 +461,9 @@ template <class T>
           e.ts_ns > c.meta.ts_max_ns) {
         return persist_error(S::RecordInvalid, kEntriesSection, at);
       }
-      if (k > 0 && rows[k - 1].ts_ns >= e.ts_ns) return persist_error(S::IndexUnsorted, kEntriesSection, at);
+      if (k > 0 && rows[k - 1].ts_ns >= e.ts_ns) {
+        return persist_error(S::IndexUnsorted, kEntriesSection, at);
+      }
       if (!c.record(e) || e.record_offset < record_end) {
         return persist_error(S::IndexBounds, kEntriesSection, at);
       }
@@ -488,10 +516,10 @@ template <class T>
   if (it == c.uids.end() || *it != uid) return {};
   const TimelineUid &d = c.dir[static_cast<std::size_t>(it - c.uids.begin())];
   const auto all = c.entries.subspan(static_cast<std::size_t>(d.entry_begin), d.entry_count);
-  const auto lo = std::lower_bound(all.begin(), all.end(), from,
-                                   [](const TimelineEntry &e, std::int64_t v) { return e.ts_ns < v; });
-  const auto hi = std::upper_bound(lo, all.end(), to,
-                                   [](std::int64_t v, const TimelineEntry &e) { return v < e.ts_ns; });
+  const auto before = [](const TimelineEntry &e, std::int64_t v) { return e.ts_ns < v; };
+  const auto after = [](std::int64_t v, const TimelineEntry &e) { return v < e.ts_ns; };
+  const auto lo = std::lower_bound(all.begin(), all.end(), from, before);
+  const auto hi = std::upper_bound(lo, all.end(), to, after);
   return all.subspan(static_cast<std::size_t>(lo - all.begin()), static_cast<std::size_t>(hi - lo));
 }
 
@@ -502,7 +530,9 @@ template <class T>
   auto rec = c.record(e);
   if (!rec) return rec;
   const std::uint32_t crc = record_crc(*rec);
-  if (crc != e.record_crc32c) return persist_error(S::SectionChecksum, kRecordsSection, e.record_offset);
+  if (crc != e.record_crc32c) {
+    return persist_error(S::SectionChecksum, kRecordsSection, e.record_offset);
+  }
   ArchiveV2SurfaceHeader h;
   std::memcpy(&h, rec->data(), sizeof h);
   if (std::memcmp(h.magic, kArchiveV2RecordMagic, sizeof h.magic) != 0 ||
@@ -517,8 +547,8 @@ template <class T>
 
 std::uint64_t surface_timeline_fingerprint() noexcept { return kFingerprint; }
 
-PersistResult<std::vector<std::byte>> encode_surface_timeline(std::span<const TimelineSource> sources,
-                                                              std::int64_t created_unix_ns) {
+PersistResult<std::vector<std::byte>>
+encode_surface_timeline(std::span<const TimelineSource> sources, std::int64_t created_unix_ns) {
   if (sources.empty() || sources.size() > std::numeric_limits<std::uint32_t>::max()) {
     return persist_error(S::InvalidArgument);
   }
@@ -742,7 +772,9 @@ PersistResult<std::size_t> SurfaceTimelineStore::collect(std::uint32_t uid, std:
                                                          std::vector<SurfaceRef> &refs,
                                                          std::vector<std::int64_t> &ts) const {
   if (!impl_) return persist_error(S::InvalidArgument);
-  const auto overlaps = [&](const Period &p) { return p.ts_max_ns >= from_ns && p.ts_min_ns <= to_ns; };
+  const auto overlaps = [&](const Period &p) {
+    return p.ts_max_ns >= from_ns && p.ts_min_ns <= to_ns;
+  };
   std::size_t n = 0;
   for (const Period &p : impl_->periods) {
     if (overlaps(p)) n += p.timeline.range(uid, from_ns, to_ns).size();

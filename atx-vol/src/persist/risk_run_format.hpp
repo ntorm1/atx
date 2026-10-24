@@ -197,7 +197,8 @@ namespace detail {
 
 [[nodiscard]] constexpr PersistFieldSpec fld(std::string_view name, std::size_t offset,
                                              std::size_t size) noexcept {
-  return PersistFieldSpec{name, static_cast<std::uint32_t>(offset), static_cast<std::uint32_t>(size)};
+  return PersistFieldSpec{name, static_cast<std::uint32_t>(offset),
+                          static_cast<std::uint32_t>(size)};
 }
 
 template <std::size_t N, std::size_t M>
@@ -401,23 +402,28 @@ inline constexpr std::array<std::vector<double> ExplainResult::*, kRiskExplainCo
 
 // ── Schema (file order == this order) ────────────────────────────────────────
 
-inline constexpr std::size_t kSectionCount = 7 + kRiskFrameColumnCount + 8 + kRiskExplainColumnCount + 4 + 2 + 3;
+// meta + 4 book + steps + totals, the frame columns + 8, the explain columns + 4,
+// two bucket sections, three VaR sections.
+inline constexpr std::size_t kSectionCount =
+    7 + kRiskFrameColumnCount + 8 + kRiskExplainColumnCount + 4 + 2 + 3;
 
 [[nodiscard]] constexpr std::array<PersistSectionSpec, kSectionCount> make_schema() noexcept {
   std::array<PersistSectionSpec, kSectionCount> s{};
   std::size_t i = 0;
-  const auto pod = [&](Section t, std::uint32_t stride, std::string_view name,
+  const auto pod = [&](Section t, std::size_t stride, std::string_view name,
                        std::span<const PersistFieldSpec> fields) {
-    s[i++] = PersistSectionSpec{type_of(t), 1, PersistDType::Pod, stride, name, fields, true};
+    s[i++] = PersistSectionSpec{type_of(t), 1, PersistDType::Pod,
+                                static_cast<std::uint32_t>(stride), name, fields, true};
   };
-  const auto col = [&](std::uint32_t t, PersistDType d, std::uint32_t stride, std::string_view name) {
+  const auto col = [&](std::uint32_t t, PersistDType d, std::uint32_t stride,
+                       std::string_view name) {
     s[i++] = PersistSectionSpec{t, 1, d, stride, name, {}, true};
   };
-  pod(Section::Meta, static_cast<std::uint32_t>(sizeof(RiskRunMeta)), "meta", kMetaFields);
-  pod(Section::BookLegs, static_cast<std::uint32_t>(sizeof(RiskRunLeg)), "book.legs", kLegFields);
-  pod(Section::Steps, static_cast<std::uint32_t>(sizeof(RiskRunStep)), "steps", kStepFields);
-  pod(Section::StepTotals, static_cast<std::uint32_t>(sizeof(ExplainTotals)), "step.totals", kTotalsFields);
-  pod(Section::BookUnique, static_cast<std::uint32_t>(sizeof(RiskRunUnique)), "book.unique", kUniqueFields);
+  pod(Section::Meta, sizeof(RiskRunMeta), "meta", kMetaFields);
+  pod(Section::BookLegs, sizeof(RiskRunLeg), "book.legs", kLegFields);
+  pod(Section::Steps, sizeof(RiskRunStep), "steps", kStepFields);
+  pod(Section::StepTotals, sizeof(ExplainTotals), "step.totals", kTotalsFields);
+  pod(Section::BookUnique, sizeof(RiskRunUnique), "book.unique", kUniqueFields);
   col(type_of(Section::BookUids), PersistDType::U32, 4, "book.uids");
   col(type_of(Section::LegIds), PersistDType::U64, 8, "book.leg_ids");
   for (std::uint32_t c = 0; c < kRiskFrameColumnCount; ++c) {
@@ -438,16 +444,17 @@ inline constexpr std::size_t kSectionCount = 7 + kRiskFrameColumnCount + 8 + kRi
   col(type_of(Section::ExplainRouteShifted), PersistDType::U8, 1, "explain.route_shifted");
   col(type_of(Section::ExplainFlags), PersistDType::U32, 4, "explain.flags");
   col(type_of(Section::ExplainStatus), PersistDType::U8, 1, "explain.status");
-  pod(Section::BucketsByUid, static_cast<std::uint32_t>(sizeof(RiskRunBucket)), "buckets.by_uid", kBucketFields);
-  pod(Section::BucketsByExpiry, static_cast<std::uint32_t>(sizeof(RiskRunBucket)), "buckets.by_expiry", kBucketFields);
-  pod(Section::VarIndex, static_cast<std::uint32_t>(sizeof(RiskRunVar)), "var.index", kVarFields);
-  pod(Section::VarFrames, static_cast<std::uint32_t>(sizeof(RiskRunVarFrame)), "var.frames", kVarFrameFields);
-  pod(Section::VarPoints, static_cast<std::uint32_t>(sizeof(RiskRunVarPoint)), "var.points", kVarPointFields);
+  pod(Section::BucketsByUid, sizeof(RiskRunBucket), "buckets.by_uid", kBucketFields);
+  pod(Section::BucketsByExpiry, sizeof(RiskRunBucket), "buckets.by_expiry", kBucketFields);
+  pod(Section::VarIndex, sizeof(RiskRunVar), "var.index", kVarFields);
+  pod(Section::VarFrames, sizeof(RiskRunVarFrame), "var.frames", kVarFrameFields);
+  pod(Section::VarPoints, sizeof(RiskRunVarPoint), "var.points", kVarPointFields);
   return s;
 }
 
 inline constexpr std::array<PersistSectionSpec, kSectionCount> kSchema = make_schema();
-inline constexpr std::uint64_t kFingerprint = persist_fingerprint(persist_salt(kRiskRunSalt), kSchema);
+inline constexpr std::uint64_t kFingerprint =
+    persist_fingerprint(persist_salt(kRiskRunSalt), kSchema);
 
 // Position of section `type` in kSchema (== its position in every segment's table).
 [[nodiscard]] constexpr std::size_t slot_of(std::uint32_t type) noexcept {
@@ -492,7 +499,8 @@ public:
   [[nodiscard]] std::span<const std::uint32_t> uids() const noexcept;
 
   // Empty when the step / column is absent (or its section fails its lazy CRC).
-  [[nodiscard]] std::span<const double> frame(RiskFrameColumn column, std::size_t step) const noexcept;
+  [[nodiscard]] std::span<const double> frame(RiskFrameColumn column,
+                                              std::size_t step) const noexcept;
   [[nodiscard]] std::span<const double> explain(RiskExplainColumn column,
                                                 std::size_t step) const noexcept;
   [[nodiscard]] const ExplainTotals *totals(std::size_t step) const noexcept;
