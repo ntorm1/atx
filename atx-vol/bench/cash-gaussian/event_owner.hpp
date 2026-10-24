@@ -32,10 +32,26 @@ struct Work {
   std::size_t rounded_intersections = 0, deterministic_rollbacks = 0;
 };
 
+// Borrowed only during the synchronous callback. A diagnostic must copy any
+// spans it retains; its callback cannot throw or modify the source function.
+struct RoundedCrossing {
+  std::span<const double> stock, value;
+  double right_slope = 0., strike = 0.;
+  Side side = Side::Put;
+  bool tail = false;
+  double stock_lo = 0., stock_hi = 0., difference_lo = 0., difference_hi = 0.;
+  double slope_difference = 0., computed_stock = 0.;
+};
+struct CrossingObserver {
+  using Callback = void (*)(const RoundedCrossing &, void *) noexcept;
+  Callback callback = nullptr;
+  void *context = nullptr;
+};
+
 // These private experiment operators own their output and retain all completed
 // construction/work counts on refusal. They do not call the PDE implementation.
 [[nodiscard]] Result<StockPwl> exercise_max(const StockPwl &, double strike, Side,
-                                           Work &);
+                                           Work &, const CrossingObserver * = nullptr);
 [[nodiscard]] Result<StockPwl> deterministic_rollback(const StockPwl &, double dt,
     double rate, double yield, Work &);
 
@@ -46,7 +62,7 @@ class EventOwner {
  public:
   [[nodiscard]] static Result<EventOwner> prepare(const Model &, std::span<const Event>,
                                                   const Options & = {});
-  [[nodiscard]] Result<double> price(Work &) const;
+  [[nodiscard]] Result<double> price(Work &, const CrossingObserver * = nullptr) const;
   [[nodiscard]] const Model &model() const noexcept { return model_; }
   [[nodiscard]] const Options &options() const noexcept { return options_; }
   [[nodiscard]] std::span<const Event> raw_events() const noexcept { return raw_; }

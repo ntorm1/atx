@@ -167,9 +167,9 @@ Result<StockPwl> diffuse(const StockPwl &f, const Model &m, std::span<const doub
   return StockPwl::create(grid, values, slope, work.integral);
 }
 
-Status exercise(StockPwl &f, const Model &m, Work &work) {
+Status exercise(StockPwl &f, const Model &m, Work &work, const CrossingObserver *observer) {
   if (m.exercise == ExerciseStyle::European) return Ok();
-  auto result = exercise_max(f, m.strike, m.side, work);
+  auto result = exercise_max(f, m.strike, m.side, work, observer);
   if (!result) return Err(result.error());
   f = std::move(*result);
   return Ok();
@@ -183,9 +183,19 @@ Status jump(StockPwl &f, double cash, Work &work) {
   ++work.jumps;
   return Ok();
 }
+
+void observe(const CrossingObserver *observer, const StockPwl &f, double strike,
+             Side side, bool tail, double lo, double hi, double difference_lo,
+             double difference_hi, double slope_difference, double computed) noexcept {
+  if (observer == nullptr || observer->callback == nullptr) return;
+  const RoundedCrossing view{f.knots(), f.values(), f.right_slope(), strike, side, tail,
+      lo, hi, difference_lo, difference_hi, slope_difference, computed};
+  observer->callback(view, observer->context);
+}
 } // namespace
 
-Result<StockPwl> exercise_max(const StockPwl &f, double strike, Side side, Work &work) {
+Result<StockPwl> exercise_max(const StockPwl &f, double strike, Side side, Work &work,
+                             const CrossingObserver *observer) {
   if (f.knots().empty() || !std::isfinite(strike) || !(strike > 0.) || !side_valid(side))
     return Err(ErrorCode::InvalidArgument, "exercise input");
   if (f.knots().size() > work.integral.limits.max_knots)
@@ -209,6 +219,8 @@ Result<StockPwl> exercise_max(const StockPwl &f, double strike, Side side, Work 
         const double scale = std::max(a, b);
         const double crossing = std::lerp(prior, stock, (a/scale)/(a/scale+b/scale));
         if (!(crossing > prior && crossing < stock)) {
+          observe(observer, f, strike, side, false, prior, stock, prior_difference,
+                  difference, 0., crossing);
           ++work.rounded_intersections;
           return Err(ErrorCode::OutOfRange, "rounded exercise crossing");
         }
@@ -229,6 +241,9 @@ Result<StockPwl> exercise_max(const StockPwl &f, double strike, Side side, Work 
         (prior_difference < 0. && slope_difference > 0.)) {
       const double crossing = prior-prior_difference/slope_difference;
       if (!std::isfinite(crossing) || !(crossing > prior)) {
+        observe(observer, f, strike, side, true, prior,
+                std::numeric_limits<double>::infinity(), prior_difference,
+                0., slope_difference, crossing);
         ++work.rounded_intersections;
         return Err(ErrorCode::OutOfRange, "rounded exercise tail");
       }
@@ -300,7 +315,7 @@ Result<EventOwner> EventOwner::prepare(const Model &m, std::span<const Event> ra
   }
 }
 
-Result<double> EventOwner::price(Work &work) const {
+Result<double> EventOwner::price(Work &work, const CrossingObserver *observer) const {
   work = Work{};
   work.integral.limits = options_.limits;
   work.planned_steps = steps_.size(); work.grid_nodes = stock_.size();
@@ -314,17 +329,20 @@ Result<double> EventOwner::price(Work &work) const {
     if (!events_.empty() && events_.back().time == model_.maturity) {
       if (const auto status = jump(value, events_.back().cash, work); !status)
         return Err(status.error());
-      if (const auto status = exercise(value, model_, work); !status) return Err(status.error());
+      if (const auto status = exercise(value, model_, work, observer); !status)
+        return Err(status.error());
     }
     for (const auto &step : steps_) {
       auto prior = diffuse(value, model_, stock_, step.to-step.from, work);
       if (!prior) return Err(prior.error());
       value = std::move(*prior);
-      if (const auto status = exercise(value, model_, work); !status) return Err(status.error());
+      if (const auto status = exercise(value, model_, work, observer); !status)
+        return Err(status.error());
       if (step.cash_at_from > 0.) {
         if (const auto status = jump(value, step.cash_at_from, work); !status)
           return Err(status.error());
-        if (const auto status = exercise(value, model_, work); !status) return Err(status.error());
+        if (const auto status = exercise(value, model_, work, observer); !status)
+          return Err(status.error());
       }
       ++work.completed_steps;
     }

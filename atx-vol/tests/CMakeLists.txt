@@ -30,7 +30,8 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
     set(CASH_GAUSSIAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-gaussian")
     add_executable(atx-vol-cash-gaussian-research-tests
         ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp ${CASH_GAUSSIAN_DIR}/stock_pwl_test.cpp
-        ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/event_owner_test.cpp)
+        ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/event_owner_test.cpp
+        ${CASH_GAUSSIAN_DIR}/semigroup.cpp ${CASH_GAUSSIAN_DIR}/followup_test.cpp)
     target_link_libraries(atx-vol-cash-gaussian-research-tests PRIVATE
         atx::vol atx::core atx_warnings GTest::gtest_main)
     add_executable(atx-vol-cash-gaussian-pilot ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp

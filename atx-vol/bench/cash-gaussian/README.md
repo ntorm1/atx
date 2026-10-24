@@ -154,3 +154,25 @@ python -m unittest discover -s atx-vol/bench/cash-gaussian -p test_pilot_audit.p
 python atx-vol/bench/cash-gaussian/pilot_audit.py --reference <frozen-replay.json> `
   --report <new-native.json> --output <new-summary.json>
 ```
+
+## Predeclared representation follow-up
+
+`followup-plan.md` freezes 18 no-cash/no-exercise European semigroup outcomes and
+the five exact previously refused crossings. `repeat_expectation` consumes a
+PWL and repeatedly applies the unchanged integral on a fixed stock grid. It
+performs every requested query and interval even for constant/linear inputs;
+all work and resource refusals remain counted.
+
+The event owner now accepts a default-null private `CrossingObserver`. It is
+called only at an existing rounded-crossing refusal with the already computed
+operands and borrowed const PWL spans. It computes no extra price, changes no
+decision and must not throw. A collector must copy retained spans and mark its
+own failure without changing the original result. This is an observational
+research seam, with no production API or default numerical-policy change.
+
+Four initial stub/unwired-observer tests fail at runtime; after implementation,
+all 25 native groups pass, including six repeated constant/linear checks, exact
+work identities, independent European values, partial resource failures and
+finite/tail/owner observer parity. Three owning source checks pass with PCH off.
+These controls precede the new 18-outcome numerical run; neither the prior 32
+prices nor their accuracy classifications are replaced.
