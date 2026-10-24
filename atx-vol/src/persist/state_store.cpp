@@ -241,7 +241,7 @@ try_skip(const Slot &slot, const fs::path &day, const StateStoreBuildOptions &op
   }
   auto dir = PersistDirectory::open(day.string());
   if (!dir) return std::nullopt;
-  PersistOpenOptions o = kMarketStateOpenDefaults;
+  PersistOpenOptions o = market_state_open_options(slot.existing->file_size);
   o.expected_size = slot.existing->file_size;
   auto archive = MarketStateArchive::open(dir->path(*slot.existing), o);
   if (!archive || archive->has_extras() != opt.include_extras ||
@@ -335,6 +335,34 @@ publish_slot(const SpiderRockStoreSpec &spec, Slot &slot, const fs::path &day,
   return {};
 }
 
+// The current generation of (date, bucket) under `root`, opened with `options` or, when
+// null, with the size policy of its manifest entry (market_state_open_options).
+[[nodiscard]] PersistResult<MarketStateArchive> open_entry(std::string_view root,
+                                                          std::string_view date,
+                                                          std::string_view bucket_et,
+                                                          const PersistOpenOptions *options) {
+  if (!date_ok(date) || !bucket_ok(bucket_et)) return persist_error(PersistStatus::InvalidArgument);
+  auto dir = PersistDirectory::open(day_dir(fs::path{std::string(root)}, date).string());
+  if (!dir) return tl::unexpected(dir.error());
+  const PersistManifestEntry *e = dir->find(bucket_et);
+  if (e == nullptr) return persist_error(PersistStatus::NotFound);
+  PersistOpenOptions o =
+      options != nullptr ? *options : market_state_open_options(e->file_size);
+  o.expected_size = e->file_size;
+  auto archive = MarketStateArchive::open(dir->path(*e), o);
+  if (!archive) {
+    if (archive.error().status == PersistStatus::SizeMismatch) {
+      return persist_error(PersistStatus::SegmentMismatch, kPersistNone, e->seq);
+    }
+    return tl::unexpected(archive.error());
+  }
+  if (archive->file().header().header_crc32c != e->header_crc32c ||
+      archive->file().footer().file_crc32c != e->file_crc32c) {
+    return persist_error(PersistStatus::SegmentMismatch, kPersistNone, e->seq);
+  }
+  return archive;
+}
+
 } // namespace
 
 PersistResult<std::uint64_t>
@@ -422,11 +450,13 @@ build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec,
     }
     if (!slots[k].loaded) {
       // A wave: k plus the next buckets that certainly need a load (no up-to-date
-      // generation), up to max_parallel_buckets in flight; they are published in order.
+      // generation) and are not loaded yet, up to max_parallel_buckets in flight; they are
+      // published in order. (A bucket loaded by an earlier wave stays loaded when a
+      // skippable bucket before it fails its skip and opens a new wave.)
       std::vector<Slot *> wave{&slots[k]};
       for (std::size_t j = k + 1;
            j < slots.size() && wave.size() < options.max_parallel_buckets; ++j) {
-        if (!skippable(slots[j])) wave.push_back(&slots[j]);
+        if (!skippable(slots[j]) && !slots[j].loaded) wave.push_back(&slots[j]);
       }
       load_wave(spec, wave);
     }
@@ -458,27 +488,14 @@ PersistResult<std::vector<std::string>> StateStore::buckets(std::string_view dat
 }
 
 PersistResult<MarketStateArchive> StateStore::open_bucket(std::string_view date,
+                                                          std::string_view bucket_et) const {
+  return open_entry(root_, date, bucket_et, nullptr);
+}
+
+PersistResult<MarketStateArchive> StateStore::open_bucket(std::string_view date,
                                                           std::string_view bucket_et,
                                                           const PersistOpenOptions &options) const {
-  if (!date_ok(date) || !bucket_ok(bucket_et)) return persist_error(PersistStatus::InvalidArgument);
-  auto dir = PersistDirectory::open(day_dir(fs::path{root_}, date).string());
-  if (!dir) return tl::unexpected(dir.error());
-  const PersistManifestEntry *e = dir->find(bucket_et);
-  if (e == nullptr) return persist_error(PersistStatus::NotFound);
-  PersistOpenOptions o = options;
-  o.expected_size = e->file_size;
-  auto archive = MarketStateArchive::open(dir->path(*e), o);
-  if (!archive) {
-    if (archive.error().status == PersistStatus::SizeMismatch) {
-      return persist_error(PersistStatus::SegmentMismatch, kPersistNone, e->seq);
-    }
-    return tl::unexpected(archive.error());
-  }
-  if (archive->file().header().header_crc32c != e->header_crc32c ||
-      archive->file().footer().file_crc32c != e->file_crc32c) {
-    return persist_error(PersistStatus::SegmentMismatch, kPersistNone, e->seq);
-  }
-  return archive;
+  return open_entry(root_, date, bucket_et, &options);
 }
 
 } // namespace atx::vol

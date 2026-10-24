@@ -12,8 +12,10 @@
 //           data-free round trip: synth -> build -> inspect -> verify -> bench)
 //
 // The store is a DERIVED cache: --out must not lie under --store (the library refuses
-// it). The licensed store is read-only; the sanctioned output root is
-// C:\atx-cache\persist\ (the default --out).
+// it). The licensed store is read-only. The output root is --out, else the environment
+// variable ATX_VOL_PERSIST_ROOT; there is no compiled-in default (an absolute literal
+// would resolve into whichever machine layout the binary was built for). The sanctioned
+// root on the research host is the atx-cache persist directory named in docs/persist.md.
 
 #include <algorithm>
 #include <array>
@@ -70,7 +72,7 @@ struct Args {
   std::string cmd;
   std::string store;
   std::string date{"2026-10-14"};
-  std::string out{"C:/atx-cache/persist"};
+  std::string out; // --out, else ATX_VOL_PERSIST_ROOT; required by build / bench / verify --out
   std::string from{"1000"};
   std::string to{"1500"};
   std::string bucket{"1000"};
@@ -92,7 +94,8 @@ struct Args {
 
 void usage() {
   std::fputs(
-      "usage: atx-vol-state-store <build|inspect|verify|bench> [options]\n"
+      "usage: atx-vol-state-store <build|inspect|verify|bench|synth> [options]\n"
+      "  (--out defaults to $ATX_VOL_PERSIST_ROOT; one of the two is required)\n"
       "  build   --store <root> --date D --out <root> [--from HHMM --to HHMM | --buckets a,b]\n"
       "          [--top N (0 = uncapped)] [--parallel N] [--no-extras] [--force]\n"
       "          [--created-unix-ns N] [--sha256] [--json <file>]\n"
@@ -117,10 +120,37 @@ void usage() {
   return out;
 }
 
+// The value of an environment variable, empty when unset.
+[[nodiscard]] std::string env_or_empty(const char *name) {
+  std::string out;
+#if defined(_MSC_VER)
+  char *value = nullptr;
+  std::size_t length = 0;
+  if (::_dupenv_s(&value, &length, name) == 0 && value != nullptr) {
+    out = value;
+    std::free(value);
+  }
+#else
+  if (const char *value = std::getenv(name)) out = value;
+#endif
+  return out;
+}
+
+// Build, bench and verify-by-day need an output root: refuse loudly instead of guessing.
+[[nodiscard]] bool require_out(const Args &a, const char *cmd) {
+  if (!a.out.empty()) return true;
+  std::fprintf(stderr,
+               "%s: no output root: pass --out <root> or set ATX_VOL_PERSIST_ROOT "
+               "(docs/persist.md names the sanctioned root)\n",
+               cmd);
+  return false;
+}
+
 [[nodiscard]] std::optional<Args> parse(int argc, char **argv) {
   if (argc < 2) return std::nullopt;
   Args a;
   a.cmd = argv[1];
+  a.out = env_or_empty("ATX_VOL_PERSIST_ROOT");
   const std::span<char *> rest{argv + 2, static_cast<std::size_t>(argc - 2)};
   for (std::size_t i = 0; i < rest.size(); ++i) {
     const std::string_view k = rest[i];
@@ -291,6 +321,7 @@ void write_text(const std::string &path, const std::string &text) {
     usage();
     return kExitUsage;
   }
+  if (!require_out(a, "build")) return kExitUsage;
   std::vector<std::string> buckets = a.buckets;
   if (buckets.empty()) {
     auto all = list_spiderrock_buckets(a.store, a.date);
@@ -419,6 +450,7 @@ void write_text(const std::string &path, const std::string &text) {
 
 [[nodiscard]] int cmd_verify(const Args &a) {
   if (!a.file.empty()) return verify_one(a.file);
+  if (!require_out(a, "verify")) return kExitUsage;
   auto dir = PersistDirectory::open((fs::path{a.out} / ("date=" + a.date)).string());
   if (!dir) {
     std::fprintf(stderr, "verify: %s\n", to_status(dir.error()).error().to_string().c_str());
@@ -482,6 +514,7 @@ struct CodecRow {
     usage();
     return kExitUsage;
   }
+  if (!require_out(a, "bench")) return kExitUsage;
   const HostLoad host_before = sample_host();
   const SpiderRockStoreSpec spec = spec_of(a);
   // 1. Parquet load + state build (the path the archive replaces).

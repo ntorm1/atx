@@ -17,6 +17,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -95,7 +96,8 @@ template <class T> [[nodiscard]] bool all_zero(const T &bytes) noexcept {
       s.bytes.size() % s.stride != 0u) {
     return persist_error(PersistStatus::InvalidArgument, s.type, i);
   }
-  if (s.codec == PersistCodec::Zstd && (s.level < 1 || s.level > 19)) {
+  if (s.codec == PersistCodec::Zstd &&
+      (s.level < 1 || s.level > 19 || s.bytes.size() > persist_detail::kMaxCodecRawBytes)) {
     return persist_error(PersistStatus::InvalidArgument, s.type, i);
   }
   return {};
@@ -482,16 +484,23 @@ struct FileCore {
     if (crc_of(a.stored(i)) != e.crc32c) {
       return persist_error(PersistStatus::SectionChecksum, e.type, i);
     }
-    if (e.raw_length > std::numeric_limits<std::size_t>::max() - 64u) {
+    // Nothing is allocated from the table's raw_length until it is bounded and the frame
+    // header itself records exactly that size; an allocation failure is still a refusal.
+    if (e.raw_length > persist_detail::kMaxCodecRawBytes ||
+        !persist_detail::check_zstd_frame(a.stored(i), e.raw_length)) {
       return persist_error(PersistStatus::CodecError, e.type, i);
     }
-    auto &buffer = a.decoded.emplace_back(static_cast<std::size_t>((e.raw_length + 63u) / 64u));
-    const std::span<std::byte> out =
-        std::as_writable_bytes(std::span{buffer}).first(static_cast<std::size_t>(e.raw_length));
-    if (PersistOutcome ok = persist_detail::decode_zstd(a.stored(i), e.element_stride,
-                                                        static_cast<PersistFilter>(e.filter), out,
-                                                        scratch);
-        !ok) {
+    std::span<std::byte> out;
+    try {
+      auto &buffer = a.decoded.emplace_back(static_cast<std::size_t>((e.raw_length + 63u) / 64u));
+      out = std::as_writable_bytes(std::span{buffer}).first(static_cast<std::size_t>(e.raw_length));
+      if (PersistOutcome ok = persist_detail::decode_zstd(a.stored(i), e.element_stride,
+                                                          static_cast<PersistFilter>(e.filter),
+                                                          out, scratch);
+          !ok) {
+        return persist_error(PersistStatus::CodecError, e.type, i);
+      }
+    } catch (const std::bad_alloc &) {
       return persist_error(PersistStatus::CodecError, e.type, i);
     }
     if (crc_of(out) != e.raw_crc32c) return persist_error(PersistStatus::RawChecksum, e.type, i);

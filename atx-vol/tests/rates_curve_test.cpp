@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <iterator>
@@ -237,6 +238,36 @@ TEST(YieldCurve, DefaultConstructed_DiscReturnsFlatOne) {
   EXPECT_DOUBLE_EQ(c.disc(0.5), 1.0);
   EXPECT_DOUBLE_EQ(c.zero(0.5), 0.0);
   EXPECT_EQ(c.size(), 0u);
+}
+
+// pillars() hands back exactly what create() was given, so a persisted curve rebuilt from
+// it is the same curve to the bit, at the pillars, between them and on both extrapolated
+// ends (the MarketState archive stores curves this way).
+TEST(YieldCurve, Pillars_RebuildBitEqualCurve) {
+  const auto built = make_treasury_curve();
+  ASSERT_TRUE(built.has_value());
+  const YieldCurve &c = *built;
+  const auto p = c.pillars();
+  ASSERT_EQ(p.t_years.size(), std::size(kPillarT));
+  ASSERT_EQ(p.zero_rates.size(), std::size(kPillarR));
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  for (std::size_t i = 0; i < std::size(kPillarT); ++i) {
+    EXPECT_EQ(bits(p.t_years[i]), bits(kPillarT[i])) << i;
+    EXPECT_EQ(bits(p.zero_rates[i]), bits(kPillarR[i])) << i;
+  }
+  const auto rebuilt = YieldCurve::create(p.t_years, p.zero_rates);
+  ASSERT_TRUE(rebuilt.has_value());
+  std::vector<double> probes{-1.0, 0.0, 1e-6, 0.5 * kPillarT[0], 3.0, 30.0};
+  for (std::size_t i = 0; i < std::size(kPillarT); ++i) {
+    probes.push_back(kPillarT[i]);
+    if (i + 1 < std::size(kPillarT)) probes.push_back(0.5 * (kPillarT[i] + kPillarT[i + 1]));
+  }
+  for (const double t : probes) {
+    EXPECT_EQ(bits(rebuilt->disc(t)), bits(c.disc(t))) << t;
+    EXPECT_EQ(bits(rebuilt->zero(t)), bits(c.zero(t))) << t;
+  }
+  const YieldCurve empty;
+  EXPECT_TRUE(empty.pillars().t_years.empty() && empty.pillars().zero_rates.empty());
 }
 
 TEST(YieldCurve, Create_RejectsEmptyPillars) {

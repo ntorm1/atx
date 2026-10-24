@@ -10,7 +10,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
+#include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/persist/persist_format.hpp"
 #include "atx/vol/api/persist/state_archive.hpp"
@@ -24,6 +26,31 @@ namespace atx::vol::state_format {
 static_assert(sizeof(VolTimeParams) == 5 * sizeof(double));
 static_assert(sizeof(TimeSpec) == 48);
 static_assert(kPersistPod<ExpiryCarry> && kPersistPod<DividendEvent>);
+
+// What the schema fingerprint cannot see (review 1): it folds field names, offsets and
+// sizes, not field TYPES nor the numeric values of enums stored as bytes. Those are
+// pinned here instead, so a retyped field of a library POD this kind stores in place, or
+// a renumbered enum, fails to compile rather than misreading old files.
+static_assert(static_cast<std::uint8_t>(Side::Call) == 0 &&
+              static_cast<std::uint8_t>(Side::Put) == 1);                 // `side` column
+static_assert(static_cast<std::uint8_t>(CarryFrom::State) == 0 &&
+              static_cast<std::uint8_t>(CarryFrom::Surface) == 1);        // UnderlierRow::carry
+static_assert(static_cast<std::uint8_t>(TimeConvention::Calendar365) == 0 &&
+              static_cast<std::uint8_t>(TimeConvention::VolTime) == 1);   // Meta::time_convention
+static_assert(std::is_same_v<std::underlying_type_t<Side>, std::uint8_t> &&
+              std::is_same_v<std::underlying_type_t<CarryFrom>, std::uint8_t> &&
+              std::is_same_v<std::underlying_type_t<TimeConvention>, std::uint8_t>);
+static_assert(std::is_same_v<decltype(ExpiryCarry::expiry_ns), std::int64_t> &&
+              std::is_same_v<decltype(ExpiryCarry::pv_divs), double> &&
+              std::is_same_v<decltype(ExpiryCarry::rate), double> &&
+              std::is_same_v<decltype(ExpiryCarry::q), double>);
+static_assert(std::is_same_v<decltype(DividendEvent::ex_date_ns), std::int64_t> &&
+              std::is_same_v<decltype(DividendEvent::amount), double>);
+static_assert(std::is_same_v<decltype(VolTimeParams::alpha), double> &&
+              std::is_same_v<decltype(VolTimeParams::trading_hours_per_year), double> &&
+              std::is_same_v<decltype(VolTimeParams::nontrading_hours_per_year), double> &&
+              std::is_same_v<decltype(VolTimeParams::session_open_hour_et), double> &&
+              std::is_same_v<decltype(VolTimeParams::session_span_hours), double>);
 
 struct Meta {
   std::int64_t ts_ns{};

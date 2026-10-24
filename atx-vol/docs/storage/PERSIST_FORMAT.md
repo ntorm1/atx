@@ -106,9 +106,11 @@ Bytes and Pod sizes are given by `element_stride`; the scalar dtypes have the ob
 - CRC32C is Castagnoli (reflected polynomial `0x82F63B78`, init and xor-out `0xFFFFFFFF`) via
   `detail::crc32c`. Known answers pinned by `PersistFile.Crc32cKnownAnswer`: `"123456789"` ->
   `0xE3069283`, 32 zero bytes -> `0x8A9136AA`.
-- `Zstd`: one zstd frame per section with the content size recorded. A reader refuses
-  (`CodecError`) a frame whose compressed size is not exactly `length` or whose content size is not
-  exactly `raw_length`. `ByteShuffle` (Blosc-style) transposes the bytes of `element_stride`-wide
+- `Zstd`: one zstd frame per section with the content size recorded, `raw_length` at most
+  2^32 bytes (the writer refuses a larger codec section). A reader refuses (`CodecError`) a
+  `raw_length` above that cap, or a frame whose compressed size is not exactly `length` or whose
+  recorded content size is not exactly `raw_length`, BEFORE allocating the decoded buffer (an
+  allocation failure is also `CodecError`). `ByteShuffle` (Blosc-style) transposes the bytes of `element_stride`-wide
   elements before compression and back after it. Encoding fans sections out over the pricing
   executor; the bytes are identical for any thread count.
 - The MarketState writer stores every section uncompressed (zero-copy mapping is the point). The
@@ -131,8 +133,10 @@ its bytes. A mapped file is never rewritten in place (section 5).
 | `Paranoid` | as Full + `file_crc32c` | nothing more |
 
 Codec sections are always decoded and verified at open, so nothing allocates after open
-(`PersistFile.NoAllocationAfterOpen`). `MarketStateArchive::open` defaults to `Full`
-(`kMarketStateOpenDefaults`).
+(`PersistFile.NoAllocationAfterOpen`). The MarketState default opens
+(`MarketStateArchive::open(path)`, `StateStore::open_bucket(date, bucket)`) use `Full` up to
+`kMarketStateFullVerifyMaxBytes` (64 MiB) and `Framing` above it
+(`market_state_open_options`); explicit options choose any level.
 
 ### 2.1 Validation order (the first refusal wins)
 
@@ -154,8 +158,9 @@ Codec sections are always decoded and verified at open, so nothing allocates aft
    raw_length` uncompressed) -> `SectionStride`; uncompressed `crc32c != raw_crc32c` ->
    `HeaderInvalid`.
 8. Two entries with one `type` -> `DuplicateSection`.
-9. Codec sections: stored CRC -> `SectionChecksum`; decode -> `CodecError`; raw CRC ->
-   `RawChecksum`.
+9. Codec sections: stored CRC -> `SectionChecksum`; `raw_length` > 2^32, or a frame header
+   that is not one exact frame recording `raw_length` -> `CodecError` (checked before any
+   allocation); decode or allocation failure -> `CodecError`; raw CRC -> `RawChecksum`.
 10. `Full` / `Paranoid`: each section CRC in file order -> `SectionChecksum`; a nonzero gap byte ->
     `PaddingNotZero`.
 11. `Paranoid`: `file_crc32c` -> `FileChecksum`.
@@ -167,7 +172,9 @@ optional section is skipped (`PersistFile.SkipsUnknownOptionalRefusesUnknownRequ
 `typed<T>(type)` refuses a stride other than `sizeof(T)` (`SectionStride`) and a payload not
 aligned for `T` (`Misaligned`).
 
-`PersistFile.RefusesEachCraftedCorruption` pins 40 crafted files against these statuses.
+`PersistFile.RefusesEachCraftedCorruption` pins 42 crafted files against these statuses
+(including `codec-raw-length-huge` / `codec-raw-length-max`: resealed tables claiming 2^44 and
+2^64 - 128 decoded bytes).
 
 ## 3. Schema fingerprint
 

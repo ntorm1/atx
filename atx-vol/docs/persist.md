@@ -25,7 +25,7 @@ auto reports = build_state_store_from_spiderrock(spec, buckets_et, o);
 
 // Serve one bucket.
 auto store = StateStore::open("C:/atx-cache/persist");
-auto archive = store->open_bucket("2026-10-14", "1000");   // Full verify by default
+auto archive = store->open_bucket("2026-10-14", "1000");   // size policy, see below
 const MarketState &state = archive->state();               // valid while `archive` lives
 MarkExtras x = archive->extras(uid);                       // bid / ask / vendor Greeks per mark
 auto bucket = selection_bucket_from_archive(*archive);     // feeds the bench book selector
@@ -34,6 +34,19 @@ auto bucket = selection_bucket_from_archive(*archive);     // feeds the bench bo
 `MarketStateArchive` owns the mapping; `state()` and every span it hands out borrow it, and a
 moved archive keeps them valid (`PersistStateArchive.MovedArchiveKeepsStateValid`).
 `materialize()` returns an owning `MarketStateStorage` copy when a caller needs one.
+
+**Lifetime: accepted residual risk (design D14, review 1).** Nothing in the type system ties a
+borrowed view to the archive. These outlive the mapping if the caller keeps them past the
+archive's destruction, and then read unmapped memory:
+
+- a copy of `state()` (`MarketState` is a view type: its mark spans, term-carry and dividend
+  spans point into the mapping);
+- the spans in `extras(uid)` and the `std::string_view` from `ticker(uid)`;
+- `materialize().surfaces`: the copy owns everything else, but its surface refs still borrow
+  the archive's embedded surface records (a `MarketStateStorage` cannot own a surface).
+
+Keep the archive alive for as long as any of these is in use (a `RiskStream` replay keeps two
+archives rolling: `s_{k-1}` alive until `step(s_k)` returns).
 `encode_market_state` / `MarketStateArchive::open_bytes` are the in-memory pair.
 
 ## Tool: `atx-vol-state-store`
@@ -68,8 +81,11 @@ synth   --store <dir> [--underliers N]
 - `synth` writes a SpiderRock-shaped synthetic day for a data-free round trip
   (`synth -> build -> inspect -> verify -> bench`).
 
-The licensed store `C:\atx-data\spiderrock-30min` is read-only; the sanctioned output root is
-`C:\atx-cache\persist\` (the default `--out`). The tool passes conventions version 1
+The licensed store `C:\atx-data\spiderrock-30min` is read-only. The output root is `--out`, else
+the environment variable `ATX_VOL_PERSIST_ROOT`; `build`, `bench` and `verify --date` refuse
+(exit 2) when neither is set. There is no compiled-in default: an absolute literal would name a
+directory of whichever machine layout the binary was built for. On the research host the
+sanctioned root is `C:\atx-cache\persist\` (set `ATX_VOL_PERSIST_ROOT` to it). The tool passes conventions version 1
 (`kStateStoreConventionsVersion`, to become `kSpiderRockConventionsVersion` at integration).
 
 ## Store layout and rebuild rules
@@ -104,6 +120,29 @@ Full 11.63 ms, Parquet 1.487 s, 128x. `Full` over `Framing` is the CRC pass over
 (single-stream hardware CRC32C plus first-touch faults on the mapped view): about 9 ms for the
 top-100 file and 51 ms for the uncapped one. `NO_BUFFERING` sequential read: 2.56 GB/s (top-100
 file), 2.85 GB/s (uncapped).
+
+**Default verify level (ruling 2026-10-24).** The default opens (`StateStore::open_bucket(date,
+bucket)`, `MarketStateArchive::open(path)`) verify `Full` up to `kMarketStateFullVerifyMaxBytes`
+= 64 MiB and `Framing` above it (`market_state_open_options(file_size)`). So the top-100 book
+opens Full (11.1 ms) and the uncapped book opens Framing (16.2 ms instead of 67.5 ms; the
+design target for it was 60 ms Full). `Lazy` is not used: building the state touches every
+section at open, so Lazy measured the same as Full (67.6 ms).
+
+What a Framing open checks and what it does not:
+
+- Checked: the header, section-table and footer CRCs and every container rule (magic, sizes,
+  section bounds / alignment / overlap, dtypes, the schema fingerprint), and every structural
+  rule of the MarketState reader: meta counts and flags, uid order, row ranges into every
+  column, uid-table / surface-index bounds, mark order within each underlier, side bytes in
+  {0, 1}, the embedded surface archive's own validation, and `MarketState::create`.
+- Not checked: the payload bytes themselves. A flipped bit inside a value column (sigma,
+  strike, expiry, vendor price / delta, the extras, term-carry and dividend rows, curve pillars)
+  that leaves the structure valid is served as stored.
+- Accepted because the store is a derived cache rebuilt from Parquet (a source change rebuilds
+  the bucket), files are never rewritten in place, and Full / Paranoid stay one option away:
+  pass options explicitly (`kMarketStateOpenDefaults` is the Full set), or run
+  `atx-vol-state-store verify` (Paranoid over every bucket of a day) after a copy or on a
+  schedule.
 
 ### Build (per bucket, p50 over 11 buckets)
 

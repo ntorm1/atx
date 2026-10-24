@@ -6350,15 +6350,17 @@ module `api/persist/` (lane P1 of the wave-3 persistence sprint; spec
   file; a constexpr schema fingerprint per kind (FNV-1a/64 + fmix64 over a field-level schema
   table, so moving or resizing a field refuses old files instead of misreading them); optional
   zstd + byte shuffle per section; verify levels Framing / Lazy / Full / Paranoid; mapped or
-  one-read access; no allocation after open. 40 crafted corruptions are each refused with their
-  own `PersistStatus`.
+  one-read access; no allocation after open. 42 crafted corruptions (including resealed
+  tables claiming 2^44 / 2^64 decoded bytes, refused before any allocation) are each refused
+  with their own `PersistStatus`.
 - **`PersistDirectory`** — a manifest of kind Manifest plus `persist.lock`: publish is
   file-then-manifest (temp + flush + rename), readers resolve keys only through the manifest,
   file names are canonical (no traversal), orphans of an interrupted publish are skipped.
 - **MarketState archive (`.atxms`)** — one `MarketStateStorage` per file, optionally with the
   per-mark selection extras and embedded fitted surfaces. `MarketStateArchive::open` serves a
   `MarketState` whose marks, term carry and dividends are spans into the mapping; yield curves
-  are rebuilt from pillars proven bit-exact at write time. 41 bytes per mark core, +56 extras.
+  are stored from the new `YieldCurve::pillars()` and rebuilt bit-equal at open. 41 bytes per
+  mark core, +56 extras.
 - **State store** — `build_state_store_from_spiderrock` / `StateStore`: a fingerprinted,
   derived cache of the Parquet ingest (rebuilt when the loader conventions version, the library
   version, the store spec or any source file changes), with uids identical to one serial load
@@ -6368,10 +6370,15 @@ module `api/persist/` (lane P1 of the wave-3 persistence sprint; spec
 Measured on the licensed day 2026-10-14 (bucket 1000, warm): the top-100 book (367,664 marks,
 35.7 MB) opens with Full verification and serves its state in 11.1 ms p50 against 1.35 s for
 the Parquet load + state build (121x; Framing 2.3 ms). The uncapped book (1.94 M marks,
-189.6 MB) opens Full in 67.5 ms p50 (Framing 16.2 ms) against 1.65 s. Encode + publish per
+189.6 MB) opens Full in 67.5 ms p50 against 1.65 s, over the 60 ms target, so the default opens
+verify Full only up to 64 MiB (`kMarketStateFullVerifyMaxBytes`) and Framing above it: the
+uncapped book opens in 16.2 ms by default, Full / Paranoid on request. Encode + publish per
 bucket: 0.086 s (top-100) and 0.43 s (uncapped). Rebuilds of all 11 buckets are sha256-identical
 across `--parallel 1` / `--parallel 2` and repeated runs, and a `RiskStream` explain over the 11
 archived states is bit-equal to the Parquet-built states on all 10 transitions.
 
 **Existing callers.** None change. The module is additive; `zstd` is linked PRIVATE to
-`atx-vol`. `--state-store` wiring in the risk bench is a later integration item.
+`atx-vol`. `YieldCurve` gains an additive `pillars()` accessor (it now also keeps the zero rates
+`create` was given); `disc` / `zero` are unchanged. `atx-vol-state-store` has no compiled-in
+output root: `--out` or `ATX_VOL_PERSIST_ROOT`. `--state-store` wiring in the risk bench is a
+later integration item.
