@@ -151,3 +151,13 @@ powershell -NoProfile -File atx-vol/bench/cash-pde-simd/run_trials.ps1 -Binary <
 The runner is prepared and validated with clocks disabled. No performance
 campaign has been run. Untimed qualification evidence is under
 `calendar/cash-pde-batch-runner-v1/` in the r7 cache.
+
+## Separate fixed accuracy diagnosis
+
+`atx-vol-cash-dspy-refinement` is a clocks-disabled scalar PDE experiment for
+DSPYp and DSPYc, retaining the entire original input manifest. Its six fixed
+nested grid pairs were declared in `be0551a8` before execution. It is separate
+from the inclusive timing runner and does not alter that runner's three grids.
+See `docs/cash-dspyp-reference-study-20261024.md` for all twelve outcomes, actual
+work tradeoffs and the proposed independent cash-jump integration reference.
+Neither selected refinement success nor this tool promotes the full cash matrix.
