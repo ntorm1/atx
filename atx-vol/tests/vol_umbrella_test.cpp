@@ -767,6 +767,23 @@ constexpr std::string_view kPathLiteralExempt[] = {
     // Feeds "../escape" to a partition-name validator to prove it is REJECTED.
     // The literal is the adversary, not a lookup.
     "surface_db_test.cpp",
+    // 2026-10-24 (risk-engine sprint integration; these pre-date the sprint and were red on
+    // main): every literal below is DATA, never resolved against the file system.
+    // Escape ladders ("..\x", "../x", "C:\x", NUL-embedded) handed to the archive
+    // partition validator to prove each rung is refused.
+    "fit_archive_fixture.hpp",
+    "fit_archive_series_test.cpp",
+    // A nonexistent absolute root and an absolute --out that must be REFUSED by the
+    // oracle bench argument validation.
+    "oracle_bench_test.cpp",
+    // An ArmCensus record whose out_path field is serialized and compared as text.
+    "chain_export_test.cpp",
+    // The JSON string escaper emits "\\\\" for a backslash; the scanner reads the
+    // escape sequence as a path literal.
+    "chain_export.hpp",
+    // The documented default of --store, the licensed aggregate store root shared with
+    // scripts/oracle-targeted-gate.ps1 (a CLI constant, overridable).
+    "oracle_bench_main.cpp",
 };
 
 // Files permitted to call current_path(). Only the test that exists to flip the
