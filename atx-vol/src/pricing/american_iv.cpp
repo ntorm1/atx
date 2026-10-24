@@ -2981,6 +2981,9 @@ struct BatchColumns {
   // The confirm batch (internal-put coordinates, McDonald-Schroder for a call).
   std::vector<double> cS, cK, cT, csigma, cr, cq, cprice, cslope, ceps, cw;
   std::vector<std::size_t> cindex;
+  std::vector<FamilyBoundedRequest> erequest;
+  std::vector<FamilyBoundedPrice> eprice;
+  std::vector<std::size_t> eindex;
 
   void resize(std::size_t n) {
     for (auto *v : {&K, &target, &q, &seed, &blo, &bhi, &plo, &phi, &sigma, &lo, &hi, &p_lo, &p_hi,
@@ -2999,6 +3002,11 @@ struct BatchColumns {
       if (v->size() < n) v->resize(n);
     }
     if (cindex.size() < n) cindex.resize(n);
+  }
+  void resize_enclosures(std::size_t n) {
+    if (erequest.size() < 2u * n) erequest.resize(2u * n);
+    if (eprice.size() < 2u * n) eprice.resize(2u * n);
+    if (eindex.size() < n) eindex.resize(n);
   }
 };
 
@@ -3127,11 +3135,70 @@ void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorE
   const AlProfile profile = confirm_opts ? confirm_opts->profile : AlProfile::Reference;
   BatchColumns &c = t_columns;
   c.resize_confirms(n);
+  for (auto &p : out) {
+    p.enclosure = IvPreparedEnclosure{};
+    p.confirm = IvPreparedConfirm{};
+  }
+  if (avx2 && env != nullptr && env->covered()) {
+    c.resize_enclosures(n);
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto &lane = out[i].lane;
+      const auto &rq = requests[i];
+      if (!lane.valid || lane.status != iv_batch::InverseStatus::Converged ||
+          !std::isfinite(lane.vega) || !(lane.vega > iv_batch::kInverseVegaFloorRel * rq.K) ||
+          !(lane.sigma > kSigmaLo && lane.sigma < kSigmaHi)) continue;
+      const double w = acceptance_width(rq.tol);
+      const double a = lane.sigma - 0.5 * w;
+      double b = lane.sigma + 0.5 * w;
+      for (int step = 0; step < kEnclosureWidthSteps && !(b - a <= w); ++step) {
+        b = std::nextafter(b, a);
+      }
+      c.eindex[count] = i;
+      c.erequest[2u * count] = {rq.S, rq.K, a, rq.q};
+      c.erequest[2u * count + 1u] = {rq.S, rq.K, b, rq.q};
+      ++count;
+    }
+    const auto t0 =
+        timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    static_cast<void>(family_prices_bounded(f, *env,
+        std::span<const FamilyBoundedRequest>(c.erequest.data(), 2u * count),
+        std::span<FamilyBoundedPrice>(c.eprice.data(), 2u * count)));
+    if (timed) work.family_ns += ns_since(t0);
+    work.family_prices += static_cast<std::uint32_t>(2u * count);
+    work.family_batch_prices += static_cast<std::uint32_t>(2u * count);
+    for (std::size_t j = 0; j < count; ++j) {
+      const std::size_t i = c.eindex[j];
+      const auto &rq = requests[i];
+      auto &p = out[i];
+      p.enclosure.family_prices = 2u;
+      const double w = acceptance_width(rq.tol);
+      const double a = c.erequest[2u * j].sigma;
+      const double b = c.erequest[2u * j + 1u].sigma;
+      const auto &pa = c.eprice[2u * j];
+      const auto &pb = c.eprice[2u * j + 1u];
+      // The batch bound is no tighter than scalar's, and the price bits match.
+      // A closed bracket is therefore scalar's first bracket with the same root.
+      // Every open/invalid bracket takes the original scalar path, including its
+      // optional recenter, so this optimization cannot change an acceptance.
+      if (pa.status != AlSigmaQFamilyStatus::Ok || pb.status != AlSigmaQFamilyStatus::Ok ||
+          !(b - a <= w) || !(pa.price + pa.bound_usd <= rq.price &&
+                             rq.price <= pb.price - pb.bound_usd)) continue;
+      const double gap = pb.price - pa.price;
+      const double frac = gap > 0.0 ? (rq.price - pa.price) / gap : 0.5;
+      FamilyEnclosure enc;
+      enc.enclosed = true;
+      enc.slope = gap / (b - a);
+      enc.lo = a;
+      enc.hi = b;
+      enc.root = std::clamp(a + frac * (b - a), a, b);
+      p.enclosure = IvPreparedEnclosure{true, &f, env, rq.price, rq.S, rq.K, rq.q,
+                                        p.lane.sigma, w, enc, 2u};
+    }
+  }
   std::size_t m = 0;
   for (std::size_t i = 0; i < n; ++i) {
     IvPremiumPrepared &p = out[i];
-    p.enclosure = IvPreparedEnclosure{};
-    p.confirm = IvPreparedConfirm{};
     const IvPreparedLane &lane = p.lane;
     const IvNativeBatchRequest &rq = requests[i];
     // family_native_root accepts exactly these lanes (its root = the lane's sigma), and
@@ -3147,16 +3214,19 @@ void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorE
     // lane's fused vega places the confirm (the lane-vega hook); otherwise the enclosure.
     double slope = lane.vega;
     if (env != nullptr && env->covered()) {
+      ++work.enclosures;
+      if (p.enclosure.valid) continue;
       IvPremiumStats spent; // untimed: only family_prices is read
       const auto t0 =
           timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       const FamilyEnclosure enc =
           family_enclosure(rq.price, rq.S, rq.K, rq.q, x, w, f, env, spent);
       if (timed) work.family_ns += ns_since(t0);
-      ++work.enclosures;
       work.family_prices += spent.family_prices;
+      const std::uint32_t batch_spent = p.enclosure.family_prices;
+      if (batch_spent != 0) work.family_retry_prices += spent.family_prices;
       p.enclosure = IvPreparedEnclosure{true, &f,   env, rq.price, rq.S, rq.K, rq.q,
-                                        x,    w,    enc, spent.family_prices};
+                                        x,    w,    enc, batch_spent + spent.family_prices};
       if (enc.enclosed) continue;
       if (std::isfinite(enc.slope) && enc.slope > 0.0) slope = enc.slope;
     }

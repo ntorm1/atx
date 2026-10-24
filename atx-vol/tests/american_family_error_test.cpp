@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <random>
@@ -137,6 +140,154 @@ TEST(AmericanFamilyError, EnvelopeBoundsTheMeasuredErrorAtRandomOffNodePoints) {
                 static_cast<int>(c.side), c.T, a.points, a.violations, a.max_err, a.max_bound,
                 a.ratios[a.ratios.size() / 2], a.max_ratio);
     EXPECT_EQ(a.violations, 0u);
+  }
+}
+
+TEST(AmericanFamilyError, BatchPreservesPriceBitsAndNeverTightensScalarBounds) {
+  for (const auto &c : family_cases()) {
+    Built b(c);
+    ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    const auto env = atx::vol::build_family_error_envelope(b.family);
+    std::vector<atx::vol::FamilyBoundedRequest> requests;
+    for (const double k : {0.25, 0.7, 1.0, 1.3, 3.0}) {
+      for (const double sigma : {c.sigma_lo, std::sqrt(c.sigma_lo * c.sigma_hi), c.sigma_hi}) {
+        for (const double q : {c.q_lo, 0.5 * (c.q_lo + c.q_hi), c.q_hi}) {
+          requests.push_back({c.S, c.S * k, sigma, q});
+        }
+      }
+    }
+    std::vector<FamilyBoundedPrice> batch(requests.size());
+    atx::vol::FamilyBoundedBatchWork work;
+    ASSERT_TRUE(atx::vol::family_prices_bounded(b.family, env, requests, batch, &work));
+    EXPECT_EQ(work.fused_prices, requests.size());
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+      const auto &r = requests[i];
+      const auto scalar = atx::vol::family_price_bounded(b.family, env, r.S, r.K, r.sigma, r.q);
+      EXPECT_EQ(batch[i].status, scalar.status) << i;
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(batch[i].price),
+                std::bit_cast<std::uint64_t>(scalar.price)) << i;
+      EXPECT_GE(batch[i].bound_usd, scalar.bound_usd) << i;
+      const auto cold = andersen_lake(r.S, r.K, c.T, r.sigma, c.r, r.q, c.side);
+      ASSERT_TRUE(cold);
+      EXPECT_LE(std::abs(batch[i].price - *cold), batch[i].bound_usd) << i;
+    }
+  }
+}
+
+TEST(AmericanFamilyError, BatchKeepsRefusalsAndStaleEnvelopeIdentity) {
+  const auto c = family_cases()[0];
+  Built b(c);
+  ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+  const auto env = atx::vol::build_family_error_envelope(b.family);
+  const std::array<atx::vol::FamilyBoundedRequest, 5> requests{{
+      {c.S, c.S, .3, c.q_lo}, {c.S, -1, .3, c.q_lo}, {c.S, c.S, 5, c.q_lo},
+      {c.S, c.S, .3, c.q_hi + .01}, {c.S, c.S, .3, std::numeric_limits<double>::quiet_NaN()}}};
+  std::array<FamilyBoundedPrice, 5> batch;
+  for (int pass = 0; pass < 2; ++pass) {
+    ASSERT_TRUE(atx::vol::family_prices_bounded(b.family, env, requests, batch));
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+      const auto &r = requests[i];
+      const auto scalar = atx::vol::family_price_bounded(b.family, env, r.S, r.K, r.sigma, r.q);
+      EXPECT_EQ(batch[i].status, scalar.status);
+      if (std::isfinite(scalar.price)) EXPECT_EQ(batch[i].price, scalar.price);
+      else EXPECT_TRUE(std::isnan(batch[i].price));
+      if (pass == 1 || i > 0) EXPECT_TRUE(std::isinf(batch[i].bound_usd));
+    }
+    ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+  }
+  batch[0].price = 123;
+  EXPECT_FALSE(atx::vol::family_prices_bounded(b.family, env, requests, std::span(batch).first(4)));
+  EXPECT_EQ(batch[0].price, 123);
+}
+
+TEST(AmericanFamilyError, BatchPreservesUnverifiedFastAndInvalidatedGeometryPaths) {
+  const auto c = family_cases()[0];
+  for (const auto profile : {atx::vol::AlProfile::Reference, atx::vol::AlProfile::Fast}) {
+    atx::vol::AlOpts opts;
+    opts.profile = profile;
+    auto geometry = prepare_al_geometry(c.T, c.r, c.q_lo, opts);
+    AlSigmaQFamily family(geometry, c.side, c.S);
+    ASSERT_TRUE(family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    auto env = atx::vol::build_family_error_envelope(family);
+    env.bound_y.fill(std::numeric_limits<double>::infinity());
+    std::array<atx::vol::FamilyBoundedRequest, 3> requests{{
+        {c.S, .3 * c.S, .1, c.q_lo}, {c.S, c.S, .3, c.q_hi},
+        {c.S, 2.0 * c.S, 1.1, c.q_lo}}};
+    std::array<FamilyBoundedPrice, 3> out;
+    for (int pass = 0; pass < 2; ++pass) {
+      atx::vol::FamilyBoundedBatchWork work;
+      ASSERT_TRUE(atx::vol::family_prices_bounded(family, env, requests, out, &work));
+      for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto &rq = requests[i];
+        const auto scalar = atx::vol::family_price_bounded(
+            family, env, rq.S, rq.K, rq.sigma, rq.q);
+        EXPECT_EQ(out[i].status, scalar.status);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(out[i].price),
+                  std::bit_cast<std::uint64_t>(scalar.price));
+        EXPECT_EQ(out[i].bound_usd, scalar.bound_usd);
+      }
+      if (profile == atx::vol::AlProfile::Fast || pass != 0) {
+        EXPECT_EQ(work.scalar_prices, requests.size());
+      }
+      if (pass == 0) geometry.prepare(c.T * 2, c.r, c.q_lo, opts);
+    }
+  }
+}
+
+// Isolated repeated endpoint workload. Opt-in and citable only from vol-rel-avx2
+// on a quiet pinned core; family construction is outside the measured region.
+TEST(AmericanFamilyError, BatchIsolatedCostProbe) {
+  bool enabled = false;
+#ifdef _MSC_VER
+  std::size_t length = 0;
+  static_cast<void>(getenv_s(&length, nullptr, 0, "ATX_K6_COST"));
+  enabled = length != 0;
+#else
+  enabled = std::getenv("ATX_K6_COST") != nullptr;
+#endif
+  if (!enabled) GTEST_SKIP() << "set ATX_K6_COST";
+  constexpr std::size_t count = 8192;
+  for (const auto side : {Side::Put, Side::Call}) {
+    const FamilyCase c{773.0, .5, .04, .011, .014, side, .05, 1.2, 4};
+    Built b(c);
+    ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    const auto env = atx::vol::build_family_error_envelope(b.family);
+    std::vector<atx::vol::FamilyBoundedRequest> requests(count);
+    std::vector<FamilyBoundedPrice> scalar(count), batch(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto j = i / 2u;
+      requests[i] = {c.S, c.S * (.7 + .6 * static_cast<double>(j % 251u) / 250.0),
+                     .15 + .4 * static_cast<double>(j % 239u) / 238.0 +
+                         ((i & 1u) ? 5.0e-8 : -5.0e-8),
+                     .012 + .001 * static_cast<double>(j % 211u) / 210.0};
+    }
+    for (int round = 0; round < 4; ++round) {
+      const auto run = [&](bool fused) {
+        const auto t0 = std::chrono::steady_clock::now();
+        if (fused) {
+          static_cast<void>(atx::vol::family_prices_bounded(b.family, env, requests, batch));
+        } else {
+          for (std::size_t i = 0; i < count; ++i) {
+            const auto &rq = requests[i];
+            scalar[i] = atx::vol::family_price_bounded(
+                b.family, env, rq.S, rq.K, rq.sigma, rq.q);
+          }
+        }
+        return std::chrono::duration<double, std::nano>(
+            std::chrono::steady_clock::now() - t0).count() / static_cast<double>(count);
+      };
+      double scalar_ns = 0.0, batch_ns = 0.0;
+      if ((round & 1) != 0) { batch_ns = run(true); scalar_ns = run(false); }
+      else { scalar_ns = run(false); batch_ns = run(true); }
+      for (std::size_t i = 0; i < count; ++i) {
+        ASSERT_EQ(std::bit_cast<std::uint64_t>(batch[i].price),
+                  std::bit_cast<std::uint64_t>(scalar[i].price));
+        ASSERT_GE(batch[i].bound_usd, scalar[i].bound_usd);
+      }
+      std::printf("[K6 bounded cost] side %d round %d points %zu scalar_ns %.3f "
+                  "batch_ns %.3f speedup %.3f\n", static_cast<int>(side), round,
+                  count, scalar_ns, batch_ns, scalar_ns / batch_ns);
+    }
   }
 }
 

@@ -46,6 +46,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american.hpp" // AlSigmaQFamily, AlSigmaQFamilyStatus
@@ -172,6 +173,29 @@ struct FamilyBoundedPrice {
                                                       const ValidatedErrorEnvelope &env, double S,
                                                       double K, double sigma,
                                                       double q) noexcept;
+
+struct FamilyBoundedRequest {
+  double S = 0.0;
+  double K = 0.0;
+  double sigma = 0.0;
+  double q = 0.0;
+};
+
+struct FamilyBoundedBatchWork {
+  std::size_t fused_prices = 0;
+  std::size_t scalar_prices = 0;
+};
+
+// The same scalar price bits, with a bound no smaller than family_price_bounded's.
+// Fuses the accurate premium and sensitivity passes; omitting the per-node minimum
+// with the trivial bound can only enlarge the envelope. Uncovered/stale envelopes
+// and unsupported arithmetic profiles use the unchanged scalar path. No allocation.
+// Unequal lengths return false without writing. Work counts are added, not reset.
+[[nodiscard]] bool family_prices_bounded(const AlSigmaQFamily &f,
+                                         const ValidatedErrorEnvelope &env,
+                                         std::span<const FamilyBoundedRequest> requests,
+                                         std::span<FamilyBoundedPrice> out,
+                                         FamilyBoundedBatchWork *work = nullptr) noexcept;
 
 // A domain-wide price bound (USD) at (S, K) for every sigma and q of the domain: the
 // per-point bound with 1 / sigma_lo, the worst carry of the q box (a negative carry's

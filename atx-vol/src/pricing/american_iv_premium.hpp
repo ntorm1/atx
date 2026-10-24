@@ -520,6 +520,8 @@ struct IvNativeBatchWork {
   std::uint64_t confirms = 0;   // first confirm prices evaluated in a batch (decisive or not)
   std::uint64_t decisive = 0;   // ... of which decisive (prepared for consumption)
   std::uint32_t family_prices = 0;
+  std::uint32_t family_batch_prices = 0; // conservative first-bracket batch evaluations
+  std::uint32_t family_retry_prices = 0; // unchanged scalar retry after an open batch bracket
   std::uint64_t lane_ns = 0;
   std::uint64_t family_ns = 0;
   std::uint64_t confirm_ns = 0;

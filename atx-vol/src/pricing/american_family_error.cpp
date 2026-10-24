@@ -32,6 +32,8 @@
 #include <utility>
 
 #include "atx/core/math.hpp" // norm_cdf / norm_pdf
+#include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/counters.hpp"
 #include "pricing/american_boundary.hpp"
 #include "pricing/american_sigma_family.hpp"   // bary_eval (the time-interpolation twin)
 #include "pricing/american_sigma_q_family.hpp" // State, QFamilyAccess
@@ -305,6 +307,101 @@ struct Layout {
 
 thread_local const ValidatedErrorEnvelope *t_family_envelope = nullptr;
 
+[[nodiscard]] bool matches(const AlSigmaQFamily &f, const ValidatedErrorEnvelope &env,
+                            StatePtr st) noexcept {
+  return st != nullptr && st->ok && st->g != nullptr &&
+         st->g->generation == st->generation && st->ws != nullptr &&
+         env.covered() && env.family == &f &&
+         env.preparation_stamp == st->preparation_stamp &&
+         env.n_quad == st->ws->n_quad_price && env.n_sigma == st->n_sigma &&
+         env.n_q == st->n_q && env.domain.sigma_lo == st->sigma_lo &&
+         env.domain.sigma_hi == st->sigma_hi && env.domain.q_lo == st->q_lo &&
+         env.domain.q_hi == st->q_hi && env.domain.T == st->grid.T &&
+         env.domain.side == st->side;
+}
+
+// Accurate premium_integrand_put's operation order is intentional: the price must
+// remain bit-identical, including sigma*sqrt(z*z) rather than sigma*z. The bound
+// uses the latter, exactly as node_term. Both passes share the boundary and log.
+// On verified nodes sensitivity >= min(box, sensitivity), so omitting the box
+// calculation can only enlarge the old bound; no empirical rounding margin is used.
+[[nodiscard]] FamilyBoundedPrice fused_bounded(StatePtr st,
+                                               const ValidatedErrorEnvelope &env,
+                                               const FamilyBoundedRequest &request) noexcept {
+  const auto c = detail::internal_put_coords(st->side, request.S, request.K);
+  const auto rq = detail::internal_put_rates(st->side, st->rate, request.q);
+  const double S = c.Sp, K = c.Kp, sigma = request.sigma, r = rq.rp, q = rq.qp;
+  amer::AlBoundary bnd = st->grid;
+  st->interpolate(sigma, request.q, bnd);
+  bnd.K = K;
+  bnd.xmax = amer::al_xmax_put(K, r, q);
+  const double euro = black76_price(S * std::exp((r - q) * bnd.T), K, bnd.T, sigma,
+                                    std::exp(-r * bnd.T), Side::Put);
+  double premium = 0.0;
+  double bound = 0.0;
+  unsigned evals = 0;
+  for (unsigned i = 0; i < env.n_quad; ++i) {
+    const double z = env.z[i];
+    const double t = z * z;
+    if (t <= 1.0e-14) continue;
+    const bool boundary = !std::isnan(env.zc[i]);
+    const double yf = boundary ? bary_eval(bnd.z.data(), bnd.wbary.data(), bnd.y.data(),
+                                           bnd.n, env.zc[i]) : 0.0;
+    const double bf = boundary ? bnd.xmax * std::exp(-std::sqrt(yf > 0.0 ? yf : 0.0)) : K;
+    // Underflowed boundaries are rare; keep the old bound's edge semantics exactly.
+    if (!(bf > 0.0)) {
+      if (boundary) bound += env.w[i] * node_term(bnd, env, i, z, S, K, sigma, r, q);
+      continue;
+    }
+    const double dq = std::exp(-q * t);
+    const double dr = std::exp(-r * t);
+    const double log_ratio = std::log(S * dq / (bf * dr));
+    const double v_price = sigma * std::sqrt(t);
+    const double dp = log_ratio / v_price + 0.5 * v_price;
+    const double integrand = 2.0 * z *
+        (r * K * dr * core::norm_cdf(-dp + v_price) - q * S * dq * core::norm_cdf(-dp));
+    premium += env.w[i] * integrand;
+    ++evals;
+    if (!boundary) continue;
+    const double delta = env.bound_y[i];
+    double term = 0.0;
+    if (!(delta < kInf)) {
+      const double v = sigma * z;
+      const double dp_x = std::log(S * dq / (bnd.xmax * dr)) / v + 0.5 * v;
+      term = std::max(2.0 * z * (r * K * dr * core::norm_cdf(-dp_x + v) -
+                                  q * S * dq * core::norm_cdf(-dp_x)), 0.0);
+    } else if (delta > 0.0) {
+      const double root_delta = std::sqrt(delta);
+      const double d = yf > 0.0 ? std::min(root_delta, delta / std::sqrt(yf)) : root_delta;
+      const double v = sigma * z;
+      const double d2 = log_ratio / v - 0.5 * v;
+      const double phi = core::norm_pdf(std::max(std::abs(d2) - d / v, 0.0));
+      const double carry = std::abs(r * K - q * bf) + std::abs(q) * bf * std::expm1(d);
+      term = 2.0 * dr * phi * carry * d / sigma;
+    }
+    bound += env.w[i] * term;
+  }
+  if (evals != 0) {
+    ATX_VOL_COUNT_N(ExpCalls, 2u * evals);
+    ATX_VOL_COUNT_N(PremiumQuadEvals, evals);
+    ATX_VOL_COUNT_N(LogCalls, evals);
+    ATX_VOL_COUNT_N(NormCdfCalls, 2u * evals);
+    counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals, evals);
+    counters::lightweight::record_exp_calls(2u * evals);
+  }
+  const double half_sqrt_t = 0.5 * std::sqrt(bnd.T);
+  premium *= half_sqrt_t;
+  double price = euro + (premium > 0.0 ? premium : 0.0);
+  if (K - S > price) price = K - S;
+  if (euro > price) price = euro;
+  if (price < 0.0) price = 0.0;
+  FamilyBoundedPrice out;
+  out.status = AlSigmaQFamilyStatus::Ok;
+  out.price = price;
+  out.bound_usd = half_sqrt_t * bound + env.contributions.rounding_rel * (S + K);
+  return out;
+}
+
 } // namespace
 
 ValidatedErrorEnvelope build_family_error_envelope(const AlSigmaQFamily &f) noexcept {
@@ -413,11 +510,7 @@ FamilyBoundedPrice family_price_bounded(const AlSigmaQFamily &f, const Validated
   amer::AlBoundary bnd = st->grid;
   st->interpolate(sigma, q, bnd);
   out.price = st->price_on(bnd, S, K, sigma, q); // == f.price(S, K, sigma, q).price
-  if (!env.covered() || env.family != &f || env.preparation_stamp != st->preparation_stamp ||
-      env.n_quad != st->ws->n_quad_price ||
-      env.n_sigma != st->n_sigma || env.n_q != st->n_q || env.domain.sigma_lo != st->sigma_lo ||
-      env.domain.sigma_hi != st->sigma_hi || env.domain.q_lo != st->q_lo ||
-      env.domain.q_hi != st->q_hi || env.domain.T != st->grid.T || env.domain.side != st->side) {
+  if (!matches(f, env, st)) {
     return out;
   }
   const detail::InternalPutCoords c = detail::internal_put_coords(st->side, S, K);
@@ -432,6 +525,26 @@ FamilyBoundedPrice family_price_bounded(const AlSigmaQFamily &f, const Validated
   }
   out.bound_usd = half_sqrt_t * sum + env.contributions.rounding_rel * (c.Sp + c.Kp);
   return out;
+}
+
+bool family_prices_bounded(const AlSigmaQFamily &f, const ValidatedErrorEnvelope &env,
+                            std::span<const FamilyBoundedRequest> requests,
+                            std::span<FamilyBoundedPrice> out,
+                            FamilyBoundedBatchWork *work) noexcept {
+  if (requests.size() != out.size()) return false;
+  const StatePtr st = QFamilyAccess::state(f);
+  const bool fused = matches(f, env, st) && !st->ws->fast;
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const auto &r = requests[i];
+    if (fused && st->admit(r.S, r.K, r.sigma, r.q) == AlSigmaQFamilyStatus::Ok) {
+      out[i] = fused_bounded(st, env, r);
+      if (work != nullptr) ++work->fused_prices;
+      if (std::isfinite(out[i].price) && !std::isnan(out[i].bound_usd)) continue;
+    }
+    out[i] = family_price_bounded(f, env, r.S, r.K, r.sigma, r.q);
+    if (work != nullptr) ++work->scalar_prices;
+  }
+  return true;
 }
 
 double family_domain_bound_usd(const ValidatedErrorEnvelope &env, double S, double K,

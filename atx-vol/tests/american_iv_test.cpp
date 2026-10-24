@@ -3264,6 +3264,71 @@ constexpr std::array<EnclosureCase, 2> kEnclosureCases{{
 // does not - the LOWER end's bound alone rejects, the upper end alone would accept. The mirror
 // (x 0.3 W below the root) is rejected by the UPPER end's bound alone. Dropping either end's
 // bound from the rule fails one of the two.
+TEST(AmericanIvPremium, BatchedEnclosuresKeepScalarDecisionsAndCertifiedEnds) {
+  using namespace atx::vol;
+  std::size_t enclosed = 0, open = 0, recentered = 0;
+  std::uint64_t batch_prices = 0, retry_prices = 0;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const auto g = prepare_al_geometry(0.5, 0.04, 0.012);
+    AlSigmaQFamily family(g, side, 100.0);
+    ASSERT_TRUE(family.prepare(0.05, 1.2, 16, 0.011, 0.013, 4));
+    const auto env = build_family_error_envelope(family);
+    const double w = kIvRootRequirement * (1.0 - 0x1p-20);
+    for (const double scale : {1.0, 1.0e7}) {
+      auto envelope = env;
+      for (auto &b : envelope.bound_y) if (std::isfinite(b)) b *= scale;
+      std::vector<IvNativeBatchRequest> requests;
+      std::vector<IvPremiumPrepared> scalar;
+      for (const double K : {70.0, 90.0, 100.0, 110.0, 140.0}) {
+        for (const double sigma : {0.08, 0.3, 1.1}) {
+          for (const double offset : {0.0, -0.3, 0.3, 2.0}) {
+            requests.push_back({family.price(100.0, K, sigma, 0.012).price,
+                                100.0, K, 0.5, 0.04, 0.012, side, 1.0e-7});
+            IvPremiumPrepared p;
+            p.lane.valid = true;
+            p.lane.sigma = sigma + offset * w;
+            p.lane.status = iv_batch::InverseStatus::Converged;
+            p.lane.vega = 10.0;
+            scalar.push_back(p);
+          }
+        }
+      }
+      auto batch = scalar;
+      // Fast confirm keeps this test entirely about the two family brackets.
+      AlOpts opts;
+      opts.profile = AlProfile::Fast;
+      IvNativeBatchWork scalar_work, batch_work;
+      iv_native_prepare_acceptance(family, &envelope, requests, scalar, opts,
+                                   false, false, scalar_work);
+      iv_native_prepare_acceptance(family, &envelope, requests, batch, opts,
+                                   true, false, batch_work);
+      EXPECT_EQ(batch_work.enclosures, scalar_work.enclosures);
+      batch_prices += batch_work.family_batch_prices;
+      retry_prices += batch_work.family_retry_prices;
+      for (std::size_t i = 0; i < batch.size(); ++i) {
+        ASSERT_EQ(batch[i].enclosure.valid, scalar[i].enclosure.valid);
+        const auto &a = batch[i].enclosure.enclosure;
+        const auto &b = scalar[i].enclosure.enclosure;
+        ASSERT_EQ(a.enclosed, b.enclosed) << i;
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(a.slope),
+                  std::bit_cast<std::uint64_t>(b.slope)) << i;
+        if (!a.enclosed) { ++open; continue; }
+        ++enclosed;
+        recentered += b.lo != scalar[i].lane.sigma - 0.5 * w ? 1u : 0u;
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(a.lo), std::bit_cast<std::uint64_t>(b.lo));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(a.hi), std::bit_cast<std::uint64_t>(b.hi));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(a.root), std::bit_cast<std::uint64_t>(b.root));
+        EXPECT_LE(a.hi - a.lo, kIvRootRequirement);
+      }
+    }
+  }
+  EXPECT_GT(enclosed, 0u);
+  EXPECT_GT(open, 0u);
+  EXPECT_GT(recentered, 0u);
+  EXPECT_GT(batch_prices, 0u);
+  EXPECT_GT(retry_prices, 0u);
+}
+
 TEST(AmericanIvPremium, FamilyEnclosureRejectsAnEndWhoseEnvelopeBoundLeavesItOpen) {
   using atx::vol::AlExpiryGeometry;
   using atx::vol::FamilyBoundedPrice;
