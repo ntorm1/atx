@@ -1,9 +1,15 @@
 # American equity options: public frontier and reproducible comparator plan
 
-Research frozen 2026-10-24. This is a source review and an implementation plan,
-not a completed competitor benchmark. No external implementation was executed.
-The proposed experiments below are engineering recommendations; they do not
-change the approved SPY acceptance contract.
+Research frozen 2026-10-24. The original source review and experiment plan below
+precede the first executable comparison. That follow-up is now measured in
+[the pinned public American-put report](public-american-comparison-20261024.md):
+252 common-domain and 357 diagnostic contracts, with exact setup clocks and
+failure coverage. QuantLib, independent general-American accuracy, cash-dividend
+and Greek qualification remain outstanding. The latest complete SPY release
+candidate takes 1.406041 s in one quiet fresh process and passes all thirteen
+correctness gates with the explicit two-row identification review; see
+[current acceptance](spy-cold-acceptance-r7.md). Historical evidence below retains
+its original scope. The experiments do not widen the approved monetary budget.
 
 The highest-value direction for the current subsecond objective is to reduce
 the number of expensive pricing and inversion problems solved during a complete

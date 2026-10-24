@@ -453,3 +453,61 @@ the complete SPY evidence. Owning PCH-off builds pass. Merge finding R1 is fixed
 by owned/versioned withheld support; R3 unsafe widening is blocked by typed
 archive refusal, with versioned persistence still to implement. R2 asynchronous
 publication protection is in its separate reviewed development lane.
+
+
+## Release candidate follow-up: 1.406 seconds and reviewed coverage
+
+Source `45d9e19290a557761801624cee555e1e4ed50afe` has a fresh one-core,
+one-worker ThinLTO measurement of **1.406041 s** native cold calibration and
+**1.5786941 s** process wall time, including input/output. Measured SMT sibling
+activity was 0%. This single trial remains above one second and is not the
+100-process qualification. Its prediction bytes match the earlier 1.4140127 s
+development result exactly.
+
+The exact release binary also passes all thirteen correctness gates under
+`raw-spread-price-v1` and the explicitly selected `reviewed-feasible-floor-v1`.
+It serves all 33 valid expiries and 12,866 eligible rows, with 12,851 inside raw
+quotes, 12,850 identified IVs and 16 PriceOnly rows. Maximum cold price residual
+remains $0.0000314582211/share, 3.14582211% of its budget; no roundoff-only passes.
+All target-floor and published shape/parity/calendar checks pass. The unchanged
+strict status diagnostic still fails for exactly IDs 27418697 and 27419115.
+[The pinned review](../docs/reviewed-identification-contract.md) independently verifies
+those two changed targets and genuine floor classifications; it preserves the
+original baseline, minimum count and strict failure, and never enters fitting.
+Every other new PriceOnly transition still fails. All 57 Python oracle tests pass.
+
+Exact joined evidence under `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/`:
+
+- `joint-feasible-v1-lto-profile/manifest.json`, SHA256
+  `482b9587e7cbb031e94231a4274f1372ea9f33ee193955b1160e6e8a6df68430`;
+- `acceptance/integrated-joint-feasible-lto-v1-audit/summary-v1.json`, joining
+  the native report, reviewed verification, binary, policy and prediction hashes;
+- release binary SHA256
+  `072116ac1d1cef36b62fcca11aed0b1f04d2ac1f2a41b47b6256a1e280843ae2`;
+- native audit SHA256
+  `11ef55c3c4c53f36b1f221c4f22ccf7faf808ff32790f49226ca7245c82f94f1`;
+- predictions SHA256
+  `892135920e749c697228fffce1e212b36c4385d47d3b6aff3bc0c02bb91ce676`.
+
+The historical native report field `served_rows` means IV-served rows (12,850).
+The independent acceptance metric counts price-served rows including the 16
+truthful PriceOnly contracts (12,866). Neither number silently drops refusals
+from its denominator; see the report's explicit identifiability semantics.
+
+R2 is now integrated at `3c63261e`: generation and owner-input revisions prevent
+stale asynchronous workers and either phase of `serve_build` from overwriting
+newer publications or resurrecting retired expiries. Follow-up coalescing keeps
+the newest accepted intent even when the queue is full. Combined R1/R2 serving
+verification passes all 77 cases, including zero-allocation reader tests;
+`r2-integrated-serving.xml` is the root receipt. R3 remains a safe typed archive
+refusal, not a claim of full versioned persistence support.
+
+The [pinned public pricing comparison](../docs/public-american-comparison-20261024.md)
+records 252 common-domain and 357 diagnostic contracts, inclusive cold/prepared
+clocks and all failures. The internal reference is correlated; it establishes
+neither independent general American accuracy nor a worldwide fastest claim.
+Current implementation priorities remain measured sparse projection overhead,
+monetary inverse acceptance with unchanged independent floor auditing, and
+QuantLib comparison. Direct monetary proposals may deliberately return slightly
+lower IVs within the approved raw budget; that experiment must not claim strict
+1e-7 IV accuracy, global numerical monotonicity, or Greek accuracy.
