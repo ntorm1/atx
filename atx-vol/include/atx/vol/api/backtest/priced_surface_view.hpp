@@ -91,6 +91,13 @@ public:
   [[nodiscard]] ResolvedSurfacePoint resolve(double K, double T) const noexcept;
 
   [[nodiscard]] double iv(double K, double T) const noexcept;
+  // Mirrors PricedSurface::iv(K, T, TenorInterp) bit-for-bit (the ShapeBlend core is
+  // the single shared implementation in vol_curve.cpp); TotalVariance IS iv(K, T).
+  [[nodiscard]] double iv(double K, double T, TenorInterp interp) const noexcept;
+  // Mirrors PricedSurface::moneyness_extrapolated: the mapped record can say so only
+  // for SplineVol slices (their stored data-supported z range); every other kind
+  // answers false, exactly as its owned curve does. BEST EFFORT.
+  [[nodiscard]] bool moneyness_extrapolated(double K, double T) const noexcept;
   [[nodiscard]] double total_variance(double K, double T) const noexcept;
 
   [[nodiscard]] double forward_at(double T) const noexcept;
@@ -196,6 +203,10 @@ private:
   // ladder-reuse path). Bit-identical to surface_w(k_log, T) when
   // resolved == surface_bracket(T).
   [[nodiscard]] double surface_w(double k_log, double T, Bracket resolved) const noexcept;
+  // ShapeBlend twin of surface_w(k_log, T, resolved): same validation and single-slice
+  // branches, the interior blend through the shared detail::shape_blend_* core.
+  [[nodiscard]] double surface_w_shape_blend(double k_log, double T,
+                                             Bracket resolved) const noexcept;
   // Per-slice total variance w(k_log) — dispatch on the mapped kind byte.
   [[nodiscard]] double slice_w(std::size_t i, double k_log) const noexcept;
   [[nodiscard]] const IVolCurve *heavy_curve(std::size_t i) const noexcept;

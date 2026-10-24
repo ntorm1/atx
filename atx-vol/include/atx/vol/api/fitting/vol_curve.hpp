@@ -379,6 +379,19 @@ private:
   std::vector<double> m2nd_;
 };
 
+// ── Maturity interpolation mode ─────────────────────────────────────────────
+//
+// Maturity interpolation for a query T between two fitted pillars. Declared HERE
+// (not in api/risk/strike_coord.hpp, which re-exports it by including this header)
+// so the surface containers below can take it without depending on the risk API.
+enum class TenorInterp : std::uint8_t {
+  TotalVariance = 0, // linear in total variance at fixed k (CurveSurface::w; the default)
+  ShapeBlend = 1,    // SpiderRock-style vol-multiple blend at common standardized
+                     // moneyness (projection.hpp InterpMode::ShapeBlend, ported to
+                     // PricedSurface::iv(K, T, TenorInterp)); ATM identical to
+                     // TotalVariance, skew shape preserved off-ATM
+};
+
 // ── Unified surface container ───────────────────────────────────────────────
 //
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
@@ -431,6 +444,22 @@ public:
   [[nodiscard]] double w(double k_log, double T) const noexcept;
   [[nodiscard]] double iv(double k_log, double T) const noexcept;
 
+  // The same queries under an explicit maturity-interpolation mode (additive,
+  // risk-engine sprint 2026-10-24). `TotalVariance` forwards to the two-argument
+  // overloads above, so it is bit-identical to them by construction. `ShapeBlend`
+  // changes ONLY a query strictly between two pillars: with wwHi = (T - T_lo) /
+  // (T_hi - T_lo), atm_x = sqrt(w_x(0) / T_x) and atm_q^2 T = wwLo w_lo(0) + wwHi
+  // w_hi(0), each parent is read at the query's standardized moneyness z = k /
+  // (atm_q sqrt T) mapped into its own coordinates (k_x = z atm_x sqrt T_x) and the
+  // vol MULTIPLES sigma_x(k_x) / atm_x are blended: sigma = atm_q (wwLo m_lo + wwHi
+  // m_hi), w = sigma^2 T. A single-slice query (exact pillar, short of the front,
+  // at or past the last) is the slice itself in both modes, and a degenerate ATM
+  // (non-finite / non-positive parent ATM variance) falls back to TotalVariance.
+  // Non-ATM calendar-arbitrage safety is NOT guaranteed in ShapeBlend (see
+  // projection.hpp InterpMode::ShapeBlend for the trade-off).
+  [[nodiscard]] double w(double k_log, double T, TenorInterp interp) const noexcept;
+  [[nodiscard]] double iv(double k_log, double T, TenorInterp interp) const noexcept;
+
   // The forward stored on the slice bracketing (or clamped to) T — used to turn
   // an absolute strike K into the log-moneyness the slices expect. Linearly
   // interpolated between brackets, clamped outside. 0 if empty.
@@ -457,6 +486,11 @@ private:
   [[nodiscard]] Bracket bracket(double T) const noexcept;
   [[nodiscard]] double w(double k_log, double T, Bracket resolved) const noexcept;
   [[nodiscard]] double iv(double k_log, double T, Bracket resolved) const noexcept;
+  [[nodiscard]] double w(double k_log, double T, Bracket resolved,
+                         TenorInterp interp) const noexcept;
+  [[nodiscard]] double iv(double k_log, double T, Bracket resolved,
+                          TenorInterp interp) const noexcept;
+  [[nodiscard]] double w_shape_blend(double k_log, double T, Bracket resolved) const noexcept;
 
   std::vector<std::unique_ptr<IVolCurve>> slices_; // ascending T
   // Contiguous mirror of slice maturities. Queries binary-search this array

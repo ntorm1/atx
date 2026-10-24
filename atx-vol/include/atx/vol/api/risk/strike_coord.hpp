@@ -40,6 +40,7 @@
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // SurfaceRef
 #include "atx/vol/api/core/types.hpp"                // DeltaConvention, Result, Side
 #include "atx/vol/api/core/vol_time.hpp"             // TimeSpec
+#include "atx/vol/api/fitting/vol_curve.hpp"         // TenorInterp
 #include "atx/vol/api/risk/risk_types.hpp"
 
 namespace atx::vol {
@@ -69,14 +70,9 @@ struct StrikeCoord {
   [[nodiscard]] bool operator==(const StrikeCoord &) const = default;
 };
 
-// Maturity interpolation for a query T between two fitted pillars.
-enum class TenorInterp : std::uint8_t {
-  TotalVariance = 0, // linear in total variance at fixed k (CurveSurface::w; the default)
-  ShapeBlend = 1,    // SpiderRock-style vol-multiple blend at common standardized
-                     // moneyness (projection.hpp InterpMode::ShapeBlend, ported to
-                     // PricedSurface::iv(K, T, TenorInterp)); ATM identical to
-                     // TotalVariance, skew shape preserved off-ATM
-};
+// Maturity interpolation for a query T between two fitted pillars: `TenorInterp`
+// (TotalVariance / ShapeBlend) is declared in api/fitting/vol_curve.hpp, beside the
+// CurveSurface overloads that take it, and re-exported by the include above.
 
 // What to do when T (or k) leaves the fitted domain.
 enum class TenorExtrapPolicy : std::uint8_t {

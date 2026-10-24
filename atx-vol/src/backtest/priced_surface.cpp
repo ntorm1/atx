@@ -648,6 +648,34 @@ double PricedSurface::iv(double K, double T) const noexcept {
   return p.valid ? p.sigma : kNaN;
 }
 
+double PricedSurface::iv(double K, double T, TenorInterp interp) const noexcept {
+  switch (interp) {
+  case TenorInterp::TotalVariance:
+    return iv(K, T);
+  case TenorInterp::ShapeBlend: {
+    // resolve()'s validation and k = ln(K / F(T)), with the surface read in the
+    // requested mode instead of the default one. A moved-from surface (no carry)
+    // answers NaN rather than reading an empty context.
+    if (!valid_query(K, T) || ctx_.empty()) {
+      return kNaN;
+    }
+    const double k_log = std::log(K / interp_forward(T).forward);
+    return surface_.iv(k_log, T, surface_.bracket(T), TenorInterp::ShapeBlend);
+  }
+  }
+  return kNaN; // out-of-range enumerator value
+}
+
+bool PricedSurface::moneyness_extrapolated(double K, double T) const noexcept {
+  if (!valid_query(K, T) || ctx_.empty() || surface_.empty()) {
+    return false;
+  }
+  const double k_log = std::log(K / interp_forward(T).forward);
+  const CurveSurface::Bracket bracket = surface_.bracket(T);
+  const auto slices = surface_.slices();
+  return slices[bracket.lo]->is_extrapolated(k_log) || slices[bracket.hi]->is_extrapolated(k_log);
+}
+
 void PricedSurface::iv_batch(std::span<const double> K, double T,
                              std::span<double> out) const noexcept {
   // SAFETY: a length mismatch is a caller bug (asserted in debug); degrading
