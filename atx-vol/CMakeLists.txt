@@ -1056,6 +1056,12 @@ if(ATX_BUILD_TOOLS)
     if(ATX_VOL_PUBLIC_QUANTLIB_DIR)
         include(bench/quantlib/quantlib.cmake)
     endif()
+    option(ATX_VOL_BUILD_GREEK_AUDIT "Build offline Greek corpus diagnostics" OFF)
+    if(ATX_VOL_BUILD_GREEK_AUDIT)
+        add_executable(atx-vol-greek-audit bench/american-greeks/greek_main.cpp)
+        target_link_libraries(atx-vol-greek-audit PRIVATE
+            atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    endif()
     add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)
     target_link_libraries(atx-vol-iv-comparator PRIVATE atx-vol-bench-clocks atx::vol
         atx::core atx_warnings nlohmann_json::nlohmann_json)

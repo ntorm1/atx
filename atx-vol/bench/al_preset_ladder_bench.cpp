@@ -1926,15 +1926,19 @@ struct ColdRef {
 // derivative's coverage beside timing/error rows, including typed edge refusals.
 struct SigmaGreekCoverage {
   std::array<std::size_t, atx::vol::kAlSigmaFamilyGreekCount> requested{}, served{};
+  std::size_t attempted = 0;
   void add(atx::vol::AlSigmaFamilyGreeksMask mask,
            atx::vol::AlSigmaFamilyGreeksMask supported, std::size_t rows = 1) noexcept {
+    attempted += rows;
     for (std::size_t i = 0; i < requested.size(); ++i) {
       const auto bit = static_cast<std::uint16_t>(1u << i);
       requested[i] += mask.has(bit) ? rows : 0u;
       served[i] += mask.has(bit) && supported.has(bit) ? rows : 0u;
     }
   }
-  void publish(benchmark::State &state) const {
+  void publish(benchmark::State &state, double iterations) const {
+    state.counters["coverage_rows"] = static_cast<double>(attempted);
+    state.counters["coverage_iterations"] = iterations;
     constexpr std::array<const char *, atx::vol::kAlSigmaFamilyGreekCount> names = {
         "delta", "gamma", "vega", "theta", "rho", "phi", "vanna", "volga", "charm"};
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -2114,7 +2118,7 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
   state.counters["one_sided_ref"] = one_sided;
   state.counters["fam2_failed"] = fam2_failed;
   state.counters["carry_failed"] = carry_failed;
-  coverage.publish(state);
+  coverage.publish(state, static_cast<double>(state.iterations()));
   e_delta_b.publish(state, "delta_vs_bundle");
   e_gamma_b.publish(state, "gamma_vs_bundle");
   e_vega_b.publish(state, "vega_vs_bundle");
@@ -2239,7 +2243,9 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
       AlSigmaFamily fam(g, key.side, key.S);
       if (!fam.prepare(box.lo, box.hi, 12, AlSigmaFamilyAxis::LogSigma)) {
         refused += static_cast<double>(idx.size());
-        coverage.add(mask, {}, idx.size());
+        if (row != GreeksRow::PriceVega && row != GreeksRow::Chord) {
+          coverage.add(mask, {}, idx.size());
+        }
         continue;
       }
       AlSigmaFamilyCarryBumps carry;
@@ -2292,7 +2298,7 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
     mean += v;
   }
   state.counters["contracts"] = static_cast<double>(us.size());
-  coverage.publish(state);
+  coverage.publish(state, static_cast<double>(state.iterations()));
   state.counters["refused"] = refused;
   state.counters["bits_fnv52"] = bits52(fold);
   state.counters["p50_us"] = sorted_quantile(us, 0.50);
@@ -2520,7 +2526,8 @@ void run_family_chain(benchmark::State &state, bool spy, GreeksRow row) {
   for (const auto supported : cols.supported) {
     coverage.add(mask, supported);
   }
-  coverage.publish(state);
+  // These are the final complete iteration's rows, not cumulative loop counts.
+  coverage.publish(state, 1.0);
   state.counters["refused"] = refused;
   state.counters["put_family"] = put_ok ? 1.0 : 0.0;
   state.counters["call_family"] = call_ok ? 1.0 : 0.0;
@@ -2583,7 +2590,7 @@ void run_family_shock(benchmark::State &state, bool chain) {
     state.SetIterationTime(std::chrono::duration<double>(t1 - t0).count());
   }
   state.counters["cells"] = static_cast<double>(cells * n);
-  coverage.publish(state);
+  coverage.publish(state, 1.0);
   state.counters["contracts"] = static_cast<double>(n);
   state.counters["refused"] = refused;
 }
