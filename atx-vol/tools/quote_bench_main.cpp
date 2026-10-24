@@ -878,6 +878,7 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_native_fallbacks", t.reimply_native_fallbacks},
           {"reimply_native_fast_confirms", t.reimply_native_fast_confirms},
           {"reimply_price_family_checks", t.reimply_price_family_checks},
+          {"reimply_price_enclosure_hits", t.reimply_price_enclosure_hits},
           {"reimply_price_cold_checks", t.reimply_price_cold_checks},
           {"reimply_price_rejections", t.reimply_price_rejections},
           {"reimply_fast_attempts", t.reimply_fast_attempts},
@@ -1206,6 +1207,8 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
                 std::vector<Prediction> &predictions, RunStatistics &stats,
                 std::set<std::uint64_t> &fitted_chains, std::set<std::uint64_t> &static_fallback) {
   auto &graded = stats.graded_stats;
+  const bool joint_cold = surface.cold_fit != QuoteSurfaceColdFit::ExistingPolicy;
+  if (joint_cold) graded["cold_fit"]["requested"] = to_string(surface.cold_fit);
   for (const auto &[identity, ids] : snapshot_chains) {
     stats.phases.lap(bench::Stage::Publication); // B0: the previous snapshot's rows
     static_cast<void>(identity);
@@ -1218,6 +1221,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       static_fallback.insert(members.begin(), members.end());
       count_into(graded["static_fallback"], "snapshots");
       count_into(graded["static_fallback"], "chains", members.size());
+      if (joint_cold) count_into(graded["cold_fit"]["fallback_chains"], "expiry_cap", members.size());
       continue;
     }
     const auto &profile = *prepared.at(members.front()).profile;
@@ -1319,6 +1323,15 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       }
       const bool ladder = surface.ladder == QuoteSurfaceLadder::KnotFirst;
       const std::string method = to_string(slice.method);
+      if (joint_cold) {
+        entry["method"] = method;
+        entry["cold_fit"] = {{"requested", to_string(surface.cold_fit)},
+                              {"fallback", to_string(slice.cold_fit_fallback)},
+                              {"final_price_observations", d.final_price_observations},
+                              {"final_price_identified_nodes", d.final_price_identified_nodes}};
+        count_into(graded["cold_fit"]["method_chains"], method);
+        count_into(graded["cold_fit"]["fallback_chains"], to_string(slice.cold_fit_fallback));
+      }
       stats.graded_ladder = stats.graded_ladder || ladder;
       if (ladder) {
         add_ladder_fields(slice, entry);
@@ -1384,7 +1397,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           count_into(graded["market_distance"], "calendar_joint_chains");
         }
       }
-      if (surface.publication != QuoteSurfacePublication::Off) {
+      if (surface.publication != QuoteSurfacePublication::Off || joint_cold) {
         // Opt-in publication provenance (lane C2, graded.publication); absent when off.
         const std::array<std::pair<const char *, std::size_t>, 9> publication{
             {{"checks", slice.publication_checks},
@@ -2261,6 +2274,13 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "strikes; C: other channel refits; calendar crossings refuse only the lower-confidence "
         "slice after a bounded-move repair and one retry; snapshots above the expiry cap use the "
         "static path (static_fallback; its B/C are term-prior-free channel fits)";
+    if (stats.graded_stats.contains("cold_fit")) {
+      report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
+          "; cold_fit joint_feasible_mid: jointly project midpoints of the original boxes "
+          "intersected with proven price floors, identify final prices once, then publish grade B "
+          "with ProjectedPrice provenance; any failed attempt falls back for the whole surface "
+          "with its actual method and typed reason. The reported original quote boxes remain unchanged";
+    }
     if (stats.graded_channel_repair) {
       report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
           "; repair channel: a failed certificate is repaired by lowering the offending nodes "

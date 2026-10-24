@@ -21,6 +21,8 @@
 // Runtime policies/provenance absent from this record version refuse with
 // UnsupportedRecordVersion: terminal-floor recovery, economic repricing budgets,
 // any nonempty withheld-node mask, and final-price projection rows/diagnostics.
+// Surface records also refuse an explicit cold objective, its method or fallback
+// provenance until those fields have a versioned representation.
 // Both fit and surface additions roll back completely on that refusal. Legacy
 // full-support archives retain their original empty-mask semantics.
 //

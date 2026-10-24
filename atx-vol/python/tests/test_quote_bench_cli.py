@@ -80,6 +80,78 @@ def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
     assert all(row["policy_source"] == "fixed-curve" for row in rows)
 
 
+@pytest.mark.parametrize("paired", [False, True])
+def test_native_joint_feasible_mid_reports_method_and_whole_surface_fallback(binary, tmp_path, paired):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    if paired:
+        with source.open(newline="") as stream:
+            originals = list(csv.DictReader(stream))
+        puts = [dict(row, row_id=str(int(row["row_id"]) + 1000), is_call="0",
+                     bid=str(float(row["bid"]) + float(row["strike"]) - 100),
+                     ask=str(float(row["ask"]) + float(row["strike"]) - 100)) for row in originals]
+        with source.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(originals[0]))
+            writer.writeheader()
+            writer.writerows(originals + puts)
+    document = {"schema_version": 1, "admission": "graded",
+                "graded": {"certificate": "box", "certificate_box_half_ticks": 0.0},
+                "serve": {"floor_price_only": True, "metadata": True}}
+    runs = {}
+    for name, mode in (("default", None), ("off", "existing_policy"), ("on", "joint_feasible_mid")):
+        selected = json.loads(json.dumps(document))
+        if mode is not None:
+            selected["graded"]["cold_fit"] = mode
+        policy = tmp_path / (name + ".json")
+        policy.write_text(json.dumps(selected))
+        output = tmp_path / (name + ".csv")
+        result = invoke(binary, source, output, "--policy", str(policy), "--timing-detail")
+        assert result.returncode == 0, result.stderr
+        runs[name] = (output, json.loads(result.stdout))
+    assert runs["default"][0].read_bytes() == runs["off"][0].read_bytes()
+    assert runs["default"][1]["policy_definition"] == runs["off"][1]["policy_definition"]
+    assert "cold_fit" not in runs["off"][1]["policy_definition"]["graded"]
+    report = runs["on"][1]
+    assert report["policy_definition"]["graded"]["cold_fit"] == "joint_feasible_mid"
+    (entry,) = report["graded_stats"]["slices"]
+    assert entry["cold_fit"]["requested"] == "joint_feasible_mid"
+    assert "reimply_price_enclosure_hits" in entry["timing"]
+    if paired:
+        assert entry["method"] == "joint_feasible_mid"
+        assert entry["cold_fit"]["fallback"] == "none"
+        assert entry["cold_fit"]["final_price_observations"] > 0
+        assert entry["cold_fit"]["final_price_identified_nodes"] > 0
+        assert entry["grade"] == "B"
+        with runs["on"][0].open(newline="") as stream:
+            predictions = list(csv.DictReader(stream))
+        assert len(predictions) == 52
+        assert all(row["status"] in ("ok", "ok_price_only") for row in predictions)
+        assert all(row["quote_status"] == "projected_price" for row in predictions)
+    else:
+        assert entry["method"] != "joint_feasible_mid"
+        assert entry["cold_fit"]["fallback"] == "unsupported_input"
+        # The policy hash differs; numerical output and row classifications do not.
+        with runs["on"][0].open(newline="") as stream:
+            actual = list(csv.DictReader(stream))
+        with runs["off"][0].open(newline="") as stream:
+            expected = list(csv.DictReader(stream))
+        for a, b in zip(actual, expected):
+            for key in ("predicted_price", "predicted_vol", "status", "quote_status"):
+                assert a[key] == b[key]
+
+
+@pytest.mark.parametrize("mode", ["joint_raw_mid", "unknown", True, 1, None, {}])
+def test_native_joint_cold_mode_rejects_invalid_policy_before_output(binary, tmp_path, mode):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                  "graded": {"cold_fit": mode}}))
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode != 0
+    assert not output.exists()
+
+
 def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     source = tmp_path / "quotes.csv"
     make_quotes(source)

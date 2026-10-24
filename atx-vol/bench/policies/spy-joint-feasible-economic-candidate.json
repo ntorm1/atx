@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "admission": "graded",
+  "graded": {
+    "term_prior_weight": 1.0,
+    "prior_decay_log_time": 1.0,
+    "prior_quote_halflife": 6.0,
+    "channel_node_weight": 0.5,
+    "calendar_retry_factor": 4.0,
+    "grade_b_min_mid_strikes": 4,
+    "calendar_repair_half_spreads": 0.5,
+    "certificate": "box",
+    "certificate_box_half_ticks": 0.0,
+    "market_distance": "repair",
+    "market_distance_spreads": 1.0,
+    "publication": "validate",
+    "inbox_projection": true,
+    "terminal_floor_recovery": true,
+    "fit_space": "vol",
+    "deam_profile": "screen",
+    "deam_cache": true,
+    "rung_memo": true,
+    "deam_inversion": "premium",
+    "confirm": "always",
+    "confirm_kernel": "fast",
+    "grid_kernel": "family",
+    "seed_gate_kappa": 4.3e-05,
+    "family": "adaptive",
+    "family_q": true,
+    "family_native": true,
+    "native_route": true,
+    "native_batch": true,
+    "cold_fit": "joint_feasible_mid"
+  },
+  "profiles": [
+    {
+      "name": "dense",
+      "base": "dense",
+      "channel": {
+        "repair_half_spreads": 0.5
+      },
+      "reimply_price_cap": 0.001,
+      "reimply_spread_fraction": 0.01
+    },
+    {
+      "name": "ordinary",
+      "base": "ordinary",
+      "channel": {
+        "repair_half_spreads": 0.5
+      },
+      "reimply_price_cap": 0.001,
+      "reimply_spread_fraction": 0.01
+    },
+    {
+      "name": "sparse",
+      "base": "sparse",
+      "channel": {
+        "repair_half_spreads": 0.5
+      },
+      "reimply_price_cap": 0.001,
+      "reimply_spread_fraction": 0.01
+    }
+  ],
+  "serve": {
+    "floor_price_only": true,
+    "metadata": true,
+    "call_floor": "discounted_intrinsic"
+  },
+  "snapshot": {
+    "one_spot": "nearest",
+    "carry_price_tolerance": 1e-06
+  }
+}

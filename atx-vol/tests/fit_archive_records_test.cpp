@@ -146,6 +146,38 @@ TEST(FitArchiveRecords, UnpersistedSupportAndFinalPriceMetadataRefuseWithoutPart
   }
 }
 
+TEST(FitArchiveRecords, UnpersistedColdObjectiveAndFallbackRefuseSurfaceWrites) {
+  for (const unsigned field : {0u, 1u, 2u}) {
+    SCOPED_TRACE(field);
+    auto surface = testkit::synthetic_surface();
+    ASSERT_GT(surface.slices.size(), 1u);
+    const auto method = surface.slices[1].method;
+    if (field == 0u) surface.config.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
+    if (field == 1u) surface.slices[1].method = QuoteSurfaceMethod::JointFeasibleMid;
+    if (field == 2u) {
+      surface.slices[1].cold_fit_fallback = QuoteSurfaceColdFitFallback::UnsupportedInput;
+    }
+    FitArchiveWriter writer;
+    const auto result = writer.add_surface({"SPY", kSnapshot, surface.slices,
+                                            surface.expiry_days, surface.config, {}, "", ""});
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().status, ArchiveStatus::UnsupportedRecordVersion);
+    EXPECT_EQ(result.error().section, static_cast<std::uint32_t>(Type::SurfaceRecords));
+    EXPECT_EQ(writer.fit_count(), 0u);
+    EXPECT_EQ(writer.surface_count(), 0u);
+    surface.config.cold_fit = QuoteSurfaceColdFit::ExistingPolicy;
+    surface.slices[1].method = method;
+    surface.slices[1].cold_fit_fallback = QuoteSurfaceColdFitFallback::None;
+    ASSERT_TRUE(writer.add_surface({"SPY", kSnapshot, surface.slices,
+                                     surface.expiry_days, surface.config, {}, "", ""}));
+    const auto image = writer.finish();
+    ASSERT_TRUE(image);
+    const auto opened = FitArchive::open_copy(*image, FitArchiveVerify::Paranoid);
+    ASSERT_TRUE(opened);
+    EXPECT_EQ(opened->fits().size(), surface.slices.size());
+  }
+}
+
 std::array<std::uint8_t, 32> digest() {
   std::array<std::uint8_t, 32> d{};
   for (std::size_t i = 0; i < d.size(); ++i) d[i] = static_cast<std::uint8_t>(0xd7 ^ i);

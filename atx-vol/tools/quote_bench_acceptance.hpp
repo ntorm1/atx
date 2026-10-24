@@ -128,6 +128,8 @@ inline Json surface(std::span<const QuoteSurfaceSlice> slices,
     const auto &slice = slices[index];
     const auto &fit = slice.fit;
     Json entry{{"chain_id", chains[index]}, {"grade", to_string(slice.grade)},
+               {"method", to_string(slice.method)},
+               {"cold_fit_fallback", to_string(slice.cold_fit_fallback)},
                {"refusal", slice.refusal}, {"fit_status", to_string(fit.fit_status)},
                {"fit_error", fit.fit_error}, {"record_attached", bool(fit.serve_record)},
                {"calendar_years", finite(fit.market.calendar_years)},

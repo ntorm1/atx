@@ -745,6 +745,13 @@ void FitArchiveWriter::record_timings(bool on) noexcept { impl_->timings = on; }
 ArchiveOutcome FitArchiveWriter::add_surface(const FitArchiveSurfaceInput &in) {
   Impl &w = *impl_;
   const std::size_t n = in.slices.size();
+  if (in.config.cold_fit != QuoteSurfaceColdFit::ExistingPolicy ||
+      std::any_of(in.slices.begin(), in.slices.end(), [](const auto &slice) {
+        return slice.method == QuoteSurfaceMethod::JointFeasibleMid ||
+            slice.cold_fit_fallback != QuoteSurfaceColdFitFallback::None;
+      })) {
+    return archive_error(ArchiveStatus::UnsupportedRecordVersion, Type::SurfaceRecords);
+  }
   if (!symbol_ok(in.underlier) || in.expiry_days.size() != n || w.fits.size() + n > kU32Max) {
     return archive_error(ArchiveStatus::InvalidArgument, Type::SurfaceRecords);
   }

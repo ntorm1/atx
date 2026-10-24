@@ -871,6 +871,9 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
            {"calendar_retry_factor", s.calendar_retry_factor},
            {"grade_b_min_mid_strikes", s.grade_b_min_mid_strikes},
            {"calendar_repair_half_spreads", s.calendar_repair_half_spreads}};
+  if (s.cold_fit != QuoteSurfaceColdFit::ExistingPolicy) {
+    out["cold_fit"] = to_string(s.cold_fit);
+  }
   if (repair.mode == QuoteSliceRepairMode::Channel) {
     out["repair"] = "channel";
     out["repair_max_nodes"] = repair.max_nodes;
@@ -1251,8 +1254,17 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
              "family_native", "publication", "native_route", "reference_budget",
              "serve_records", "serve_record_profile",
-             "native_batch", "native_no_leg", "calendar_parity_clamp", "terminal_floor_recovery"});
+             "native_batch", "native_no_leg", "calendar_parity_clamp", "terminal_floor_recovery",
+             "cold_fit"});
     space = parse_fit_space(j);
+    if (j.contains("cold_fit")) {
+      const auto mode = text(j.at("cold_fit"));
+      if (mode == "joint_feasible_mid") {
+        surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
+      } else if (mode != "existing_policy") {
+        throw std::runtime_error("Policy graded cold_fit must be existing_policy or joint_feasible_mid");
+      }
+    }
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
     if (j.contains("rung_memo")) {
