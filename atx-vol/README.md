@@ -76,6 +76,11 @@ shape. See the [time-knot contract](sprints/2026-10-16-american-markov-time-knot
 | Surface analytics | `analytics.hpp` | ATMF term structure, delta wings / RR / BF, skew & curvature, forward vol; Breeden–Litzenberger density, implied CDF/quantiles, BKM moments, and the OTM log-strip model-free implied vol (`var_swap_vol`) — **diagnostics read off a served surface, not the traded variance-swap product** (that is `derivatives.hpp`) |
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
 | Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
+| Risk engine — market state & book | `api/risk/market_state.hpp`, `risk_book.hpp`, `risk_frame.hpp`, `risk_types.hpp` | One market environment (spot, per-expiry carry, per-contract marks, optional surfaces) and a deduplicated book of options + shares prepared into (uid, expiry, side) groups; SoA Greek frame with routes, flags, status |
+| Risk engine — kernels & explain | `api/risk/risk_kernel.hpp`, `pnl_explain.hpp` | Sigma-family kernel with typed cold fallback (or cold per-contract kernel) → one frame per state; eight-term Taylor explain between frames (vega split in standardized moneyness), shares as delta-one legs, `RiskStream`; ≤ 2 ulp identities, bit-identical across thread counts |
+| Risk engine — projection | `api/risk/strike_coord.hpp`, `theo_contract.hpp` | Strike ↔ log-moneyness ↔ K/S ↔ standardized moneyness ↔ delta (Forward / Spot / American), ShapeBlend tenor interpolation with typed extrapolation flags; theoretical contracts at relative maturities and fixed-TTE / fixed-moneyness series across historical surfaces |
+| Risk engine — historical VaR | `api/risk/historical_var.hpp` | One-period VaR / ES over (base, shifted) state pairs for a book of theoretical templates, with the Greek attribution of the tail |
+| SpiderRock intraday store | `api/marketdata/spiderrock_store.hpp` | `date=<d>/bucket_et=<HHMM>/` parquet partitions → SoA bucket → `MarketStateStorage` (American exercise, standard roots, per-expiry carry medians); SpiderRock-shaped synthetic store for data-free runs |
 | Surface archive | `surface_archive.hpp` | ATXVSA2 (magic `ATXVSA20`) binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
 | Batch kernels | `batch.hpp` | SoA batch B76 price/value+vega/from-lnfk, IV, Greeks, eSSVI-w. Price, value+vega, Greeks and eSSVI-w **runtime-dispatch to 4-lane AVX2** on an AVX2 host (`n ≥ 4`; eSSVI-w `n ≥ 16`), so they agree with the scalar kernel to the SIMD gate (~1e-6 abs + 1e-7 rel; ~1e-5 abs on the fused `vega` column; eSSVI ~1e-12), **not bit-for-bit**; from-lnFK and IV have no vector route and stay scalar-backed and bit-exact |
@@ -1083,6 +1088,13 @@ the umbrella: Tier-B 36 → **37**, api/ headers 95 → **96**, no Tier-A change
 The batch-pricing lane (2026-10-17) added `api/pricing/batch_chain.hpp` (chain-level
 batch price / Greeks / implied vol over structure-of-arrays columns), outside the
 umbrella: Tier-B 37 → **38**, api/ headers 96 → **97**, no Tier-A change.
+
+The risk-engine sprint (2026-10-24) added the `api/risk/` module (8 headers: `risk_types`,
+`market_state`, `risk_book`, `risk_frame`, `risk_kernel`, `pnl_explain`, `strike_coord`,
+`theo_contract`, `historical_var`) and `api/marketdata/spiderrock_store.hpp`, outside the
+umbrella; re-deriving at that commit found 119 api/ headers, so Tier-B is **60**: the sprint's
+10 plus 12 Tier-B headers that had landed between 2026-10-17 and 2026-10-24 without a log line
+here (the table test was red on `main` at 109 headers). No Tier-A change.
 
 That drift is now caught by a test rather than by a reader, for the counts
 that can be.

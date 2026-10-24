@@ -5,6 +5,27 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — risk engine: streaming P&L explain, strike/maturity projection, SpiderRock bench (`api/risk/`)
+
+A new public module `include/atx/vol/api/risk/` (Tier-B) and `api/marketdata/spiderrock_store.hpp`.
+`MarketState` (spot, per-expiry carry, per-contract marks, optional surfaces) + `RiskBook` /
+`PreparedRiskBook` (options and shares, contracts deduplicated on exact bits) + `RiskKernel`
+(sigma-family kernel with a typed cold fallback, or the cold per-contract kernel) produce one
+`RiskFrame` of Greeks per environment; `explain` / `RiskStream` give the eight-term Taylor
+explain between consecutive frames (delta, gamma, vega split level / skew / curvature in
+standardized moneyness, theta, rho, vanna, volga, charm, unexplained; shares as delta-one legs),
+with row identities at ≤ 2 ulp, Neumaier totals and bit-identical results across thread counts.
+`strike_coord.hpp` converts strike ↔ log-moneyness ↔ K/S ↔ standardized moneyness ↔ delta under
+`DeltaConvention::{Forward, Spot, American}` (Spot is new; `strike_at_delta` refuses it and points
+here); `theo_contract.hpp` resolves relative-maturity / coordinate-strike templates on a surface at a
+timestamp and projects fixed-TTE / fixed-moneyness series across historical surfaces.
+`TenorInterp::ShapeBlend` is an additive overload on `CurveSurface`, `PricedSurface` and views
+(`TotalVariance` default bit-unchanged); `moneyness_extrapolated(K, T)` is new on surfaces and views.
+Tool `atx-vol-risk-bench` + `scripts/spiderrock_intraday_to_store.py` run the 10k-option / 100-underlier
+/ 100-share 10:00–15:00 explain over the SpiderRock 30-minute store (licensed or synthetic); the loader
+filters to American exercise and standard option roots. Docs: `docs/risk-engine.md`, `docs/risk-bench.md`,
+design `docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md`.
+
 ### NEW — coupled calendar feasibility and explicit terminal-floor recovery
 
 The opt-in `QuoteSliceRepairConfig::inbox_projection` calendar path solves calls and puts
