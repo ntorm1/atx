@@ -5059,6 +5059,7 @@ Result<AmericanGreeks> american_greeks_fd_impl(
   };
   std::array<detail::AmericanGreekSample, 17> evidence{};
   auto EV = [&](double dS, double dsig, double dr, double dT, std::size_t sample_index) -> double {
+    const bool attempted = !failed;
     const double value = call_fast ? Pcall(dS, dsig, dr, dT)
                                    : (put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT));
     double boundary = std::numeric_limits<double>::quiet_NaN();
@@ -5080,10 +5081,10 @@ Result<AmericanGreeks> american_greeks_fd_impl(
     evidence[sample_index] = detail::american_greek_sample(value, S+dS, K, side,
                                                           boundary, boundary_required);
     if (audit != nullptr) {
-      ++audit->sample_attempts;
+      if (attempted) ++audit->sample_attempts;
       audit->samples[sample_index] = {S+dS, K, T+dT, sigma+dsig, r+dr, q, value,
                                       boundary, boundary_required,
-                                      evidence[sample_index].exercised, true};
+                                      evidence[sample_index].exercised, attempted};
     }
     return value;
   };

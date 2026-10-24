@@ -24,7 +24,7 @@ struct AlGreekFdSample {
   double internal_boundary = std::numeric_limits<double>::quiet_NaN();
   bool boundary_required = false;
   bool exercised = false;
-  bool evaluated = false; // false for a one-sided alias or an untouched sample
+  bool evaluated = false; // false for a one-sided alias or after an earlier price refusal
 };
 
 struct AlGreekFdAudit {
@@ -32,7 +32,7 @@ struct AlGreekFdAudit {
   // Center; S+/-; sigma+/-; r+/-; T+/-; S+sigma+, S+sigma-, S-sigma+, S-sigma-;
   // S+T+, S-T+, S+T-, S-T-. Aliases retain actual model parameters, not a fictitious bump.
   std::array<AlGreekFdSample, 17> samples{};
-  std::size_t sample_attempts = 0;
+  std::size_t sample_attempts = 0; // actual evaluator attempts, excluding short-circuited slots
   std::size_t boundary_cold_solves = 0;
   std::size_t boundary_warm_solves = 0;
   std::size_t boundary_price_calls = 0;

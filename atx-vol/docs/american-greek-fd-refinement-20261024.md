@@ -14,6 +14,13 @@ dynamic allocation. Calls and puts use the same homogeneity/boundary evidence
 as the production calculation. Public `american_greeks_fd` calls the shared
 implementation without overrides or observation.
 
+After an earlier price refusal, later operand slots still identify their model
+inputs but remain `evaluated=false` and do not increase `sample_attempts`.
+The fixed seventeen-slot formula denominator is separate from the actual work
+denominator. A regression pins an unsupported center to one attempted operand,
+one public price call and sixteen unpriced slots. This closes a peer-review
+finding in the first observation-only commit; public calculation is unchanged.
+
 Invalid explicit steps and nonfinite model inputs refuse before pricing.
 Existing near-expiry forward-time and unsupported-down-rate forward-rho rules
 remain active. The output records the adjusted volatility step and both

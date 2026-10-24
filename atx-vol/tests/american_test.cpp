@@ -5226,4 +5226,18 @@ TEST(AmericanGreekFdAudit, NonfiniteModelRefusesBeforeObservingPrices) {
   }
 }
 
+TEST(AmericanGreekFdAudit, RefusalMarksOnlyActuallyAttemptedOperands) {
+  using namespace atx::vol;
+  detail::AlGreekFdAudit audit;
+  const auto result = detail::audit_american_greeks_fd(
+      100., 100., .5, .25, -.01, -.02, Side::Put,
+      detail::AlGreekFdSteps{.1, .001, .0001, .001}, audit);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(audit.sample_attempts, 1u);
+  EXPECT_EQ(audit.public_price_calls, 1u);
+  EXPECT_TRUE(audit.samples[0].evaluated);
+  for (std::size_t i = 1; i < audit.samples.size(); ++i)
+    EXPECT_FALSE(audit.samples[i].evaluated) << "sample=" << i;
+}
+
 } // namespace
