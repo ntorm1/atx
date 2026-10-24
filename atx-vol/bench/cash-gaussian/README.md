@@ -267,8 +267,7 @@ scalar/short-array temporaries, not a measured heap/stack peak. Actual selection
 special-function and coefficient-product counts are separate. Reported remainder
 strings cover real-arithmetic series truncation only, evaluated at fixed
 precision; they exclude arithmetic/transcendental and complete-price errors.
-The successor fixed24 exporter/reader is not implemented or executed yet, and
-neither Stage A completeness nor18-request progression is established.
+Neither Stage A completeness nor18-request progression is established.
 
 Peer review of3ece878 found two diagnostic-contract gaps: only the maximum
 condition survived publication, and local probes could fall back before their
@@ -280,3 +279,54 @@ completed scalar reservation. Zero-lower direct original routing still uses
 no local scalar workspace. All45 native groups and owning2-TU PCH-off checks
 pass after correction; the original failed review and prior receipt remain.
 No successor24 export or18-request run was performed.
+
+## Successor local-series receipt tool
+
+`atx-vol-cash-cubic-local-control` is a separate, default-off research target.
+It uses the exact original twelve cells at both precisions and emits all24
+outcomes, including every refusal. It accepts no input file or numerical knob.
+The schema pins the reviewed declaration and primitive, and records decimal
+weights, all seven conditions, separate value/derivative truncation formulas,
+route/reason, selected orders and actual work. Compiled scalar object sizes
+make the conservative 256-object scalar and 2312-object full reservations
+explicit; these remain reservations rather than measured stack/heap peaks.
+
+`cubic_local_audit.py` is a separate reader; the original numerical reader,
+native24 bytes and failed precision decisions remain hash-pinned. The reader
+checks all24 input bit patterns, all12 unchanged1e-40 precision gates and
+all168 positive-integrand quadrature comparisons at the original tolerances.
+Original-route weights and raw-moment diagnostics must equal the frozen
+original decimal outputs exactly. Every failure remains in the denominator.
+It does not convert a truncation formula into a complete-price error bound.
+
+The reader reconstructs order selection and real-arithmetic truncation formulas
+at Decimal precision250, using direct powers/factorials independently of the
+native recurrence. It forms unscaled polynomial powers before factorial
+division and exact rational Bernstein integrals to reconstruct all seven
+condition ratios. The absolute prefactor uses an independent pi construction:
+`pi=16*atan(1/5)-4*atan(1/239)`, with fixed224/64 terms of the
+[alternating arctangent series](https://dlmf.nist.gov/4.24.E3). The identity
+follows because `tan(4*atan(1/5))=120/119` and subtracting `atan(1/239)` gives
+tangent1 in `(0,pi/2)`. Its alternating truncation is below1e-300; this is
+separate from Decimal rounding, transcendental evaluation and pricing error.
+Exact beta-integral and independently specified pi-digit controls test this
+reader-only construction. No dependency or production numerical path changes.
+
+Three derivation stub tests and two receipt-reader tests failed at runtime
+before implementation. The test-only synthetic protocol fixture deliberately
+retains the historical negative weights while supplying independently derived
+local metadata; it is not a native successor result. The reader must report
+the same three failed precision controls. Ten new Python groups cover this
+negative fixture,22 malformed mutations, work/resource/refusal accounting,
+balanced weight corruption detected by independent quadrature, and exclusive
+output creation; the four unchanged reader groups also pass. The initial
+test import syntax error remains logged separately from the runtime failures.
+
+The exporter compiles and its owning translation unit passes with PCH disabled;
+only its invalid-argument exit has been executed, producing no numerical rows.
+The initial hygiene lookup failed because the new target had not been configured;
+the explicit configure and subsequent owning-TU check both pass.
+The numerical primitive remains frozen
+at8436a3b. The successor24 export is held for fresh source review, and no18
+option semigroup run is authorized by this tool. The original50 cash cases,
+150 PDE outcomes,32 Gaussian pilot outcomes and18+5 follow-up remain unchanged.

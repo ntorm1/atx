@@ -59,6 +59,12 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
         ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
     target_link_libraries(atx-vol-cash-cubic-weight-control PRIVATE
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-cash-cubic-local-control
+        ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_local_probe.cpp)
+    target_include_directories(atx-vol-cash-cubic-local-control SYSTEM PRIVATE
+        ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
+    target_link_libraries(atx-vol-cash-cubic-local-control PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
 endif()
 
 # Explicit private research target; no kernel is linked into the production library.
