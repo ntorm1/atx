@@ -57,7 +57,8 @@ class Context {
                             CubicExpectationWork &work, bool weighted) {
     work.phase = CubicExpectationPhase::Preflight;
     if (curve.cells().size() > 8191 ||
-        curve.cells().size()+1 > std::min<std::size_t>(budget.owner.max_knots, 8192))
+        curve.cells().size()+1 > std::min<std::size_t>(budget.owner.max_knots, 8192) ||
+        (curve.cells().empty() && curve.tail().lower != 0.))
       throw Refusal{ErrorCode::Unavailable, "cubic expectation knot budget"};
     const auto storage = curve.cells().size()*sizeof(HermiteCell)+sizeof(CubicAffineTail);
     // Global context/ledger and the maximum sequential child are simultaneously

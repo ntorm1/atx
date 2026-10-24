@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include <boost/math/special_functions/erf.hpp>
 #include <boost/multiprecision/cpp_bin_float.hpp>
@@ -416,6 +417,37 @@ TEST(CashCubicExpectation, PartitionedSignedConstantsAndAllZeroRemainValid) {
       EXPECT_EQ(work.tail_completions,1U);
       EXPECT_EQ(work.exact_zeros,2U);
     }
+  }
+}
+
+TEST(CashCubicExpectation, MovedFromPositiveTailCannotBecomeAFullDomainOwner) {
+  const std::array cells{HermiteCell{0., 2., 0., 2., 1., 1.}};
+  CubicOwnerWork owner_work;
+  auto source=StockCubic::make(cells,{2.,2.,1.},{},owner_work);
+  ASSERT_TRUE(source);
+  auto destination=std::move(*source);
+  ASSERT_TRUE(source->cells().empty());
+  ASSERT_EQ(source->tail().lower,2.);
+  for (const auto precision : precisions) {
+    EXPECT_FALSE(cubic_point(*source,1.5,precision,{},owner_work));
+    for (const auto request : {CubicExpectationRequest{1.5,.5,.2,.03,.01},
+                              {1.5,0.,.2,.03,.01}, {0.,.5,.2,.03,.01},
+                              {1.5,.5,0.,.03,.01}}) {
+      CubicExpectationWork work;
+      auto refused=cubic_expectation(*source,request,precision,{},work);
+      EXPECT_FALSE(refused);
+      EXPECT_EQ(work.phase,CubicExpectationPhase::Preflight);
+      EXPECT_EQ(work.conversions,0U);
+      EXPECT_EQ(work.finite_attempts,0U);
+      EXPECT_EQ(work.tail_attempts,0U);
+      EXPECT_EQ(work.elementary_functions,0U);
+    }
+    CubicExpectationWork work;
+    auto valid=cubic_expectation(destination,{1.5,.5,.2,.03,.01},precision,{},work);
+    ASSERT_TRUE(valid) << valid.error().message();
+    close(valid->value,R(1.5)*exp(-R(.01)*R(.5)));
+    EXPECT_EQ(work.finite_completions,1U);
+    EXPECT_EQ(work.tail_completions,1U);
   }
 }
 } // namespace

@@ -75,7 +75,7 @@ decimal strings and does not reconstruct an owner.
 ## Controls and remaining gates
 
 The refusal stub produced eight runtime failures before implementation. The
-new 19 unit controls cover independent full moments/Black value and Delta,
+initial 19 unit controls cover independent full moments/Black value and Delta,
 partitioned affine cells including adjacent high/low/unit endpoints, signed
 nonconvex cubic moments, finite `x^3` with its actual affine tail, deterministic
 interior transport, one-sided kinks and the zero-stock limit. They also cover a
@@ -88,7 +88,8 @@ The independent formulas never call the implementation's moment/contraction
 helpers. Supported value/Delta comparisons use the unchanged `1e-40` relative
 gate; exact analytic zeros require exact zero. All 65 previous research controls
 remain included in the scoped executable. The complete component run passes
-84 tests. Owning-header hygiene is recorded separately in the final receipt.
+84 tests before the ownership correction below. Owning-header hygiene is
+recorded separately in the receipts.
 
 The final scoped commands were:
 
@@ -112,3 +113,22 @@ study, American rollback, PDE comparison, latency run or full-price/Greek error
 bound is claimed. The earlier negative PWL/precision studies remain unchanged.
 Fresh exact-source review is required before any later numerical export or
 prospectively declared matrix.
+
+## Moved-from owner correction
+
+Fresh review of `ff8b4fac` found that the new reservation lacked the existing
+point evaluator's empty-cell/tail-origin guard. Moving a valid owner can leave
+the source with an empty vector and its original positive tail boundary. The
+new stochastic evaluator then incorrectly reported a tail-only integral as a
+full-domain expectation. The initial 84 tests did not cover that invalid
+representation; their receipt remains unchanged and does not establish this
+missing invariant.
+
+A runtime regression reproduced the false success before the fix. The new
+preflight now applies the same guard: an empty owner must have tail.lower=0.
+The regression checks both precisions and all four dispatch routes refuse
+before arithmetic, and the moved destination still produces its independent
+full-affine value. This adds one control, bringing the scoped suite to 85.
+No numerical formula or valid-owner result is changed. The original finding,
+runtime RED, corrected green and two owning PCH-off checks are retained under
+`calendar/cubic-moved-owner-v1/receipt.json`; no matrix or option run occurred.
