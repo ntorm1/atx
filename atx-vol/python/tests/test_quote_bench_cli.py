@@ -168,6 +168,10 @@ def test_native_terminal_floor_recovery_policy_is_explicit_and_reports_counts(bi
             if enabled:
                 assert entry["repair"]["terminal_floor_asks"] == 0
                 assert entry["repair"]["terminal_floor_max_ask_raise"] == 0
+                # This policy deliberately leaves inbox_projection off: the
+                # terminal-floor rung still writes its actual box diagnostics.
+                assert entry["inbox_projection"]["terminal_floor_asks"] == 0
+                assert entry["inbox_projection"]["terminal_floor_max_ask_raise"] == 0
 
 
 def test_native_funding_carry_normalization_is_reported_and_material_conflicts_refuse(

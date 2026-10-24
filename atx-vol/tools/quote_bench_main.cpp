@@ -1296,7 +1296,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         if (d.call_floor_lifted > 0) count_into(graded["call_floor"], "lifted_chains");
         if (d.call_floor_refused) count_into(graded["call_floor"], "refused_chains");
       }
-      if (profile.config.repair.inbox_projection) {
+      if (profile.config.repair.inbox_projection || profile.config.repair.terminal_floor_recovery) {
         // Opt-in in-box projection provenance (lane C4, graded.inbox_projection): the last
         // box rung run of the served fit (QuoteSliceDiagnostics::box); absent when off.
         const QuoteSliceInboxRecord &r = d.box.inbox;
@@ -1316,6 +1316,8 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
             {"phase2_steps", r.phase2_steps},
             {"moved_nodes", d.box.nodes},
             {"max_price_move", d.box.max_price_move},
+            {"terminal_floor_asks", d.box.terminal_floor_asks},
+            {"terminal_floor_max_ask_raise", d.box.terminal_floor_max_ask_raise},
             {"max_move_half_spreads", r.max_move_half_spreads},
             {"max_mid_half_spreads", r.max_mid_half_spreads},
             {"elapsed_us", r.elapsed_us}};
