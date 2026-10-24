@@ -213,3 +213,29 @@ Two runtime regressions first reproduced the aggregate false pass and misleading
 partial-risk diagnostic. All 81 backtest/shape/mark tests and eight declarative
 strategy/tolerance tests pass; three owning PCH-off objects pass. Receipts are
 `repair-iv/greek-backtest-risk-{red,green,policy,hygiene}.*`.
+
+Python now carries the same availability without inferring supply from finite
+zeros: scalar AmericanGreeks has readonly masks/reasons; American batches,
+fitted-chain valuations and priced-surface grids export owning uint32 masks
+and uint8 reasons with shape (N,9), including empty (0,9) results. Grid field
+validity requires native support, and its new greek_price is the price belonging
+to that metadata, distinct from the independently priced fair_value. PriceStatus,
+GreekFieldMask and AmericanGreekReason enumerate every native value. This does
+not add a Python portfolio API or complete native ServedSession propagation.
+
+The binding tests exposed an older collision: both STATUS_OK and the dedicated
+American Unsupported sentinel were -1. Unsupported now exports -2, while success
+stays -1 and nonnegative native error codes are unchanged. Price and Greek mixed
+batches explicitly pin this distinction and retain every refused row. Partial
+Greek failure still preserves supplied price. This is a compatibility correction
+for callers that hard-coded the old erroneous unsupported value.
+
+Fourteen metadata regressions first failed at runtime, followed by four explicit
+Greek status-collision failures and a separate price-collision failure. All 99
+focused Python tests pass, with one expected source-build wheel-metadata skip;
+all four owning PCH-off binding objects pass. The staged module is SHA256
+b2aa4140009bbde36b217a25950f7fbebbd3170caf5c10fb796c2f026dd31af9 and matches
+the actual build output. Receipts are repair-iv/greek-python-{red,green,status-red,
+final,hygiene}.*. The hygiene cache initially selected a venv without pybind11;
+explicitly selecting the existing Python312 interpreter resolved configuration.
+No numerical arithmetic, Greek accuracy budget, or timing claim changed.
