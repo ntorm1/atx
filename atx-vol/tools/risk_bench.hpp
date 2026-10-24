@@ -388,8 +388,9 @@ inline constexpr double kParityVegaFloor = 1e-3;
 // MarketState precedence, market_state.hpp):
 //   TermCarry        the uid's ExpiryCarry row with the contract's exact expiry_ns
 //   Flat             no row: flat_rate / flat_q, no cash dividends (pv_divs = 0)
-//   FlatCurveOrDivs  no row, and a yield curve or cash dividends apply: the rate /
-//                    pv_divs the engine derived are not reproduced (empty cells; the
+//   FlatCurveOrDivs  no row, and a yield curve or cash dividends apply: carry_rate =
+//                    flat_rate when no yield curve applies (empty under a curve);
+//                    pv_divs empty (the engine's cash-dividend PV is not reproduced; the
 //                    frame's rate / q_eff columns are what the kernel used)
 //   Surface          CarryFrom::Surface (carry read from the uid's surface)
 //   Absent           the uid is not in the base state

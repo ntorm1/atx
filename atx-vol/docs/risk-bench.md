@@ -424,7 +424,7 @@ are one bucket apart.)
 | `qty`, `multiplier` | signed contracts; the effective deliverable (≤ 0 / non-finite ⇒ 100) |
 | `T`, `sigma`, `forward`, `rate`, `q_eff` | the base frame's resolved inputs (what the kernel priced at) |
 | `spot` | the base state's `UnderlierState::spot` (median uPrc of the bucket) |
-| `carry_source` | `term_carry` (the uid's `ExpiryCarry` row with the exact expiry), `flat` (no row: flat_rate / flat_q, no cash dividends), `flat_curve_or_divs` (no row; a yield curve or cash dividends apply, rate / pv_divs not reproduced), `surface`, `absent` |
+| `carry_source` | `term_carry` (the uid's `ExpiryCarry` row with the exact expiry), `flat` (no row: flat_rate / flat_q, no cash dividends), `flat_curve_or_divs` (no row; a yield curve or cash dividends apply: carry_rate = flat_rate when no yield curve applies (empty under a curve); pv_divs empty), `surface`, `absent` |
 | `carry_rate`, `carry_q`, `pv_divs` | that row's rate / q / pv_divs (flat: flat_rate, flat_q, 0) |
 | `q_eff_d4` | `spiderrock_q_eff(spot, pv_divs, carry_rate, carry_q, T)`: the carry the row implies; compare with `q_eff` |
 | `carry_mode` | the basis of the contract's (uid, expiry) row: `implied_from_calls` / `published` (empty when the state wrote no row) |
