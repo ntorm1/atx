@@ -112,8 +112,9 @@ struct FamilyKernelPolicy {
   // short-tenor cold block, a one-lane family, a forty-lane family): false hands each
   // worker one contiguous static chunk (pricing_executor run_blocks), true lets workers
   // claim blocks one at a time (run_dynamic). Every block writes only its own rows,
-  // slots and counters, so both give the same bits for any thread count.
-  bool dynamic_schedule{false};
+  // slots and counters, so both give the same bits for any thread count. Dynamic is the
+  // default: faster on both bench stores at 8 threads on a 4P + 8E host (lane A2).
+  bool dynamic_schedule{true};
 };
 
 struct ColdKernelPolicy {
