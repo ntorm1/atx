@@ -19,7 +19,10 @@
 // valid after it. A `MarketState` from `state()` (and every copy of it) BORROWS the
 // archive and must not outlive it; spans from `extras()` / `ticker()` likewise. A
 // RiskStream replay therefore keeps two archives rolling (s_{k-1} alive until
-// `step(s_k)` returns). `materialize()` deep-copies when an owned state is needed.
+// `step(s_k)` returns). `materialize()` deep-copies when an owned state is needed,
+// EXCEPT its `surfaces`, which still borrow the archive's embedded records.
+// ACCEPTED RESIDUAL RISK (review 1): none of this is enforced by the type system; a
+// view kept past the archive reads unmapped memory (docs/persist.md "Lifetime").
 //
 // FROZEN API CONTRACT (wave 3, lane P scaffold 2026-10-24). Lane P1 may ADD.
 //
@@ -86,8 +89,10 @@ inline constexpr PersistOpenOptions kMarketStateOpenDefaults{true, PersistVerify
 // on the research host (2026-10-14 bucket 1000: 35.7 MB top-100 book Full 11.1 ms vs
 // Framing 2.3 ms; 189.6 MB uncapped book Full 67.5 ms vs Framing 16.2 ms). Files above the
 // threshold open at Framing: header / table / footer CRCs plus every structural rule of the
-// reader (row ranges, mark order, side bytes) still run, and Full / Paranoid stay available
-// by passing options explicitly (`atx-vol-state-store verify` runs Paranoid). Not Lazy: Lazy
+// reader (row ranges, mark order, side bytes) still run; the PAYLOAD bytes are not
+// checked, so a flipped bit inside a value column that leaves the structure valid is
+// served as stored. Full / Paranoid stay available by passing options explicitly
+// (`atx-vol-state-store verify` runs Paranoid). Trade-off: docs/persist.md. Not Lazy: Lazy
 // verifies a section on its first touch, and building the state touches every section at
 // open, so Lazy costs what Full costs (67.6 ms measured on the uncapped file).
 inline constexpr std::uint64_t kMarketStateFullVerifyMaxBytes = std::uint64_t{64} << 20;

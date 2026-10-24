@@ -34,6 +34,19 @@ auto bucket = selection_bucket_from_archive(*archive);     // feeds the bench bo
 `MarketStateArchive` owns the mapping; `state()` and every span it hands out borrow it, and a
 moved archive keeps them valid (`PersistStateArchive.MovedArchiveKeepsStateValid`).
 `materialize()` returns an owning `MarketStateStorage` copy when a caller needs one.
+
+**Lifetime: accepted residual risk (design D14, review 1).** Nothing in the type system ties a
+borrowed view to the archive. These outlive the mapping if the caller keeps them past the
+archive's destruction, and then read unmapped memory:
+
+- a copy of `state()` (`MarketState` is a view type: its mark spans, term-carry and dividend
+  spans point into the mapping);
+- the spans in `extras(uid)` and the `std::string_view` from `ticker(uid)`;
+- `materialize().surfaces`: the copy owns everything else, but its surface refs still borrow
+  the archive's embedded surface records (a `MarketStateStorage` cannot own a surface).
+
+Keep the archive alive for as long as any of these is in use (a `RiskStream` replay keeps two
+archives rolling: `s_{k-1}` alive until `step(s_k)` returns).
 `encode_market_state` / `MarketStateArchive::open_bytes` are the in-memory pair.
 
 ## Tool: `atx-vol-state-store`
@@ -112,11 +125,24 @@ file), 2.85 GB/s (uncapped).
 bucket)`, `MarketStateArchive::open(path)`) verify `Full` up to `kMarketStateFullVerifyMaxBytes`
 = 64 MiB and `Framing` above it (`market_state_open_options(file_size)`). So the top-100 book
 opens Full (11.1 ms) and the uncapped book opens Framing (16.2 ms instead of 67.5 ms; the
-design target for it was 60 ms Full). Framing still checks the header, section-table and footer
-CRCs and every structural rule of the reader; it skips only the payload CRC pass. `Lazy` is not
-used: building the state touches every section at open, so Lazy measured the same as Full
-(67.6 ms). Full / Paranoid stay available by passing options explicitly
-(`kMarketStateOpenDefaults` is the Full set), and `atx-vol-state-store verify` runs Paranoid.
+design target for it was 60 ms Full). `Lazy` is not used: building the state touches every
+section at open, so Lazy measured the same as Full (67.6 ms).
+
+What a Framing open checks and what it does not:
+
+- Checked: the header, section-table and footer CRCs and every container rule (magic, sizes,
+  section bounds / alignment / overlap, dtypes, the schema fingerprint), and every structural
+  rule of the MarketState reader: meta counts and flags, uid order, row ranges into every
+  column, uid-table / surface-index bounds, mark order within each underlier, side bytes in
+  {0, 1}, the embedded surface archive's own validation, and `MarketState::create`.
+- Not checked: the payload bytes themselves. A flipped bit inside a value column (sigma,
+  strike, expiry, vendor price / delta, the extras, term-carry and dividend rows, curve pillars)
+  that leaves the structure valid is served as stored.
+- Accepted because the store is a derived cache rebuilt from Parquet (a source change rebuilds
+  the bucket), files are never rewritten in place, and Full / Paranoid stay one option away:
+  pass options explicitly (`kMarketStateOpenDefaults` is the Full set), or run
+  `atx-vol-state-store verify` (Paranoid over every bucket of a day) after a copy or on a
+  schedule.
 
 ### Build (per bucket, p50 over 11 buckets)
 
