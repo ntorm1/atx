@@ -330,3 +330,11 @@ The numerical primitive remains frozen
 at8436a3b. The successor24 export is held for fresh source review, and no18
 option semigroup run is authorized by this tool. The original50 cash cases,
 150 PDE outcomes,32 Gaussian pilot outcomes and18+5 follow-up remain unchanged.
+
+After all three source approvals, the single frozen successor24 run completes
+all24 outcomes and passes all12 unchanged precision checks and168 quadrature
+checks. Eight outcomes use the direct local series;16 retain exact original
+weights. The three previous precision failures remain preserved, while their
+successor differences fall below1.66e-81. See the
+[complete result and work receipt](../../docs/cash-cubic-local-weight-review-20261024.md).
+This does not complete Stage A or authorize the18-option semigroup run.
