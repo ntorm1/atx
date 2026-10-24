@@ -257,7 +257,7 @@ struct BucketStateReport {
   // Where a Published ExpiryCarry row's pv_divs came from: true = the median of the
   // bucket's `ddiv_pv` (the column is present; an expiry whose ddivPv cells are all NULL
   // falls back to the ddiv median), false = the median of `ddiv` (no ddivPv column).
-  // `max_ddiv_spread` is measured on the same source column.
+  // `max_ddiv_spread` is measured, per expiry, on the column that expiry's pv_divs used.
   bool pv_divs_from_ddiv_pv{false};
   // ExpiryCarry rows written per basis (n_expiries_implied + n_expiries_published ==
   // n_expiry_rows); every row is Published under SpiderRockCarryMode::Published.
