@@ -113,12 +113,12 @@ using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
 }
 
 // R-19 (F6): the current content identity of the archive at `path`, read from its
-// 256-byte v2 header only. Any successful read produces a non-zero, byte-content-
+// 128-byte v2 header only. Any successful read produces a non-zero, byte-content-
 // sensitive identity (see `ArchiveContentIdentity`); an unreadable / not-yet-an-
 // archive file yields the default (all-zero) identity so the actual load surfaces
 // the real error while the cache still keys deterministically. Called BEFORE the
 // cache mutex so the small header read never serializes other cache operations.
-// S4 clean break: partitions are ATXVSA2 (magic "ATXVSA20"); ATXVSA03 is gone.
+// Partitions are ATXVSA2 revision 1 (`kArchiveV2Magic`, docs/atxvsa2-format.md).
 [[nodiscard]] ArchiveContentIdentity current_identity(const std::string &path) {
   std::ifstream in{path, std::ios::binary};
   if (!in) {
@@ -129,8 +129,7 @@ using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
   if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
     return {}; // shorter than a header — not a valid archive (yet)
   }
-  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
-  if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
+  if (std::memcmp(header.magic, kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0 ||
       header.header_size != sizeof(ArchiveV2Header)) {
     return {}; // not an ATXVSA2 archive; identity is unknown
   }

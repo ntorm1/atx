@@ -115,4 +115,51 @@ enum class FileReadStatus : std::uint8_t {
 
 [[nodiscard]] FileReadStatus read_whole_file(std::string_view path, std::string &out);
 
+// ── Positional reads (the ATXVSA2 point-read seam) ─────────────────────────
+//
+// A read-only file handle that reads at explicit offsets — Win32 `ReadFile` with an
+// `OVERLAPPED` offset on a synchronous handle, POSIX `pread` — and never creates a
+// mapping. On Windows it opens with `FILE_SHARE_READ | FILE_SHARE_DELETE`, so holding
+// it never refuses a concurrent atomic republish (`flush_and_publish_file`'s rename),
+// and with no `FILE_SHARE_WRITE`, so nobody can rewrite the bytes in place while it is
+// open. The handle closes in the destructor; callers keep it for one read operation
+// (docs/atxvsa2-format.md §4).
+//
+// Error contract of `open`: `NotFound` iff the OS reported the path (or a parent
+// directory) absent; `IoError` for every other failure, including a directory. The
+// size is captured once, at open. `read_at` reads exactly `n` bytes or fails with
+// `IoError` (a short read means the file shrank underneath the handle).
+//
+// Not thread-safe: one handle, one thread. Move-only.
+class PositionalFile {
+public:
+  [[nodiscard]] static atx::core::Result<PositionalFile> open(std::string_view path);
+
+  PositionalFile(PositionalFile &&other) noexcept;
+  PositionalFile &operator=(PositionalFile &&other) noexcept;
+  PositionalFile(const PositionalFile &) = delete;
+  PositionalFile &operator=(const PositionalFile &) = delete;
+  ~PositionalFile();
+
+  [[nodiscard]] std::uint64_t size() const noexcept { return size_; }
+  [[nodiscard]] atx::core::Status read_at(std::uint64_t offset, std::byte *dst, std::size_t n);
+
+  // The reader's own I/O accounting: bytes delivered and read syscalls issued.
+  [[nodiscard]] std::uint64_t bytes_read() const noexcept { return bytes_read_; }
+  [[nodiscard]] std::uint32_t read_calls() const noexcept { return read_calls_; }
+
+private:
+  PositionalFile() = default;
+  void close() noexcept;
+
+#if defined(_WIN32)
+  void *handle_{nullptr}; // HANDLE; nullptr when closed
+#else
+  int fd_{-1};
+#endif
+  std::uint64_t size_{0};
+  std::uint64_t bytes_read_{0};
+  std::uint32_t read_calls_{0};
+};
+
 }  // namespace atx::vol::detail

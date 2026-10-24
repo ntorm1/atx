@@ -1621,29 +1621,32 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
         return Err(ErrorCode::IoError,
                    "RunDir::run_identity_hash: cannot open manifest archive");
       }
-      std::array<char, sizeof(ArchiveHeader)> header_bytes{};
-      stream.read(header_bytes.data(), 8);
-      if (stream.gcount() != 8) {
+      // A surface archive's identity is its whole ATXVSA2 header (revision 1,
+      // `kArchiveV2Magic`). Any other magic -- including the earlier "ATXVSA20"
+      // revision and the retired "ATXVSA03" -- is refused by name: there is no
+      // multi-format recogniser (docs/atxvsa2-format.md §11).
+      std::array<char, sizeof(ArchiveV2Header)> header_bytes{};
+      stream.read(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
+      if (stream.gcount() < 8) {
         return Err(ErrorCode::IoError,
                    "RunDir::run_identity_hash: truncated manifest archive header");
       }
-      std::size_t header_size = 0;
-      if (std::memcmp(header_bytes.data(), "ATXVSA20", 8) == 0) {
-        header_size = sizeof(ArchiveV2Header);
-      } else if (std::memcmp(header_bytes.data(), "ATXVSA03", 8) == 0) {
-        header_size = sizeof(ArchiveHeader);
-      } else {
+      if (std::memcmp(header_bytes.data(), kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0) {
+        std::string found;
+        for (std::size_t i = 0; i < 8; ++i) {
+          const auto c = static_cast<unsigned char>(header_bytes[i]);
+          found.push_back(c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '?');
+        }
         return Err(ErrorCode::ParseError,
-                   "RunDir::run_identity_hash: bad manifest archive magic");
+                   "RunDir::run_identity_hash: manifest archive has magic '" + found +
+                       "', expected 'ATXVSA21' (re-write the archive)");
       }
-      stream.seekg(0);
-      stream.read(header_bytes.data(), static_cast<std::streamsize>(header_size));
-      if (stream.gcount() != static_cast<std::streamsize>(header_size)) {
+      if (stream.gcount() != static_cast<std::streamsize>(header_bytes.size())) {
         return Err(ErrorCode::IoError,
                    "RunDir::run_identity_hash: truncated manifest archive header");
       }
       fold_bytes("surface_archive_identity",
-                 std::string_view(header_bytes.data(), header_size));
+                 std::string_view(header_bytes.data(), header_bytes.size()));
     }
   }
 
