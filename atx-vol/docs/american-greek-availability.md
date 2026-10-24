@@ -399,3 +399,13 @@ on the pre-guard production source (28b2ad5d): GoldenPathPnlIsPinned returns
 cancellation fixture returns Gamma -4.163336342344337e-17 versus zero. Archived
 baseline executables and hashes are in greek-risk-guard-baseline-binaries.json;
 these pins are retained unchanged in this guard component.
+
+
+The strategy cancellation fixture now uses binary-exact Gamma inputs
+0.03125/0.015625, retaining its strict zero assertion and all other risk inputs.
+The prior decimal 0.02/0.01 products allow the final fused accumulation to expose
+-4.163336342344337e-17; the original failure reproduces on the archived pre-guard
+binary and is independently listed as r6 known issue Q0-F26. All nine focused
+strategy/quant integration tests and the owning PCH-off object now pass. The
+BEV golden remains unchanged (r6 Q0-F3); its original first-green deterministic
+pin is not an economic tolerance. No production arithmetic was changed.

@@ -143,11 +143,13 @@ TEST(StrategyPipelineConstruction,
 }
 
 TEST(StrategyPipelineRisk, AggregatesRiskAndSupportsClampOrReject) {
+  // Binary-exact Gamma inputs preserve strict cancellation under both fused
+  // and separately rounded products; decimal .02/.01 are not exact in binary.
   const std::vector<PositionRiskInput> inputs = {
       PositionRiskInput{Position{2u, OptionContract{2u, 100.0, 0.25, Side::Put}, -1.0, 100.0},
-                        greeks(3.0, -0.4, 0.02, 2.0, -0.1)},
+                        greeks(3.0, -0.4, 0.03125, 2.0, -0.1)},
       PositionRiskInput{Position{1u, OptionContract{1u, 100.0, 0.25, Side::Call}, 2.0, 100.0},
-                        greeks(5.0, 0.5, 0.01, 3.0, -0.2)},
+                        greeks(5.0, 0.5, 0.015625, 3.0, -0.2)},
   };
   const auto risk = aggregate_strategy_risk(inputs);
   ASSERT_TRUE(risk);
