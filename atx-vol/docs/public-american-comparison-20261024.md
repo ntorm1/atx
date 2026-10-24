@@ -31,7 +31,7 @@ divided by 252. Cold includes fresh construction/boundary solve for every put.
 Prepared total includes construction and one solve per group, seven prices and
 destruction, amortized across those seven contracts.
 
-| Profile | Cold Âµs/put | Prepared total Âµs/put | Within $0.001 | Within $0.0001 | Maximum absolute residual |
+| Profile | Cold microseconds/put | Prepared total microseconds/put | Within $0.001 | Within $0.0001 | Maximum absolute residual |
 |---|---:|---:|---:|---:|---:|
 | Public fast, order 7 / quadrature 15,41 /3 iterations |25.451|5.324|213/252|178/252|$0.1208289|
 | Public finer, order 16 / quadrature 31,61 /16 iterations |567.624|84.890|252/252|252/252|$0.00003612|
