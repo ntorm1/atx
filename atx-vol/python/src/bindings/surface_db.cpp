@@ -442,16 +442,10 @@ void bind_surface_core(py::module_ &m) {
 
   py::class_<SurfaceDbCreateOpts>(m, "SurfaceDbCreateOpts")
       .def(py::init<>())
-      .def_readwrite("created_ts_ns", &SurfaceDbCreateOpts::created_ts_ns)
-      .def_readwrite("partition_cache_capacity", &SurfaceDbCreateOpts::partition_cache_capacity);
+      .def_readwrite("created_ts_ns", &SurfaceDbCreateOpts::created_ts_ns);
 
   py::class_<SurfaceDbOpenOpts>(m, "SurfaceDbOpenOpts")
-      .def(py::init<>())
-      .def_readwrite("partition_cache_capacity", &SurfaceDbOpenOpts::partition_cache_capacity);
-
-  py::class_<SurfaceDbCacheStats>(m, "SurfaceDbCacheStats")
-      .def_readonly("resident", &SurfaceDbCacheStats::resident)
-      .def_readonly("capacity", &SurfaceDbCacheStats::capacity);
+      .def(py::init<>());
 
   py::class_<DbPartitionInfo>(m, "DbPartitionInfo")
       .def_readonly("key", &DbPartitionInfo::key)
@@ -520,7 +514,6 @@ void bind_surface_core(py::module_ &m) {
             return keys;
           },
           "Partition keys only, preserving main's original lightweight view.")
-      .def("partition_cache_stats", &SurfaceDb::partition_cache_stats)
       .def("write_partition", &write_partition, py::arg("key"), py::arg("items"),
            py::arg("opts") = ArchiveV2WriteOpts{},
            "Archive [(symbol, PricedSurface), ...] under one partition key.")

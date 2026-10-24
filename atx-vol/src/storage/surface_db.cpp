@@ -18,7 +18,8 @@
 #include <vector>
 
 #include "fitting/essvi_anchored.hpp" // apply_anchored_env_policy (opt-in)
-#include "storage/archive_util.hpp"  // crc32c, align_up, canonicalize_symbol
+#include "storage/archive_util.hpp"  // crc32c, align_up, canonicalize_symbol, PositionalFile
+#include "storage/surface_archive_internal.hpp" // read_archive_v2_first_now_ts
 #include "storage/writer_lock.hpp"   // Task D3: cross-process manifest writer lock
 
 namespace atx::vol {
@@ -36,100 +37,70 @@ namespace {
 
 // ── Small helpers ────────────────────────────────────────────────────────
 
-constexpr char kDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '1'};
-constexpr std::uint32_t kDbSurfacePolicyMarker = 0x31504C56u; // "VLP1"
+// Bits 0..12 — includes both publish-with-Degraded reasons, ValidationFailure::CarryGap
+// (1u << 11) and ValidationFailure::SubstituteUnderserve (1u << 12): a Degraded
+// provenance carrying either is a routinely SERVED state and must round-trip.
+constexpr std::uint32_t kKnownFailures = (1u << 13) - 1u;
 
-// Versioned payload embedded in DbSymbolRecord::reserved. Its size exactly
-// matches the existing reserved region, so ATXVDB v1 framing remains unchanged.
-struct DbSurfacePolicyRecord {
-  std::uint32_t marker{};
-  std::uint8_t quality_mode{};
-  std::uint8_t outputs{};
-  std::uint8_t risk_admission{};
-  std::uint8_t fallback{};
-  std::uint8_t has_provenance{};
-  std::uint8_t purpose{};
-  std::uint8_t state{};
-  std::uint8_t provenance_quality_mode{};
-  std::uint32_t validation_failures{};
-  std::uint64_t validation_id{};
-  std::uint64_t served_generation{};
-};
-static_assert(sizeof(DbSurfacePolicyRecord) == 32);
-
-[[nodiscard]] DbSurfacePolicyRecord
-encode_surface_policy(const SurfacePolicy &policy,
-                      const std::optional<SurfaceProvenance> &provenance) noexcept {
-  DbSurfacePolicyRecord record{};
-  record.marker = kDbSurfacePolicyMarker;
-  record.quality_mode = static_cast<std::uint8_t>(policy.quality_mode);
-  record.outputs = static_cast<std::uint8_t>(policy.outputs);
-  record.risk_admission = static_cast<std::uint8_t>(policy.risk_admission);
-  record.fallback = static_cast<std::uint8_t>(policy.fallback);
+// SurfacePolicy + provenance into the record's named fields (ATXVDB02).
+void encode_surface_policy(DbSymbolRecord &rec, const SurfacePolicy &policy,
+                           const std::optional<SurfaceProvenance> &provenance) noexcept {
+  rec.policy_quality_mode = static_cast<std::uint8_t>(policy.quality_mode);
+  rec.policy_outputs = static_cast<std::uint8_t>(policy.outputs);
+  rec.policy_risk_admission = static_cast<std::uint8_t>(policy.risk_admission);
+  rec.policy_fallback = static_cast<std::uint8_t>(policy.fallback);
   if (provenance.has_value()) {
-    record.has_provenance = 1u;
-    record.purpose = static_cast<std::uint8_t>(provenance->purpose);
-    record.state = static_cast<std::uint8_t>(provenance->state);
-    record.provenance_quality_mode =
-        static_cast<std::uint8_t>(provenance->quality_mode);
-    record.validation_failures =
-        static_cast<std::uint32_t>(provenance->validation.failures);
-    record.validation_id = provenance->validation.validation_id;
-    record.served_generation = provenance->served_generation;
+    rec.prov_present = 1u;
+    rec.prov_purpose = static_cast<std::uint8_t>(provenance->purpose);
+    rec.prov_state = static_cast<std::uint8_t>(provenance->state);
+    rec.prov_quality_mode = static_cast<std::uint8_t>(provenance->quality_mode);
+    rec.prov_validation_failures = static_cast<std::uint32_t>(provenance->validation.failures);
+    rec.prov_validation_id = provenance->validation.validation_id;
+    rec.prov_source_generation = provenance->source_generation;
+    rec.prov_served_generation = provenance->served_generation;
   }
-  return record;
 }
 
-[[nodiscard]] bool surface_policy_record_valid(const DbSurfacePolicyRecord &record) noexcept {
-  // All-zero is the legacy ATXVDB v1 representation and maps to SurfacePolicy{}.
-  if (record.marker == 0u) {
-    const auto *bytes = reinterpret_cast<const std::uint8_t *>(&record);
-    return std::all_of(bytes, bytes + sizeof record,
-                       [](std::uint8_t value) { return value == 0u; });
-  }
-  const bool fields_valid = record.marker == kDbSurfacePolicyMarker && record.quality_mode <= 2u &&
-                            record.outputs >= 1u && record.outputs <= 3u &&
-                            record.risk_admission <= 1u && record.fallback <= 1u;
+// The policy/provenance half of a symbol record. There is no all-zero "legacy"
+// policy: `policy_outputs` must be 1..3, and an absent provenance is all-zero.
+[[nodiscard]] bool surface_policy_fields_valid(const DbSymbolRecord &r) noexcept {
+  const bool policy_valid = r.policy_quality_mode <= 2u && r.policy_outputs >= 1u &&
+                            r.policy_outputs <= 3u && r.policy_risk_admission <= 1u &&
+                            r.policy_fallback <= 1u;
   const bool requests_risk =
-      (record.outputs & static_cast<std::uint8_t>(SurfaceOutputs::Risk)) != 0u;
+      (r.policy_outputs & static_cast<std::uint8_t>(SurfaceOutputs::Risk)) != 0u;
   const bool mandatory_risk_admission =
-      !requests_risk || record.risk_admission == static_cast<std::uint8_t>(RiskAdmission::Required);
-  // Bits 0..12 — includes both publish-with-Degraded reasons,
-  // ValidationFailure::CarryGap (1u << 11) and
-  // ValidationFailure::SubstituteUnderserve (1u << 12, T7a): a Degraded
-  // provenance carrying either is a routinely SERVED state and must
-  // round-trip the db record.
-  constexpr std::uint32_t kKnownFailures = (1u << 13) - 1u;
-  const bool provenance_valid =
-      record.has_provenance <= 1u &&
-      (record.has_provenance == 0u ||
-       (record.purpose <= 1u && record.state <= 3u &&
-        record.provenance_quality_mode <= 2u &&
-        (record.validation_failures & ~kKnownFailures) == 0u &&
-        (record.state != static_cast<std::uint8_t>(SurfaceState::Healthy) ||
-         record.validation_failures == 0u)));
-  return fields_valid && mandatory_risk_admission && provenance_valid;
+      !requests_risk || r.policy_risk_admission == static_cast<std::uint8_t>(RiskAdmission::Required);
+  bool provenance_valid = false;
+  if (r.prov_present == 0u) {
+    provenance_valid = r.prov_purpose == 0u && r.prov_state == 0u && r.prov_quality_mode == 0u &&
+                       r.prov_validation_failures == 0u && r.prov_validation_id == 0u &&
+                       r.prov_source_generation == 0u && r.prov_served_generation == 0u;
+  } else if (r.prov_present == 1u) {
+    provenance_valid = r.prov_purpose <= 1u && r.prov_state <= 3u && r.prov_quality_mode <= 2u &&
+                       (r.prov_validation_failures & ~kKnownFailures) == 0u &&
+                       (r.prov_state != static_cast<std::uint8_t>(SurfaceState::Healthy) ||
+                        r.prov_validation_failures == 0u);
+  }
+  return policy_valid && mandatory_risk_admission && provenance_valid && r.pad0 == 0u;
 }
 
-[[nodiscard]] SurfacePolicy decode_surface_policy(const DbSymbolRecord &record) noexcept {
-  DbSurfacePolicyRecord wire{};
-  std::memcpy(&wire, record.reserved, sizeof wire);
-  if (wire.marker == 0u) {
-    return SurfacePolicy{};
-  }
+[[nodiscard]] SurfacePolicy decode_surface_policy(const DbSymbolRecord &r) noexcept {
   SurfacePolicy policy;
-  policy.quality_mode = static_cast<FitQualityMode>(wire.quality_mode);
-  policy.outputs = static_cast<SurfaceOutputs>(wire.outputs);
-  policy.risk_admission = static_cast<RiskAdmission>(wire.risk_admission);
-  policy.fallback = static_cast<SurfaceFallback>(wire.fallback);
+  policy.quality_mode = static_cast<FitQualityMode>(r.policy_quality_mode);
+  policy.outputs = static_cast<SurfaceOutputs>(r.policy_outputs);
+  policy.risk_admission = static_cast<RiskAdmission>(r.policy_risk_admission);
+  policy.fallback = static_cast<SurfaceFallback>(r.policy_fallback);
   return policy;
 }
 
-[[nodiscard]] DbSurfacePolicyRecord
-decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
-  DbSurfacePolicyRecord wire{};
-  std::memcpy(&wire, record.reserved, sizeof wire);
-  return wire;
+template <std::size_t N>
+[[nodiscard]] bool key_tail_zero(const char (&s)[N], std::size_t len) noexcept {
+  return std::all_of(s + std::min(len, N), s + N, [](char c) { return c == '\0'; });
+}
+
+template <std::size_t N> [[nodiscard]] bool bytes_zero(const std::uint8_t (&b)[N]) noexcept {
+  return std::all_of(std::begin(b), std::end(b), [](std::uint8_t v) { return v == 0u; });
 }
 
 [[nodiscard]] std::byte *buf_at(std::vector<std::byte> &b, std::uint64_t off) noexcept {
@@ -156,10 +127,10 @@ inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
 // struct shape rejects the file instead of mis-reading bytes.
 [[nodiscard]] std::uint64_t db_schema_hash() noexcept {
   constexpr std::uint64_t kFnvPrime = kFnv1a64Prime;
-  // Salt derived from "atx-vol-surface-db-v1" -- distinct from the archive's
-  // kV3Salt so a manifest never aliases into an archive schema hash (or vice
-  // versa) even though both fold sizeof()s with the same FNV pattern.
-  constexpr std::uint64_t kDbSalt = 0xB19E'55DB'2A17'0001ull;
+  // ATXVDB02 salt (ATXVDB01 was ...0001) -- distinct from the archive's salt so a
+  // manifest never aliases into an archive schema hash (or vice versa) even though
+  // both fold sizeof()s with the same FNV pattern.
+  constexpr std::uint64_t kDbSalt = 0xB19E'55DB'2A17'0002ull;
   std::uint64_t h = 0x9e3779b97f4a7c15ull ^ kDbSalt;
   h ^= static_cast<std::uint64_t>(sizeof(DbManifestHeader)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(DbSymbolRecord)) * kFnvPrime;
@@ -310,11 +281,7 @@ inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
   rec.max_spread_to_mid_pct = cfg.curve.parametric.max_spread_to_mid_pct;
   rec.al_tol = cfg.al.tol;
   rec.band_k = cfg.band_k;
-
-  const DbSurfacePolicyRecord surface_policy =
-      encode_surface_policy(cfg.surface_policy, provenance);
-  std::memcpy(rec.reserved, &surface_policy, sizeof surface_policy);
-
+  encode_surface_policy(rec, cfg.surface_policy, provenance);
   return rec;
 }
 
@@ -345,13 +312,11 @@ inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
 // reconstruct. Raise this cap only alongside a new wire version that defines
 // SplineVol's on-disk payload.
 [[nodiscard]] bool symbol_record_enums_valid(const DbSymbolRecord &rec) noexcept {
-  DbSurfacePolicyRecord surface_policy{};
-  std::memcpy(&surface_policy, rec.reserved, sizeof surface_policy);
   return rec.preset <= static_cast<std::uint8_t>(FitPreset::Bulk) && // Perf 2b: Bulk=5 is new max
          rec.curve_kind <= 4 && rec.calendar_repair <= 2 &&
          rec.convex_loss <= 1 && rec.essvi_rho_mode <= 2 && rec.optimization_level <= 4 &&
          rec.residual_basis_kind <= 5 && rec.loss_kind <= 1 && rec.anchor_kind <= 2 &&
-         surface_policy_record_valid(surface_policy);
+         surface_policy_fields_valid(rec);
 }
 
 } // namespace
@@ -428,11 +393,11 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
 
 // Fold the fit CONFIG of each named symbol into one stable digest. `canon` must
 // already be canonicalized; it is sorted here so caller order cannot change the
-// result. Each symbol contributes the 256 bytes of its record re-encoded with
-// provenance = nullopt: that strips the provenance half of the embedded
-// DbSurfacePolicyRecord (which `write_partition` rewrites on every write, and
-// which is not part of the config) while keeping every genuine config field,
-// surface_policy included. Returns 0 — the "unknown, never reuse" sentinel — if
+// result. Each symbol contributes the sizeof(DbSymbolRecord) bytes of its record
+// re-encoded with provenance = nullopt: that zeroes the named `prov_*` fields
+// (which `write_partition` rewrites on every write, and which are not part of the
+// config) while keeping every genuine config field, the `policy_*` fields
+// included. Returns 0 — the "unknown, never reuse" sentinel — if
 // any symbol has no manifest entry.
 [[nodiscard]] std::uint64_t fold_symbol_configs(std::span<const DbSymbolRecord> recs,
                                                 std::vector<std::string> canon) {
@@ -543,12 +508,9 @@ SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
   // `fit_board` serves it explicitly tagged `SurfacePurpose::MarketMark`
   // (corpus_board_fit.cpp).
   //
-  // ON-DISK: NO FORMAT CHANGE. `outputs` is already persisted, in the
-  // `DbSurfacePolicyRecord` embedded in `DbSymbolRecord::reserved` (this file,
-  // top), and `surface_policy_record_valid` already admits `outputs` in 1..3 —
-  // `MarketMarkAndRisk` is 3. `sizeof(DbSymbolRecord)` is unchanged, so the
-  // compile-time schema fingerprint (surface_db.hpp) and
-  // `kSurfaceDbCarryOverFitSalt` both stand. The record BYTES do change, so
+  // ON-DISK: `outputs` is persisted in the named `DbSymbolRecord::policy_outputs`
+  // field (ATXVDB02, surface_db.hpp), and `surface_policy_fields_valid` admits
+  // `outputs` in 1..3 — `MarketMarkAndRisk` is 3. The record BYTES change, so
   // `fold_symbol_configs` yields a different carry-over fingerprint and a
   // partition fitted under the old contract is re-fitted rather than carried —
   // which is exactly the intended behaviour for a changed fit config.
@@ -570,19 +532,17 @@ SymbolFitConfig symbol_config_from_preset(FitPreset preset) {
 
 std::optional<SurfaceProvenance>
 decode_symbol_provenance(const DbSymbolRecord &rec) noexcept {
-  const DbSurfacePolicyRecord wire = decode_surface_policy_record(rec);
-  if (wire.marker == 0u || wire.has_provenance == 0u) {
+  if (rec.prov_present == 0u) {
     return std::nullopt;
   }
   SurfaceProvenance provenance;
-  provenance.purpose = static_cast<SurfacePurpose>(wire.purpose);
-  provenance.quality_mode =
-      static_cast<FitQualityMode>(wire.provenance_quality_mode);
-  provenance.state = static_cast<SurfaceState>(wire.state);
-  provenance.validation.failures =
-      static_cast<ValidationFailure>(wire.validation_failures);
-  provenance.validation.validation_id = wire.validation_id;
-  provenance.served_generation = wire.served_generation;
+  provenance.purpose = static_cast<SurfacePurpose>(rec.prov_purpose);
+  provenance.quality_mode = static_cast<FitQualityMode>(rec.prov_quality_mode);
+  provenance.state = static_cast<SurfaceState>(rec.prov_state);
+  provenance.validation.failures = static_cast<ValidationFailure>(rec.prov_validation_failures);
+  provenance.validation.validation_id = rec.prov_validation_id;
+  provenance.source_generation = rec.prov_source_generation;
+  provenance.served_generation = rec.prov_served_generation;
   provenance.legacy_format = false;
   return provenance;
 }
@@ -655,12 +615,11 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
     p.rec.surface_count = info.surface_count;
     p.rec.file_size = info.file_size;
     p.rec.created_ts_ns = info.created_ts_ns;
-    // FIX-D: previously-unused reserved field. Symmetric with decode_partitions
-    // below -- the decode half is NOT optional, because every manifest mutation
-    // round-trips the untouched partitions through DbPartitionInfo, so a
-    // write-only field would be wiped from every other partition on the next
-    // upsert_symbol.
-    p.rec.reserved0 = info.config_fingerprint;
+    // FIX-D. Symmetric with decode_partitions below -- the decode half is NOT
+    // optional, because every manifest mutation round-trips the untouched partitions
+    // through DbPartitionInfo, so a write-only field would be wiped from every other
+    // partition on the next upsert_symbol.
+    p.rec.config_fingerprint = info.config_fingerprint;
     part_plans.push_back(p);
   }
 
@@ -704,7 +663,7 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
 
   // 7. Header (payload_crc32c filled before header_crc32c, computed last).
   DbManifestHeader hdr{};
-  std::memcpy(hdr.magic, kDbMagic, 8);
+  std::memcpy(hdr.magic, kSurfaceDbMagic, 8);
   hdr.major = kSurfaceDbMajor;
   hdr.minor = kSurfaceDbMinor;
   hdr.header_size = static_cast<std::uint16_t>(sizeof(DbManifestHeader));
@@ -739,8 +698,13 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
   DbManifestHeader h;
   std::memcpy(&h, bytes.data(), sizeof h);
 
-  if (std::memcmp(h.magic, kDbMagic, 8) != 0) {
-    return Err(ErrorCode::ParseError, "DbManifest::open: bad magic");
+  if (std::memcmp(h.magic, kSurfaceDbMagic, 8) != 0) {
+    if (std::memcmp(h.magic, "ATXVDB01", 8) == 0) {
+      return Err(ErrorCode::ParseError,
+                 "DbManifest::open: found magic 'ATXVDB01' (the previous manifest format); this "
+                 "reader reads only ATXVDB02 - rebuild the surface db");
+    }
+    return Err(ErrorCode::ParseError, "DbManifest::open: bad magic (not an ATXVDB02 manifest)");
   }
   if (h.major != kSurfaceDbMajor) {
     return Err(ErrorCode::ParseError, "DbManifest::open: unsupported major version");
@@ -783,8 +747,18 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
   if (header_crc(h) != h.header_crc32c) {
     return Err(ErrorCode::ParseError, "DbManifest::open: header checksum mismatch");
   }
+  if (h.pad0 != 0u || !bytes_zero(h.reserved)) {
+    return Err(ErrorCode::ParseError, "DbManifest::open: non-zero reserved header bytes");
+  }
 
   const std::uint64_t payload_end = h.partitions_offset + partitions_bytes;
+  // Canonical placement: symbols right after the header, partitions at the next 64-B
+  // boundary, nothing after them -- so every byte of the file is under a CRC.
+  if (h.symbols_offset != align_up(sizeof(DbManifestHeader), kSurfaceDbSectionAlign) ||
+      h.partitions_offset != align_up(h.symbols_offset + symbols_bytes, kSurfaceDbSectionAlign) ||
+      payload_end != h.file_size) {
+    return Err(ErrorCode::ParseError, "DbManifest::open: section placement is not canonical");
+  }
   const std::uint32_t payload_crc = crc32c(
       buf_at(bytes, h.symbols_offset), static_cast<std::size_t>(payload_end - h.symbols_offset));
   if (payload_crc != h.payload_crc32c) {
@@ -807,7 +781,8 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
   // Validate every record eagerly (once, here) so find_symbol/find_partition
   // stay cheap lookups with no per-query re-validation.
   for (const DbSymbolRecord &rec : m.symbols_) {
-    if (rec.symbol_len == 0 || rec.symbol_len > kSurfaceDbKeyMax) {
+    if (rec.symbol_len == 0 || rec.symbol_len > kSurfaceDbKeyMax ||
+        !key_tail_zero(rec.symbol, rec.symbol_len)) {
       return Err(ErrorCode::ParseError, "DbManifest::open: invalid symbol_len");
     }
     if (!symbol_record_enums_valid(rec)) {
@@ -823,8 +798,9 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
   }
 
   for (const DbPartitionRecord &rec : m.partitions_) {
-    if (rec.key_len == 0 || rec.key_len > kSurfaceDbKeyMax) {
-      return Err(ErrorCode::ParseError, "DbManifest::open: invalid partition key_len");
+    if (rec.key_len == 0 || rec.key_len > kSurfaceDbKeyMax || !key_tail_zero(rec.key, rec.key_len) ||
+        rec.flags != 0u) {
+      return Err(ErrorCode::ParseError, "DbManifest::open: invalid partition record");
     }
   }
   for (std::size_t i = 1; i < m.partitions_.size(); ++i) {
@@ -925,26 +901,23 @@ namespace {
   return detail::flush_and_publish_file(tmp.string(), dst.string());
 }
 
-// Read a file fully into memory. NotFound if missing, IoError on any stream
-// failure (open/size/short read).
+// Read the manifest fully with ONE positional read (a delete-sharing handle, so a
+// concurrent manifest publish is never refused because of this reader). NotFound iff
+// the open reports the file absent; IoError on any other failure.
 [[nodiscard]] Result<std::vector<std::byte>> read_file_fully(const std::filesystem::path &p) {
-  std::error_code ec;
-  if (!std::filesystem::exists(p, ec) || ec) {
-    return Err(ErrorCode::NotFound, "SurfaceDb: manifest not found");
+  auto file = detail::PositionalFile::open(p.string());
+  if (!file) {
+    if (file.error().code() == ErrorCode::NotFound) {
+      return Err(ErrorCode::NotFound, "SurfaceDb: manifest not found");
+    }
+    return Err(file.error());
   }
-  std::ifstream is(p, std::ios::binary | std::ios::ate);
-  if (!is) {
-    return Err(ErrorCode::IoError, "SurfaceDb: cannot open manifest file");
+  if (file->size() > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    return Err(ErrorCode::IoError, "SurfaceDb: manifest too large to buffer");
   }
-  const std::streamsize size = is.tellg();
-  if (size < 0) {
-    return Err(ErrorCode::IoError, "SurfaceDb: cannot size manifest file");
-  }
-  std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-  is.seekg(0);
-  is.read(reinterpret_cast<char *>(bytes.data()), size);
-  if (is.gcount() != size) {
-    return Err(ErrorCode::IoError, "SurfaceDb: short read of manifest file");
+  std::vector<std::byte> bytes(static_cast<std::size_t>(file->size()));
+  if (Status st = file->read_at(0, bytes.data(), bytes.size()); !st) {
+    return Err(st.error());
   }
   return Ok(std::move(bytes));
 }
@@ -962,7 +935,7 @@ decode_partitions(std::span<const DbPartitionRecord> recs) {
     info.surface_count = rec.surface_count;
     info.file_size = rec.file_size;
     info.created_ts_ns = rec.created_ts_ns;
-    info.config_fingerprint = rec.reserved0; // FIX-D; 0 on a pre-FIX-D manifest
+    info.config_fingerprint = rec.config_fingerprint; // FIX-D; 0 = unknown
     out.push_back(std::move(info));
   }
   return out;
@@ -1020,17 +993,13 @@ Result<SurfaceDb> SurfaceDb::create(std::string_view root, const SurfaceDbCreate
     return Err(wrote.error());
   }
 
-  return open(root, SurfaceDbOpenOpts{opts.partition_cache_capacity});
+  return open(root, SurfaceDbOpenOpts{});
 }
 
-Result<SurfaceDb> SurfaceDb::open(std::string_view root, const SurfaceDbOpenOpts &opts) {
+Result<SurfaceDb> SurfaceDb::open(std::string_view root, const SurfaceDbOpenOpts & /*opts*/) {
   SurfaceDb db;
   db.root_ = std::string(root);
   db.mu_ = std::make_unique<std::mutex>();
-  db.cache_mu_ = std::make_unique<std::mutex>(); // S5 partition view cache
-  // Normalize a zero capacity to a single resident entry so the LRU bound is
-  // always positive (an unbounded cache is exactly the RSS defect S5 fixes).
-  db.partition_cache_capacity_ = std::max<std::size_t>(1u, opts.partition_cache_capacity);
 
   auto bytes = read_file_fully(db.manifest_path());
   if (!bytes) {
@@ -1090,7 +1059,7 @@ std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) cons
   // `shared_ptr<const DbManifest>` BY VALUE; written as two statements
   //
   //     const DbPartitionRecord *rec = manifest()->find_partition(key);
-  //     return rec != nullptr ? rec->reserved0 : 0u;
+  //     return rec != nullptr ? rec->config_fingerprint : 0u;
   //
   // the temporary shared_ptr is destroyed at the semicolon of the FIRST line and
   // `rec` — which points into the manifest's mapped bytes — is dereferenced on the
@@ -1108,7 +1077,7 @@ std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) cons
   // so it needs the owner past the semicolon.
   const std::shared_ptr<const DbManifest> m = manifest();
   const DbPartitionRecord *rec = m->find_partition(key);
-  return rec != nullptr ? rec->reserved0 : 0u;
+  return rec != nullptr ? rec->config_fingerprint : 0u;
 }
 
 // ── SurfaceDb: manifest mutation ──────────────────────────────────────────
@@ -1347,15 +1316,23 @@ Status SurfaceDb::remove_symbol(std::string_view symbol) {
 Status SurfaceDb::refresh() {
   std::lock_guard<std::mutex> lock(*mu_);
 
+  // The generation probe reads the header only, through a delete-sharing handle that
+  // is closed before the full read. Torn reads are impossible: every manifest version
+  // is published by an atomic rename, the probe only decides WHETHER to reload, and the
+  // reload parses (and CRC-checks) whichever complete version it opens.
   const std::filesystem::path path = manifest_path();
-  std::ifstream is(path, std::ios::binary);
-  if (!is) {
-    return Err(ErrorCode::IoError, "SurfaceDb::refresh: cannot open manifest file");
-  }
   DbManifestHeader hdr{};
-  is.read(reinterpret_cast<char *>(&hdr), sizeof hdr);
-  if (is.gcount() != static_cast<std::streamsize>(sizeof hdr)) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::refresh: short read of manifest header");
+  {
+    auto file = detail::PositionalFile::open(path.string());
+    if (!file) {
+      return Err(ErrorCode::IoError, "SurfaceDb::refresh: cannot open manifest file");
+    }
+    if (file->size() < sizeof hdr) {
+      return Err(ErrorCode::ParseError, "SurfaceDb::refresh: short read of manifest header");
+    }
+    if (Status st = file->read_at(0, reinterpret_cast<std::byte *>(&hdr), sizeof hdr); !st) {
+      return Err(st.error());
+    }
   }
 
   if (hdr.generation <= snapshot_->generation()) {
@@ -1397,10 +1374,6 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   if (!wrote) {
     return Err(wrote.error());
   }
-  // S5: the partition file was just rewritten — drop any stale cached mapping so
-  // the next load/map reopens the new bytes (the F6 identity check would catch it
-  // too, but evicting here is unconditional and cheap).
-  evict_partition(*canon);
 
   std::error_code size_ec;
   const std::uintmax_t file_size = std::filesystem::file_size(path, size_ec);
@@ -1479,7 +1452,9 @@ Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
   if (snap->find_partition(*canon) == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceDb::open_partition: partition not present");
   }
-  return SurfaceArchiveV2::open_file(partition_path(*canon));
+  // Whole-board callers: one positional read into an owned buffer (no stream, no
+  // mapping left against the file).
+  return SurfaceArchiveV2::open_copied(partition_path(*canon));
 }
 
 // REV-R3 fix-1 (review I-1). The same open with the manifest gate REMOVED — see
@@ -1488,52 +1463,19 @@ Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
 // file" apart from "there is a file I could not use", because its caller turns
 // the first into a whole-file overwrite.
 //
-// REV-R3 fix-2 (review N-1). WHAT THE PROBE BELOW CHECKS, stated as a check and
-// not as a guarantee — the previous version of this comment claimed the split
-// was already delivered by `SurfaceArchiveV2::open_file`, and it was not:
-//
-//   `std::filesystem::exists(p, ec)` returns false for BOTH "the path is not
-//   there" and "the query itself failed" (access denied on the file or on
-//   `partitions/`, a sharing violation, a transient volume or SMB fault, handle
-//   exhaustion). It distinguishes the two only through `ec`, which it CLEARS for
-//   a merely-absent path and SETS for a failed query. `open_file` folds both
-//   into one `NotFound` (`surface_archive.cpp`), and `NotFound` is the coverage
-//   guard's "nothing on disk, proceed and overwrite" branch — so a filesystem
-//   that could not answer read as a filesystem that answered "empty".
-//
-// So the existence question is asked HERE, where `ec` is looked at, and a failed
-// query becomes `IoError` — which the guard treats as an abort like any other
-// non-`NotFound` code. `open_file` itself is deliberately NOT changed: it has
-// other callers and widening its error contract underneath them is a separate
-// change with a separate blast radius.
-//
-// RESIDUAL, because this file has already had three comments that promised more
-// than the code did: `open_file` re-probes the path itself, so if the filesystem
-// starts failing in the window BETWEEN these two adjacent stats, this still
-// returns `open_file`'s `NotFound`. That window is two syscalls wide on one
-// thread and is the same window a real delete would race; it is narrowed here,
-// not eliminated. Eliminating it means changing `open_file`.
+// The split is the open's own error code (`detail::PositionalFile::open`):
+// NotFound only for ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND (ENOENT/ENOTDIR),
+// IoError for every other refusal — denied ACL, sharing violation, a directory, a
+// volume or SMB fault. Asking the open that also reads the bytes removes revision
+// 0's separate `exists` probe and with it the window between the probe and the read.
+// Armed with a real ERROR_ACCESS_DENIED by
+// `SurfaceDbPartition.OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent`.
 Result<SurfaceArchiveV2> SurfaceDb::open_partition_file(std::string_view key) const {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
   }
-  const std::string path = partition_path(*canon);
-  std::error_code ec;
-  const bool present = std::filesystem::exists(std::filesystem::path(path), ec);
-  if (ec) {
-    // NOT `NotFound`: the filesystem declined to answer, so "absent" is not
-    // something anyone here knows. Armed with a real ERROR_ACCESS_DENIED by
-    // `SurfaceDbPartition.OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent`
-    // (Windows-only — that test records which arming routes do NOT work and why).
-    return Err(ErrorCode::IoError,
-               "SurfaceDb::open_partition_file: cannot determine whether the partition file "
-               "exists");
-  }
-  if (!present) {
-    return Err(ErrorCode::NotFound, "SurfaceDb::open_partition_file: no partition file");
-  }
-  return SurfaceArchiveV2::open_file(path);
+  return SurfaceArchiveV2::open_copied(partition_path(*canon));
 }
 
 // REV-R3 fix-2 (review N-3). Does the MANIFEST list `key`? Pure snapshot lookup:
@@ -1550,263 +1492,54 @@ bool SurfaceDb::partition_listed(std::string_view key) const {
   return manifest()->find_partition(*canon) != nullptr;
 }
 
-namespace {
-constexpr char kArchiveV2Magic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
-constexpr char kArchiveV2RecordMagic[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'};
-
-[[nodiscard]] std::uint32_t archive_header_crc(ArchiveV2Header header) noexcept {
-  header.header_crc32c = 0;
-  std::array<std::byte, sizeof(ArchiveV2Header)> bytes{};
-  std::memcpy(bytes.data(), &header, sizeof header);
-  return crc32c(bytes.data(), bytes.size());
-}
-
-[[nodiscard]] Status read_archive_bytes(std::ifstream &in, std::uint64_t offset,
-                                        void *out, std::size_t size) {
-  if (offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
-      size > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
-    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: file offset is not seekable");
-  }
-  in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-  if (!in) {
-    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: seek failed");
-  }
-  const auto count = static_cast<std::streamsize>(size);
-  in.read(static_cast<char *>(out), count);
-  if (in.gcount() != count) {
-    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: short read");
-  }
-  return Ok();
-}
-
-[[nodiscard]] Status validate_session_archive_header(const ArchiveV2Header &header,
-                                                     std::uint64_t file_size) {
-  const bool layout_ok = header.major == kArchiveV2Major && header.endian == 1u &&
-                         header.pointer_bits == 64u &&
-                         header.header_size == sizeof(ArchiveV2Header) &&
-                         header.lookup_slot_size == sizeof(ArchiveV2LookupSlot) &&
-                         header.dir_entry_size == sizeof(ArchiveV2DirEntry) &&
-                         header.surface_header_size == sizeof(ArchiveV2SurfaceHeader);
-  if (std::memcmp(header.magic, kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0 ||
-      !layout_ok) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: invalid archive header");
-  }
-  if (header.file_size != file_size) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: file size mismatch");
-  }
-  if (archive_header_crc(header) != header.header_crc32c) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: header checksum mismatch");
-  }
-  if (header.surface_count == 0u) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: partition has no surfaces");
-  }
-  const std::uint64_t directory_size =
-      static_cast<std::uint64_t>(header.surface_count) * sizeof(ArchiveV2DirEntry);
-  if (header.directory_offset > file_size ||
-      directory_size > file_size - header.directory_offset ||
-      header.directory_offset + directory_size > header.data_offset ||
-      header.data_offset > file_size) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: directory out of bounds");
-  }
-  return Ok();
-}
-
-[[nodiscard]] Result<std::int64_t> read_session_ts(std::string_view path) {
-  const std::filesystem::path archive_path{std::string(path)};
-  std::error_code ec;
-  if (!std::filesystem::exists(archive_path, ec) || ec) {
-    return Err(ErrorCode::NotFound, "SurfaceDb::session_ts: partition file not found");
-  }
-  std::ifstream in{archive_path, std::ios::binary | std::ios::ate};
-  if (!in) {
-    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: cannot open partition file");
-  }
-  const std::streamsize sized = in.tellg();
-  if (sized < 0) {
-    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: cannot size partition file");
-  }
-  const auto file_size = static_cast<std::uint64_t>(sized);
-  if (file_size < sizeof(ArchiveV2Header)) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: shorter than archive header");
-  }
-
-  ArchiveV2Header header{};
-  auto read = read_archive_bytes(in, 0u, &header, sizeof header);
-  if (!read) {
-    return Err(read.error());
-  }
-  auto valid = validate_session_archive_header(header, file_size);
-  if (!valid) {
-    return Err(valid.error());
-  }
-
-  ArchiveV2DirEntry entry{};
-  read = read_archive_bytes(in, header.directory_offset, &entry, sizeof entry);
-  if (!read) {
-    return Err(read.error());
-  }
-  if (entry.surface_offset < header.data_offset || entry.surface_offset > file_size ||
-      entry.surface_size < sizeof(ArchiveV2SurfaceHeader) ||
-      entry.surface_size > file_size - entry.surface_offset ||
-      (entry.surface_offset % kArchiveV2ColumnAlign) != 0u) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: surface record out of bounds");
-  }
-
-  ArchiveV2SurfaceHeader surface{};
-  read = read_archive_bytes(in, entry.surface_offset, &surface, sizeof surface);
-  if (!read) {
-    return Err(read.error());
-  }
-  if (std::memcmp(surface.magic, kArchiveV2RecordMagic,
-                  sizeof(kArchiveV2RecordMagic)) != 0 ||
-      surface.record_size != entry.surface_size || surface.n_slices != entry.n_slices) {
-    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: invalid surface record header");
-  }
-  return Ok(surface.now_ts_ns);
-}
-
-// F6 content identity of the partition file at `path`, from its 256-byte v2
-// header only (cheap — no full read); mirrors SnapshotCache::current_identity. A
-// missing / not-yet-v2 file yields the default identity ("unknown").
-[[nodiscard]] ArchiveContentIdentity read_partition_identity(const std::string &path) {
-  std::ifstream in{path, std::ios::binary};
-  if (!in) {
-    return {};
-  }
-  ArchiveV2Header header{};
-  in.read(reinterpret_cast<char *>(&header), sizeof(header));
-  if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
-    return {};
-  }
-  if (std::memcmp(header.magic, kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0 ||
-      header.header_size != sizeof(ArchiveV2Header)) {
-    return {};
-  }
-  return archive_v2_identity_from_header(header);
-}
-} // namespace
-
-Result<std::int64_t> SurfaceDb::session_ts(std::string_view key) const {
+Result<std::string> SurfaceDb::listed_partition_path(std::string_view key,
+                                                     std::string_view caller) const {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
   }
   if (manifest()->find_partition(*canon) == nullptr) {
-    return Err(ErrorCode::NotFound, "SurfaceDb::session_ts: partition not present");
+    return Err(ErrorCode::NotFound, std::string(caller) + ": partition not present");
   }
-  return read_session_ts(partition_path(*canon));
+  return Ok(partition_path(*canon));
 }
 
-Result<std::shared_ptr<const SurfaceArchiveV2>>
-SurfaceDb::cached_partition(std::string_view canonical_key) const {
-  const std::string key{canonical_key};
-  const std::string path = partition_path(canonical_key);
-  // Read the on-disk identity BEFORE the lock (small header read) so a rewrite
-  // that changed the file evicts the stale mapping (F6). A default identity
-  // (unreadable / not-yet-v2) is "unknown": keep any cached mapping (a transient
-  // blip must not thrash a live entry); a true miss falls through to open, whose
-  // error is the real one.
-  const ArchiveContentIdentity identity = read_partition_identity(path);
-  {
-    std::lock_guard<std::mutex> lock(*cache_mu_);
-    const auto it = partition_cache_.find(key);
-    if (it != partition_cache_.end() &&
-        (identity == ArchiveContentIdentity{} || it->second.identity == identity)) {
-      // Hit: this key is now the most-recently-USED, so splice it to the back of
-      // the recency list (refreshes LRU order — a re-read protects it from
-      // eviction; the front stays the genuine least-recently-used victim).
-      cache_recency_.splice(cache_recency_.end(), cache_recency_, it->second.recency);
-      return it->second.archive; // shared mapping, identity unchanged/unknown
-    }
+Result<std::int64_t> SurfaceDb::session_ts(std::string_view key) const {
+  auto path = listed_partition_path(key, "SurfaceDb::session_ts");
+  if (!path) {
+    return Err(path.error());
   }
-  // Miss or stale: open fresh OUTSIDE the lock (no whole-file I/O under cache_mu_).
-  auto opened = SurfaceArchiveV2::open_file(path);
-  if (!opened) {
-    return Err(opened.error());
-  }
-  auto shared = std::make_shared<const SurfaceArchiveV2>(std::move(*opened));
-  const ArchiveContentIdentity opened_identity = shared->identity();
-  {
-    std::lock_guard<std::mutex> lock(*cache_mu_);
-    // Re-check under the lock: a concurrent open of the same key may have raced
-    // ahead. Replace an existing entry's mapping in place (keeping its recency
-    // slot, then refreshed to MRU); otherwise insert a fresh MRU entry.
-    const auto it = partition_cache_.find(key);
-    if (it != partition_cache_.end()) {
-      it->second.archive = shared;
-      it->second.identity = opened_identity;
-      cache_recency_.splice(cache_recency_.end(), cache_recency_, it->second.recency);
-    } else {
-      cache_recency_.push_back(key);
-      auto recency = std::prev(cache_recency_.end());
-      partition_cache_.emplace(key, PartitionCacheEntry{shared, opened_identity, recency});
-    }
-    // Bound resident mappings: evict least-recently-used (front) keys until at
-    // cap. The just-inserted key is at the back (MRU), so it is never the victim
-    // while capacity >= 1. Eviction only drops the cache's shared_ptr; any caller
-    // still co-owning the mapping keeps it alive (view-safety across eviction).
-    while (partition_cache_.size() > partition_cache_capacity_ && !cache_recency_.empty()) {
-      const std::string &victim = cache_recency_.front();
-      partition_cache_.erase(victim);
-      cache_recency_.pop_front();
-    }
-  }
-  return shared;
+  return detail::read_archive_v2_first_now_ts(*path);
 }
 
-void SurfaceDb::evict_partition(std::string_view canonical_key) const {
-  std::lock_guard<std::mutex> lock(*cache_mu_);
-  const auto it = partition_cache_.find(std::string(canonical_key));
-  if (it != partition_cache_.end()) {
-    cache_recency_.erase(it->second.recency);
-    partition_cache_.erase(it);
-  }
-}
-
-SurfaceDbCacheStats SurfaceDb::partition_cache_stats() const {
-  std::lock_guard<std::mutex> lock(*cache_mu_);
-  return SurfaceDbCacheStats{partition_cache_.size(), partition_cache_capacity_};
-}
-
+// Both single-surface reads are POINT READS (docs/atxvsa2-format.md §4, §10): the
+// archive header, the probed lookup slot(s) and the one record — O(record) I/O
+// whatever the partition's size — through one delete-sharing handle that is closed
+// before the call returns. Each call therefore reads ONE consistent file version, and
+// the revision-0 partition cache (whole-file buffers keyed by a content identity read
+// outside its lock, kept stale when the identity was unreadable) has no successor.
 Result<PricedSurface> SurfaceDb::load_surface(std::string_view key, std::string_view symbol) const {
-  auto canon = canonicalize_key(key);
-  if (!canon) {
-    return Err(canon.error());
+  auto path = listed_partition_path(key, "SurfaceDb::load_surface");
+  if (!path) {
+    return Err(path.error());
   }
-  const std::shared_ptr<const DbManifest> snap = manifest();
-  if (snap->find_partition(*canon) == nullptr) {
-    return Err(ErrorCode::NotFound, "SurfaceDb::load_surface: partition not present");
+  auto got = point_read_archive_reconstruct(*path, symbol);
+  if (!got) {
+    return Err(got.error());
   }
-  auto arch = cached_partition(*canon);
-  if (!arch) {
-    return Err(arch.error());
-  }
-  // Owned reconstruct over the shared cached mapping (the mapping is read once per
-  // partition, not once per load). Callers that hold a PricedSurface (the
-  // PortfolioPricer's SurfaceSet) use this; the zero-copy path is map_surface.
-  return (*arch)->reconstruct_symbol(symbol);
+  return Ok(std::move(got->archived.surface));
 }
 
 Result<LoadedSurface> SurfaceDb::map_surface(std::string_view key, std::string_view symbol) const {
-  auto canon = canonicalize_key(key);
-  if (!canon) {
-    return Err(canon.error());
+  auto path = listed_partition_path(key, "SurfaceDb::map_surface");
+  if (!path) {
+    return Err(path.error());
   }
-  const std::shared_ptr<const DbManifest> snap = manifest();
-  if (snap->find_partition(*canon) == nullptr) {
-    return Err(ErrorCode::NotFound, "SurfaceDb::map_surface: partition not present");
+  auto got = point_read_archive_surface(*path, symbol);
+  if (!got) {
+    return Err(got.error());
   }
-  auto arch = cached_partition(*canon);
-  if (!arch) {
-    return Err(arch.error());
-  }
-  auto view = (*arch)->map_symbol(symbol);
-  if (!view) {
-    return Err(view.error());
-  }
-  // The view borrows (*arch)'s bytes; co-own the mapping so it stays valid across
-  // a later eviction / in-place rewrite (seam §4).
-  return LoadedSurface{*arch, std::move(*view)};
+  return LoadedSurface{std::move(got->backing), std::move(got->view)};
 }
 
 Status SurfaceDb::drop_partition(std::string_view key) {
@@ -1838,9 +1571,6 @@ Status SurfaceDb::drop_partition(std::string_view key) {
   if (!persisted) {
     return Err(persisted.error());
   }
-  // S5: drop any cached mapping for the dropped key (mu_ -> cache_mu_ nesting is
-  // the same lock order as the read paths, so it cannot deadlock).
-  evict_partition(*canon);
 
   // Manifest-first ordering is deliberate, not incidental: the index entry is
   // already gone (and generation already bumped) by the time we get here, so
