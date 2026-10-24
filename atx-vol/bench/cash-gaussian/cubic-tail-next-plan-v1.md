@@ -150,3 +150,12 @@ price/Delta controls and later18-option study remain gated afterward. Original
 50 cash cases,150 PDE outcomes,32 Gaussian outcomes,18+5 diagnosis and both24
 weight receipts remain unchanged. No production, reference or timing promotion
 is implied by this prospective completion plan.
+
+The current owner stores binary64 endpoint values/slopes. Reconstructing it
+from decimal expectation outputs would introduce an additional binary64
+projection at every step. A future repeated matrix must retain and charge that
+conversion, then compare actual value/Delta against the independent analytic
+semigroup. Agreement between100/200-digit executions sharing the same rounded
+tuples is insufficient. If high-precision endpoint storage is needed, propose
+a separate explicit snapshot type and ownership/resource contract; do not
+silently reinterpret the frozen binary64 owner or its exact-zero proof.
