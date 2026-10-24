@@ -101,3 +101,37 @@ Still required for a performance conclusion: archive the enabled ThinLTO binary,
 repeat its own scalar actual-API gate, then compare complete fits against an
 archived control under valid physical-core and whole-host quiet gates. No
 subsecond result or qualified throughput improvement is established here.
+
+## Exact ThinLTO archive follow-up
+
+The enabled Release AVX2 ThinLTO build also passes all 13 scalar actual-API
+gates. Its complete prediction bytes and all 164 nonclock timing-counter fields
+exactly match the development result above. Both capture switches are OFF;
+both empirical switches are ON; the research QP library setting is empty.
+
+Before timing, source comparison caught that this research branch predated the
+reviewed strict CPU-counter interval guard `5ea67439`. The first ThinLTO archive
+`candidate-finalizer-lto-v1` passes its correctness audit but remains unsuitable
+for timing admission. Its executable and receipts are retained unchanged. No
+timing was attempted with it.
+
+The guard was cherry-picked as `e209692bd0ef3e0c94bf08371d749fffcdab3fca`, with
+only an append-only ledger conflict. Clock source/header/test blobs match the
+reviewed guard exactly; all 20 owning clock tests pass. Pricing and finalizer
+numerics remain `7037c0e1`. The replacement executable was archived before its
+own full audit, rather than inferring correctness from the earlier binary.
+
+Evidence directory:
+`C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/candidate-finalizer-lto-v2/`.
+
+| Artifact | SHA256 |
+|---|---|
+| Guarded ThinLTO executable | `7c44a1b2a206b6f9a920bd7e8d19e445dcaf062e3c53bc990a32f48442ca69c6` |
+| Native actual-API report | `2d7303e9a1d19352676ba68ddd3deced0ef2ba73316747be1906d6623c84be9a` |
+| Fourteen-artifact evidence manifest | `9d57bbe302a8fd4e71cadb3bd403ba11570192591256f0d75fb3a6b370814939` |
+
+The manifest retains the copied build cache, build log, 20-test XML/log, exact
+policy, command/exit receipt, complete output and independent verification.
+The canonical policy and prediction hashes remain those above. This closes
+the exact-release-binary correctness step only. A qualified quiet-host
+comparison and any subsecond or speedup claim remain outstanding.
