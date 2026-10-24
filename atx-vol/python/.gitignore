@@ -2,5 +2,8 @@
 /dist/
 # In-place extension: `cmake --build ... --target _core` output copied beside the
 # package so `pytest` runs against THIS tree instead of an editable install that
-# may point at another checkout.
+# may point at another checkout. The in-tree ATX_VOL_PYTHON build stages it here
+# automatically (cmake/stage_core.cmake), together with the vcpkg DLL closure the
+# module imports from its own directory.
 src/atxvol/*.pyd
+src/atxvol/*.dll

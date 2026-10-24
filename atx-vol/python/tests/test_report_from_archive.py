@@ -31,18 +31,40 @@ _EXPECTED_NAV_MONEY = "-$457"      # hero / caption, money at zero dp
 _EXPECTED_NAV_CENTS = "-$456.58"   # the daily P&L table
 
 
-def test_build_report_from_run_reads_the_archive(tmp_path):
-    """Renders from ``run.atxrun`` alone, with no TSV anywhere in the run dir.
+def _run_dir_with_effective_config(tmp_path: Path) -> Path:
+    """A run directory shaped like the CLI's: ``run.atxrun`` + ``run_config.tsv``.
 
-    Falsifiable in the direction that matters: reintroducing a TSV read makes this
-    fail, because the run directory deliberately contains no TSV to find.
+    The renderer REFUSES a run with no ``friction_regime`` (``_regime`` in
+    ``report/dispersion.py``), and the CLI records the regime in the effective-
+    config sidecar it writes beside the archive (``dispersion_run.cpp``: "REGIME
+    FIRST"), not in the archive's meta section -- so an archive copied on its own
+    is no longer a renderable run. The fixture's regime is not recoverable from
+    its meta, and nothing below asserts on the badge, so the sidecar states the
+    fixture's default-config label; the economics still come only from the archive.
     """
-    from atxvol.report.dispersion import build_report_from_run
-
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     shutil.copy(FIXTURE, run_dir / "run.atxrun")
-    assert not list(run_dir.glob("*.tsv")), "the point is that no TSV is present"
+    (run_dir / "run_config.tsv").write_text(
+        "key\tvalue\nfriction_regime\tfrictionless\n", encoding="utf-8"
+    )
+    return run_dir
+
+
+def test_build_report_from_run_reads_the_archive(tmp_path):
+    """Renders from ``run.atxrun`` with no backtest-series TSV in the run dir.
+
+    Falsifiable in the direction that matters: reintroducing a TSV read makes this
+    fail, because the run directory deliberately contains no series TSV to find --
+    its only TSV is the key/value effective config every CLI run writes.
+    """
+    from atxvol.report.dispersion import TRACK_NAMES, build_report_from_run
+
+    run_dir = _run_dir_with_effective_config(tmp_path)
+    assert [p.name for p in run_dir.glob("*.tsv")] == ["run_config.tsv"]
+    assert not any((run_dir / name).exists() for name in TRACK_NAMES), (
+        "the point is that no backtest series TSV is present"
+    )
 
     out = tmp_path / "report.html"
     written = build_report_from_run(str(run_dir), str(out), label="archive-only")
@@ -91,9 +113,7 @@ def test_section_selects_which_economics_are_rendered(tmp_path):
     if not alternates:
         pytest.skip(f"fixture has no alternate backtest section: {sorted(present)}")
 
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    shutil.copy(FIXTURE, run_dir / "run.atxrun")
+    run_dir = _run_dir_with_effective_config(tmp_path)
 
     a = tmp_path / "listed.html"
     b = tmp_path / "alt.html"

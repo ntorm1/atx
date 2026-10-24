@@ -13,6 +13,8 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -25,6 +27,7 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -294,6 +297,54 @@ namespace {
 #endif
 }
 
+#if defined(_WIN32)
+// Replace `dst` by `tmp` with POSIX rename semantics (`FileRenameInfoEx`,
+// `FILE_RENAME_FLAG_POSIX_SEMANTICS | FILE_RENAME_FLAG_REPLACE_IF_EXISTS`, NTFS on
+// Windows 10 1607+). Unlike `MoveFileEx`, it succeeds while readers hold `dst` open
+// with FILE_SHARE_DELETE (the point read, `open_copied`): they keep reading the old,
+// now-unlinked file. A reader WITHOUT FILE_SHARE_DELETE (a mapping, an ifstream) still
+// refuses it. Returns false — having changed nothing — on any refusal (sharing, an
+// older OS, a file system without POSIX semantics); the caller then falls back to the
+// classic rename and its bounded retry.
+[[nodiscard]] bool posix_replace_rename(const std::filesystem::path &tmp,
+                                        const std::filesystem::path &dst) noexcept {
+  std::error_code ec;
+  const std::filesystem::path abs_dst = std::filesystem::absolute(dst, ec);
+  if (ec) {
+    return false;
+  }
+  try {
+    const std::wstring target = abs_dst.wstring();
+    const std::size_t name_bytes = target.size() * sizeof(wchar_t);
+    if (name_bytes > 0xFFFF'0000u) {
+      return false;
+    }
+    // FILE_RENAME_INFO ends in a one-element FileName array that the name overruns: the
+    // documented variable-length Win32 pattern. Its spare element keeps a NUL.
+    std::vector<std::byte> buf(sizeof(FILE_RENAME_INFO) + name_bytes);
+    // SAFETY: `buf` is operator-new aligned (>= alignof(FILE_RENAME_INFO)) and sized for
+    // the struct plus the name; the object is created in place before any member use.
+    auto *info = ::new (static_cast<void *>(buf.data())) FILE_RENAME_INFO{};
+    info->Flags = FILE_RENAME_FLAG_POSIX_SEMANTICS | FILE_RENAME_FLAG_REPLACE_IF_EXISTS;
+    info->RootDirectory = nullptr;
+    info->FileNameLength = static_cast<DWORD>(name_bytes);
+    std::memcpy(info->FileName, target.c_str(), name_bytes);
+    HANDLE h = ::CreateFileW(tmp.wstring().c_str(), DELETE | SYNCHRONIZE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+    const BOOL ok = ::SetFileInformationByHandle(h, FileRenameInfoEx, info,
+                                                 static_cast<DWORD>(buf.size()));
+    ::CloseHandle(h);
+    return ok != FALSE;
+  } catch (...) { // allocation / path conversion: fall back to the classic rename
+    return false;
+  }
+}
+#endif
+
 } // namespace
 
 Status flush_and_publish_file(std::string_view tmp_path, std::string_view dst_path) {
@@ -321,14 +372,22 @@ Status flush_and_publish_file(std::string_view tmp_path, std::string_view dst_pa
   }
 
   // (2) Atomic publish with bounded retry + exponential backoff. On Windows the
-  // rename fails while any process holds `dst` open without FILE_SHARE_DELETE
-  // (MSVC ifstream, mmap); the hold is usually brief, so back off and retry.
+  // POSIX-semantics replace goes first: it is not refused by readers that share
+  // delete (lane SER 2026-10-23: under a tight point-read loop the classic rename
+  // exhausted all 8 retries 4 times in 40 publishes). The classic rename still fails
+  // while any process holds `dst` open without FILE_SHARE_DELETE (MSVC ifstream,
+  // mmap); the hold is usually brief, so back off and retry.
   // Cumulative budget ~635 ms across 8 attempts (5,10,20,40,80,160,320 ms gaps).
   constexpr int kMaxAttempts = 8;
   std::chrono::milliseconds delay{5};
   std::error_code ec;
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     ec.clear();
+#if defined(_WIN32)
+    if (posix_replace_rename(tmp, dst)) {
+      return fsync_parent_directory(dst);
+    }
+#endif
     fs::rename(tmp, dst, ec);
     if (!ec) {
       return fsync_parent_directory(dst);
@@ -422,6 +481,131 @@ Status flush_and_publish_file(std::string_view tmp_path, std::string_view dst_pa
     return FileReadStatus::IoError;
   }
   return FileReadStatus::Ok;
+}
+
+// ── PositionalFile ──────────────────────────────────────────────────────────
+
+atx::core::Result<PositionalFile> PositionalFile::open(std::string_view path) {
+  const std::filesystem::path p{std::string(path)};
+  PositionalFile f;
+#if defined(_WIN32)
+  HANDLE h = ::CreateFileW(p.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD error = ::GetLastError();
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+      return Err(ErrorCode::NotFound, "PositionalFile: no such file: " + p.string());
+    }
+    return Err(ErrorCode::IoError, "PositionalFile: cannot open " + p.string() +
+                                       " (win32 error " + std::to_string(error) + ")");
+  }
+  f.handle_ = h;
+  LARGE_INTEGER size{};
+  if (::GetFileSizeEx(h, &size) == 0 || size.QuadPart < 0) {
+    return Err(ErrorCode::IoError, "PositionalFile: cannot size " + p.string());
+  }
+  f.size_ = static_cast<std::uint64_t>(size.QuadPart);
+#else
+  const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    if (errno == ENOENT || errno == ENOTDIR) {
+      return Err(ErrorCode::NotFound, "PositionalFile: no such file: " + p.string());
+    }
+    return Err(ErrorCode::IoError, "PositionalFile: cannot open " + p.string());
+  }
+  f.fd_ = fd;
+  struct stat st {};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+    return Err(ErrorCode::IoError, "PositionalFile: not a sizable regular file: " + p.string());
+  }
+  f.size_ = static_cast<std::uint64_t>(st.st_size);
+#endif
+  return Ok(std::move(f));
+}
+
+PositionalFile::PositionalFile(PositionalFile &&other) noexcept
+#if defined(_WIN32)
+    : handle_{std::exchange(other.handle_, nullptr)},
+#else
+    : fd_{std::exchange(other.fd_, -1)},
+#endif
+      size_{other.size_}, bytes_read_{other.bytes_read_}, read_calls_{other.read_calls_} {
+}
+
+PositionalFile &PositionalFile::operator=(PositionalFile &&other) noexcept {
+  if (this != &other) {
+    close();
+#if defined(_WIN32)
+    handle_ = std::exchange(other.handle_, nullptr);
+#else
+    fd_ = std::exchange(other.fd_, -1);
+#endif
+    size_ = other.size_;
+    bytes_read_ = other.bytes_read_;
+    read_calls_ = other.read_calls_;
+  }
+  return *this;
+}
+
+PositionalFile::~PositionalFile() { close(); }
+
+void PositionalFile::close() noexcept {
+#if defined(_WIN32)
+  if (handle_ != nullptr) {
+    ::CloseHandle(static_cast<HANDLE>(handle_));
+    handle_ = nullptr;
+  }
+#else
+  if (fd_ >= 0) {
+    ::close(fd_);
+    fd_ = -1;
+  }
+#endif
+}
+
+atx::core::Status PositionalFile::read_at(std::uint64_t offset, std::byte *dst, std::size_t n) {
+  // One syscall per chunk; a chunk stays well inside DWORD / ssize_t range.
+  constexpr std::size_t kChunk = std::size_t{1} << 30;
+  std::size_t done = 0;
+  while (done < n) {
+    const std::size_t want = std::min(kChunk, n - done);
+    const std::uint64_t at = offset + done;
+#if defined(_WIN32)
+    if (handle_ == nullptr) {
+      return Err(ErrorCode::IoError, "PositionalFile::read_at: file is closed");
+    }
+    OVERLAPPED ov{};
+    ov.Offset = static_cast<DWORD>(at & 0xFFFFFFFFull);
+    ov.OffsetHigh = static_cast<DWORD>(at >> 32);
+    DWORD got = 0;
+    ++read_calls_;
+    if (::ReadFile(static_cast<HANDLE>(handle_), dst + done, static_cast<DWORD>(want), &got,
+                   &ov) == 0) {
+      return Err(ErrorCode::IoError, "PositionalFile::read_at: ReadFile failed (win32 error " +
+                                         std::to_string(::GetLastError()) + ")");
+    }
+    const std::size_t step = got;
+#else
+    if (fd_ < 0) {
+      return Err(ErrorCode::IoError, "PositionalFile::read_at: file is closed");
+    }
+    ++read_calls_;
+    const ssize_t got = ::pread(fd_, dst + done, want, static_cast<off_t>(at));
+    if (got < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return Err(ErrorCode::IoError, "PositionalFile::read_at: pread failed");
+    }
+    const auto step = static_cast<std::size_t>(got);
+#endif
+    if (step == 0) {
+      return Err(ErrorCode::IoError, "PositionalFile::read_at: short read (file shrank)");
+    }
+    done += step;
+    bytes_read_ += step;
+  }
+  return Ok();
 }
 
 } // namespace atx::vol::detail

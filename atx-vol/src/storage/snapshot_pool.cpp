@@ -58,7 +58,7 @@ struct PoolKeyHash {
   return std::hash<std::string_view>{}(date) % n_shards;
 }
 
-// The archive's content identity, read from its 256-byte v2 header only. Byte-
+// The archive's content identity, read from its 128-byte v2 header only. Byte-
 // content sensitive (see `ArchiveContentIdentity`); an unreadable or not-yet-an-
 // archive file yields the default (all-zero) identity so the load that follows
 // surfaces the real error. Mirrors `current_identity` in snapshot_cache.cpp —
@@ -75,8 +75,7 @@ struct PoolKeyHash {
   if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
     return {};
   }
-  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
-  if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
+  if (std::memcmp(header.magic, kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0 ||
       header.header_size != sizeof(ArchiveV2Header)) {
     return {};
   }

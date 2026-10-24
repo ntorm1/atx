@@ -589,6 +589,55 @@ target_compile_definitions(atx-vol-test-paths INTERFACE
     "ATX_VOL_REPO_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/..\""
     "ATX_VOL_ARTIFACT_CACHE=\"${CMAKE_BINARY_DIR}/artifact-cache\"")
 
+# ---- In-tree atxvol extension (opt-in; lane PY 2026-10-23) -------------------
+# atx-vol/python is a standalone scikit-build-core project, so before this block
+# no monorepo build ever compiled a binding and the `atx-vol-python` ctest lane
+# exited SKIP 77 in every tree (LEDGER 2026-08-23, 2026-10-18). ATX_VOL_PYTHON=ON
+# builds the same `_core` (one TU list: python/cmake/atxvol_core.cmake) as target
+# `atx-vol-python-core`, stages it beside python/src/atxvol (python/cmake/
+# stage_core.cmake says why there), and tests/CMakeLists.txt then registers
+# `atx-vol-python` as a HARD gate on that exact build output. OFF by default, so a
+# preset configure without the flag is unchanged. Configure with
+#   -DATX_VOL_PYTHON=ON -DPython3_EXECUTABLE=<python with numpy+pytest+pybind11>
+# pybind11_DIR is derived from that interpreter's `-m pybind11 --cmakedir` unless
+# given; vcpkg ships no pybind11 port.
+option(ATX_VOL_PYTHON
+    "Build the atxvol _core extension in-tree (atx-vol-python-core) and gate atx-vol-python on it"
+    OFF)
+if(ATX_VOL_PYTHON)
+    find_package(Python3 3.10 COMPONENTS Interpreter Development.Module REQUIRED)
+    if(NOT pybind11_DIR)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -m pybind11 --cmakedir
+            OUTPUT_VARIABLE _atx_vol_pybind11_dir
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _atx_vol_pybind11_rc)
+        if(NOT _atx_vol_pybind11_rc EQUAL 0)
+            message(FATAL_ERROR
+                "ATX_VOL_PYTHON=ON: `${Python3_EXECUTABLE} -m pybind11 --cmakedir` failed "
+                "(${_atx_vol_pybind11_rc}); install pybind11 for that interpreter or pass "
+                "-Dpybind11_DIR=<dir holding pybind11Config.cmake>.")
+        endif()
+        file(TO_CMAKE_PATH "${_atx_vol_pybind11_dir}" _atx_vol_pybind11_dir)
+        set(pybind11_DIR "${_atx_vol_pybind11_dir}" CACHE PATH "pybind11 CMake package dir")
+    endif()
+    find_package(pybind11 CONFIG REQUIRED)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/python/cmake/atxvol_core.cmake")
+    atxvol_add_core_module(atx-vol-python-core)
+    # A dedicated output directory: vcpkg's applocal POST_BUILD step copies the
+    # module's Arrow/Parquet DLL closure beside it, and the stage step below copies
+    # exactly that directory's _core*.pyd + *.dll -- never bin/'s gtest DLLs.
+    set_target_properties(atx-vol-python-core PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python/atxvol"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python/atxvol")
+    add_custom_command(TARGET atx-vol-python-core POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            "-DATXVOL_STAGE_FROM=$<TARGET_FILE_DIR:atx-vol-python-core>"
+            "-DATXVOL_STAGE_TO=${CMAKE_CURRENT_SOURCE_DIR}/python/src/atxvol"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/python/cmake/stage_core.cmake"
+        VERBATIM)
+endif()
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 

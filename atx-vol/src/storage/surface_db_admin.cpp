@@ -362,16 +362,14 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
     }
   };
 
-  // Partition-major so each partition file is opened once and every symbol in it
-  // is probed against the same cached mapping (the LRU view cache holds 16).
+  // Partition-major: one whole-board copy per partition row, plus one point read per
+  // cell (the path every production reader takes).
   for (const DbPartitionInfo &row : rows) {
     const std::string &key = row.key;
-    // ONE open per row, serving gate -1 and gate 0 both. `open_partition` re-reads
-    // the file rather than borrowing the db's cached mapping (there is no accessor
-    // for that mapping without a successful map, which is precisely what gate 0
-    // does not have); a concurrent writer can therefore make the two disagree,
-    // which is the torn view this header already documents as the
-    // concurrent-writer contract.
+    // ONE open per row, serving gate -1, gate 0 and the checksum classification.
+    // `open_partition` is a separate read of the file from each cell's point read;
+    // a concurrent writer can therefore make the two disagree, which is the torn
+    // view this header already documents as the concurrent-writer contract.
     const Result<SurfaceArchiveV2> row_archive = db.open_partition(key);
 
     // ── Gate -1: the manifest's RECORD against the FILE it indexes ────────────
@@ -428,24 +426,28 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
           record_absent(key, symbol);
           continue;
         }
+        // The point read verifies the record CRC BEFORE it frames the record, so a
+        // payload-only corruption fails the map. Tell that apart from a record the
+        // view refuses: when the row's copy still FRAMES the record (map_symbol
+        // checks framing and builds the view, no CRC) and only the CRC check fails,
+        // the bytes rotted — ChecksumMismatch, exactly the cell the pre-point-read
+        // classification called a checksum fault. Anything else is Unmappable.
+        if (row_archive && row_archive->map_symbol(symbol)) {
+          const Status crc = row_archive->validate_symbol(symbol);
+          if (!crc) {
+            ++out.cells_checksum;
+            record(key, symbol, DbCellFailure::ChecksumMismatch, crc.error().to_string());
+            continue;
+          }
+        }
         ++out.cells_unmappable;
         record(key, symbol, DbCellFailure::Unmappable, mapped.error().to_string());
         continue;
       }
-      // Mapping validated magic, framing and bounds — NOT one payload byte. The
-      // record carries its own CRC-32C; check it against the archive the map is
-      // already holding open (`LoadedSurface::partition`), so this costs no extra
-      // open and no extra mapping — only the read of the payload it checksums.
-      // Without this, intra-record damage maps cleanly, and a probe that happens
-      // to miss the damaged slices reports the cell healthy.
-      const Status crc = mapped->partition->validate_symbol(symbol);
-      if (!crc) {
-        ++out.cells_checksum;
-        record(key, symbol, DbCellFailure::ChecksumMismatch, crc.error().to_string());
-        continue;
-      }
-      // Bytes intact. Evaluate one ATM-ish point — K at the surface's own forward
-      // — to prove valid bytes actually produce a usable number.
+      // Bytes intact: the point read verified the record's CRC-32C over every byte
+      // before it built the view (docs/atxvsa2-format.md §4 step 6). Evaluate one
+      // ATM-ish point — K at the surface's own forward — to prove valid bytes
+      // actually produce a usable number.
       const PricedSurfaceView &view = mapped->view;
       const double forward = view.forward_at(spec.probe_T);
       const double iv = view.iv(forward, spec.probe_T);

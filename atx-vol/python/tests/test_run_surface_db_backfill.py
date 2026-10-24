@@ -734,6 +734,10 @@ def test_cli_dry_run_never_spawns_a_subprocess(tmp_path, monkeypatch, capsys):
         raise AssertionError("subprocess.run must not be called under --dry-run")
 
     monkeypatch.setattr(subprocess, "run", boom)
+    # The CLI's defaults (`--rates atx-vol/data/rates/us_3m_monthly.csv`, the
+    # build/bin exes) are repo-root-relative, as an operator runs it; the gated
+    # ctest lane runs from the build tree, so say where "here" is.
+    monkeypatch.chdir(_ROOT.parent)
     universe = _ROOT / "data" / "universe" / "sp100_2026-07.csv"
     argv = [
         "--universe", str(universe),

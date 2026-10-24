@@ -46,6 +46,7 @@
 #include "atx/vol/tools/surface_db_build.hpp"      // build_surface_db, generate_symbol_configs
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp"             // VolCurveKind
+#include "surface_archive_v2_patch.hpp" // propagate_record_crc (index CRC copies)
 
 namespace atx::vol {
 namespace {
@@ -206,7 +207,19 @@ void edit_record(const AdminFixture &f, std::string_view key, std::string_view s
     ASSERT_EQ(static_cast<std::size_t>(in.gcount()), n);
   }
   ASSERT_LE(ext.offset + ext.size, bytes.size());
+  constexpr std::size_t kCrcOff = offsetof(ArchiveV2SurfaceHeader, payload_crc32c);
+  std::uint32_t crc_before = 0;
+  std::memcpy(&crc_before, bytes.data() + ext.offset + kCrcOff, sizeof crc_before);
   mutate(std::span<std::byte>(bytes.data() + ext.offset, static_cast<std::size_t>(ext.size)));
+  // ATXVSA21 mirrors each record's CRC into its lookup slot and directory entry
+  // (docs/atxvsa2-format.md §2-§3). A mutation that repaired the record's own CRC
+  // (`repair_record_crc`) is a self-consistent rewrite, so its index copies follow;
+  // a mutation that left the CRC field alone is bit-rot, and the copies stay stale.
+  std::uint32_t crc_after = 0;
+  std::memcpy(&crc_after, bytes.data() + ext.offset + kCrcOff, sizeof crc_after);
+  if (crc_after != crc_before) {
+    atxvsa_patch::propagate_record_crc(bytes, ext.offset);
+  }
 
   const std::size_t before = bytes.size();
   {
@@ -1098,9 +1111,10 @@ TEST(SurfaceDbAdmin, VerifyDbKeyRangeMatchingNothingIsNotOk) {
 // ── payload checksum ────────────────────────────────────────────────────────
 
 // One byte flipped INSIDE a record, length preserved. The archive's framing,
-// magic and bounds are all still correct, so the surface maps and the ATM probe
-// returns a perfectly usable number — the walk sees nothing wrong. The record's
-// own payload CRC, which the format has carried all along, says it is corrupt.
+// magic and bounds are all still correct, so the whole-board map (lazy CRC) builds a
+// view and the ATM probe returns a perfectly usable number. The record's own payload
+// CRC says it is corrupt — and the SurfaceDb point read checks it, so `map_surface`
+// refuses the cell (ATXVSA21, docs/atxvsa2-format.md §4 step 6).
 TEST(SurfaceDbAdmin, VerifyDbDetectsInPlacePayloadCorruption) {
   const AdminFixture f = make_fixture("verify_crc");
   build_healthy_db(f);
@@ -1111,21 +1125,25 @@ TEST(SurfaceDbAdmin, VerifyDbDetectsInPlacePayloadCorruption) {
   });
   const SurfaceDb db = open_db(f);
 
-  // The damage is INVISIBLE to the map + probe walk...
-  const auto mapped = db.map_surface("2026-07-01", "AAA");
+  // The damage is INVISIBLE to the whole-board map + probe...
+  const auto archive = db.open_partition("2026-07-01");
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  const auto mapped = archive->map_symbol("AAA");
   ASSERT_TRUE(mapped.has_value()) << (mapped ? "" : mapped.error().to_string());
-  const double fwd = mapped->view.forward_at(kSurfaceDbVerifyProbeT);
-  const double iv = mapped->view.iv(fwd, kSurfaceDbVerifyProbeT);
+  const double fwd = mapped->forward_at(kSurfaceDbVerifyProbeT);
+  const double iv = mapped->iv(fwd, kSurfaceDbVerifyProbeT);
   EXPECT_TRUE(std::isfinite(fwd));
   EXPECT_GT(fwd, 0.0);
   EXPECT_TRUE(std::isfinite(iv));
   EXPECT_GT(iv, 0.0);
 
-  // ...and plainly visible to the checksum the record already carries.
-  const auto archive = db.open_partition("2026-07-01");
-  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  // ...and plainly visible to the checksum the record carries, which the point read
+  // behind `map_surface` verifies on every call.
   const Status crc = archive->validate_symbol("AAA");
   EXPECT_FALSE(crc.has_value()) << "the fixture must actually corrupt the payload";
+  const auto point = db.map_surface("2026-07-01", "AAA");
+  ASSERT_FALSE(point.has_value()) << "the point read must never serve a rotted record";
+  EXPECT_EQ(point.error().code(), ErrorCode::ParseError);
 
   const auto rep = verify_db(db, DbVerifySpec{});
   ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());

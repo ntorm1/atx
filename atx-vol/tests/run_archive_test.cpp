@@ -2031,7 +2031,7 @@ TEST(RunDir, MergeWriteDropsCarriedSectionsWhenSurfaceArchiveIdentityChanges) {
 
   const std::filesystem::path surface = dir / "2026-07-01.atxvsa";
   ArchiveV2Header header{};
-  std::memcpy(header.magic, "ATXVSA20", 8);
+  std::memcpy(header.magic, kArchiveV2Magic, 8);
   header.file_size = sizeof header;
   header.header_size = sizeof header;
   {
@@ -2049,6 +2049,32 @@ TEST(RunDir, MergeWriteDropsCarriedSectionsWhenSurfaceArchiveIdentityChanges) {
   }
   write_projected_only(RunDir(dir));
   expect_projected_write_started_fresh(dir);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// SER 2026-10-23: the run identity folds ONLY an ATXVSA21 header. The multi-format
+// recogniser (ATXVSA20 / ATXVSA03 header sizes) is gone; a manifest that references
+// an archive of any other revision is refused by name, so a stale run dir surfaces
+// "rebuild" rather than silently folding a foreign header into its identity.
+TEST(RunDir, RunIdentityRefusesAPriorRevisionSurfaceArchiveByName) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_archive_prior_revision_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+
+  const std::filesystem::path surface = dir / "2026-07-01.atxvsa";
+  std::array<char, 256> old_header{};
+  std::memcpy(old_header.data(), "ATXVSA20", 8);
+  {
+    std::ofstream out(surface, std::ios::binary | std::ios::trunc);
+    out.write(old_header.data(), static_cast<std::streamsize>(old_header.size()));
+    ASSERT_TRUE(out.good());
+  }
+  const auto identity = RunDir(dir).run_identity_hash();
+  ASSERT_FALSE(identity.has_value()) << "a revision-0 archive must not fold into an identity";
+  EXPECT_EQ(identity.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(identity.error().to_string().find("ATXVSA20"), std::string::npos)
+      << identity.error().to_string();
 
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);

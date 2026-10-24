@@ -21,6 +21,7 @@
 #include "atx/vol/api/pricing/implied_vol.hpp"
 #include "atx/vol/api/core/types.hpp"
 #include "batch_status.hpp"
+#include "common.hpp"
 #include "result.hpp"
 #include "sides.hpp"
 
@@ -538,7 +539,10 @@ void bind_pricing(py::module_ &m) {
       .value("INTERNAL", atx::core::ErrorCode::Internal)
       .value("NOT_IMPLEMENTED", atx::core::ErrorCode::NotImplemented)
       .value("IO_ERROR", atx::core::ErrorCode::IoError)
-      .value("PARSE_ERROR", atx::core::ErrorCode::ParseError);
+      .value("PARSE_ERROR", atx::core::ErrorCode::ParseError)
+      .value("CANCELLED", atx::core::ErrorCode::Cancelled)
+      .value("SWAP_FIXING_SCHEDULE_VIOLATION", atx::core::ErrorCode::SwapFixingScheduleViolation);
+  atxvol::python::register_enum_names<atx::core::ErrorCode>("ErrorCode");
 
   // Sentinel for the NaN + per-lane status convention (batch_status.hpp): every
   // vectorized entry point returns a parallel int32 status array whose entries

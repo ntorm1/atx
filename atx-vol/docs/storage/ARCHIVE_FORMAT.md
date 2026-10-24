@@ -364,6 +364,22 @@ trusted cache) but never the structural pass. Each refusal is exercised by a
 crafted file in `tests/fit_archive_test.cpp`, `tests/fit_archive_records_test.cpp`
 and `tests/fit_archive_series_test.cpp`.
 
+**Open cost model** (lane SER review, 2026-10-23). Every level pays the framing
+checks — O(1) header/footer work plus O(sections) table work and the table CRC —
+and the record pass, which is O(records) (every symbol, index entry and record
+reference is checked once). `Full` (the default) adds a CRC of every section and a
+scan of every padding byte: O(file bytes), and on a `Mapped` open it faults in
+every page of the file. `Paranoid` adds a second O(file) CRC over `[0, footer)`.
+So a single `find_surface` against a large segment pays an O(records) open even at
+`Framing` and an O(file) open at `Full`; the lookups after the open
+(`find_underlier`, `find_keyed`) are binary searches over the sorted fixed-stride
+indexes. Named follow-up, not implemented: a `Lazy` verify level that runs the
+framing checks at open and CRCs a section on its first `section_bytes` /
+`view<T>` touch (a per-section `std::atomic<uint8_t>` state: unchecked / ok /
+failed, the CRC run once under `std::call_once`-style publication), so a single
+lookup pays O(touched sections) instead of O(file). The record pass would move
+behind the same first touch of the sections it reads.
+
 Size arithmetic on file-supplied values never wraps. Section bounds use the
 subtraction form (`length <= footer_offset - offset`) and the element count is
 checked as `count == length / stride`; pool references use `first <= pool` and

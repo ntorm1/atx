@@ -104,6 +104,34 @@ add_test(NAME atx-vol-fit-archive COMMAND atx-vol-fit-archive-tests)
 set_tests_properties(atx-vol-fit-archive PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# ATXVSA2 surface archive and SurfaceDb point-read storage (docs/atxvsa2-format.md).
+# Focused and PCH-less so a storage lane builds three or four TUs instead of the
+# whole storage slice. Every file is ALSO compiled into atx-vol-tests, so these
+# entries carry `atx_vol_slice` only (never atx_vol_fast/slow): release
+# qualification still runs each case exactly once, through the monolith. No skip
+# regex: surface_archive_v2_test skips its three counter probes when
+# ATX_VOL_COUNTERS is OFF, which is the vol-rel default.
+add_executable(atx-vol-surface-archive-tests
+    surface_archive_v2_test.cpp surface_archive_v2_adversarial_test.cpp
+    surface_archive_durability_test.cpp surface_archive_point_read_test.cpp)
+target_link_libraries(atx-vol-surface-archive-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-surface-archive-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-surface-archive COMMAND atx-vol-surface-archive-tests)
+set_tests_properties(atx-vol-surface-archive PROPERTIES LABELS "atx_vol_slice")
+
+add_executable(atx-vol-surface-db-tests
+    surface_db_test.cpp surface_db_admin_test.cpp run_archive_test.cpp)
+target_link_libraries(atx-vol-surface-db-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main atx-test-scratch
+            atx-vol-test-paths)
+target_include_directories(atx-vol-surface-db-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+add_test(NAME atx-vol-surface-db COMMAND atx-vol-surface-db-tests)
+set_tests_properties(atx-vol-surface-db PROPERTIES LABELS "atx_vol_slice")
+
 # The opt-in strike-smoothing lattice schemes of the dated-cash American route
 # (DiscreteDivScheme, api/pricing/american.hpp). Focused executable for the same
 # reason as the schedule target above: its allocation test replaces global
@@ -559,6 +587,7 @@ add_executable(atx-vol-tests
     # Pipeline-SOTA WS-C (storage hardening) — appended target:
     surface_archive_v2_adversarial_test.cpp # C1/C4: view semantic+bounds validation, corruption corpus, x-check
     surface_archive_durability_test.cpp      # C3: fsync-before-rename + reader-held rename retry / preserve-temp
+    surface_archive_point_read_test.cpp      # SER 2026-10-23: ATXVSA21 O(1) point read + slot/record binding
     # Wave-P AAD greeks (Agent greeks) — appended target:
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
     # solve-wall SOTA WS-V (verify agent) — appended target:
@@ -987,11 +1016,28 @@ if(Python3_Interpreter_FOUND)
     # log rather than vanishing. atx-vol/python is a STANDALONE scikit-build-core
     # project, not an add_subdirectory of this build, so there is no _core target
     # here to guard on at configure time — hence the run-time guard.
-    add_test(
-        NAME atx-vol-python
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
-    )
+    #
+    # Lane PY (2026-10-23): with -DATX_VOL_PYTHON=ON the extension IS a target of
+    # this build (`atx-vol-python-core`, atx-vol/CMakeLists.txt), and the lane
+    # becomes a HARD gate on that exact build output: `--expect-core` makes the
+    # driver fail (never skip) when the staged `_core` is missing, unimportable or
+    # not byte-identical to $<TARGET_FILE:atx-vol-python-core>. The interpreter is
+    # the one the module was compiled against (Python3_EXECUTABLE, found by the
+    # option block with Development.Module before this directory was added).
+    if(TARGET atx-vol-python-core)
+        add_test(
+            NAME atx-vol-python
+            COMMAND ${Python3_EXECUTABLE} -E -P -B -X utf8
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
+                    --expect-core $<TARGET_FILE:atx-vol-python-core>
+        )
+    else()
+        add_test(
+            NAME atx-vol-python
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
+        )
+    endif()
     set_tests_properties(atx-vol-python PROPERTIES
         LABELS atx_vol
         SKIP_RETURN_CODE 77

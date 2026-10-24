@@ -1,55 +1,49 @@
 #pragma once
 
-// surface_db — the on-disk symbol/partition MANIFEST for a directory of ATXVSA2
-// surface archives (surface_archive.hpp — magic "ATXVSA20"; that header owns the
-// format naming, and this line used to say "ATXVSA v3", which named the RETIRED
-// format), plus the per-symbol fit
-// configuration a production pipeline needs to fit "this underlying, this
-// way" without hand-assembling `SessionInputs` at every call site.
+// surface_db — the on-disk symbol/partition MANIFEST (ATXVDB02) for a directory of
+// ATXVSA2 surface archives (surface_archive.hpp, revision 1, magic "ATXVSA21"; that
+// header owns the format naming), plus the per-symbol fit configuration a production
+// pipeline needs to fit "this underlying, this way" without hand-assembling
+// `SessionInputs` at every call site.
 //
-// A `SurfaceDb` is a directory: one `manifest.atxdb` (this format) indexing
-// zero or more `.atxvsa` partition files under `partitions/`. This header
-// covers the manifest's binary shape and in-memory writer/reader, the
-// `SurfaceDb` class itself (create/open, atomic manifest persistence, symbol
-// CRUD, partition IO, refresh()), and `apply_symbol_config` /
-// `symbol_config_from_preset` for binding a stored config onto
-// `SessionInputs`.
+// A `SurfaceDb` is a directory: one `manifest.atxdb` (this format) indexing zero or
+// more `.atxvsa` partition files under `partitions/`. This header covers the
+// manifest's binary shape and in-memory writer/reader, the `SurfaceDb` class itself
+// (create/open, atomic manifest persistence, symbol CRUD, partition IO, refresh()),
+// and `apply_symbol_config` / `symbol_config_from_preset`.
 //
-// ── On-disk shape ───────────────────────────────────────────────────────────
+// ── On-disk shape (ATXVDB02, spec: docs/atxvsa2-format.md §10) ────────────────
 //
-//   header (192 B) -> symbol records (sorted) -> partition records (sorted)
+//   header (128 B) -> symbol records (264 B, sorted) -> partition records (64 B, sorted)
 //
-//   * symbol records    — one per configured symbol, sorted by canonical
-//                          symbol; a fixed-width, field-for-field mirror of
-//                          `SymbolFitConfig` (bools packed into `flags`, enums
-//                          as `uint8`, every `CurveConfig`/`CalibOpts`/
-//                          `ConvexFitOpts`/`AlOpts` knob laid out flat).
-//   * partition records — one per `.atxvsa` partition file, sorted by
-//                          canonical key; identity + bookkeeping only — the
-//                          partition FILE's own integrity is the archive's job
-//                          (layered CRC-32C inside the `.atxvsa`, see
-//                          surface_archive.hpp).
+//   * symbol records    — one per configured symbol, sorted by canonical symbol; a
+//                          fixed-width, field-for-field mirror of `SymbolFitConfig`
+//                          (bools packed into `flags`, enums as `uint8`, every knob
+//                          laid out flat) whose surface policy and provenance are
+//                          NAMED fields.
+//   * partition records — one per `.atxvsa` partition file, sorted by canonical key;
+//                          identity + bookkeeping (incl. the carry-over
+//                          `config_fingerprint`). The partition FILE's own integrity
+//                          is the archive's job.
+//
+// Placement is canonical — symbols at 128, partitions at the next 64-B boundary,
+// `file_size` == end of partitions — so every byte of the file is covered by a CRC.
 //
 // ── Integrity ────────────────────────────────────────────────────────────────
 //
-// The same hardware-accelerated CRC-32C as the archive (atx::vol::detail,
-// shared so both formats agree bit-for-bit): a `header_crc32c` (header bytes
-// with that field zeroed) and a `payload_crc32c` over the contiguous
-// `[symbols_offset, end-of-partitions)` span. `open` validates framing
-// (magic/version/endian/pointer width/record sizes/schema hash), both CRCs,
-// section bounds, sort order, and every record's enum wire values EAGERLY —
-// once, at open — so `find_symbol`/`find_partition` stay cheap lookups with no
-// per-query re-validation.
+// The archive's CRC-32C: a `header_crc32c` (header bytes with that field zeroed) and a
+// `payload_crc32c` over `[symbols_offset, file_size)`. `open` validates framing
+// (magic — an older one is named in the error — version, endian, pointer width,
+// record sizes, schema hash), both CRCs, canonical placement, sort order, zero pads
+// and every record's enum wire values EAGERLY — once, at open — so
+// `find_symbol`/`find_partition` stay cheap lookups.
 //
 // ── Schema hash / endianness ──────────────────────────────────────────────────
 //
-// Same discipline as the archive: the header stores a compile-time
-// fingerprint folded from the `sizeof` of every on-disk record + an ATXVDB01
-// format salt (this manifest's own magic — a third, unrelated "v1"), so a reader
-// built against a different struct shape refuses the file
-// (ParseError) instead of mis-reading it. Records are host byte order; the
-// header stamps endian = 1 (little) / pointer_bits = 64. Little-endian LP64
-// hosts only.
+// The header stores a fingerprint folded from the `sizeof` of every on-disk record +
+// an ATXVDB02 salt, so a reader built against a different struct shape refuses the
+// file. Records are host byte order; the header stamps endian = 1 (little) /
+// pointer_bits = 64. Little-endian LP64 hosts only.
 //
 // ── Thread safety ────────────────────────────────────────────────────────────
 //
@@ -61,7 +55,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -69,7 +62,6 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"        // AlOpts
@@ -83,7 +75,8 @@
 namespace atx::vol {
 
 // ── On-wire constants ─────────────────────────────────────────────────────
-inline constexpr std::uint16_t kSurfaceDbMajor = 1;
+inline constexpr char kSurfaceDbMagic[8] = {'A', 'T', 'X', 'V', 'D', 'B', '0', '2'};
+inline constexpr std::uint16_t kSurfaceDbMajor = 2; // ATXVDB01 was major 1
 inline constexpr std::uint16_t kSurfaceDbMinor = 0;
 inline constexpr std::size_t kSurfaceDbKeyMax = 32; // partition-key chars
 inline constexpr std::string_view kSurfaceDbManifestName = "manifest.atxdb";
@@ -171,15 +164,15 @@ void apply_symbol_config(const SymbolFitConfig &cfg, SessionInputs &in, SurfaceP
 // ── On-disk records (POD, little-endian, fixed layout) ────────────────────
 
 // Manifest file header, at offset 0. `header_crc32c` covers the header with
-// that field zeroed; `payload_crc32c` covers the symbols ‖ partitions span.
+// that field zeroed; `payload_crc32c` covers [symbols_offset, file_size).
 struct DbManifestHeader {
-  char magic[8]{};       // "ATXVDB01", no NUL
+  char magic[8]{};       // "ATXVDB02", no NUL
   std::uint16_t major{}; // kSurfaceDbMajor
   std::uint16_t minor{};
   std::uint16_t header_size{};  // sizeof(DbManifestHeader)
   std::uint16_t endian{};       // 1 = little
   std::uint16_t pointer_bits{}; // 64
-  std::uint16_t reserved0{};
+  std::uint16_t pad0{};         // alignment of `flags`; must be zero
   std::uint32_t flags{};
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
@@ -188,24 +181,26 @@ struct DbManifestHeader {
   std::uint64_t schema_hash{}; // sizeof-based layout fingerprint
   std::uint32_t symbol_count{};
   std::uint32_t partition_count{};
-  std::uint64_t symbols_offset{};
-  std::uint64_t partitions_offset{};
+  std::uint64_t symbols_offset{};    // == sizeof(DbManifestHeader)
+  std::uint64_t partitions_offset{}; // == align_up(symbols end, 64)
   std::uint32_t symbol_record_size{};    // sizeof(DbSymbolRecord)
   std::uint32_t partition_record_size{}; // sizeof(DbPartitionRecord)
   std::uint32_t header_crc32c{};
   std::uint32_t payload_crc32c{};
-  std::uint8_t reserved[88]{};
+  // Zero. Pads the header to the 64-B section alignment, so no byte between the header
+  // and the symbols escapes a checksum; a reader refuses a non-zero byte.
+  std::uint8_t reserved[24]{};
 };
-static_assert(sizeof(DbManifestHeader) == 192, "DbManifestHeader layout drift");
+static_assert(sizeof(DbManifestHeader) == 128, "DbManifestHeader layout drift");
 static_assert(std::is_trivially_copyable_v<DbManifestHeader>);
 static_assert(std::is_standard_layout_v<DbManifestHeader>);
 
 // One symbol's full fit configuration, fixed-width. Sorted by canonical
 // symbol in the file. Field-for-field mirror of SymbolFitConfig (bools in
 // `flags`, enums as uint8, CurveConfig/CalibOpts/ConvexFitOpts/AlOpts fields
-// laid out flat).
+// laid out flat), followed by the named surface-policy and provenance fields.
 struct DbSymbolRecord {
-  char symbol[32]{}; // canonical, not NUL-terminated
+  char symbol[32]{}; // canonical, zero padded
   std::uint16_t symbol_len{};
   std::uint16_t flags{}; // kDbSym* bits
   // enums (uint8 wire width)
@@ -219,12 +214,8 @@ struct DbSymbolRecord {
   std::uint8_t residual_n_basis_terms{};
   std::uint8_t loss_kind{};   // CalibLossKind (calib loss)
   std::uint8_t anchor_kind{}; // CalibAnchorKind
-  // AlOpts::n_quad_price (C2 / SE-P1-2): the decoupled premium quadrature order
-  // of the symbol's fit config. 0 ties it to al_n_quadrature; pre-C2 manifests
-  // stored 0 here (a zero-filled reserved slot), so 0 -> tied preserves them. The
-  // reuse is layout-invariant (sizeof unchanged), so the DB schema hash is
-  // unchanged and every existing manifest still opens (no salt bump on the DB
-  // side — a fit-config field cannot misprice already-stored surfaces).
+  // AlOpts::n_quad_price: the decoupled premium quadrature order of the symbol's fit
+  // config; 0 ties it to al_n_quadrature.
   std::uint16_t al_n_quad_price{};
   // 16-bit knobs
   std::uint16_t max_outer_iter{};
@@ -261,26 +252,44 @@ struct DbSymbolRecord {
   double max_spread_to_mid_pct{};
   double al_tol{};
   double band_k{};
-  std::uint8_t reserved[32]{};
+  // SurfacePolicy (named fields; ATXVDB01 hid them in `reserved`). `policy_outputs`
+  // must be 1..3 — there is no all-zero "legacy" policy.
+  std::uint8_t policy_quality_mode{};   // FitQualityMode
+  std::uint8_t policy_outputs{};        // SurfaceOutputs bitmask, 1..3
+  std::uint8_t policy_risk_admission{}; // RiskAdmission (Required whenever outputs has Risk)
+  std::uint8_t policy_fallback{};       // SurfaceFallback
+  // The last served SurfaceProvenance written back by write_partition.
+  std::uint8_t prov_present{}; // 0 none (every prov_* field zero), 1 present
+  std::uint8_t prov_purpose{};
+  std::uint8_t prov_state{};
+  std::uint8_t prov_quality_mode{};
+  std::uint32_t prov_validation_failures{};
+  std::uint32_t pad0{}; // alignment of the u64 block; must be zero
+  std::uint64_t prov_validation_id{};
+  std::uint64_t prov_source_generation{};
+  std::uint64_t prov_served_generation{};
 };
-static_assert(sizeof(DbSymbolRecord) == 256, "DbSymbolRecord layout drift");
+static_assert(sizeof(DbSymbolRecord) == 264, "DbSymbolRecord layout drift");
+static_assert(offsetof(DbSymbolRecord, band_k) == 216);
+static_assert(offsetof(DbSymbolRecord, policy_quality_mode) == 224);
+static_assert(offsetof(DbSymbolRecord, prov_validation_failures) == 232);
+static_assert(offsetof(DbSymbolRecord, prov_validation_id) == 240);
 static_assert(std::is_trivially_copyable_v<DbSymbolRecord>);
 static_assert(std::is_standard_layout_v<DbSymbolRecord>);
 
 // One partition's index entry, sorted by canonical key. Integrity of the
-// partition file itself is the archive's job (layered CRCs inside .atxvsa);
-// the manifest tracks identity + bookkeeping.
+// partition file itself is the archive's job (CRCs inside .atxvsa); the manifest
+// tracks identity + bookkeeping.
 struct DbPartitionRecord {
-  char key[32]{}; // canonical, not NUL-terminated
+  char key[32]{}; // canonical, zero padded
   std::uint16_t key_len{};
-  std::uint16_t flags{};
+  std::uint16_t flags{}; // zero
   std::uint32_t surface_count{};
   std::uint64_t file_size{}; // partition file bytes at write time
   std::int64_t created_ts_ns{};
-  std::uint64_t reserved0{};
-  std::uint8_t reserved[64]{};
+  std::uint64_t config_fingerprint{}; // FIX-D carry-over fingerprint; 0 = unknown
 };
-static_assert(sizeof(DbPartitionRecord) == 128, "DbPartitionRecord layout drift");
+static_assert(sizeof(DbPartitionRecord) == 64, "DbPartitionRecord layout drift");
 static_assert(std::is_trivially_copyable_v<DbPartitionRecord>);
 static_assert(std::is_standard_layout_v<DbPartitionRecord>);
 
@@ -429,11 +438,10 @@ struct DbPartitionInfo {
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
   // FIX-D: fingerprint of the per-symbol fit CONFIGS this partition was written
-  // under (computed by `SurfaceDb::config_fingerprint`). Stored in the record's
-  // previously-unused `reserved0`, so no on-disk struct changes size and no
-  // existing manifest is rejected. 0 means UNKNOWN — either a manifest written
-  // before this field existed, or a symbol whose config is no longer in the
-  // manifest — and unknown always means "do not reuse the stored surfaces".
+  // under (computed by `SurfaceDb::config_fingerprint`), persisted in
+  // `DbPartitionRecord::config_fingerprint`. 0 means UNKNOWN — an unattested write,
+  // or a symbol whose config is no longer in the manifest — and unknown always means
+  // "do not reuse the stored surfaces".
   std::uint64_t config_fingerprint{0};
 };
 
@@ -503,41 +511,13 @@ decode_symbol_provenance(const DbSymbolRecord &rec) noexcept;
 // ── SurfaceDb: create/open, atomic manifest persistence, symbol CRUD,
 // refresh(), partition IO ─────────────────────────────────────────────────
 
-// Default LRU bound for the S5 partition view cache. Each resident entry pins a
-// whole partition file's bytes in RAM: SurfaceArchiveV2::open_file reads the
-// entire file into an owned buffer (the real-mmap `atx::tsdb::Mapping` seam is
-// deferred to a later wave — see surface_archive.hpp), so an UNBOUNDED cache
-// would grow RSS by one full partition per distinct key the reader touches. The
-// backtest hot loop (B1) sweeps ~135 daily partitions, which without a bound
-// would keep every day's bytes resident for the SurfaceDb's lifetime and break
-// the sprint's RSS = O(in-flight) invariant. 16 keeps a working set of recent
-// partitions hot — comfortably covering the typical lookback / roll windows a
-// step reprices across — while bounding resident bytes to O(16 partitions).
-// Callers with a wider working set raise it via SurfaceDb{Create,Open}Opts; a
-// zero is normalized to 1 (see SurfaceDb::open).
-inline constexpr std::size_t kSurfaceDbDefaultPartitionCacheCapacity = 16;
-
 struct SurfaceDbCreateOpts {
   std::int64_t created_ts_ns{0}; // 0 => system clock
-  // Passed through to the SurfaceDb::open that create() returns, so a
-  // create-then-read caller configures the view cache in one call.
-  std::size_t partition_cache_capacity{kSurfaceDbDefaultPartitionCacheCapacity};
 };
 
-struct SurfaceDbOpenOpts {
-  // Max partition mappings held resident in the S5 view cache (LRU-evicted).
-  // See kSurfaceDbDefaultPartitionCacheCapacity for the resident-bytes rationale
-  // and the default. Zero is normalized to 1.
-  std::size_t partition_cache_capacity{kSurfaceDbDefaultPartitionCacheCapacity};
-};
-
-// Observability for the S5 partition view cache. `resident` is the number of
-// mappings held right now; `capacity` is the configured LRU bound. A
-// diagnostic/test hook (mirrors SnapshotCache::stats()); off every hot path.
-struct SurfaceDbCacheStats {
-  std::size_t resident{0};
-  std::size_t capacity{0};
-};
+// Read-side options. Empty since the partition view cache was replaced by the point
+// read (docs/atxvsa2-format.md §10); kept so `open(root, opts)` has a stable shape.
+struct SurfaceDbOpenOpts {};
 
 // An opened surface database. Const queries are thread-safe (they read an
 // immutable manifest snapshot swapped under a mutex). Manifest mutations
@@ -553,15 +533,15 @@ struct SurfaceDbCacheStats {
 // themselves; distinct keys are unaffected. Cross-process: single writer,
 // many readers; every manifest mutation is an atomic rewrite (tmp+rename)
 // with generation++ so a reader process picks it up via refresh().
-// A zero-copy surface handle returned by SurfaceDb::map_surface (S5). It CO-OWNS
-// the partition mapping it borrows (via the shared_ptr) so the view stays valid
-// even after the partition is later rewritten or evicted from the db's view
-// cache — the seam §4 "never let a view outlive the archive" rule, enforced by
-// construction. `operator*` / `operator->` forward to the view so callers write
+//
+// A zero-copy surface handle returned by SurfaceDb::map_surface. `backing` OWNS the
+// verified bytes of exactly the one record the view borrows (a point read, no mapping,
+// no file handle), so the view stays valid however the partition is later rewritten
+// or dropped. `operator*` / `operator->` forward to the view so callers write
 // `loaded->fair_value(...)`. Move-only (the view is move-only).
 struct LoadedSurface {
-  std::shared_ptr<const SurfaceArchiveV2> partition; // keeps the mapping alive
-  PricedSurfaceView view;                            // borrows `partition`'s bytes
+  std::shared_ptr<const void> backing; // owns the record bytes
+  PricedSurfaceView view;              // borrows `backing`
   [[nodiscard]] const PricedSurfaceView *operator->() const noexcept { return &view; }
   [[nodiscard]] const PricedSurfaceView &operator*() const noexcept { return view; }
 };
@@ -575,15 +555,11 @@ public:
                                                 const SurfaceDbCreateOpts &opts = {});
 
   // Open an existing database. Errors: NotFound (no manifest), ParseError,
-  // IoError. `opts` configures the S5 partition view-cache LRU bound.
+  // IoError.
   [[nodiscard]] static Result<SurfaceDb> open(std::string_view root,
                                               const SurfaceDbOpenOpts &opts = {});
 
   [[nodiscard]] const std::string &root() const noexcept { return root_; }
-
-  // Current partition view-cache occupancy + its LRU bound (S5). Diagnostic /
-  // test hook; thread-safe.
-  [[nodiscard]] SurfaceDbCacheStats partition_cache_stats() const;
 
   // ── Manifest snapshot queries (thread-safe) ──
   [[nodiscard]] std::shared_ptr<const DbManifest> manifest() const;
@@ -687,32 +663,24 @@ public:
   // resolve in the FILE's favour. Through `open_partition` it resolved the other
   // way and the rewrite overwrote the file.
   //
-  // ERROR CONTRACT — written as what is CHECKED, because the two previous
-  // versions of this paragraph were written as what is guaranteed and both were
-  // false (REV-R3 fix-2, review N-1):
+  // ERROR CONTRACT — written as what is CHECKED (REV-R3 fix-2, review N-1):
   //
-  //   `NotFound`     the existence probe was asked with an `std::error_code`,
-  //                  reported no error, and reported the path absent. This is
-  //                  the only code on which a caller may conclude "there is
-  //                  nothing here to lose".
-  //   `IoError`      either the existence probe FAILED (the filesystem declined
-  //                  to answer: denied ACL on the file or on `partitions/`, a
-  //                  sharing violation, a transient volume or SMB fault) or the
-  //                  file is there and would not read.
+  //   `NotFound`     the OPEN itself (`detail::PositionalFile::open`) was refused
+  //                  with "file / path not found". This is the only code on which a
+  //                  caller may conclude "there is nothing here to lose".
+  //   `IoError`      the open failed for any other reason (denied ACL on the file or
+  //                  on `partitions/`, a sharing violation, a transient volume or SMB
+  //                  fault, a directory) or the file is there and would not read.
   //   `ParseError`   the file is there, read, and is not a valid archive.
   //   `InvalidArgument`  `key` is not a representable partition key.
   //
   // Callers MUST keep `NotFound` apart from the rest — conflating them is the
-  // fail-open this was added to close, and folding a failed probe INTO
-  // `NotFound` is how that fail-open came back a second time.
+  // fail-open this was added to close. The answer comes from the one open that also
+  // reads the bytes, so there is no separate existence probe and no window between
+  // a probe and the read (revision 0 had two adjacent stats).
   //
-  // What this does NOT establish: `SurfaceArchiveV2::open_file` re-probes the
-  // path internally and still collapses a failed probe into `NotFound`, so a
-  // filesystem that starts failing between the two adjacent stats yields
-  // `NotFound` from here. The window is two syscalls on one thread.
-  //
-  // NO CACHING, deliberately: this bypasses the S5 partition view cache as well
-  // as the manifest, so it always reads what is on disk right now. It is a
+  // NO CACHING: this bypasses the manifest and reads what is on disk right now
+  // (`SurfaceArchiveV2::open_copied`, one positional read). It is a
   // once-per-written-date call on the drain thread, not a hot path.
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition_file(std::string_view key) const;
 
@@ -731,8 +699,8 @@ public:
   [[nodiscard]] bool partition_listed(std::string_view key) const;
 
   // Read the market timestamp for partition `key` without opening a full
-  // archive view or reconstructing a surface. This reads only the archive
-  // header, the first directory entry, and that entry's fixed-size surface header. Partition
+  // archive view or reconstructing a surface: positional reads of the archive
+  // header, the first directory entry, and that entry's record header only. Partition
   // timestamps are unique by the later MarketSnapshot load contract, which
   // rejects surfaces in one partition whose PricingContext::now_ts_ns disagree.
   //
@@ -741,20 +709,18 @@ public:
   // opened file that cannot be read, and `ParseError` for malformed framing.
   [[nodiscard]] Result<std::int64_t> session_ts(std::string_view key) const;
 
-  // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
-  // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
-  // evicted when the file's F6 content identity changes), so repeated loads of the
-  // same partition reuse one mapping instead of re-reading the whole file each
-  // call. Still materializes an owned PricedSurface (for callers that need one);
-  // the zero-copy path is `map_surface`.
+  // Reconstruct an OWNED surface for `symbol` in partition `key` through the point
+  // read (`point_read_archive_reconstruct`): the archive header, the probed lookup
+  // slot(s) and that record only — O(record) I/O whatever the partition's size, every
+  // touched byte CRC-verified, the record bound to `symbol`, no handle kept. Errors:
+  // `InvalidArgument` (bad key / symbol), `NotFound` (partition unlisted, file absent
+  // or symbol absent), `IoError`, `ParseError` (any corruption — never a wrong surface).
   [[nodiscard]] Result<PricedSurface> load_surface(std::string_view key,
                                                    std::string_view symbol) const;
 
-  // Zero-copy view of `symbol` in partition `key`, over the shared cached mapping
-  // (S5). The returned LoadedSurface co-owns the mapping so the view is safe even
-  // across a concurrent rewrite/eviction. This is the reconstruct-free deserialize
-  // path (kills bottleneck #2): O(1) hash-probe + a stack view on a cache hit, no
-  // per-surface allocation for parametric kinds.
+  // Zero-copy view of `symbol` in partition `key` through the point read
+  // (`point_read_archive_surface`); the LoadedSurface owns the one record's bytes.
+  // Same I/O budget and error contract as `load_surface`.
   [[nodiscard]] Result<LoadedSurface> map_surface(std::string_view key,
                                                   std::string_view symbol) const;
   // Remove `key` from the manifest, then unlink its archive file. Errors:
@@ -772,36 +738,14 @@ private:
                                       std::vector<DbPartitionInfo> partitions);
   [[nodiscard]] std::string manifest_path() const;
   [[nodiscard]] std::string partition_path(std::string_view canonical_key) const;
-
-  // S5 view cache: return the shared mapping for the partition at `canonical_key`,
-  // opening it iff absent or its on-disk F6 content identity changed (rewrite).
-  // Shared across cohorts/callers; I/O happens outside `cache_mu_`.
-  [[nodiscard]] Result<std::shared_ptr<const SurfaceArchiveV2>>
-  cached_partition(std::string_view canonical_key) const;
-  // Drop any cached mapping for `canonical_key` (called on write/drop).
-  void evict_partition(std::string_view canonical_key) const;
-
-  // One cached partition mapping + the content identity it was opened against +
-  // this key's slot in `cache_recency_` (its LRU position).
-  struct PartitionCacheEntry {
-    std::shared_ptr<const SurfaceArchiveV2> archive;
-    ArchiveContentIdentity identity;
-    std::list<std::string>::iterator recency;
-  };
+  // The partition FILE path for a key the manifest lists (InvalidArgument for an
+  // unrepresentable key, NotFound when unlisted).
+  [[nodiscard]] Result<std::string> listed_partition_path(std::string_view key,
+                                                          std::string_view caller) const;
 
   std::string root_{};
   mutable std::unique_ptr<std::mutex> mu_{}; // guards snapshot_ swap + writes
   std::shared_ptr<const DbManifest> snapshot_{};
-  // S5 partition view cache (guarded by cache_mu_). `cache_recency_` orders keys
-  // least-recently-USED at the front, most-recently at the back; each map entry
-  // stores an iterator into it. On a hit the key is spliced to the back; when the
-  // map exceeds partition_cache_capacity_ the front (LRU) key is evicted. Evicting
-  // only drops the cache's shared_ptr — an outstanding LoadedSurface / caller that
-  // still co-owns the mapping keeps it alive, so no in-use view is invalidated.
-  mutable std::unique_ptr<std::mutex> cache_mu_{};
-  mutable std::unordered_map<std::string, PartitionCacheEntry> partition_cache_{};
-  mutable std::list<std::string> cache_recency_{};
-  std::size_t partition_cache_capacity_{kSurfaceDbDefaultPartitionCacheCapacity};
 };
 
 } // namespace atx::vol

@@ -107,7 +107,8 @@ void bind_strategy(py::module_ &m) {
   py::enum_<LifecycleSpec::Holding>(lifecycle, "Holding")
       .value("HOLD_TO_EXPIRY", LifecycleSpec::Holding::HoldToExpiry)
       .value("ROLL_AT_HORIZON", LifecycleSpec::Holding::RollAtHorizon)
-      .value("CLOSE_AT_HORIZON", LifecycleSpec::Holding::CloseAtHorizon);
+      .value("CLOSE_AT_HORIZON", LifecycleSpec::Holding::CloseAtHorizon)
+      .value("FIXED_EXPIRY_RESTRIKE", LifecycleSpec::Holding::FixedExpiryRestrike);
   lifecycle.def(py::init<>())
       .def_readwrite("entry", &LifecycleSpec::entry)
       .def_readwrite("holding", &LifecycleSpec::holding)

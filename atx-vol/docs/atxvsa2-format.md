@@ -1,376 +1,389 @@
-# ATXVSA2 — zero-copy mmap columnar surface-archive format
+# ATXVSA2 revision 1 — surface archive with an O(1) point read
 
-Naming: this format is **ATXVSA2**, after its on-disk magic `ATXVSA20`
-(`major == kArchiveV2Major == 4`). The format it replaced is **ATXVSA03**, after
-its magic (`major == 3`). Neither is called "v1" or "v3" any more — the ordinals
-collided three ways (magic digits, the `major` field, sequence position) and the
-same format ended up named both. `surface_archive.hpp` states the rule; the `_v2`
-in `write_surface_archive_v2` is the `2` in the magic.
+Status: **authoritative layout spec** for the surface-archive format as of lane SER
+(2026-10-23). The on-disk POD structs live in
+`include/atx/vol/api/storage/surface_archive.hpp` (`ArchiveV2*`); the writer, the
+whole-board reader and the point read in `src/storage/surface_archive.cpp`; the
+positional-read seam (`detail::PositionalFile`) in `src/storage/archive_util.{hpp,cpp}`;
+the zero-copy view in
+`include/atx/vol/api/backtest/priced_surface_view.hpp`. Every size and offset below is
+pinned by a `static_assert` in the header, so this table and the code cannot drift
+silently.
 
-Status: **wave-1 design + implementation** (WS-S / S1–S3 of the
-`2026-07-18-atx-vol-backtest-hotpath-throughput-sprint`). This document is the
-authoritative layout spec; the on-disk POD structs live in
-`atx-vol/include/atx/vol/surface_archive.hpp` (the `ArchiveV2*` family) and the
-reader/writer in `atx-vol/src/surface_archive.cpp`. The zero-copy read view is
-`atx-vol/include/atx/vol/priced_surface_view.hpp`.
+## 0. Naming and identity
 
-Cite this file (and the primary sources in §7) in-code at the point of use, per
-the sprint §3 research-first mandate.
+The format family is **ATXVSA2** (the `2` in `SurfaceArchiveV2` /
+`write_surface_archive_v2`). This document specifies **revision 1**, identified on disk
+by the file magic `ATXVSA21`, `major == kArchiveV2Major == 5`, `minor == 0`, and the
+schema hash of §7. Two older containers exist and are refused with a `ParseError`
+that names the magic found:
 
----
+| Magic | Name | Status |
+| --- | --- | --- |
+| `ATXVSA03` | ATXVSA03 (major 3) | refused; its declarations and the `run_archive.cpp` recogniser are deleted |
+| `ATXVSA20` | ATXVSA2 revision 0 (major 4) | refused; no point read, wyhash lookup key, zero-marker provenance |
+| `ATXVSA21` | ATXVSA2 revision 1 (major 5) | **this spec** |
 
-## 0. Why a new format (the three bottlenecks it kills)
+There is no dual read and no migrator: no `.atxvsa` file exists outside rebuildable
+caches (production rebuilds from the OPRA hives), so the break is free.
 
-The ATXVSA03 archive (`major == 3`, magic `ATXVSA03`) deserializes by
-`reconstruct`: it CRC-32Cs the **whole blob** on every open, `make_unique`s a
-polymorphic `IVolCurve` per slice, and copies each node array into fresh
-`std::vector`s — *for every surface, even when the caller wants a subset*. Each
-blob is padded to **4096 bytes** (`kArchiveBlobAlign`), a ~4 KB/surface floor and
-read-amplification tax.
+A surface **record** keeps its own magic `ATXVSR20`. The record magic tags "this extent
+is a surface record"; the record LAYOUT is versioned by the file (magic + major +
+schema hash). A record is only reachable through a validated file header, and the
+zero-copy view (`priced_surface_view.cpp`, outside the storage module) carries its own
+copy of the record magic, so the record magic did not move with the layout.
 
-v2 removes all three:
+## 1. Why revision 1
 
-| v1 cost | v2 fix |
-|---|---|
-| whole-blob CRC-32C on every `reconstruct` (bottleneck #5) | CRC is **lazy** — `open` verifies only header + directory framing (O(directory), not O(data)); per-surface payload CRC is a `validate()`-on-demand API, never run to price |
-| `make_unique`/vector-copy per slice (bottleneck #5) | `PricedSurfaceView` reads slice scalars + parametric params **in place** from the mapping; **zero per-surface allocation** for parametric surfaces (see §4) |
-| whole-board touch for a subset (bottleneck #1) | `map_symbol(sym)` hash-probes the lookup and constructs a view over **only that surface record's byte extent** — no other surface's bytes are read |
-| 4096-B blob pad (bottleneck #6) | surfaces packed on **64-byte** boundaries (cache line / SIMD headroom); only the *file* tail is page-aligned |
+Revision 0 served a single underlying only after reading the WHOLE partition:
+`SurfaceDb::map_surface` / `load_surface` streamed the file into a heap buffer
+(`open_file`), copied the entire lookup table and directory, CRC'd the whole metadata
+span and cross-checked every directory entry against the lookup — O(file) bytes and
+O(#surfaces) work before one hash probe. Revision 1 adds a **point read** that touches
+only the header, the probed lookup slots and the record's own extent, and makes every
+byte it touches self-verifying (header CRC, per-slot CRC, record CRC + symbol binding).
+Whole-board readers keep an eager, fully cross-checked open (§5).
 
-Clean break (§0 of the sprint): v2 is not backward compatible with v1 and there is
-**no dual-read** in product code. v1 read/write is retained this wave *only* for
-not-yet-cutover readers and the throwaway migrator; the reader cutover + v1
-deletion is WS-S S4 (wave 2).
-
----
-
-## 1. Design lineage (researched primary sources → decisions)
-
-The layout is grounded in a survey of the state-of-the-art zero-copy /
-memory-mapped serialization formats (§7 sources), taking one idea from each:
-
-- **Apache Arrow columnar / IPC** — buffers are contiguous typed arrays written
-  end-to-end, min **8-byte** aligned (64-byte preferred for AVX-512), and the IPC
-  file format is "designed to support memory-mapped I/O with aligned buffers …
-  arrays point directly to the mapped memory without any copying or
-  deserialization." → v2 stores the per-slice re-pricing scalars as **contiguous
-  typed columns** (SoA): a `T[]` f64 array the bracket binary-search walks, plus
-  `forward[]`, `q_eff[]`, `df[]`, `kind[]`. The view's `resolve`/`interp_forward`
-  read these columns in place. Columns are 8-byte aligned; surfaces 64-byte.
-- **FlatBuffers** — "each scalar is aligned to its own size … little-endian …
-  the format is defined in terms of offsets and adjacency only," enabling
-  zero-copy access with no parse step. → every v2 field is **naturally aligned**
-  (f64/u64 on 8, u32 on 4, u16 on 2); records are laid out by offset+adjacency so
-  a mapped region is queryable with no fix-up.
-- **Cap'n Proto** — "the entire message is allocated in a few contiguous
-  segments … relative pointers within the segment"; a struct is a *data section*
-  followed by a *pointer (offset) section*. → v2 is a **single contiguous region**
-  (one mmap); every internal reference is a **byte offset** (directory→surface is
-  file-relative; surface-header→columns/payloads is record-relative), so **mapping
-  needs no relocation / pointer fix-up**. The `ArchiveV2SurfaceHeader`'s block of
-  `col_*_off` / `payload` offsets is exactly the "pointer section."
-
-Deliberately **not** adopted: FlatBuffers vtables / Cap'n Proto far-pointers /
-Arrow Flatbuffer metadata framing. Our schema is fixed and versioned by a
-`schema_hash` (sizeof-fold + salt, §5), so we pay none of the schema-evolution
-indirection — a reader built against a different struct shape recomputes a
-different hash and refuses the file, exactly as v1 does.
-
----
-
-## 2. File shape (single contiguous mmap region)
+## 2. File shape
 
 ```
-offset 0   ┌────────────────────────────┐
-           │ ArchiveV2Header (256 B)     │  magic, version, schema_hash, counts,
-           │                             │  section byte-offsets, header/meta CRC
-lookup_off ├────────────────────────────┤
-           │ ArchiveV2LookupSlot[slots]  │  open-addressed hash: symbol → surface
-           │  (64 B each, pow2 count)    │  offset/size. O(1) map_symbol / find.
-dir_off    ├────────────────────────────┤
-           │ ArchiveV2DirEntry[count]    │  one per surface, sorted by canonical
-           │  (80 B each)                │  symbol. Ordered map_all + jump table.
-data_off   ├────────────────────────────┤  (64-B aligned)
-           │ SurfaceRecord 0             │  packed, 64-B aligned, self-contained
-           │ SurfaceRecord 1             │
-           │ …                           │
-           └────────────────────────────┘  file tail padded to 4096 (clean mmap)
+offset 0             ArchiveV2Header            128 B
+128                  ArchiveV2LookupSlot[S]      64 B each, S = lookup_slot_count (pow2)
+128 + 64*S           ArchiveV2DirEntry[N]        72 B each, N = surface_count, sorted by symbol
+data_offset          SurfaceRecord 0..N-1        each at a multiple of the surface alignment
+EOF                  zero padding to 4096
 ```
 
-`lookup ‖ directory` is the **metadata span** covered by `metadata_crc32c`. Both
-the lookup slot and the directory entry carry `(surface_offset, surface_size)`,
-and **the directory entry additionally carries a copy of each record's
-`payload_crc32c`** (wave-2 S4/S5) — so *any* surface-payload rewrite, **including
-one that preserves the record's byte length and offset**, changes
-`metadata_crc32c` and hence the archive's content identity (F6
-`ArchiveContentIdentity`, reused from v1). Without the directory CRC copy a
-same-length in-place rewrite would be invisible to the identity: v2's per-record
-CRC otherwise lives only in the record header, which `metadata_crc32c` does not
-cover (the price of the lazy-CRC deserialize win). This is the faithful v2 port of
-v1's per-blob `surface_crc32c` in the lookup slot.
+Metadata placement is **canonical**: `lookup_offset == 128`, `directory_offset ==
+lookup_offset + 64*S`, `data_offset >= directory_offset + 72*N` and a multiple of 8.
+A reader refuses any other placement, so no byte between the header and the data
+section escapes a checksum. All integers are little-endian, all floats IEEE-754
+binary64, every field naturally aligned (FlatBuffers rule), every internal reference a
+byte offset (Cap'n Proto rule: mapping needs no relocation).
 
-### 2.1 SurfaceRecord — columnar, self-contained
+### 2.1 `ArchiveV2Header` (128 B, offset 0)
 
-All offsets below are **relative to the record start** (`surface_offset`). The
-record is self-contained: `[surface_offset, surface_offset+surface_size)` holds
-everything needed to price the surface and touches no other record.
+| Off | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 8 | `magic` | `ATXVSA21` |
+| 8 | 8 | `file_size` | total bytes; must equal the real size |
+| 16 | 8 | `created_ts_ns` | content identity, NOT a time (§8) |
+| 24 | 8 | `schema_hash` | §7 |
+| 32 | 8 | `lookup_offset` | 128 |
+| 40 | 8 | `directory_offset` | `128 + 64*S` |
+| 48 | 8 | `data_offset` | first record; multiple of 8 |
+| 56 | 4 | `surface_count` | N, `<= kArchiveV2MaxSurfaces` (2^24) |
+| 60 | 4 | `lookup_slot_count` | S: power of two, `>= 8`, `> N` (at least one empty slot) |
+| 64 | 4 | `lookup_slot_size` | 64 |
+| 68 | 4 | `dir_entry_size` | 72 |
+| 72 | 4 | `surface_header_size` | 224 |
+| 76 | 4 | `header_crc32c` | CRC-32C of these 128 bytes with this field zero |
+| 80 | 4 | `metadata_crc32c` | CRC-32C of lookup ‖ directory |
+| 84 | 4 | `flags` | writer `ArchiveV2WriteOpts::flags`, opaque |
+| 88 | 2 | `major` | 5 |
+| 90 | 2 | `minor` | 0 |
+| 92 | 2 | `header_size` | 128 |
+| 94 | 2 | `endian` | 1 (little) |
+| 96 | 2 | `pointer_bits` | 64 |
+| 98 | 30 | `reserved` | zero; pads the header to the 64-B lookup alignment so no uncovered gap precedes the lookup |
+
+### 2.2 `ArchiveV2LookupSlot` (64 B) — open-addressed hash table
+
+Linear probing from `archive_v2_symbol_hash(symbol) & (S - 1)`. Every slot, empty or
+occupied, carries its own CRC, so a point read verifies exactly the slots it reads.
+
+| Off | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 8 | `symbol_hash` | §6 |
+| 8 | 8 | `surface_offset` | absolute record offset |
+| 16 | 4 | `surface_size` | record extent in bytes (records are `< 4 GiB`; the writer refuses larger) |
+| 20 | 4 | `payload_crc32c` | copy of the record's `payload_crc32c` |
+| 24 | 4 | `slot_crc32c` | CRC-32C of these 64 bytes with this field zero |
+| 28 | 1 | `symbol_len` | 1..32 (occupied), 0 (empty) |
+| 29 | 1 | `flags` | 0 empty, 1 occupied |
+| 30 | 2 | `reserved` | zero |
+| 32 | 32 | `symbol` | canonical bytes, zero padded |
+
+An empty slot is all-zero except `slot_crc32c` (= the CRC of 64 zero bytes).
+
+### 2.3 `ArchiveV2DirEntry` (72 B) — the ordered jump table
+
+Sorted strictly ascending by canonical symbol (memcmp over the shared prefix, shorter
+first). Whole-board readers (`map_all`, `entries()`) iterate it; nothing on the point
+read touches it.
+
+| Off | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | `surface_offset` |
+| 8 | 8 | `surface_size` |
+| 16 | 8 | `symbol_hash` |
+| 24 | 4 | `uid` |
+| 28 | 4 | `payload_crc32c` (copy; makes `metadata_crc32c` sensitive to any payload rewrite) |
+| 32 | 2 | `n_slices` |
+| 34 | 2 | `kind_bits` (OR of `1 << VolCurveKind`) |
+| 36 | 2 | `symbol_len` |
+| 38 | 2 | `flags` (zero) |
+| 40 | 32 | `symbol` |
+
+## 3. Surface record
+
+A record is self-contained and self-identifying: `[surface_offset, surface_offset +
+surface_size)` holds everything needed to price the surface, its provenance, the
+canonical symbol it belongs to and its own CRC. Offsets inside it are record-relative.
+
+### 3.1 `ArchiveV2SurfaceHeader` (224 B)
+
+| Off | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 8 | `magic` | `ATXVSR20` |
+| 8 | 8 | `record_size` | equals the extent |
+| 16 | 8 | `S` | spot |
+| 24 | 8 | `r` | scalar rate |
+| 32 | 8 | `now_ts_ns` | valuation instant |
+| 40 | 8 | `al_tol` | `AlOpts::tol` |
+| 48 | 8 | `prov_validation_id` | |
+| 56 | 8 | `prov_source_generation` | |
+| 64 | 8 | `prov_served_generation` | |
+| 72 | 80 | `col_*_off` x10 | kind, T, forward, q_eff, df, borrow, n_used, n_dropped, node_count, payload_off |
+| 152 | 4 | `uid` | |
+| 156 | 4 | `n_slices` | 1..65535 |
+| 160 | 4 | `prov_validation_failures` | `ValidationFailure` bits 0..12 |
+| 164 | 4 | `payload_crc32c` | CRC-32C of the whole record with this field zero |
+| 168 | 2 | `kind_bits` | must equal the OR over the kind column |
+| 170 | 2 | `symbol_len` | 1..32 |
+| 172 | 8 | `al_n_collocation`, `al_n_quadrature`, `al_max_newton_iter`, `al_n_quad_price` | u16 each; `n_quad_price == 0` = tied |
+| 180 | 1 | `method` | `AmericanMethod` (0 AndersenLake, 1 Baw); anything else is refused |
+| 181 | 1 | `prov_status` | 1 Attested, 2 Unattested; 0 or anything else is refused |
+| 182 | 3 | `prov_purpose`, `prov_quality_mode`, `prov_state` | enum wire values |
+| 185 | 7 | `reserved` | zero; aligns `symbol` to a 64-B boundary |
+| 192 | 32 | `symbol` | canonical symbol, zero padded — the slot -> record binding |
+
+`prov_status` replaces revision 0's zero-marker convention. `Attested` records carry a
+validated provenance (purpose <= 1, quality <= 2, state <= 3, failure bits <= 12, and a
+`Healthy` state carries no failure bit). `Unattested` records were written from a
+`SurfaceArchiveItem` with `provenance == nullopt`; every provenance field is zero and
+the record decodes to `legacy_surface_provenance()` (a degraded, never-admitted market
+mark with `legacy_format = true`, the flag the backtest risk gate reads). An all-zero
+provenance block is no longer a state; it is `ParseError`.
+
+### 3.2 Columns and payloads — canonical geometry
+
+The reader recomputes the writer's geometry from `n = n_slices` and requires equality,
+which rules out every aliasing class (a column overlapping the header, two columns
+overlapping, a payload overlapping a column) in O(n):
 
 ```
-rec off 0  ┌─────────────────────────────────┐
-           │ ArchiveV2SurfaceHeader          │  pricing scalars (S,r,now,method,
-           │                                 │  AlOpts), provenance record, n_slices,
-           │                                 │  kind_bits, the col_*_off pointer block,
-           │                                 │  payload_crc32c
-           ├─────────────────────────────────┤  ── columnar SoA scalars (8-B aligned) ──
-col_kind   │ u8   kind[n_slices]             │  VolCurveKind per slice (dispatch)
-col_T      │ f64  T[n_slices]                │  slice maturity — bracket binary search
-col_fwd    │ f64  forward[n_slices]          │  term forward F
-col_qeff   │ f64  q_eff[n_slices]            │  effective carry
-col_df      │ f64  df[n_slices]              │  discount factor (slice-rate decode)
-col_borrow │ f64  borrow[n_slices]           │  SliceContext.borrow (fidelity)
-col_nused  │ u64  n_used[n_slices]           │  SliceContext.n_used
-col_ndrop  │ u64  n_dropped[n_slices]        │  SliceContext.n_dropped
-col_nodes  │ u32  node_count[n_slices]       │  array-curve node counts (0 = parametric)
-col_poff   │ u64  payload_off[n_slices]      │  record-relative offset of each payload
-           ├─────────────────────────────────┤  ── variable payloads (packed, 8-B) ──
-           │ slice 0 payload                 │  parametric POD OR node arrays (§3)
-           │ slice 1 payload                 │
-           │ …                               │
-           └─────────────────────────────────┘  padded to 64 B (next record)
+col_kind_off      = 224
+col_T_off         = align8(224 + n)
+col_forward_off   = col_T_off + 8n        col_qeff_off     = col_forward_off + 8n
+col_df_off        = col_qeff_off + 8n     col_borrow_off   = col_df_off + 8n
+col_nused_off     = col_borrow_off + 8n   col_ndropped_off = col_nused_off + 8n
+col_nodecount_off = col_ndropped_off + 8n
+col_payload_off_off = align8(col_nodecount_off + 4n)
+payload_off[0]    = align8(col_payload_off_off + 8n)
+payload_off[i]    = align8(payload_off[i-1] + payload_size(kind[i-1], node_count[i-1]))
+record_size       = payload_off[n-1] + payload_size(kind[n-1], node_count[n-1])
 ```
 
-The hot query path (`bracket` + `interp_forward` + surface-`w` interp) reads only
-the `kind`,`T`,`forward`,`q_eff`,`df` columns + at most two slices' payloads —
-all contiguous, all in place.
+Per-slice payload encoding (unchanged from revision 0, so record encoding is bit-exact
+and the view/reconstruct parity tests hold verbatim):
 
----
+| kind | `node_count` | payload bytes (8-B aligned start) |
+| --- | --- | --- |
+| `ConvexDense` (0) | >= 1 | `rmse_price` f64, `n_obs` u64, `n_active` u64, `u[n]` f64, `C[n]` f64 |
+| `Essvi` (1) | 0 | `EssviParams` (248 B, padding canonical zero) |
+| `Svi` (2) | 0 | `SviParams` (72 B, padding canonical zero) |
+| `LinearVariance` (3) | >= 1 | `k[n]` f64, `w[n]` f64 |
+| `C8` (4) | 0 | `C8Params` (176 B, padding canonical zero) |
+| `SplineVol` (5) | >= 1 | `atm_vol, z_lo, z_hi` f64x3, `n` u32 (== node_count), pad u32 (0), `z[n]`, `mult[n]`, **`mult_cap` f64, `w_offset` f64**, `n_butterfly_viol` u32 |
 
-## 3. Per-slice payload encoding (one kind byte drives it)
+`mult_cap` and `w_offset` are live terms of `SplineVolCurve::w()`; dropping them
+misprices clamped / calendar-lifted slices. `df[i]` must be finite and `> 0`.
 
-Mirrors v1's per-kind payloads byte-for-byte so the migrator is a pure
-re-pack (no numeric change). `n = node_count`.
+## 4. Point read (`point_read_archive_surface`)
 
-| kind | `node_count` | payload bytes (all f64/u32, 8-B aligned start) |
-|---|---|---|
-| `Essvi` (1) | 0 | `EssviParams` verbatim |
-| `Svi` (2) | 0 | `SviParams` verbatim |
-| `C8` (4) | 0 | `C8Params` verbatim |
-| `ConvexDense` (0) | #nodes | `rmse_price` f64 · `n_obs` u64 · `n_active` u64 · `u[n]` f64 · `C[n]` f64 |
-| `LinearVariance` (3) | #nodes | `k[n]` f64 · `w[n]` f64 |
-| `SplineVol` (5) | #knots | `atm_vol,z_lo,z_hi` f64×3 · `n` u32 · pad u32 · `z[n]` f64 · `mult[n]` f64 · **`mult_cap` f64 · `w_offset` f64** · `n_butterfly_viol` u32 |
+Given a partition path and a symbol, serve that one surface:
 
-**`mult_cap` and `w_offset` are load-bearing** — both are live eval-time terms of
-`SplineVolCurve::w()` (`mult_cap` clamps the served multiple; `w_offset` is the
-calendar-cone additive total-variance lift). Dropping them (the pre-review v2
-layout, and ATXVSA03, both did) silently misprices any SplineVol slice with
-a clamping multiple or a projected offset — the view rebuilds them as their 0.0
-struct defaults. They are serialized here so the view is bit-exact; the change
-bumped `schema_hash_v2`'s salt (minor→1) so any older v2 file is rejected.
+1. Canonicalize the symbol (ASCII upper-case). Empty or longer than 32 bytes:
+   `InvalidArgument` (the writer refuses such symbols, so no truncation alias exists).
+2. Open the file for **positional reads** (`detail::PositionalFile`: Win32
+   `ReadFile` with an `OVERLAPPED` offset, POSIX `pread`), shared
+   `READ | DELETE` on Windows. Absent file: `NotFound`; any other open failure:
+   `IoError`. No mapping is ever created.
+3. Read 128 B at offset 0. Validate magic (an older magic is named in the error),
+   major, endian, pointer width, struct sizes, schema hash, header CRC, `file_size ==`
+   real size (truncation and appended bytes both refuse), canonical metadata
+   placement, `S` pow2 `>= 8` and `> N`, `N <= 2^24`, `reserved == 0`.
+4. `h = archive_v2_symbol_hash(canon)`, `i = h & (S - 1)`. Read slots in runs of up to
+   8 (512 B, never wrapping inside one read). For each slot, verify `slot_crc32c`
+   (`ParseError` on mismatch), then: empty -> `NotFound`; `flags > 1` or a non-zero
+   empty slot -> `ParseError`; hash and symbol bytes equal -> hit. The probe is bounded
+   by `S` steps; because `S > N` an absent symbol always meets an empty slot.
+5. Check the slot extent: `surface_offset >= data_offset`, a multiple of 8,
+   `surface_size >= 224`, `surface_size <= file_size - surface_offset` (subtraction
+   form). Read exactly `[surface_offset, surface_offset + surface_size)` into an owned,
+   16-B aligned buffer. Close the file.
+6. Verify the record: magic, `record_size == surface_size`, symbol binding
+   (`symbol_len`/`symbol` equal the canonical query), `payload_crc32c` recomputed over
+   the record equals both the record's field and the slot's copy, then the canonical
+   geometry and enum checks of §3. Any failure: `ParseError` — never a wrong surface.
+7. Build the `PricedSurfaceView` over the owned buffer (zero copy from there) or
+   reconstruct an owned `PricedSurface`, plus provenance.
 
-The ConvexDense fit diagnostics (`rmse_price/n_obs/n_active`) live **inline** in
-its payload (only that kind needs them) rather than as a mostly-zero column.
+I/O budget (the reader's own accounting, `ArchivePointReadStats`): 3 positional reads in
+the common case — 128 B header, one slot run (<= 512 B), the record (~0.3–2 KB for a
+parametric surface) — independent of the partition's size. The file handle lives only
+for the call, so a point read never blocks the atomic republish of the partition.
 
----
+## 5. Whole-board open (`SurfaceArchiveV2::open*`)
 
-## 4. Zero-copy read view — allocation profile & bit-exactness
+`open` / `open_copied` / `open_file` / `open_mapped` / `open_borrowed` keep the eager
+metadata parse: header checks of step 3, the metadata CRC, every slot's CRC and
+emptiness, every slot's and entry's `symbol_hash` recomputed from its symbol, strictly
+ascending directory symbols, occupied-slot count `== N`, and the lookup <-> directory
+bijection (offset, size, CRC copy and hash agree). `map_symbol`, `map_entry`, `map_all*`,
+`reconstruct_*` and `provenance` then check, per record they touch, the record
+framing, the symbol binding against the slot / entry, `n_slices` / `kind_bits` / `uid`
+/ CRC-copy agreement with the entry, and the §3 geometry and enums. They do NOT
+recompute the record CRC (lazy, `validate_symbol` / `validate_all`): whole-board loads
+stay O(bytes touched), not O(bytes CRC'd).
 
-`PricedSurfaceView` (S2) is a non-owning handle over a mapped SurfaceRecord span.
-It reproduces `PricedSurface`'s **cold** query path (`QueryPricingTier::
-LegacyCompatible` / `ColdReference` — no `QueryAccelerator`, which is the default
-and only bit-reproducible backtest route). The surface-level math
-(`interp_forward`, `bracket`, surface `w`/`iv` interpolation, `resolve`) is
-replicated **inline and bit-for-bit** from `priced_surface.cpp` /
-`vol_curve.cpp` over the columns; price/greeks call the identical free functions
-(`american_price`, `american_greeks_fd/_al`, `american_delta`, `american_vega_al`).
+`open_copied` (and `open_file`, kept as the same operation for test fixtures) reads the
+whole file with ONE positional read into an owned buffer — no `ifstream`, no mapping —
+so it never blocks a republish and keeps `NotFound` typed. `open_mapped` maps the file
+and keeps the mapping for the archive's lifetime (on Windows that blocks a republish
+of that file while the archive lives; use it only for read-only corpora).
 
-Per-slice `w(k_log)` dispatch, by kind:
+## 6. Symbol hash
 
-- **Essvi / Svi / C8** — `memcpy` the POD params from the mapping to a stack
-  struct and call the exact free evaluator (`essvi_total_w` / `svi_total_w` /
-  `c8_slice_w`). **Zero heap.** Bit-exact (same function).
-- **LinearVariance** — replicate the ~12-line linear-in-w interpolation over the
-  mapped `k[]`/`w[]` spans (`LinearVarianceCurve::w`). **Zero heap.** Bit-exact.
-- **ConvexDense / SplineVol** — these carry non-trivial derived state
-  (`ConvexDenseCurve`'s wing-anchor extrapolation table; `SplineVolCurve`'s
-  natural-spline second-derivatives) and an iterative evaluator (Black-76
-  inversion / spline solve). The view **eagerly materializes the exact concrete
-  `IVolCurve`** for these two kinds at construction (copying the node arrays out
-  of the mapping — one small alloc per such slice), then evaluates through the
-  exact virtual `w`/`iv`. Bit-exact by construction (reuses the concrete curve);
-  **not** zero-alloc for these kinds.
+`archive_v2_symbol_hash(canonical bytes)` = FNV-1a/64 (offset basis
+`0xcbf29ce484222325`, prime `0x100000001b3`) over the bytes, then the MurmurHash3
+`fmix64` finalizer so the low bits the table masks are well mixed. It is defined by
+this spec, fixed arithmetic, and pinned by a known-answer test. Revision 0 persisted
+`atx::core::hash_bytes` (wyhash through ankerl's private `detail` namespace), whose own
+contract says "NOT stable across process restarts or platforms": a dependency bump
+would have turned every lookup into `NotFound` with no schema-hash change.
 
-**Net allocation profile** (measured intent; the measure agent ratifies):
+## 7. Integrity model
 
-- Parametric surfaces (single-name Essvi/Svi/C8 — the dispersion-basket bulk):
-  **zero per-surface allocation**. A 50-surface parametric partition maps with no
-  heap traffic; `map_symbol` on one is an O(1) hash probe + a stack view.
-- ConvexDense/SplineVol surfaces (SPY / index — a handful): a one-time,
-  subset-scoped, CRC-free materialization of the array curves. Far cheaper than
-  v1 (no whole-blob CRC, only referenced uids, done once and cached by S5), but
-  **not** zero-alloc.
+| Region | Covered by | Point read | Whole-board open | A bit flip there |
+| --- | --- | --- | --- | --- |
+| header | `header_crc32c` | verified | verified | `ParseError` |
+| one lookup slot | its `slot_crc32c` and `metadata_crc32c` | verified (each slot read) | both verified | `ParseError` |
+| directory | `metadata_crc32c` | not read | verified | `ParseError` at open |
+| record | its `payload_crc32c` (+ copies in its slot and entry) | verified | lazy (`validate_*`) | point read: `ParseError`; whole-board: served unless validated (by design) |
+| inter-record / tail padding | nothing | not read | not read | harmless, undetected (never read) |
 
-**Wave-2 opportunity (documented, not done):** push ConvexDense/SplineVol fully
-zero-copy by (a) storing their derived state in the record (spline `m2nd[]`;
-optional ConvexDense wing anchors) and (b) extracting span-based evaluator cores
-that the concrete curves also call (guaranteeing bit-exactness). Both touch
-`dense_slice.cpp`/`spline_curve.cpp`/`vol_curve.cpp` (not WS-S-owned), so they
-are coordinated follow-ups, not wave-1 work.
+`schema_hash` = `0x9e3779b97f4a7c15 ^ salt`, then `^= sizeof(T) * 0x100000001b3` for
+`ArchiveV2Header`, `ArchiveV2LookupSlot`, `ArchiveV2DirEntry`, `ArchiveV2SurfaceHeader`,
+`EssviParams`, `SviParams`, `C8Params`; salt `0xA7C3'5F04'2E1F'0201`. There is no
+prior-salt accept-list: a reader accepts exactly one schema hash.
 
-The economic-correctness gate is **bit-equality** vs the v1 `reconstruct` path on
-the same source surface (same doubles, same free functions). The parity test
-asserts `view.resolve/fair_value/greeks/evaluate_batch` are `std::bit_cast`-equal
-to a `PricedSurface` reconstructed from the same bytes.
+Records are host byte order; the header stamps `endian = 1`, `pointer_bits = 64` and
+the reader refuses a mismatch (little-endian LP64 only).
 
----
+## 8. Content identity (`created_ts_ns`)
 
-## 5. Integrity, schema hash, endianness
+`ArchiveContentIdentity = {file_size, created_ts_ns, header_crc32c, metadata_crc32c}`
+keys the backtest `SnapshotCache` / `SnapshotPool` staleness checks. With the writer's
+default `created_ts_ns = 0`, the field is filled from `(CRC32C(bytes[128, EOF)) << 32)
+^ file_size` (never 0): two identical builds are byte-identical, two different builds
+differ. It is a staleness signal only — CRC-32C is linear and forgeable, never tamper
+evidence — and it may be negative as an `int64`; never order archives by it. When a
+caller pins `created_ts_ns`, the identity of a same-size rewrite rests on
+`metadata_crc32c` alone (32 bits, which the CRC copies in slots and entries make
+sensitive to every record byte).
 
-- `schema_hash` folds `sizeof` of every v2 on-disk struct + the serialized POD
-  slice structs (`EssviParams`, `SviParams`) + a **v2 salt** distinct from v1's,
-  so a v1 file, a v2 file with drifted structs, and a v2 file from a different
-  build are all rejected with `ParseError`. (C8/SplineVol/LinearVariance kinds
-  are frozen by `static_assert` on their sizes, as in v1, so a new kind is a new
-  *kind byte*, not a layout change to the fold.)
-- **Salt history & the n_quad_price accept-list (C2 / SE-P1-2).** Salt low bits:
-  `0100` initial · `0101` SplineVol payload gained `mult_cap`+`w_offset` · `0102`
-  `AlOpts::n_quad_price` (the decoupled premium Gauss-Legendre order) now persists
-  in `ArchiveV2SurfaceHeader::al_n_quad_price` / `DbSymbolRecord::al_n_quad_price`,
-  each a formerly-zero **reserved u16**. Because that reuse is **layout-invariant**
-  (`sizeof` unchanged, so the fold is unchanged), a `0101` record is byte-identical
-  to a `0102` record whenever `n_quad_price == 0` (the tied default). The reader
-  therefore **accepts both `0102` and the immediately-prior `0101` salt** — every
-  existing archive still opens and reads `n_quad_price` back as `0` (tied). The
-  salt is bumped anyway so a **pre-C2 reader rejects** a NEW archive that sets a
-  genuinely decoupled premium order (it would otherwise silently reprice it with
-  the tied order — the SE-P1-2 round-trip-fidelity bug). Salts `<= 0100` stay
-  rejected (their payloads really are incompatible). The **DB manifest** side does
-  NOT bump its schema hash — a fit-config field cannot misprice already-stored
-  surfaces, and the reused reserved slot keeps every existing manifest openable.
-- Records are **host byte order**; the header stamps `endian=1` (little) /
-  `pointer_bits=64` and the reader rejects any mismatch. Little-endian LP64 only
-  (matches the rest of atx-vol).
-- CRC-32C (hardware SSE4.2 with table fallback, shared `detail::crc32c`):
-  `header_crc32c` (header, own field zeroed), `metadata_crc32c` (lookup ‖
-  directory), and a per-record `payload_crc32c` (record bytes, own field zeroed).
-  **`open` verifies header + metadata + framing bounds only.** Per-record CRC is
-  checked **only** by the explicit `validate_symbol` / `validate_all` API — never
-  on the price path. This is the lazy-CRC win (#5).
-- **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** Both writers
-  (`write_surface_archive_v2_file` and the SurfaceDb
-  `write_manifest_file_atomic`) publish through the one shared primitive
-  `detail::flush_and_publish_file(tmp, dst)`: exclusively reserve a **unique
-  same-directory temp**, write payload, close, **fsync the temp**
-  (`FlushFileBuffers`), then **rename** with **bounded retry + exponential
-  backoff** (8 attempts, ~635 ms cumulative). The fsync-before-rename closes the
-  crash-consistency gap: without it, a power loss AFTER the rename but BEFORE the
-  OS flushed the data could leave a correctly-named destination with empty/garbage
-  content while the rename had already destroyed the prior good version (data
-  loss, not just unavailability). With the fsync the temp's bytes are on stable
-  storage before it ever becomes the live file. The retry addresses the Windows
-  `MoveFileEx(REPLACE_EXISTING)` failure when a reader holds the destination open
-  without `FILE_SHARE_DELETE` (MSVC `std::ifstream`, `open_mapped`): a brief hold
-  (a concurrent backtest reading the partition mid-republish) is ridden out by the
-  backoff instead of failing the publish. On final failure (destination held for
-  the whole budget) the temp is **preserved**, not deleted, so the freshly written
-  bytes are recoverable and the prior good destination is still intact.
-  Same-destination publishers are serialized within the process, eliminating
-  local last-step rename races. On POSIX, a successful rename is followed by
-  `fsync` of the parent directory so the new directory entry is durable too;
-  on Windows, `FlushFileBuffers` on the file is the available primitive.
-  - There is **no automated power-loss test** (a unit test cannot cut power);
-    the fsync *presence* is code-review-verifiable, and the reader-held rename retry /
-    temp-preservation behavior is covered by `surface_archive_durability_test.cpp`
-    via a `FILE_SHARE_READ` holder.
-  - **External truncation of a mapped archive** (SE-P2-4) remains a standard mmap
-    hazard: another process truncating/replacing-in-place a file that is currently
-    `open_mapped` raises `EXCEPTION_IN_PAGE_ERROR` (Windows) / `SIGBUS` (POSIX) on
-    page access — a crash, not a `Result`. The sharing-mode lock above makes the
-    truncation itself usually fail on Windows; the failure mode is otherwise the
-    undefined mmap default. Documented, not handled.
+## 9. Durable publish
 
-### 5.1 Migration (v2 `0101` → `0102`, n_quad_price)
+`write_surface_archive_v2_file` writes a unique same-directory temp, fsyncs it
+(`FlushFileBuffers` / `fsync`), and replaces the destination. On Windows the replace
+first uses POSIX rename semantics (`SetFileInformationByHandle(FileRenameInfoEx,
+FILE_RENAME_FLAG_POSIX_SEMANTICS | FILE_RENAME_FLAG_REPLACE_IF_EXISTS)`, NTFS on
+Windows 10 1607+), which succeeds while readers hold the destination open with
+`FILE_SHARE_DELETE` — the point read and `open_copied` do, and keep reading the old,
+now-unlinked file through their handle. The classic rename (`MoveFileEx` semantics)
+is refused by such a reader: measured in lane SER, 4 of 40 publishes exhausted the
+retry budget under a tight two-thread point-read loop
+(`SurfaceArchivePointRead.ConcurrentRepublishServesOneWholeVersion`). It remains the
+fallback, with bounded retry (8 attempts, ~635 ms), for file systems without POSIX
+semantics and for readers that do not share delete (a long-lived `open_mapped`
+archive, an `ifstream`); on final failure the temp is preserved.
+External in-place truncation of a mapped file remains the standard mmap hazard
+(`EXCEPTION_IN_PAGE_ERROR` / `SIGBUS`); positional reads turn it into a short read
+(`IoError`).
 
-No migration action is required. Every `.atxvsa2` written before this change
-opens unchanged and prices identically (its surfaces were fit/priced with the
-premium order tied to `n_quadrature`, and `al_n_quad_price` reads back as `0`,
-which resolves to exactly that tied scheme). A rewrite through the current writer
-re-stamps the header with salt `0102`; the surface record bytes are unchanged for
-tied surfaces. Only a surface actually fit under a decoupled-premium rung (e.g.
-the `ql_fast` `n_quadrature=8, n_quad_price=32`) records a non-zero
-`al_n_quad_price` and now round-trips to identical theo — previously it silently
-reverted to the tied order on reload.
+## 10. SurfaceDb integration (ATXVDB02)
 
-### 5.2 `created_ts_ns` is a content-derived identity, NOT a timestamp
+`SurfaceDb::map_surface` / `load_surface` serve every call through the point read; the
+revision-0 LRU partition cache (16 whole-file buffers keyed by content identity) is
+deleted. A cache hit used to pay a file open plus a 256-B identity read anyway, so a
+point read costs the same order as the old hit while a miss drops from O(file) to
+O(record). Each call reads one consistent file version through one handle, which
+removes the cache's identity-outside-the-lock window and its "unreadable identity keeps
+the stale entry" rule. `open_partition` / `open_partition_file` (whole-board callers)
+use `open_copied`; `session_ts` uses positional reads of the header, the first
+directory entry and that record's header.
 
-`ArchiveV2Header::created_ts_ns` (and the v1 `ArchiveHeader::created_ts_ns`) is
-**not a wall-clock time**. When the writer's `created_ts_ns` option is left at its
-`0` sentinel (the production path), the field is filled from a **deterministic
-content hash**: `(CRC32C(bytes[header_size, EOF)) << 32) ^ file_size`, clamped away
-from `0`. The hash span is the whole payload — data ‖ lookup ‖ directory — and
-excludes the header itself (so `created_ts_ns` / `header_crc32c` are never inputs to
-their own hash). An explicit non-zero `created_ts_ns` is honored verbatim (unit
-tests pin it).
+Measured (6,000-symbol partition, 11.3 MB, `atx-vol-surface-archive-bench`
+`pointread_study`, vol-rel, unqualified; `sprints/2026-10-23-SER-sprint.md`): a cold
+`map_surface` reads 3 calls / 2,214 B mean (was 2,826 calls / 11.58 MB) in 24 µs p50,
+41 µs p99 (was 11.8 ms / 14.6 ms); whole-board `open_partition` + `map_all` 7.6 ms (was
+12.3 ms).
 
-Why (and the caveats):
+The manifest is **ATXVDB02** (`major 2`): a 128-B header (24-B zero tail), 264-B
+`DbSymbolRecord`s whose surface policy and provenance are named fields (no marker, no
+all-zero legacy policy: `outputs` must be 1..3, and the manifest provenance now keeps
+`source_generation`), and 64-B `DbPartitionRecord`s with a named `config_fingerprint`.
+Placement is canonical (symbols at 128, partitions at the next 64-B boundary, `file_size
+==` end of partitions), so every manifest byte is covered by a CRC. `ATXVDB01` is
+refused by name.
 
-- **Reproducibility.** Two byte-identical builds of identical content produce an
-  identical container, header included. Previously the wall clock forced a spurious
-  `SnapshotCache` evict+reload on every rebuild of identical content. This is the
-  settled answer (a *constant* stamp is wrong — it would make two DIFFERENT builds
-  share an `ArchiveContentIdentity` and serve a stale surface).
-- **It is not a time.** Bit 63 can be set, so as a signed `int64` it **may be
-  negative**; **ordering archives by `created_ts_ns` is meaningless**. Nothing in
-  the codebase orders by it (`run_report` prints the *manifest's*
-  `DbPartitionInfo.created_ts_ns`, which is a different, wall-clock field — see
-  below).
-- **Staleness only, never tamper evidence.** The derived stamp adds ~**32 bits** of
-  content entropy. It participates in `ArchiveContentIdentity` =
-  {file_size, created_ts_ns, header_crc32c, metadata_crc32c} purely as a local
-  cache-staleness signal; CRC-32C is linear and trivially forgeable, so this field
-  must **never** be relied on as authenticity / tamper evidence.
-- **The SurfaceDb manifest is different.** `SurfaceDbManifestHeader` /
-  `DbPartitionInfo::created_ts_ns` / `updated_ts_ns` **stay wall-clock** (filled
-  from `wall_clock_ns()` on the `0` sentinel). The manifest tracks *when* a
-  partition was written for operational bookkeeping; only the archive container's
-  own `created_ts_ns` is content-derived.
+## 11. What revision 1 removed, and why
 
----
+| Removed | Why |
+| --- | --- |
+| ATXVSA03 record declarations (`ArchiveHeader`, `ArchiveIndexSlot`, `ArchiveDirEntry`, `SurfaceBlobHeader`, `ArchivePricingRecord`, `ArchiveSliceHeader`, `ArchiveSurfaceProvenanceRecord`) and their `run_archive.cpp` recogniser | kept only to fold an ATXVSA03 header into a run identity; nothing can read such a file |
+| prior-salt accept-list (`schema_hash_v2_prev`, salt 0101) | backward compatibility waived; one reader accepts one schema |
+| zero-marker provenance (`prov_marker == 0` -> legacy) | replaced by the explicit `prov_status` byte |
+| `writer_version_hash` | always written 0, never read |
+| SurfacePolicy / provenance / fingerprint in manifest `reserved` bytes | named fields |
+| revision-0 reserved tails (header 148 B, record 66 B, entry 8 B, manifest 88 B, partition 64 B) | every remaining reserved byte is an alignment pad that must be zero |
+| `SurfaceDb` partition cache, `partition_cache_stats`, `partition_cache_capacity` | replaced by the point read (§10) |
 
-## 6. Reader/writer API surface (see surface_archive.hpp)
+## 12. API
 
-Writer: `write_surface_archive_v2(items, opts) -> Result<vector<byte>>` and
-`write_surface_archive_v2_file(path, items, opts)`. Same `SurfaceArchiveItem`
-inputs as v1 (symbol, `const PricedSurface*`, optional `SurfaceProvenance`),
-so a caller re-targets by swapping the function name (clean break, no overload).
+```cpp
+// Writer (unchanged signatures).
+Result<std::vector<std::byte>> write_surface_archive_v2(span<const SurfaceArchiveItem>, opts);
+Status write_surface_archive_v2_file(string_view path, span<const SurfaceArchiveItem>, opts);
 
-Reader: `class SurfaceArchiveV2` — backing-agnostic (owns a
-`std::span<const std::byte>` + a type-erased owner `shared_ptr<void>`, so the
-bytes can be an owned buffer today or a real mmap in wave-2 with no view change):
-- `open(vector<byte>)` / `open_file(path)` — owned-buffer entry.
-- `open_borrowed(span, shared_ptr<void> owner)` — the **mmap seam**: wave-2's
-  `SnapshotCache`/`SurfaceDb` supply an `atx::tsdb::Mapping`-owning `shared_ptr`.
-- `find(symbol) -> Result<ArchiveV2DirEntry>` — O(1) hash probe.
-- `map_symbol(symbol) -> Result<PricedSurfaceView>` — **subset map**; touches
-  only that record's extent. The returned view borrows the archive's bytes and
-  must not outlive the archive.
-- `map_all() -> Result<vector<PricedSurfaceView>>` — ordered, whole-board.
-- `provenance(symbol)` / `validate_symbol(symbol)` / `validate_all()` — lazy CRC.
+// Point read: one surface from a partition file, O(record) I/O, no mapping kept.
+Result<PointReadSurface> point_read_archive_surface(string_view path, string_view symbol);
+Result<PointReadOwnedSurface> point_read_archive_reconstruct(string_view path, string_view symbol);
 
-Lifetime: a `PricedSurfaceView` is a **borrow** of the archive's mapped bytes; it
-is valid only while the owning `SurfaceArchiveV2` (and its backing) is alive. The
-view is immutable after construction and concurrent-const-safe (like
-`PricedSurface`). It exposes a never-reused `instance_id()` with `PricedSurface`'s
-move semantics so the `PortfolioPricer` retained-cache ABA guard keeps working.
+// Whole-board.
+SurfaceArchiveV2::open(vector<byte>) / open_copied(path) / open_file(path)
+                / open_mapped(path) / open_borrowed(span, owner);
+find, provenance, map_symbol, map_entry, map_all, map_all_with_provenance,
+reconstruct_symbol, reconstruct_entry, reconstruct_all, reconstruct_all_with_provenance,
+validate_symbol, validate_all, entries(), identity().
+```
 
----
+`PointReadSurface` owns the record bytes its view borrows (move-safe: the bytes live on
+the heap); `PricedSurfaceView`s from a `SurfaceArchiveV2` borrow that archive's bytes and
+must not outlive it.
 
-## 7. Primary sources (cite at point of use)
+## 13. Primary sources
 
-- FlatBuffers Internals — memory layout, natural alignment, little-endian,
-  offsets+adjacency, zero-copy: https://flatbuffers.dev/internals/
-- Cap'n Proto Encoding Spec — contiguous segments, relative pointers, struct =
-  data section + pointer section: https://capnproto.org/encoding.html
-- Apache Arrow Columnar Format — contiguous typed buffers, 8/64-byte alignment,
-  mmap-first direct access:
+- FlatBuffers internals — natural alignment, offsets + adjacency, zero-copy:
+  https://flatbuffers.dev/internals/
+- Cap'n Proto encoding — contiguous segments, relative offsets:
+  https://capnproto.org/encoding.html
+- Apache Arrow columnar format — contiguous typed buffers, 8/64-B alignment, mmap-first:
   https://arrow.apache.org/docs/format/Columnar.html
-  and the IPC/Feather mmap design: https://github.com/apache/arrow (docs/source/format)
+- FNV-1a: http://www.isthe.com/chongo/tech/comp/fnv/ ; MurmurHash3 `fmix64`:
+  https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
+- CRC-32C (Castagnoli), RFC 3720 appendix B.4 (known answer `"123456789"` -> `0xE3069283`).
+- Win32 `ReadFile` with `OVERLAPPED` offsets on a synchronous handle, and
+  `FILE_SHARE_DELETE` semantics: https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile

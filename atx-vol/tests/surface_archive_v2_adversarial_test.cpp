@@ -21,6 +21,7 @@
 #include "atx/vol/api/storage/surface_archive.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp"
+#include "surface_archive_v2_patch.hpp" // slot / record / header CRC restamps
 
 // WS-C adversarial suite for ATXVSA2 (v2). Under the lazy-CRC design the reader
 // never checks a record's payload CRC on the price path, so the zero-copy
@@ -452,8 +453,11 @@ void restamp_v2_crcs(std::vector<std::byte> &b) {
   std::memcpy(&s, b.data() + h.lookup_offset + i * sizeof(s), sizeof s);
   return s;
 }
+// Every slot carries its own CRC (ATXVSA21 §2.2): a forged slot is restamped so the
+// rejection under test is the semantic check, not the slot checksum.
 void write_slot(std::vector<std::byte> &b, const ArchiveV2Header &h, std::size_t i,
-                const ArchiveV2LookupSlot &s) {
+                ArchiveV2LookupSlot s) {
+  s.slot_crc32c = atxvsa_patch::slot_crc(s);
   std::memcpy(b.data() + h.lookup_offset + i * sizeof(s), &s, sizeof s);
 }
 [[nodiscard]] ArchiveV2DirEntry read_dir(const std::vector<std::byte> &b, const ArchiveV2Header &h,
@@ -663,7 +667,7 @@ TEST(SurfaceArchiveV2Adversarial, OpenMappedServesSubsetMap) {
 // lookup slot and the directory entry, and every consumer that materializes the
 // name does `std::string(e.symbol, e.symbol_len)`. A length past
 // `kArchiveSymbolMax` is therefore an out-of-bounds read straight off the end of
-// the record. The writer can never emit one (`canonicalize_symbol` truncates at
+// the record. The writer can never emit one (it refuses a symbol longer than
 // `kArchiveSymbolMax`), so these two guards fire only on a forged or corrupt
 // file — which is exactly why they need a pin rather than none.
 //
@@ -685,14 +689,14 @@ TEST(SurfaceArchiveV2Adversarial, OpenRejectsOversizedLookupSymbolLength) {
   const std::ptrdiff_t ia = slot_index_for(bytes, h, "AAA");
   ASSERT_GE(ia, 0);
   ArchiveV2LookupSlot sa = read_slot(bytes, h, static_cast<std::size_t>(ia));
-  sa.symbol_len = static_cast<std::uint16_t>(atx::vol::kArchiveSymbolMax + 1u);
+  sa.symbol_len = static_cast<std::uint8_t>(atx::vol::kArchiveSymbolMax + 1u);
   write_slot(bytes, h, static_cast<std::size_t>(ia), sa);
   restamp_v2_crcs(bytes);
 
   const auto arch = SurfaceArchiveV2::open(std::move(bytes));
   ASSERT_FALSE(arch.has_value());
   EXPECT_EQ(arch.error().code(), ErrorCode::ParseError);
-  EXPECT_NE(arch.error().to_string().find("lookup symbol length out of bounds"), std::string::npos)
+  EXPECT_NE(arch.error().to_string().find("lookup slot symbol malformed"), std::string::npos)
       << arch.error().to_string();
 }
 
@@ -711,8 +715,7 @@ TEST(SurfaceArchiveV2Adversarial, OpenRejectsOversizedDirectorySymbolLength) {
   const auto arch = SurfaceArchiveV2::open(std::move(bytes));
   ASSERT_FALSE(arch.has_value());
   EXPECT_EQ(arch.error().code(), ErrorCode::ParseError);
-  EXPECT_NE(arch.error().to_string().find("directory symbol length out of bounds"),
-            std::string::npos)
+  EXPECT_NE(arch.error().to_string().find("directory entry malformed"), std::string::npos)
       << arch.error().to_string();
 }
 
@@ -762,7 +765,26 @@ TEST(SurfaceArchiveV2Adversarial, WriteRejectsEmptySymbol) {
   const auto built = write_surface_archive_v2(items);
   ASSERT_FALSE(built.has_value());
   EXPECT_EQ(built.error().code(), ErrorCode::InvalidArgument);
-  EXPECT_NE(built.error().to_string().find("empty symbol"), std::string::npos)
+  EXPECT_NE(built.error().to_string().find("symbol must be 1..32 bytes"), std::string::npos)
+      << built.error().to_string();
+}
+
+// Audit Minor (SER 2026-10-23): revision 0 TRUNCATED a symbol longer than 32 bytes
+// to its first 32, so two distinct 33-byte names aliased one slot (AlreadyExists at
+// best, a silently renamed surface at worst). The writer now refuses the item.
+// Ruling: no truncation.
+TEST(SurfaceArchiveV2Adversarial, WriteRejectsOverlongSymbolInsteadOfTruncating) {
+  const PricedSurface ps = make_essvi(1, 3);
+  const std::string exact(atx::vol::kArchiveSymbolMax, 'X');
+  const std::array<SurfaceArchiveItem, 1> good{SurfaceArchiveItem{exact, &ps, std::nullopt}};
+  ASSERT_TRUE(write_surface_archive_v2(good).has_value()) << "32 bytes is the legal maximum";
+
+  const std::string overlong = exact + "Y";
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{overlong, &ps, std::nullopt}};
+  const auto built = write_surface_archive_v2(items);
+  ASSERT_FALSE(built.has_value());
+  EXPECT_EQ(built.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(built.error().to_string().find("no truncation"), std::string::npos)
       << built.error().to_string();
 }
 

@@ -32,10 +32,22 @@ first written and immediately failed to collect. The rule is therefore:
     `atxvol` FIRST -- above numpy, pandas and pyarrow alike.
 
 Importing `atxvol.chain` necessarily initialises `atxvol` (hence `_core`) before
-this module's own `import pandas` / `import pyarrow.parquet`, so any caller
-whose FIRST atx import is this module gets the working order for free and cannot
-accidentally assemble the broken one. A caller that imports pandas on its own
-account must still put `import atxvol` above it.
+this module's own `import pandas`, so any caller whose FIRST atx import is this
+module gets the working order for free and cannot accidentally assemble the
+broken one. A caller that imports pandas on its own account must still put
+`import atxvol` above it.
+
+MEASURED 2026-10-23: THE "atxvol FIRST" ORDER NO LONGER RESCUES PYARROW. The
+vcpkg baseline now builds Arrow 24.0.0 while the user-site pyarrow bundles 18.0.0,
+and with `_core` resident `import pyarrow` fails ("DLL load failed while importing
+lib: The specified procedure could not be found") -- the working order above was a
+property of two compatible Arrow builds, not a guarantee. `import pandas` still
+works after `atxvol` (pandas treats the failed pyarrow import as "pyarrow absent"),
+so this module now imports `pyarrow.parquet` LAZILY, inside `load_chain`, the one
+function that reads a file: the frame algebra (expiries, slicing, forwards,
+normalisation, market-IV inversion of a frame you already hold) works in an
+atxvol process whatever pyarrow is installed, and `load_chain` raises an
+ImportError naming the collision instead of the module failing to import at all.
 
 DEEP-IN-THE-MONEY QUOTES DO NOT INVERT, AND THAT IS NOT A BUG
 -------------------------------------------------------------
@@ -63,7 +75,6 @@ import atxvol  # noqa: F401  (imported for its DLL-load side effect, then used)
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
 from . import Side, american_implied_vol
 
@@ -95,6 +106,22 @@ _CORE_COLUMNS = [
 ]
 
 
+def _parquet_module():
+    """`pyarrow.parquet`, imported on first use (module docstring, 2026-10-23)."""
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise ImportError(
+            f"{exc}\n\natxvol.chain.load_chain reads parquet through pyarrow, and pyarrow "
+            "could not be imported into this process. With atxvol._core already loaded "
+            "this is the atxvol/pyarrow Arrow-DLL collision (the two bundle different "
+            "arrow.dll builds): read the file in a separate process, or see 'Known "
+            "limitation: atxvol and pyarrow cannot share a process on Windows' in "
+            "atx-vol/python/README.md."
+        ) from exc
+    return pq
+
+
 def load_chain(path, symbol=None, columns=None) -> pd.DataFrame:
     """Read a chain-export parquet, optionally for one underlier only.
 
@@ -104,7 +131,7 @@ def load_chain(path, symbol=None, columns=None) -> pd.DataFrame:
     mask if the footer statistics are missing.
     """
     cols = list(columns) if columns is not None else _CORE_COLUMNS
-    pf = pq.ParquetFile(path)
+    pf = _parquet_module().ParquetFile(path)
     if symbol is None:
         return pf.read(columns=cols).to_pandas()
 

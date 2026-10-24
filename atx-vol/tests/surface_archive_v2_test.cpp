@@ -854,17 +854,63 @@ TEST(SurfaceArchiveV2, RejectsHeaderCorruption) {
 }
 
 TEST(SurfaceArchiveV2, CleanBreakCrossFormatRejection) {
-  // An ATXVSA03 file is not an ATXVSA2 archive — no dual read (§0). Its writer is
-  // gone (release-v1 plan 3.6), so the fixture is the v1 FRAMING this reader must
-  // still refuse when it meets a legacy file on disk: a v1-sized header block
-  // stamped with the v1 magic. Long enough to clear v2's minimum-size check, so the
-  // rejection is genuinely the magic/version gate and not a short-buffer accident.
-  std::vector<std::byte> v1(sizeof(atx::vol::ArchiveHeader), std::byte{0});
-  static_assert(sizeof(atx::vol::ArchiveHeader) > sizeof(atx::vol::ArchiveV2Header),
-                "the v1 header block must clear v2's minimum-size check");
+  // An ATXVSA03 file is not an ATXVSA2 archive — no dual read (spec §0). Its writer
+  // and its header struct are gone, so the fixture is the retired framing this
+  // reader must still refuse by name: a header block of the retired format's 464-B
+  // size stamped with its magic. Long enough to clear the minimum-size check, so the
+  // rejection is genuinely the magic gate and not a short-buffer accident.
+  std::vector<std::byte> v1(464, std::byte{0});
+  static_assert(464 > sizeof(atx::vol::ArchiveV2Header),
+                "the retired header block must clear the minimum-size check");
   constexpr char kV1Magic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
   std::memcpy(v1.data(), kV1Magic, sizeof kV1Magic);
-  EXPECT_FALSE(SurfaceArchiveV2::open(std::move(v1)).has_value());
+  const auto opened = SurfaceArchiveV2::open(std::move(v1));
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(opened.error().to_string().find("ATXVSA03"), std::string::npos)
+      << opened.error().to_string();
+}
+
+// Revision 0 of ATXVSA2 ("ATXVSA20", major 4) is refused BY NAME — every reader
+// (whole-board open and point read) reports the magic it found, so an operator holding
+// an old partition learns it must be rebuilt rather than reading "bad magic".
+// Ruling: no revision-0 read path (spec §0, §11).
+TEST(SurfaceArchiveV2, RefusesRevisionZeroArchiveByName) {
+  std::vector<std::byte> bytes = build_v2(make_essvi(1, 3), "sym");
+  std::memcpy(bytes.data(), "ATXVSA20", 8);
+  const auto opened = SurfaceArchiveV2::open(std::vector<std::byte>(bytes));
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(opened.error().to_string().find("ATXVSA20"), std::string::npos)
+      << opened.error().to_string();
+
+  // A file too short to hold the revision-1 header still names the magic it holds.
+  std::vector<std::byte> stub(64, std::byte{0});
+  std::memcpy(stub.data(), "ATXVSA20", 8);
+  const auto short_open = SurfaceArchiveV2::open(std::move(stub));
+  ASSERT_FALSE(short_open.has_value());
+  EXPECT_NE(short_open.error().to_string().find("ATXVSA20"), std::string::npos)
+      << short_open.error().to_string();
+}
+
+// The format symbol hash is fixed arithmetic (FNV-1a/64 + fmix64, spec §6) and is
+// PERSISTED in every slot and entry, so its values are an on-disk contract. Revision
+// 0 used `atx::core::hash_bytes` (wyhash), whose contract explicitly does not promise
+// cross-process stability — an audit Major. Pin known answers so a silent change to
+// the function is a test failure, not an unreadable archive.
+TEST(SurfaceArchiveV2, SymbolHashKnownAnswers) {
+  // Literal pins, computed independently (Python big-int reference of spec §6).
+  static_assert(atx::vol::archive_v2_symbol_hash("SPY") == 0xC1FA64560ADAE932ull);
+  static_assert(atx::vol::archive_v2_symbol_hash("AAPL") == 0x59ABE90C82FC3687ull);
+  static_assert(atx::vol::archive_v2_symbol_hash("BRK.B") == 0x6F7AE374C22B4EC5ull);
+  static_assert(atx::vol::archive_v2_symbol_hash("S0000") == 0xA0489B8CA8626EA0ull);
+  static_assert(atx::vol::archive_v2_symbol_hash("") == 0xEFD01F60BA992926ull);
+  // The persisted slot/entry hash is the same function of the canonical symbol.
+  std::vector<std::byte> bytes = build_v2(make_essvi(1, 3), "spy");
+  auto arch = SurfaceArchiveV2::open(std::move(bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  ASSERT_EQ(arch->entry_count(), 1u);
+  EXPECT_EQ(arch->entries()[0].symbol_hash, 0xC1FA64560ADAE932ull);
 }
 
 // ── instance_id: never-reused, move transfers, distinct per view ──────────────
@@ -1181,47 +1227,46 @@ TEST(SurfaceArchiveV2, RoundTripsNQuadPrice) {
   EXPECT_EQ(rec->pricing().al_opts.n_quad_price, 32u); // owned path persists too
 }
 
-// C2 back-compat: an archive written under the PRIOR schema salt (before
-// n_quad_price occupied the reserved u16) must still open under the new reader
-// and reprice with the tied premium order. The reserved_u16 reuse is
-// layout-invariant, so a default-AlOpts (n_quad_price==0) record is byte-identical
-// to what an old writer produced; we re-stamp its header to the prior salt fold
-// (recomputing only the header CRC — the two bytes a salt bump touches) to obtain
-// a faithful pre-bump fixture. This guards the reader's prior-salt accept-list.
-TEST(SurfaceArchiveV2, OpensPriorSaltArchiveAsTiedNQuadPrice) {
+// Revision 0 kept a prior-salt ACCEPT-LIST (…0100/…0101) so a file written before
+// n_quad_price took its u16 still opened. Revision 1 has exactly one schema: a header
+// stamped with any earlier salt fold is refused even with a faithful header CRC.
+// Ruling: the prior-salt accept-list is dropped (spec §7).
+TEST(SurfaceArchiveV2, RefusesPriorSaltArchive) {
   using atx::vol::ArchiveV2DirEntry;
   using atx::vol::ArchiveV2Header;
   using atx::vol::ArchiveV2LookupSlot;
   using atx::vol::ArchiveV2SurfaceHeader;
-  const PricedSurface orig = make_essvi(88, 4); // default AlOpts -> n_quad_price==0
-  std::vector<std::byte> bytes = build_v2(orig, "old");
+  const PricedSurface orig = make_essvi(88, 4);
+  const std::vector<std::byte> good = build_v2(orig, "old");
+  ASSERT_TRUE(SurfaceArchiveV2::open(std::vector<std::byte>(good)).has_value());
 
-  // Prior schema salt fold (…0101) — the identical sizeof-fold, one older salt.
   constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
-  constexpr std::uint64_t kV2SaltPrev = 0xA7C3'5F04'2E1F'0101ull;
-  std::uint64_t prev = 0x9e3779b97f4a7c15ull ^ kV2SaltPrev;
-  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2Header)) * kFnvPrime;
-  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2LookupSlot)) * kFnvPrime;
-  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2DirEntry)) * kFnvPrime;
-  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2SurfaceHeader)) * kFnvPrime;
-  prev ^= static_cast<std::uint64_t>(sizeof(EssviParams)) * kFnvPrime;
-  prev ^= static_cast<std::uint64_t>(sizeof(SviParams)) * kFnvPrime;
+  for (const std::uint64_t salt : {0xA7C3'5F04'2E1F'0100ull, 0xA7C3'5F04'2E1F'0101ull,
+                                   0xA7C3'5F04'2E1F'0102ull}) {
+    std::uint64_t prev = 0x9e3779b97f4a7c15ull ^ salt;
+    prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2Header)) * kFnvPrime;
+    prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2LookupSlot)) * kFnvPrime;
+    prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2DirEntry)) * kFnvPrime;
+    prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2SurfaceHeader)) * kFnvPrime;
+    prev ^= static_cast<std::uint64_t>(sizeof(EssviParams)) * kFnvPrime;
+    prev ^= static_cast<std::uint64_t>(sizeof(SviParams)) * kFnvPrime;
+    prev ^= static_cast<std::uint64_t>(sizeof(atx::vol::C8Params)) * kFnvPrime;
 
-  ArchiveV2Header h;
-  std::memcpy(&h, bytes.data(), sizeof h);
-  h.schema_hash = prev;
-  h.header_crc32c = 0;
-  std::array<std::byte, sizeof(ArchiveV2Header)> hb{};
-  std::memcpy(hb.data(), &h, sizeof h);
-  h.header_crc32c = atx::vol::detail::crc32c(hb.data(), hb.size());
-  std::memcpy(bytes.data(), &h, sizeof h);
+    std::vector<std::byte> bytes = good;
+    ArchiveV2Header h;
+    std::memcpy(&h, bytes.data(), sizeof h);
+    h.schema_hash = prev;
+    h.header_crc32c = 0;
+    std::array<std::byte, sizeof(ArchiveV2Header)> hb{};
+    std::memcpy(hb.data(), &h, sizeof h);
+    h.header_crc32c = atx::vol::detail::crc32c(hb.data(), hb.size());
+    std::memcpy(bytes.data(), &h, sizeof h);
 
-  auto arch = SurfaceArchiveV2::open(std::move(bytes));
-  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
-  auto v = arch->map_symbol("old");
-  ASSERT_TRUE(v.has_value()) << v.error().to_string();
-  EXPECT_EQ(v->pricing().al_opts.n_quad_price, 0u); // prior-salt file reads tied
-  expect_view_bit_identical(orig, *v);
+    const auto arch = SurfaceArchiveV2::open(std::move(bytes));
+    ASSERT_FALSE(arch.has_value()) << "salt " << std::hex << salt;
+    EXPECT_NE(arch.error().to_string().find("schema hash"), std::string::npos)
+        << arch.error().to_string();
+  }
 }
 
 // ── C6 (SE-P2-6): entries()/entry_count() are a FRAMING-ONLY enumeration ───────
@@ -1352,7 +1397,7 @@ void expect_kind_reemit_byte_identical(const PricedSurface &ps, const char *labe
   const SurfaceProvenance prov = make_provenance();
   const std::array<SurfaceArchiveItem, 1> with_prov{SurfaceArchiveItem{"SYM", &ps, prov}};
   expect_reemit_byte_identical(with_prov, label);
-  // And the legacy (marker == 0) shape, which takes the nullopt branch above.
+  // And the Unattested (prov_status 2) shape, which takes the nullopt branch above.
   const std::array<SurfaceArchiveItem, 1> no_prov{SurfaceArchiveItem{"SYM", &ps, std::nullopt}};
   expect_reemit_byte_identical(no_prov, label);
 }
