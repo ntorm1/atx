@@ -3155,11 +3155,16 @@ void check_native_root(double price, double S, const PremiumCase &c, const IvPre
     EXPECT_EQ(a.reason, RootAcceptanceReason::FamilyEnclosure);
     EXPECT_EQ(st.confirm_solves, 0u);
     EXPECT_TRUE(st.confirm_skipped);
+    ASSERT_TRUE(std::isfinite(a.bound_price));
+    const auto cold = atx::vol::andersen_lake(S, c.K, c.T, res.iv, c.r, c.q, c.sd);
+    ASSERT_TRUE(cold);
+    EXPECT_LE(std::abs(*cold - price), a.bound_price);
   } else {
     ++t.confirmed;
     EXPECT_GE(st.confirm_solves, 1u);
     t.family_far += a.reason == RootAcceptanceReason::ConfirmAndFamily ? 1u : 0u;
     t.both_ends += a.reason == RootAcceptanceReason::ConfirmBothEnds ? 1u : 0u;
+    EXPECT_EQ(a.bound_price, std::numeric_limits<double>::infinity());
   }
   const auto ref = reference_bracket(price, S, c, res.iv);
   ASSERT_TRUE(ref.has_value()) << c.K << " " << c.T;
@@ -3456,13 +3461,24 @@ TEST(AmericanIvPremium, BatchedEnclosuresKeepScalarDecisionsAndCertifiedEnds) {
         ASSERT_EQ(a.enclosed, b.enclosed) << i;
         EXPECT_EQ(std::bit_cast<std::uint64_t>(a.slope),
                   std::bit_cast<std::uint64_t>(b.slope)) << i;
-        if (!a.enclosed) { ++open; continue; }
+        if (!a.enclosed) {
+          EXPECT_EQ(a.bound_price, std::numeric_limits<double>::infinity());
+          EXPECT_EQ(b.bound_price, std::numeric_limits<double>::infinity());
+          ++open;
+          continue;
+        }
         ++enclosed;
         recentered += b.lo != scalar[i].lane.sigma - 0.5 * w ? 1u : 0u;
         EXPECT_EQ(std::bit_cast<std::uint64_t>(a.lo), std::bit_cast<std::uint64_t>(b.lo));
         EXPECT_EQ(std::bit_cast<std::uint64_t>(a.hi), std::bit_cast<std::uint64_t>(b.hi));
         EXPECT_EQ(std::bit_cast<std::uint64_t>(a.root), std::bit_cast<std::uint64_t>(b.root));
         EXPECT_LE(a.hi - a.lo, kIvRootRequirement);
+        ASSERT_TRUE(std::isfinite(a.bound_price));
+        ASSERT_TRUE(std::isfinite(b.bound_price));
+        EXPECT_GE(a.bound_price, b.bound_price); // fused endpoint bounds are conservative
+        const auto cold = andersen_lake(100, requests[i].K, 0.5, a.root, 0.04, 0.012, side);
+        ASSERT_TRUE(cold);
+        EXPECT_LE(std::abs(*cold - requests[i].price), a.bound_price);
       }
     }
   }
@@ -3549,6 +3565,7 @@ TEST(AmericanIvPremium, FamilyEnclosureRejectsAnEndWhoseEnvelopeBoundLeavesItOpe
           min_margin = std::min(min_margin, std::min(eps_near / near_gap, far_gap / eps_far));
           const FamilyEnclosure open = family_enclosure(price, S, K, ec.q, x, w, fam, &e, st);
           EXPECT_FALSE(open.enclosed);
+          EXPECT_EQ(open.bound_price, std::numeric_limits<double>::infinity());
           (near_lower ? lower : upper) += open.enclosed ? 0u : 1u;
         }
       }

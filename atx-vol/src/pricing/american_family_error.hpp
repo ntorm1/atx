@@ -254,6 +254,9 @@ struct RootAcceptance {
   double bound_iv = std::numeric_limits<double>::quiet_NaN(); // hi - lo (vol): |served - sigma*|
   double lo = std::numeric_limits<double>::quiet_NaN();       // the bracket of A's root (vol)
   double hi = std::numeric_limits<double>::quiet_NaN();
+  // Optional monetary residual proof for the returned root in a paired family
+  // enclosure. Infinity means absent; it never changes the IV acceptance rule.
+  double bound_price = std::numeric_limits<double>::infinity();
 };
 
 // The calling thread's envelope for the family a Premium inversion iterates on (a scoped

@@ -1644,9 +1644,22 @@ TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCaches
     const timing::ChainScope scope(&repair);
     ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
   }
-  EXPECT_EQ(repair.result().reimply_price_family_checks, repair.result().reimply_native_roots);
-  EXPECT_GT(repair.result().reimply_price_family_checks, 0u);
+  EXPECT_EQ(repair.result().reimply_price_family_checks +
+                repair.result().reimply_price_enclosure_hits, repair.result().reimply_native_roots);
+  EXPECT_GT(repair.result().reimply_price_enclosure_hits, 0u);
   EXPECT_EQ(repair.result().reimply_price_rejections, 0u);
+  // Omitting the dollar policy retains the same accepted native root bits. Reusing
+  // its existing monetary proof changes work, not final prices or identification.
+  auto baseline = fit_quote_slice(c.market, c.quotes, native_repair_config());
+  ASSERT_TRUE(baseline && baseline->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_TRUE(repair_quote_slice_calendar(*baseline, c.quotes, earlier, {}, 1.0));
+  ASSERT_EQ(baseline->rows.size(), fit->rows.size());
+  for (std::size_t i = 0; i < fit->rows.size(); ++i) {
+    EXPECT_EQ(fit->rows[i].evaluation_status, baseline->rows[i].evaluation_status);
+    EXPECT_DOUBLE_EQ(fit->rows[i].fitted_price, baseline->rows[i].fitted_price);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(fit->rows[i].fitted_iv),
+              std::bit_cast<std::uint64_t>(baseline->rows[i].fitted_iv));
+  }
   timing::ChainRecorder queries;
   {
     const timing::ChainScope scope(&queries);
@@ -1667,6 +1680,33 @@ TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCaches
   EXPECT_EQ(queries.result().reimply_fast_attempts, 0u);
   EXPECT_EQ(queries.result().reimply_price_family_checks, 0u);
   EXPECT_EQ(queries.result().reimply_price_cold_checks, 0u);
+}
+
+TEST(QuoteSliceChannel, TightPriceBudgetRetainsCenterColdCheckAndRejectedRootFallback) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto config = native_repair_config();
+  config.reimply_price_cap = 1e-16;
+  config.reimply_spread_fraction = 0.01;
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder queries;
+  for (const auto &quote : c.quotes) {
+    const auto target = andersen_lake(c.market.spot, quote.strike, c.market.variance_years,
+        0.263123456789, c.market.rate, c.market.continuous_yield, quote.side);
+    ASSERT_TRUE(target);
+    const timing::ChainScope scope(&queries);
+    const auto id = detail::reimplied_vol(*fit, quote.strike, quote.side, *target,
+                                         QuoteSliceFloorPolicy::PriceOnly);
+    EXPECT_EQ(id.status, QuoteSliceEvaluationStatus::Success);
+  }
+  const auto &count = queries.result();
+  EXPECT_GT(count.reimply_native_roots, 0u);
+  EXPECT_EQ(count.reimply_price_enclosure_hits, 0u);
+  EXPECT_EQ(count.reimply_price_family_checks, count.reimply_native_roots);
+  EXPECT_GT(count.reimply_price_cold_checks, 0u);
+  EXPECT_GT(count.reimply_price_rejections, 0u);
+  EXPECT_GT(count.reimply_stage_calls[static_cast<unsigned>(timing::ReimplyStage::Search)], 0u);
 }
 
 TEST(QuoteSurface, NativeCalendarTrialPreservesTheQualifiedInverseAndPublicAnswer) {

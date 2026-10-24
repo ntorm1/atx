@@ -3922,7 +3922,13 @@ VolIdentification identified(double volatility) noexcept {
 // price was an original quote. Only the existing K3 bracket acceptance can return it.
 // Refused/flat/out-of-box prices keep reimplied_vol's historical typed Search semantics;
 // the acceleration gets no additional reference solves before that fallback.
-std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double strike, Side side,
+struct ReimpliedNativeRoot {
+  double sigma;
+  double bound_price = std::numeric_limits<double>::infinity();
+};
+
+std::optional<ReimpliedNativeRoot> native_reimplied_root(const QuoteSliceFit &fit,
+    double strike, Side side,
     double price, double q, const IvOpts &opts, const IvPremiumPrepared *prepared) {
   const auto &context = fit.reimply_context;
   auto *const counts = counters::fit_timing::current_counts();
@@ -3986,7 +3992,16 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
       ++counts->reimply_native_fallbacks;
     }
   }
-  return accepted ? std::optional<double>{answer.iv} : std::nullopt;
+  if (!accepted) return std::nullopt;
+  ReimpliedNativeRoot root{answer.iv};
+  const auto &acceptance = stats.acceptance;
+  if (acceptance.kind == RootAcceptanceKind::Skipped &&
+      acceptance.reason == RootAcceptanceReason::FamilyEnclosure &&
+      acceptance.lo <= answer.iv && answer.iv <= acceptance.hi &&
+      std::isfinite(acceptance.bound_price) && acceptance.bound_price >= 0.0) {
+    root.bound_price = acceptance.bound_price;
+  }
+  return root;
 }
 
 bool native_price_budget_met(const QuoteSliceFit &fit, double strike, Side side,
@@ -4082,8 +4097,15 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   if (!budget || *budget > 0.0) {
     if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts,
                                                prepared)) {
-      if (!budget || native_price_budget_met(fit, strike, side, price, q_effective, *root, *budget)) {
-        return identified(*root);
+      const bool enclosed = budget && root->bound_price <= *budget;
+      if (enclosed) {
+        if (auto *const counts = counters::fit_timing::current_counts()) {
+          ++counts->reimply_price_enclosure_hits;
+        }
+      }
+      if (!budget || enclosed || native_price_budget_met(fit, strike, side, price,
+                                                         q_effective, root->sigma, *budget)) {
+        return identified(root->sigma);
       }
     }
   }

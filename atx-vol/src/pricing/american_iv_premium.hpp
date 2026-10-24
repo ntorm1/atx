@@ -393,6 +393,7 @@ struct FamilyEnclosure {
   double lo = std::numeric_limits<double>::quiet_NaN();
   double hi = std::numeric_limits<double>::quiet_NaN();
   double slope = std::numeric_limits<double>::quiet_NaN();
+  double bound_price = std::numeric_limits<double>::infinity(); // paired-endpoint proof, if closed
 };
 [[nodiscard]] FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x,
                                                double w, const AlSigmaQFamily &f,

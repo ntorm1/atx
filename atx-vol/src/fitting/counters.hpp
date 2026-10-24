@@ -1184,6 +1184,7 @@ struct FitTimingCounters {
   std::uint32_t reimply_plateau_searches{0};
   std::uint32_t reimply_envelope_covered{0};
   std::uint32_t reimply_price_family_checks{0};
+  std::uint32_t reimply_price_enclosure_hits{0};
   std::uint32_t reimply_price_cold_checks{0};
   std::uint32_t reimply_price_rejections{0};
   std::uint32_t reimply_fast_attempts{0};

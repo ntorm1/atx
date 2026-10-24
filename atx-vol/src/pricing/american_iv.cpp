@@ -1496,6 +1496,23 @@ constexpr int kEnclosureWidthSteps = 4;
   return std::fmin(tol, kIvRootRequirement) * (1.0 - 0x1p-20);
 }
 
+// On the same monotone domain that qualifies the paired-endpoint root bracket,
+// every returned point inside it is between these two cold-map price bounds.
+// Round outward: this is a dollar residual proof, not a point-vega estimate.
+[[nodiscard]] double enclosure_price_bound(const FamilyEnclosure &enc, double target,
+                                           const FamilyBoundedPrice &pa,
+                                           const FamilyBoundedPrice &pb) noexcept {
+  constexpr double inf = std::numeric_limits<double>::infinity();
+  if (!enc.enclosed || !std::isfinite(enc.root) ||
+      !(enc.lo <= enc.root && enc.root <= enc.hi) ||
+      !std::isfinite(target) || !std::isfinite(pa.price) || !std::isfinite(pb.price) ||
+      !(pa.bound_usd >= 0.0 && pb.bound_usd >= 0.0)) return inf;
+  const double lower = std::nextafter(pa.price - pa.bound_usd, -inf);
+  const double upper = std::nextafter(pb.price + pb.bound_usd, inf);
+  const double bound = std::nextafter(std::max(target - lower, upper - target), inf);
+  return std::isfinite(bound) && bound >= 0.0 ? bound : inf;
+}
+
 } // namespace
 
 // Encloses A's root in [x - w/2, x + w/2] (the upper end stepped toward the lower one where
@@ -1539,6 +1556,7 @@ FamilyEnclosure family_enclosure(double price, double S, double K, double q, dou
       out.lo = a;
       out.hi = b;
       out.root = std::clamp(a + frac * (b - a), a, b);
+      out.bound_price = enclosure_price_bound(out, price, pa, pb);
       return out;
     }
     const bool fits = (pb.price - pb.bound_usd) - (pa.price + pa.bound_usd) > 0.0;
@@ -1867,7 +1885,7 @@ namespace {
     stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
                                       RootAcceptanceReason::FamilyEnclosure,
                                       FamilyErrorClass::RefinementValidated, enc.hi - enc.lo,
-                                      enc.lo, enc.hi};
+                                      enc.lo, enc.hi, enc.bound_price};
     stats.confirm_skipped = true;
     stats.gate_bound_vol = enc.hi - enc.lo;
     stats.fallback = IvPremiumFallback::None;
@@ -2392,7 +2410,7 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
           stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
                                             RootAcceptanceReason::FamilyEnclosure,
                                             FamilyErrorClass::RefinementValidated,
-                                            enc.hi - enc.lo, enc.lo, enc.hi};
+                                            enc.hi - enc.lo, enc.lo, enc.hi, enc.bound_price};
           stats.confirm_skipped = true;
           stats.gate_bound_vol = enc.hi - enc.lo;
           stats.fallback = IvPremiumFallback::None;
@@ -3274,6 +3292,7 @@ void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorE
       enc.lo = a;
       enc.hi = b;
       enc.root = std::clamp(a + frac * (b - a), a, b);
+      enc.bound_price = enclosure_price_bound(enc, rq.price, pa, pb);
       p.enclosure = IvPreparedEnclosure{true, &f, env, rq.price, rq.S, rq.K, rq.q,
                                         p.lane.sigma, w, enc, 2u};
     }
