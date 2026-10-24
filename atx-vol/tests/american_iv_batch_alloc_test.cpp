@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -29,6 +30,99 @@ namespace {
 
 namespace sq = sigma_q_family_detail;
 namespace ib = iv_batch;
+
+struct ColdFloorFault {
+  std::size_t calls = 0, index = 0;
+  static void inject(std::size_t index, void *context) {
+    auto &state = *static_cast<ColdFloorFault *>(context);
+    ++state.calls;
+    state.index = index;
+    // Deliberate exception-seam injection, not a numerical floor counterexample.
+    throw std::bad_alloc();
+  }
+};
+
+TEST(IvCandidateBatchAlloc, ColdFloorFailurePreservesOtherLanesAndResumesOnlyFailedProof) {
+  if (!simd::use_avx2()) GTEST_SKIP() << "AVX2 unavailable";
+  std::array<IvPriceSeedRequest, 5> seeds;
+  std::array<IvPriceCandidateRequest, 5> requests;
+  for (std::size_t i = 0; i < seeds.size(); ++i) {
+    const double strike = 98. + static_cast<double>(i);
+    const auto price = andersen_lake(100., strike, .5, .25, .04, .012, Side::Put);
+    ASSERT_TRUE(price);
+    seeds[i] = {*price, 100., strike, .5, .04, .012, .25, .001, Side::Put};
+    requests[i] = {*price, 100., strike, .5, .04, .012, .001, Side::Put};
+  }
+  std::array<IvPriceCandidateResult, 5> baseline;
+  IvPriceCandidateBatchStats baseline_stats;
+  ASSERT_TRUE(american_implied_vol_price_candidate_batch(requests, IvOpts{},
+      IvPriceSeedKernel::VectorReferenceEmpirical, baseline, baseline_stats));
+  ASSERT_EQ(baseline_stats.proof.vector_admitted, 4u);
+  ASSERT_EQ(baseline_stats.fast_continuations, 0u);
+  const auto &failed = requests[1];
+  const auto resumed = american_implied_vol_price_candidate(failed.price, failed.S,
+      failed.K, failed.T, failed.r, failed.q, failed.side, IvOpts{}, failed.budget,
+      nullptr, IvPriceProposalKernel::Fast);
+  ASSERT_TRUE(resumed);
+  for (const bool candidate : {false, true}) {
+    ColdFloorFault fault;
+    const research::IvSeedColdFloorTestHook hook{ColdFloorFault::inject, &fault};
+    std::array<IvPriceSeedResult, 5> proofs;
+    IvPriceSeedBatchStats proof_stats;
+    std::array<IvPriceCandidateResult, 5> results;
+    IvPriceCandidateBatchStats stats;
+    bool escaped = false, applied = false;
+    testkit::alloc_counter_arm();
+    // Four allocations prepare the first put's floor. Refuse the second put's
+    // cache State (plus three candidate scratch allocations when applicable),
+    // then inject at its actual uncached cold-floor call. Lane zero completed.
+    testkit::alloc_counter_fail_once_at(candidate ? 8u : 5u);
+    try {
+      if (candidate)
+        applied = american_implied_vol_price_candidate_batch(requests, IvOpts{},
+            IvPriceSeedKernel::VectorReferenceEmpirical, results, stats, false,
+            IvPriceProposalKernel::ScreenThenFast, &hook);
+      else
+        applied = american_implied_vol_price_seed_batch(seeds, IvOpts{},
+            IvPriceSeedKernel::VectorReferenceEmpirical, proofs, proof_stats, false, &hook);
+    } catch (const std::bad_alloc &) {
+      escaped = true;
+    }
+    const auto allocations = testkit::alloc_counter_disarm();
+    EXPECT_FALSE(escaped);
+    EXPECT_TRUE(applied);
+    EXPECT_EQ(fault.calls, 1u);
+    EXPECT_EQ(fault.index, 1u);
+    EXPECT_GT(allocations, candidate ? 8u : 5u); // later lanes actually ran
+    if (escaped) continue;
+    if (candidate) {
+      EXPECT_EQ(stats.screen_proposals, 5u);
+      EXPECT_EQ(stats.screen_seeds, 5u);
+      EXPECT_EQ(stats.proof.requests, 5u);
+      EXPECT_EQ(stats.proof.allocation_refusals, 1u);
+      EXPECT_EQ(stats.fast_continuations, 1u);
+      EXPECT_EQ(stats.complete_scalar_fallbacks, 0u);
+      EXPECT_TRUE(results[1].screen_proof.allocation_refused);
+      EXPECT_FALSE(results[1].stats.screen_accepted);
+      for (std::size_t i = 0; i < results.size(); ++i) {
+        ASSERT_TRUE(results[i].sigma);
+        EXPECT_FALSE(results[i].allocation_refused);
+        if (i != 1) EXPECT_EQ(std::bit_cast<std::uint64_t>(*results[i].sigma),
+                             std::bit_cast<std::uint64_t>(*baseline[i].sigma));
+      }
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(*results[1].sigma),
+                std::bit_cast<std::uint64_t>(*resumed));
+    } else {
+      EXPECT_EQ(proof_stats.requests, 5u);
+      EXPECT_EQ(proof_stats.allocation_refusals, 1u);
+      EXPECT_EQ(proof_stats.vector_admitted, 3u);
+      EXPECT_EQ(proof_stats.scalar_fallbacks, 1u); // tail only; no whole-batch replay
+      EXPECT_FALSE(proofs[1].sigma);
+      EXPECT_TRUE(proofs[1].allocation_refused);
+      for (const std::size_t i : {0u, 2u, 3u, 4u}) ASSERT_TRUE(proofs[i].sigma);
+    }
+  }
+}
 
 TEST(IvCandidateBatchAlloc, ScratchAllocationRefusalRunsEveryOriginalCallOnce) {
   const auto price = andersen_lake(773., 780., 1./365., .35, .045, .01, Side::Put);

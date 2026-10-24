@@ -3068,7 +3068,8 @@ bool vector_seed_scope(const IvPriceSeedRequest &a, const IvOpts &opts) noexcept
 
 bool american_implied_vol_price_seed_batch(std::span<const IvPriceSeedRequest> requests,
     const IvOpts &opts, IvPriceSeedKernel kernel, std::span<IvPriceSeedResult> out,
-    IvPriceSeedBatchStats &stats, bool timed) {
+    IvPriceSeedBatchStats &stats, bool timed,
+    const research::IvSeedColdFloorTestHook *test_hook) {
   stats = {};
   for (auto &v : out) v = {};
   if (out.size() != requests.size() ||
@@ -3137,9 +3138,21 @@ bool american_implied_vol_price_seed_batch(std::span<const IvPriceSeedRequest> r
         }
         const auto floor_start = now();
         auto floor = floor_cache.price(a.S, a.K, a.T, a.r, a.q, a.side, opts.al_opts);
-        if (!floor) {
-          const auto cold = andersen_lake(a.S, a.K, a.T, kIvMin, a.r, a.q, a.side, opts.al_opts);
-          if (cold) floor = *cold;
+        try {
+          if (!floor) {
+            if (test_hook != nullptr && test_hook->before_price != nullptr)
+              test_hook->before_price(i, test_hook->context);
+            const auto cold = andersen_lake(a.S, a.K, a.T, kIvMin, a.r, a.q, a.side, opts.al_opts);
+            if (cold) floor = *cold;
+          }
+        } catch (const std::bad_alloc &) {
+          // The scalar seed helper contains this same failure and supplies no
+          // proof. Preserve completed lanes; a candidate caller may resume its
+          // original Fast continuation, without repeating Screen or this pack.
+          answer.allocation_refused = true;
+          ++stats.allocation_refusals;
+          if (timed) stats.floor_ns += elapsed(floor_start);
+          continue;
         }
         if (timed) stats.floor_ns += elapsed(floor_start);
         if (!floor || !std::isfinite(*floor) || !(a.price > *floor)) {
@@ -3449,7 +3462,8 @@ std::optional<double> american_implied_vol_price_candidate(
 bool american_implied_vol_price_candidate_batch(
     std::span<const IvPriceCandidateRequest> requests, const IvOpts &opts,
     IvPriceSeedKernel proof_kernel, std::span<IvPriceCandidateResult> out,
-    IvPriceCandidateBatchStats &stats, bool timed, IvPriceProposalKernel proposal_kernel) {
+    IvPriceCandidateBatchStats &stats, bool timed, IvPriceProposalKernel proposal_kernel,
+    const research::IvSeedColdFloorTestHook *test_hook) {
   const auto now = [&] { return timed ? CandidateClock::now() : CandidateClock::time_point{}; };
   const auto started = now();
   stats = {};
@@ -3510,7 +3524,7 @@ bool american_implied_vol_price_candidate_batch(
       }
       stats.screen_seeds = count;
       if (!american_implied_vol_price_seed_batch(std::span(seeds).first(count), opts,
-          proof_kernel, std::span(proofs).first(count), stats.proof, timed)) return false;
+          proof_kernel, std::span(proofs).first(count), stats.proof, timed, test_hook)) return false;
       for (std::size_t j = 0; j < count; ++j) {
         auto &answer = out[indices[j]];
         answer.screen_proof = proofs[j];

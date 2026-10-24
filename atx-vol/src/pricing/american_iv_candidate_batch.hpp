@@ -36,11 +36,14 @@ struct IvPriceCandidateBatchStats {
 // Output sigma is supplied only after a complete proof; screen_proof retains
 // explicit empirical/scalar origin and never supplies a generic error bound.
 // Scratch allocation refusal falls back to the complete scalar path for every
-// request before any proposal is run. Other bad_alloc follows per-call refusal.
+// request before any proposal is run. Escaping Screen/Fast bad_alloc follows
+// per-call refusal. A contained proof allocation failure resumes the original
+// Fast chain, as the scalar seed helper does; screen_proof retains that refusal.
 [[nodiscard]] bool american_implied_vol_price_candidate_batch(
     std::span<const IvPriceCandidateRequest> requests, const IvOpts &opts,
     IvPriceSeedKernel proof_kernel, std::span<IvPriceCandidateResult> out,
     IvPriceCandidateBatchStats &stats, bool timed = false,
-    IvPriceProposalKernel proposal_kernel = IvPriceProposalKernel::ScreenThenFast);
+    IvPriceProposalKernel proposal_kernel = IvPriceProposalKernel::ScreenThenFast,
+    const research::IvSeedColdFloorTestHook *test_hook = nullptr);
 
 } // namespace atx::vol

@@ -33,6 +33,25 @@ or Fast continuation refuses only that request, preserving original candidate
 semantics. Contained optional-floor allocation failures retain their existing
 cold scalar fallback and are not mislabeled as escaping failures.
 
+Fresh review found an uncontained `bad_alloc` at the vector proof's uncached
+cold-floor call. That lane now supplies no proof, records
+`screen_proof.allocation_refused` and the proof allocation-refusal count, and
+continues through the original Fast body. This matches the scalar seed helper's
+contained exception semantics. Completed and later lanes remain intact; no
+whole-batch replay occurs. The failed floor attempt stays in its floor clock.
+The ordinary scalar seed/candidate path is unchanged.
+
+The new native control first uses the real allocation hook to refuse the second
+put's optional cache after the first lane completed. A private, default-null
+observer then deliberately throws immediately before that lane's actual cold
+floor evaluation. This second exception is synthetic seam injection, not a
+claimed numerical counterexample or a naturally reproduced allocator failure
+inside the scalar evaluator. The observer cannot replace a numerical value and
+is absent from ordinary scalar calls. The pre-fix test failed for both direct
+seed-batch and candidate-batch routes, showing the escape and lost later work.
+The correction preserves other lane bits and resumes only the failed proof;
+its final sigma matches the existing Fast-only continuation exactly.
+
 The inclusive optional clock starts before output reset and scratch setup and
 ends after scratch and floor-owner destruction. Setup, Screen proposals,
 the existing proof component and Fast continuations have separate subclocks.
@@ -50,12 +69,14 @@ explicit nondefault Reference options, invalid inputs/shape, and unchanged
 inverse-iteration counts. The existing trace tests keep scalar decisions,
 phase arguments, work and floor state observable after factoring.
 
-Five isolated allocation controls pass, including two new groups. Failure at
+Six isolated allocation controls pass, including three new groups. Failure at
 each of the three scratch allocations preserves every original result through
 the complete scalar fallback. Fail-once allocation at actual Screen and
 resumed Fast error construction preserves one attempted call, its refusal and
 which continuation was reached. Three owning source/test files compile with
 PCH disabled (the shared pricing test has two owning object targets).
+The proof-floor follow-up passes the same 37 pricing controls; its six allocation
+controls include both direct proof and resumed-candidate exception routes.
 Evidence prefix:
 `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/candidate-proof-batch-*`.
 

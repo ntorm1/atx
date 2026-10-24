@@ -37,24 +37,41 @@ struct IvPriceSeedResult {
   double boundary_distance = std::numeric_limits<double>::quiet_NaN();
   double empirical_allowance = 0.0;
   AlExerciseClass exercise = AlExerciseClass::UnsupportedRegime;
+  bool allocation_refused = false; // escaped cold-floor allocation, not optional-cache refusal
 };
 struct IvPriceSeedBatchStats {
   std::uint64_t requests = 0, vector_packs = 0, vector_lanes = 0, vector_admitted = 0;
   std::uint64_t scalar_fallbacks = 0, scalar_admitted = 0;
   std::uint64_t floor_preparations = 0, floor_hits = 0;
+  std::uint64_t allocation_refusals = 0;
   std::uint64_t vector_ns = 0, scalar_ns = 0, floor_ns = 0, inclusive_ns = 0;
 };
 
-// Every declined experiment lane runs the unchanged complete scalar helper.
+namespace research {
+// Test-only synchronous borrowed observer. Called only after the optional floor
+// cache refused and immediately before the actual cold floor evaluation. It may
+// inject bad_alloc to exercise that otherwise allocation-free success path.
+// Ordinary callers omit it; it cannot supply or replace a numerical value.
+struct IvSeedColdFloorTestHook {
+  void (*before_price)(std::size_t request_index, void *context) = nullptr;
+  void *context = nullptr;
+};
+} // namespace research
+
+// Every numerically declined experiment lane runs the unchanged scalar helper.
 // Only full packs are vectorized; tails retain scalar arithmetic. Cold scalar
 // floor checks and nonmonotone chord semantics are mandatory. Resets results and
 // stats; false denotes invalid shape/mode, never a per-lane numerical refusal.
 // Input and output spans must be disjoint and live through the call.
 // No retained state. Allocation is limited to the existing boundary/floor owners.
+// A cold-floor bad_alloc refuses only that proof and is separately counted;
+// optional-cache allocation refusal may still complete its usual cold fallback.
+// The final private argument is solely for synthetic exception-path testing.
 [[nodiscard]] bool american_implied_vol_price_seed_batch(
     std::span<const IvPriceSeedRequest> requests, const IvOpts &opts,
     IvPriceSeedKernel kernel, std::span<IvPriceSeedResult> out,
-    IvPriceSeedBatchStats &stats, bool timed = false);
+    IvPriceSeedBatchStats &stats, bool timed = false,
+    const research::IvSeedColdFloorTestHook *test_hook = nullptr);
 
 namespace simd::detail {
 struct IvSeedVectorPrice {
