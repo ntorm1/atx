@@ -539,3 +539,72 @@ TEST(PersistSurfaceTimeline, CollectReservesBeforeTakingRefs) {
   EXPECT_EQ(views.size(), 12u);
   EXPECT_EQ(refs.size(), 12u);
 }
+
+namespace {
+
+// A correctly sealed manifest naming exactly `e` (its CRCs and ts range as given).
+[[nodiscard]] std::vector<std::byte> manifest_of(const PersistManifestEntry &e) {
+  const PersistSectionInput in{kPersistManifestEntriesSection, 1, 0, PersistDType::Pod,
+                               static_cast<std::uint32_t>(sizeof(PersistManifestEntry)), true,
+                               PersistCodec::None, PersistFilter::None, 3,
+                               std::as_bytes(std::span{&e, 1})};
+  PersistFileInfo info;
+  info.kind = PersistKind::Manifest;
+  info.schema_fingerprint = persist_manifest_fingerprint();
+  info.ts_min_ns = std::min(e.ts_min_ns, e.ts_max_ns);
+  info.ts_max_ns = std::max(e.ts_min_ns, e.ts_max_ns);
+  auto image = build_persist_file(std::span{&in, 1}, info);
+  EXPECT_TRUE(image.has_value());
+  return image ? *image : std::vector<std::byte>{};
+}
+
+} // namespace
+
+TEST(PersistSurfaceTimeline, StoreRefusesForgedManifestRows) {
+  // A manifest row must describe the period file it names (header CRC, whole-file CRC,
+  // instant range): a forged or stale row is refused at open, never served or used to
+  // route a query past a period.
+  const fs::path dir = fresh_dir("forged");
+  auto db = SurfaceDb::create((dir / "db").string());
+  ASSERT_TRUE(db.has_value());
+  const std::vector<std::string> keys{"2023-11-14T2213", "2023-11-19T2213"};
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const Snapshot s =
+        make_snapshot(static_cast<std::int64_t>(i) * 5 * rt::kDayUnits, static_cast<int>(i));
+    ASSERT_TRUE(db->write_partition(keys[i], items_of(s)).has_value());
+  }
+  const fs::path root = dir / "timeline";
+  ASSERT_TRUE(SurfaceTimelineStore::build_from_surface_db(*db, keys, root.string(), 0).has_value());
+  ASSERT_TRUE(SurfaceTimelineStore::open(root.string()).has_value());
+  auto d = PersistDirectory::open(root.string());
+  ASSERT_TRUE(d.has_value());
+  ASSERT_EQ(d->entries().size(), 1u);
+  const PersistManifestEntry good = d->entries().front();
+  ASSERT_LT(good.ts_min_ns, good.ts_max_ns);
+  const fs::path manifest = root / std::string(kPersistManifestFileName);
+  const std::vector<std::byte> original = slurp(manifest);
+
+  struct Forge {
+    const char *what;
+    void (*apply)(PersistManifestEntry &);
+  };
+  const Forge forges[] = {
+      {"header crc", [](PersistManifestEntry &e) { e.header_crc32c ^= 1u; }},
+      {"file crc", [](PersistManifestEntry &e) { e.file_crc32c ^= 1u; }},
+      {"ts_min later", [](PersistManifestEntry &e) { e.ts_min_ns += 1; }},
+      {"ts_max earlier", [](PersistManifestEntry &e) { e.ts_max_ns -= 1; }},
+      {"ts inverted", [](PersistManifestEntry &e) { std::swap(e.ts_min_ns, e.ts_max_ns); }},
+  };
+  for (const Forge &f : forges) {
+    PersistManifestEntry e = good;
+    f.apply(e);
+    spit(manifest, manifest_of(e));
+    auto s = SurfaceTimelineStore::open(root.string());
+    ASSERT_FALSE(s.has_value()) << f.what;
+    if (std::string_view{f.what} != "ts inverted") {
+      EXPECT_EQ(s.error().status, PersistStatus::SegmentMismatch) << f.what;
+    }
+  }
+  spit(manifest, original);
+  EXPECT_TRUE(SurfaceTimelineStore::open(root.string()).has_value());
+}

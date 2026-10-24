@@ -89,8 +89,10 @@ calendar month of its instant, and republishes each touched period as a new gene
 MERGES the previous generation (fully verified) with the new partitions — a new partition at an
 existing instant replaces that whole snapshot. Returns the entries published. One builder per
 store root at a time (each period publish is atomic, the read-merge-publish of a period is not).
-`open(root)` maps every listed period (Lazy, size bound to the manifest) and refuses periods
-whose ts ranges interleave (`IndexUnsorted`). `collect(uid, from, to, views, refs, ts)` counts
+`open(root)` maps every listed period (Lazy, size bound to the manifest), refuses a row that does
+not describe its file — header CRC, whole-file CRC or instant range differing from the opened
+file's header (`SegmentMismatch`, detail = the row's seq; the periods are routed by the file's own
+range) — and refuses periods whose ts ranges interleave (`IndexUnsorted`). `collect(uid, from, to, views, refs, ts)` counts
 first, reserves `views` once, re-points any existing ref that named an element of `views` if
 the reserve moved the buffer, then appends in ascending ts across periods; on a failed view it
 rolls all three vectors back (strong guarantee).
@@ -132,9 +134,21 @@ can add or replace only one key.
 | `Publish` (default for `segment_bytes` seals) | temp, write, rename | a process crash; a power loss can tear a file, then `open` refuses it by CRC |
 | `Flush` (default for `finish()` and compaction) | temp, write, FlushFileBuffers, rename | a power loss, for that segment and the manifest |
 
-A `Flush` seal does not reach back to earlier `Publish` segments: they are durable once the OS
-has written them back. A run whose every segment must survive a power loss sets
-`seal_durability = Flush`. The writer starts no thread.
+A `Flush` `finish()` first runs FlushFileBuffers over every segment the writer sealed at
+`Publish`, then makes its last seal: once it returns, everything the manifest lists is durable.
+That flush needs write access to each file, so while a reader holds one open without write
+sharing (a mapping), `finish()` returns `Busy`, changes nothing and may be retried. A
+size-triggered `Flush` seal makes only its own segment and the manifest durable. Open at Full /
+Paranoid refuses a torn segment; at Lazy a torn column is found on its first touch (an empty span,
+or `SectionChecksum` from `materialize_*`). The writer starts no thread.
+
+**Single writer.** `create` refuses a directory that already lists a run (`AlreadyExists`, under
+the lock). Each seal publishes only if the manifest still ends (highest seq) with the row this
+writer published last, or is empty for its first segment; otherwise `SegmentMismatch`. A listed
+key is never replaced (`DuplicateKey`). After either refusal, every later append and `finish()`
+returns it (the writer's unsealed steps are lost); the run stays openable on what the manifest
+lists. So a second writer on one directory is refused at its first seal, and a compaction under a
+live writer refuses that writer's next seal.
 
 ### 2.2 Sections (all `type_major` 1, all required, in this file order)
 
@@ -221,7 +235,9 @@ in [1, 19] after a byte shuffle by element stride — and, under `<dir>/persist.
 manifest changed since it was read (`SegmentMismatch`: every entry's seq and file CRC are
 compared), publishes the merged file under a fresh name and replaces the manifest with its
 single entry (§2.1a; `PersistDirectory::replace_all` was deferred, so this is the compaction
-contract). The superseded segment files stay on disk
+contract). A seal landing during the compaction makes the compaction refuse; a compaction landing
+first makes the live writer's next seal refuse (§2.1a), so compact finished runs only. The
+superseded segment files stay on disk
 (they may be mapped; offline gc removes them). Compressed sections are decoded and CRC-verified
 at open by the container, so nothing allocates after open on either tier.
 
@@ -230,4 +246,6 @@ at open by the container, so nothing allocates after open on either tier.
 Archives / timelines / stores are move-only PIMPL; spans and views borrow the backing and die
 with the object (moves keep them valid). All readers are immutable after open and safe to query
 from any number of threads (the lazy CRC verdicts are the container's seq_cst atomics). Writers
-are single-threaded; one writer per run directory, one builder per timeline store.
+are single-threaded. A run directory has one writer, enforced through the manifest (§2.1a: a
+second writer, or a writer whose run was compacted underneath it, is refused at its next seal). A
+timeline store has one builder at a time; that is a usage contract, not enforced.

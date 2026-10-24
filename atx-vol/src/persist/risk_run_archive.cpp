@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,6 +47,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/api/persist/persist_file.hpp"
+#include "persist/risk_run_archive_publish.hpp"
 #include "persist/risk_run_format.hpp"
 #include "storage/writer_lock.hpp"
 
@@ -261,6 +263,12 @@ struct WriterCore {
   std::uint64_t next_var{0};
   std::uint32_t next_segment{0};
   bool finished{false};
+  // The manifest row this writer published last (its ownership token), the segments
+  // it sealed at Publish and has not flushed yet, and the refusal that ended its
+  // ownership (every later call returns it).
+  std::optional<WriterTail> tail;
+  std::vector<std::string> unflushed;
+  std::optional<PersistError> lost;
   bool reserved{false};
 
   [[nodiscard]] std::size_t n_legs() const noexcept { return book.legs.size(); }
@@ -312,7 +320,8 @@ struct WriterCore {
     prefault(staging.explain_status, steps * n_legs());
   }
 
-  [[nodiscard]] PersistOutcome seal(SealDurability durability) {
+  // The staged segment as section spans (into the staging and the book) plus its meta.
+  [[nodiscard]] SegmentParts staged_parts() const {
     SegmentParts p;
     RiskRunMeta &m = p.meta;
     m.book_fingerprint = book.fingerprint;
@@ -366,14 +375,28 @@ struct WriterCore {
     p.bytes[slot(Section::VarIndex)] = bytes_of(g.vars);
     p.bytes[slot(Section::VarFrames)] = bytes_of(g.var_frames);
     p.bytes[slot(Section::VarPoints)] = bytes_of(g.var_points);
+    return p;
+  }
+
+  [[nodiscard]] PersistOutcome seal(SealDurability durability) {
+    const SegmentParts p = staged_parts();
     auto image = build_segment(p, PersistCodec::None, 3, 1);
     if (!image) return tl::unexpected(image.error());
     const auto records = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(m.n_steps, std::numeric_limits<std::uint32_t>::max()));
-    if (PersistOutcome ok =
-            publish_segment(dir, segment_key(next_segment), *image, records, durability);
-        !ok) {
-      return ok;
+        std::min<std::uint64_t>(p.meta.n_steps, std::numeric_limits<std::uint32_t>::max()));
+    auto published =
+        publish_writer_segment(dir, segment_key(next_segment), *image, records, durability, tail);
+    if (!published) {
+      // Another writer or a compaction owns the manifest now: this writer is done.
+      const S st = published.error().status;
+      if (st == S::SegmentMismatch || st == S::DuplicateKey) lost = published.error();
+      return tl::unexpected(published.error());
+    }
+    tail = WriterTail{published->seq, published->file_crc32c};
+    if (durability == SealDurability::Publish) {
+      const auto name = std::find(published->file_name.begin(), published->file_name.end(), '\0');
+      unflushed.push_back(
+          (fs::path{dir} / std::string(published->file_name.begin(), name)).string());
     }
     staging.clear();
     ++next_segment;
@@ -400,6 +423,7 @@ struct WriterCore {
   }
 
   [[nodiscard]] PersistOutcome append_frame(const RiskFrame &f) {
+    if (lost) return tl::unexpected(*lost);
     if (finished) return persist_error(S::InvalidArgument);
     if (f.book_logical_id != book.logical_id) {
       return persist_error(S::InvalidArgument, type_of(Section::Steps), f.book_logical_id);
@@ -467,6 +491,7 @@ struct WriterCore {
   }
 
   [[nodiscard]] PersistOutcome append_explain(const ExplainResult &r) {
+    if (lost) return tl::unexpected(*lost);
     if (finished) return persist_error(S::InvalidArgument);
     if (PersistOutcome ok = check_explain(r); !ok) return ok;
     const bool attach = !staging.steps.empty() &&
@@ -521,6 +546,7 @@ struct WriterCore {
   }
 
   [[nodiscard]] PersistOutcome append_var(const HistoricalVarResult &r) {
+    if (lost) return tl::unexpected(*lost);
     if (finished) return persist_error(S::InvalidArgument);
     RiskRunVar v{};
     v.step = next_step == 0 ? kNone64 : next_step - 1;
@@ -549,7 +575,14 @@ struct WriterCore {
   }
 
   [[nodiscard]] PersistOutcome finish() {
+    if (lost) return tl::unexpected(*lost);
     if (finished) return persist_error(S::InvalidArgument);
+    // A Flush finish makes the whole run durable: the segments sealed at Publish are
+    // flushed first (Busy, retryable, while a mapped reader holds one), then the last
+    // seal flushes its segment and the manifest.
+    if (options.finish_durability == SealDurability::Flush) {
+      if (PersistOutcome ok = flush_files(unflushed); !ok) return ok;
+    }
     // An empty run still publishes one (book-only) segment so it opens.
     if (!staging.empty() || next_segment == 0) {
       if (PersistOutcome ok = seal(options.finish_durability); !ok) return ok;
@@ -584,6 +617,22 @@ struct SegmentView {
   }
 };
 
+// a * b, or std::nullopt when the product would wrap u64.
+[[nodiscard]] std::optional<std::uint64_t> checked_mul(std::uint64_t a, std::uint64_t b) noexcept {
+  if (b != 0u && a > std::numeric_limits<std::uint64_t>::max() / b) return std::nullopt;
+  return a * b;
+}
+
+// rows[begin, begin + n) when it lies inside `rows` (subtraction form: never a u64
+// addition that can wrap), std::nullopt otherwise.
+template <class T>
+[[nodiscard]] std::optional<std::span<const T>> checked_subspan(std::span<const T> rows,
+                                                                std::uint64_t begin,
+                                                                std::uint64_t n) noexcept {
+  if (begin > rows.size() || n > rows.size() - begin) return std::nullopt;
+  return rows.subspan(static_cast<std::size_t>(begin), static_cast<std::size_t>(n));
+}
+
 template <class T>
 [[nodiscard]] PersistOutcome bind_section(const PersistFile &f, Section s,
                                           std::span<const T> &out) noexcept {
@@ -597,10 +646,16 @@ template <class T>
 [[nodiscard]] PersistOutcome check_columns(const SegmentView &v) noexcept {
   const RiskRunMeta &m = v.meta;
   const bool frames = (m.flags & kRunFrames) != 0u;
-  const std::uint64_t fu = frames ? m.n_frames * m.n_unique : 0u;
-  const std::uint64_t fi = frames ? m.n_frames * m.n_uids : 0u;
-  const std::uint64_t fs_ = frames ? m.n_frames * m.n_share_legs : 0u;
   if (!frames && m.n_frames != 0u) return persist_error(S::RecordInvalid, type_of(Section::Meta));
+  // Column lengths are n_frames x (unique | uids | share legs): a product that would
+  // wrap u64 can never match a real column, so it is refused before any compare.
+  const auto pu = checked_mul(m.n_frames, m.n_unique);
+  const auto pi = checked_mul(m.n_frames, m.n_uids);
+  const auto ps = checked_mul(m.n_frames, m.n_share_legs);
+  if (!pu || !pi || !ps) return persist_error(S::IndexBounds, type_of(Section::Meta));
+  const std::uint64_t fu = frames ? *pu : 0u;
+  const std::uint64_t fi = frames ? *pi : 0u;
+  const std::uint64_t fs_ = frames ? *ps : 0u;
   for (std::uint32_t c = 0; c < kRiskFrameColumnCount; ++c) {
     if (v.count(Section::FrameF64, c) != fu) {
       return persist_error(S::IndexBounds, type_of(Section::FrameF64) + c);
@@ -658,11 +713,13 @@ template <class T>
     if (r.frame_begin != vf || r.point_begin != vp || r.reserved != 0u) {
       return persist_error(S::RecordInvalid, type_of(Section::VarIndex), i);
     }
-    vf += r.frame_count;
-    vp += r.point_count;
-    if (vf > v.var_frames.size() || vp > v.var_points.size()) {
+    // Each count against what is left (vf, vp <= the column sizes by induction): no
+    // u64 addition here can wrap, so a forged count cannot alias the running sums.
+    if (r.frame_count > v.var_frames.size() - vf || r.point_count > v.var_points.size() - vp) {
       return persist_error(S::IndexBounds, type_of(Section::VarIndex), i);
     }
+    vf += r.frame_count;
+    vp += r.point_count;
   }
   if (vf != v.var_frames.size() || vp != v.var_points.size()) {
     return persist_error(S::IndexBounds, type_of(Section::VarIndex));
@@ -699,17 +756,22 @@ template <class T>
       if (s.explain_row != row || (s.explain_rows != n_legs && s.explain_rows != m.n_option_legs)) {
         return bad();
       }
+      if (s.explain_rows > m.n_explain_rows - row) {
+        return persist_error(S::IndexBounds, type_of(Section::Steps), i);
+      }
       row += s.explain_rows;
     } else if (s.explain_row != kNone64 || s.explain_rows != 0u || s.n_bucket_uid != 0u ||
                s.n_bucket_expiry != 0u) {
       return bad();
     }
     if (s.bucket_uid_begin != buid || s.bucket_expiry_begin != bexp) return bad();
-    buid += s.n_bucket_uid;
-    bexp += s.n_bucket_expiry;
-    if (buid > v.by_uid.size() || bexp > v.by_expiry.size()) {
+    // buid / bexp never exceed the bucket sections (checked before each addition).
+    if (s.n_bucket_uid > v.by_uid.size() - buid ||
+        s.n_bucket_expiry > v.by_expiry.size() - bexp) {
       return persist_error(S::IndexBounds, type_of(Section::BucketsByUid), i);
     }
+    buid += s.n_bucket_uid;
+    bexp += s.n_bucket_expiry;
     for (const RiskRunBucket &b :
          v.by_uid.subspan(static_cast<std::size_t>(s.bucket_uid_begin), s.n_bucket_uid)) {
       if (b.step != s.step) {
@@ -991,10 +1053,13 @@ rows(const SegmentView &v, std::uint32_t type, std::uint64_t begin, std::uint64_
     return tl::unexpected(ok.error());
   }
   r.total = v.totals[a.local];
-  r.by_uid =
-      buckets_of(v.by_uid.subspan(static_cast<std::size_t>(s.bucket_uid_begin), s.n_bucket_uid));
-  r.by_expiry = buckets_of(
-      v.by_expiry.subspan(static_cast<std::size_t>(s.bucket_expiry_begin), s.n_bucket_expiry));
+  const auto by_uid = checked_subspan(v.by_uid, s.bucket_uid_begin, s.n_bucket_uid);
+  const auto by_expiry = checked_subspan(v.by_expiry, s.bucket_expiry_begin, s.n_bucket_expiry);
+  if (!by_uid || !by_expiry) {
+    return persist_error(S::IndexBounds, type_of(Section::BucketsByUid), s.step);
+  }
+  r.by_uid = buckets_of(*by_uid);
+  r.by_expiry = buckets_of(*by_expiry);
   r.excluded_count = s.excluded_count;
   r.excluded_premium = s.excluded_premium;
   r.n_pivot_groups = s.n_pivot_groups;
@@ -1009,17 +1074,20 @@ rows(const SegmentView &v, std::uint32_t type, std::uint64_t begin, std::uint64_
   const auto [s, l] = c.var_ref[index];
   const SegmentView &v = c.segs[s];
   const RiskRunVar &row = v.vars[l];
+  // Validated at open (check_var); re-checked here, where the spans are formed, so a
+  // count can never reach reserve() or subspan() unbounded.
+  const auto frames = checked_subspan(v.var_frames, row.frame_begin, row.frame_count);
+  const auto points = checked_subspan(v.var_points, row.point_begin, row.point_count);
+  if (!frames || !points) return persist_error(S::IndexBounds, type_of(Section::VarIndex), index);
   HistoricalVarResult out;
-  out.frames.reserve(static_cast<std::size_t>(row.frame_count));
-  for (const RiskRunVarFrame &f : v.var_frames.subspan(static_cast<std::size_t>(row.frame_begin),
-                                                       static_cast<std::size_t>(row.frame_count))) {
+  out.frames.reserve(frames->size());
+  for (const RiskRunVarFrame &f : *frames) {
     out.frames.push_back(HistoricalVarFrame{f.base_ts_ns, f.shifted_ts_ns, f.totals,
                                             f.n_legs_resolved, f.n_legs_unresolved,
                                             f.admitted != 0u});
   }
-  out.points.reserve(static_cast<std::size_t>(row.point_count));
-  for (const RiskRunVarPoint &p : v.var_points.subspan(static_cast<std::size_t>(row.point_begin),
-                                                       static_cast<std::size_t>(row.point_count))) {
+  out.points.reserve(points->size());
+  for (const RiskRunVarPoint &p : *points) {
     out.points.push_back(HistoricalVarPoint{p.confidence, p.value_at_risk, p.expected_shortfall,
                                             static_cast<std::size_t>(p.tail_scenarios),
                                             p.tail_mean});
@@ -1279,10 +1347,10 @@ PersistResult<RiskRunWriter> RiskRunWriter::create(std::string_view dir,
     return persist_error(PersistStatus::InvalidArgument);
   }
   // A run directory has one writer for its whole life: refuse one that already holds
-  // a run (a resumed run would need the book identity check of the reader).
-  auto existing = PersistDirectory::open(dir);
-  if (existing) return persist_error(PersistStatus::AlreadyExists);
-  if (existing.error().status != PersistStatus::NotFound) return tl::unexpected(existing.error());
+  // a run, under the directory lock (a resumed run would need the book identity check
+  // of the reader). Two writers created before either seals are told apart at the
+  // first seal: the second is refused (risk_run_archive_publish.hpp).
+  if (PersistOutcome ok = risk_run::claim_run_dir(dir); !ok) return tl::unexpected(ok.error());
   auto captured = risk_run::capture_book(book);
   if (!captured) return tl::unexpected(captured.error());
   auto impl = std::make_unique<Impl>();

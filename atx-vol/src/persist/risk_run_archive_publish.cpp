@@ -1,6 +1,7 @@
 // risk_run_archive_publish.cpp — publication of RiskRun segments and manifests at a
-// selectable durability (lane P2 fix round, 2026-10-24; SealDurability in
-// risk_run_archive.hpp).
+// selectable durability, with the single-writer check (lane P2 fix rounds,
+// 2026-10-24; SealDurability in risk_run_archive.hpp, the writer API in
+// risk_run_archive_publish.hpp).
 //
 // PROTOCOL. PersistDirectory's (persist_file.hpp): under `dir/persist.lock` read the
 // manifest, write the data file under a fresh canonical name (an earlier crash's
@@ -14,15 +15,20 @@
 //            loses nothing sealed; a power loss before write-back can leave a torn
 //            file, which RiskRunArchive::open refuses by CRC.
 //
-// WHY HERE. PersistDirectory::publish always flushes and can add or replace one key
-// only; compaction must drop every key but one. PersistDirectory::replace_all was
-// deferred (ruling 2026-10-24), so the manifest image is built here, byte-compatible
-// with PersistDirectory's (manifest kind + fingerprint, one Pod section of
-// PersistManifestEntry rows sorted by key, header ts range = the union of the rows').
-// Only the M1 public API of the container is used (build_persist_file,
-// persist_file_name, PersistDirectory::open) plus atx-vol's storage primitives.
+// OWNERSHIP. A writer's seal is refused (SegmentMismatch) unless the manifest still
+// ends with the row that writer published last — see risk_run_archive_publish.hpp.
+// Compaction compares the whole manifest with the one it read (publish_compacted).
+//
+// WHY HERE. PersistDirectory::publish always flushes, replaces a same-key row and can
+// add or replace one key only; compaction must drop every key but one.
+// PersistDirectory::replace_all was deferred (ruling 2026-10-24), so the manifest image
+// is built here, byte-compatible with PersistDirectory's (manifest kind + fingerprint,
+// one Pod section of PersistManifestEntry rows sorted by key, header ts range = the
+// union of the rows'). Only the M1 public API of the container is used
+// (build_persist_file, persist_file_name, PersistDirectory::open) plus atx-vol's
+// storage primitives.
 
-#include "persist/risk_run_format.hpp"
+#include "persist/risk_run_archive_publish.hpp"
 
 #include <algorithm>
 #include <array>
@@ -44,8 +50,22 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/api/persist/persist_file.hpp"
 #include "atx/vol/api/persist/persist_format.hpp"
+#include "persist/risk_run_format.hpp"
 #include "storage/archive_util.hpp"
 #include "storage/writer_lock.hpp"
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace atx::vol::risk_run {
 namespace {
@@ -207,11 +227,67 @@ manifest_image(std::span<const PersistManifestEntry> entries) {
   return d == SealDurability::Publish || d == SealDurability::Flush;
 }
 
+// The writer still owns the run: the manifest is empty (its first segment) or its
+// newest row is the one the writer published last.
+[[nodiscard]] bool owns(std::span<const PersistManifestEntry> entries,
+                        const std::optional<WriterTail> &tail) noexcept {
+  if (!tail) return entries.empty();
+  const auto newest =
+      std::max_element(entries.begin(), entries.end(),
+                       [](const PersistManifestEntry &a, const PersistManifestEntry &b) {
+                         return a.seq < b.seq;
+                       });
+  return newest != entries.end() && newest->seq == tail->seq &&
+         newest->file_crc32c == tail->file_crc32c;
+}
+
+// FlushFileBuffers / fsync on an existing, fully written file.
+[[nodiscard]] PersistOutcome flush_file(const std::string &path) {
+#if defined(_WIN32)
+  const std::wstring wide = fs::path{path}.wstring();
+  HANDLE h = ::CreateFileW(wide.c_str(), GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD err = ::GetLastError();
+    return persist_error(err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION
+                             ? S::Busy
+                             : S::IoError);
+  }
+  const BOOL flushed = ::FlushFileBuffers(h);
+  ::CloseHandle(h);
+  if (!flushed) return persist_error(S::IoError);
+  return {};
+#else
+  const int fd = ::open(path.c_str(), O_WRONLY);
+  if (fd < 0) return persist_error(S::IoError);
+  const int rc = ::fsync(fd);
+  ::close(fd);
+  if (rc != 0) return persist_error(S::IoError);
+  return {};
+#endif
+}
+
 } // namespace
 
-PersistOutcome publish_segment(std::string_view dir, std::string_view key,
-                               std::span<const std::byte> image, std::uint32_t records,
-                               SealDurability durability) {
+PersistOutcome claim_run_dir(std::string_view dir) {
+  if (dir.empty()) return persist_error(S::InvalidArgument);
+  const fs::path root{std::string(dir)};
+  std::error_code ec;
+  fs::create_directories(root, ec);
+  if (!fs::is_directory(root, ec)) return persist_error(S::IoError);
+  auto lock = lock_dir(root);
+  if (!lock) return tl::unexpected(lock.error());
+  auto d = PersistDirectory::open(dir);
+  if (d) return persist_error(S::AlreadyExists);
+  if (d.error().status != S::NotFound) return tl::unexpected(d.error());
+  return {};
+}
+
+PersistResult<PersistManifestEntry>
+publish_writer_segment(std::string_view dir, std::string_view key,
+                       std::span<const std::byte> image, std::uint32_t records,
+                       SealDurability durability, const std::optional<WriterTail> &tail) {
   if (!durability_ok(durability) || image.size() < sizeof(PersistHeader) + sizeof(PersistFooter)) {
     return persist_error(S::InvalidArgument);
   }
@@ -223,24 +299,31 @@ PersistOutcome publish_segment(std::string_view dir, std::string_view key,
   if (!lock) return tl::unexpected(lock.error());
   auto entries = read_entries(dir);
   if (!entries) return tl::unexpected(entries.error());
-  std::uint64_t seq = 1;
-  for (const PersistManifestEntry &e : *entries) seq = std::max(seq, e.seq + 1);
-  auto name = fresh_name(root, key, seq);
-  if (!name) return tl::unexpected(name.error());
-  if (PersistOutcome ok = write_file(root / *name, image, durability); !ok) return ok;
-
-  const PersistManifestEntry e = entry_of(image, *name, key, seq, records);
+  if (!owns(*entries, tail)) {
+    return persist_error(S::SegmentMismatch, kPersistManifestEntriesSection,
+                         tail ? tail->seq : 0u);
+  }
   std::vector<PersistManifestEntry> &next = *entries;
   const auto at = std::lower_bound(next.begin(), next.end(), key,
                                    [](const PersistManifestEntry &x, std::string_view k) {
                                      return fixed_name(x.key) < k;
                                    });
   if (at != next.end() && fixed_name(at->key) == key) {
-    *at = e;
-  } else {
-    next.insert(at, e);
+    return persist_error(S::DuplicateKey, kPersistManifestEntriesSection, at->seq);
   }
-  return write_manifest(root, next, durability);
+  std::uint64_t seq = 1;
+  for (const PersistManifestEntry &e : next) seq = std::max(seq, e.seq + 1);
+  auto name = fresh_name(root, key, seq);
+  if (!name) return tl::unexpected(name.error());
+  if (PersistOutcome ok = write_file(root / *name, image, durability); !ok) {
+    return tl::unexpected(ok.error());
+  }
+  const PersistManifestEntry e = entry_of(image, *name, key, seq, records);
+  next.insert(at, e);
+  if (PersistOutcome ok = write_manifest(root, next, durability); !ok) {
+    return tl::unexpected(ok.error());
+  }
+  return e;
 }
 
 PersistOutcome publish_compacted(std::string_view dir, std::span<const PersistManifestEntry> seen,
@@ -269,6 +352,14 @@ PersistOutcome publish_compacted(std::string_view dir, std::span<const PersistMa
   if (PersistOutcome ok = write_file(root / *name, image, durability); !ok) return ok;
   const PersistManifestEntry e = entry_of(image, *name, key, seq, records);
   return write_manifest(root, std::span{&e, 1}, durability);
+}
+
+PersistOutcome flush_files(std::vector<std::string> &paths) {
+  while (!paths.empty()) {
+    if (PersistOutcome ok = flush_file(paths.back()); !ok) return ok;
+    paths.pop_back();
+  }
+  return {};
 }
 
 } // namespace atx::vol::risk_run

@@ -45,13 +45,20 @@ inline constexpr std::string_view kRiskRunSalt = "ATXVRR01";
 // manifest leaves an unreferenced orphan, never a dangling entry.
 //   Publish  no flush: the bytes are in the OS cache when the seal returns. A process
 //            crash loses nothing that was sealed; a power loss / OS crash before the
-//            OS writes the pages back can leave a torn segment or manifest, which
-//            RiskRunArchive::open then refuses (header / file / section CRC).
+//            OS writes the pages back can leave a torn segment or manifest. Open at
+//            Full / Paranoid refuses such a run (header / file / section CRC); at
+//            Lazy the index sections are verified at open and a column on its first
+//            touch, so a torn column surfaces later (an empty span from frame() /
+//            explain(), SectionChecksum from materialize_*); Framing verifies no
+//            payload.
 //   Flush    Publish + FlushFileBuffers on the segment and on the manifest before
-//            their renames: the seal survives a power loss once it returns. It makes
-//            THAT segment and the manifest durable, not earlier Publish segments
-//            (those are durable once the OS has written them back; a run whose every
-//            segment must survive a power loss uses Flush for every seal).
+//            their renames: the seal survives a power loss once it returns. A Flush
+//            finish() first flushes every segment this writer sealed at Publish, so a
+//            power loss after it returns cannot leave the flushed manifest naming an
+//            unflushed segment. That flush needs write access to the files: while a
+//            reader holds one open without write sharing (a mapping), finish() returns
+//            Busy, changes nothing and may be retried. A size-triggered Flush seal
+//            makes only its own segment and the manifest durable.
 // The writer never starts a thread: a caller that wants a Flush seal off its hot path
 // runs the appending (or finish()) on its own thread.
 enum class SealDurability : std::uint8_t { Publish = 0, Flush = 1 };
@@ -70,6 +77,15 @@ struct RiskRunOptions {
   SealDurability finish_durability{SealDurability::Flush};
 };
 
+// SINGLE WRITER. A run directory has one writer for its whole life. create() refuses a
+// directory that already lists a run (AlreadyExists, checked under the directory's
+// writer lock). Every seal re-checks ownership under the lock: the manifest must still
+// end with the row this writer published last (or still be empty, for its first
+// segment). A second writer on the same directory, or a compaction that replaced the
+// manifest under a live writer, makes the next seal refuse with SegmentMismatch (a
+// listed key is never replaced: DuplicateKey). From then on every append and finish()
+// returns that refusal, and the writer's unsealed steps are lost; the run stays
+// openable on whatever the manifest now lists.
 class RiskRunWriter {
 public:
   [[nodiscard]] static PersistResult<RiskRunWriter> create(std::string_view dir,
@@ -136,7 +152,10 @@ public:
   ~RiskRunArchive();
 
   [[nodiscard]] std::size_t n_steps() const noexcept;
-  // Empty span when the step / column is absent.
+  // Empty span when the step or column is absent, AND when the column failed its lazy
+  // CRC (a Lazy open; see SealDurability): step_info() says whether the step has a
+  // frame / explain, and materialize_frame / materialize_explain tell NotFound from
+  // SectionChecksum.
   [[nodiscard]] std::span<const double> frame(RiskFrameColumn column, std::size_t step) const noexcept;
   [[nodiscard]] std::span<const double> explain(RiskExplainColumn column,
                                                 std::size_t step) const noexcept;
@@ -168,7 +187,10 @@ private:
 // on the files the manifest stops naming); the merged segment is published under a
 // fresh name; then, holding the directory's writer lock, the manifest is re-read and
 // replaced by one naming only the merged segment — refused with SegmentMismatch when
-// anything was published since the run was read (a live writer appended a segment).
+// anything was published since the run was read (every row's seq and file CRC are
+// compared). Compact only finished runs: if a writer is still live, a seal it lands
+// during the compaction makes the compaction refuse, and a compaction that lands first
+// makes the writer's next seal refuse (SINGLE WRITER above), losing its unsealed steps.
 // The superseded files stay on disk (a reader may still map them); removing them is
 // offline gc. The 3-argument form seals with SealDurability::Flush.
 [[nodiscard]] PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec codec,
