@@ -2318,11 +2318,15 @@ read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &sum
     }
     fr.admitted = admitted == 1u;
     // Every published pair is complete (dispersion_book_var's gate) and the pairs chain:
-    // each base is the previous row's shifted session.
+    // each base is the previous row's shifted session. Admission is re-derived from the
+    // counts rather than trusted from the bit: the route runs historical_var at
+    // max_excluded_premium_frac 0, where a pair is admitted only with a leg in the totals and
+    // no excluded leg at all, so any other row was not written by this rule.
     const bool chained =
         rows.empty() || (row.base_date == rows.back().shifted_date &&
                          fr.base_ts_ns == rows.back().frame.shifted_ts_ns);
-    if (fr.base_ts_ns <= 0 || fr.shifted_ts_ns <= fr.base_ts_ns || !fr.admitted ||
+    const bool admissible = fr.admitted && t.n_ok != 0u && t.n_excluded == 0u;
+    if (fr.base_ts_ns <= 0 || fr.shifted_ts_ns <= fr.base_ts_ns || !admissible ||
         fr.n_legs_resolved != summary.n_positions || fr.n_legs_unresolved != 0u ||
         row.definition_fingerprint == 0u || utc_date_from_ns(fr.base_ts_ns) != row.base_date ||
         utc_date_from_ns(fr.shifted_ts_ns) != row.shifted_date ||

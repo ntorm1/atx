@@ -85,7 +85,9 @@ takes an evaluator that supplies the history in overlapping windows, so
 `dispersion_run_projected_var` loads each archive exactly once. Its loose TSV triple
 (`projected_var.tsv`, `projected_risk_scenarios.tsv` — one row per pair with the explain totals —
 and `projected_risk_legs.tsv` — the base-session resolutions) is recomputed bit-for-bit by
-`verify_projected_var_artifacts`, which also requires `n_scenarios` = sessions − 1.
+`verify_projected_var_artifacts`, which also requires `n_scenarios` = sessions − 1 and
+re-derives every row's admission from its counts (a leg in the totals, no excluded leg: the
+route runs at `max_excluded_premium_frac` 0) instead of trusting the stored `admitted` bit.
 `dispersion_run_projected_var` feeds overlapping 16-session windows, turns the family kernel's
 own fan-out off (`family.n_threads = 1`) and fans the scenarios over `fit.workers` instead.
 
@@ -120,7 +122,8 @@ went with it.
     by hand), `NearestRankTiesKeepScenarioOrder`, `NearestRankAtOneScenarioAndConfidenceNearOne`,
     `TailMeanIsAttributionOfTail`, `SummarizeRefusesAnAdmittedNonFiniteFrame`;
   - failure policy: `UnresolvedTemplateIsCountedNotFatal`, `NoSurfaceStateIsRefused`,
-    `ExcludedLegNeedsAKnownPremiumStrictlyBelowTheFraction`,
+    `ExcludedLegNeedsAKnownPremiumStrictlyBelowTheFraction` (incl. a known zero premium at
+    fraction 0), `ClockThatRefusesAnExpiryDropsOnlyThatScenario`,
     `ForeignWorkspaceIsAnErrorNotADroppedScenario`, `InvalidArgumentsAreRefused`;
   - kernels: `FamilyAndColdAgreeWithinTolerance` (family economics off so the family route really
     runs, witnessed by `FrameCounters`; bounds derived from the 1e-6 relative price gate, plus
@@ -129,6 +132,6 @@ went with it.
   the windowed evaluator bit-equal to one span, with the covered-twice / uncovered / past-the-end
   refusals; a timed surface off its snapshot's instant refused even next to an untimed one),
   `dispersion/DispersionRun*` and `dispersion/DispersionProjectedVar*` (artifact schema, verifier,
-  sessions − 1 rule, and an 18-session history that crosses the route's 16-pair window seam with
+  sessions − 1 rule, admission re-derived from the counts, and an 18-session history that crosses the route's 16-pair window seam with
   every archive opened once). On the listed-pipeline 3-set fixture the pair P&Ls are
   −36.0787 / +74.7856, so VaR95 = ES95 = 36.0787.

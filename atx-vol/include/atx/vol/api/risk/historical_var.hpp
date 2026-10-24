@@ -53,7 +53,9 @@ struct HistoricalVarConfig {
   RiskNeeds needs{};
   ExplainOptions explain{};
   std::vector<double> confidences{0.95, 0.99};
-  double max_excluded_premium_frac{0.0}; // a scenario with more excluded premium is dropped
+  // A scenario whose excluded premium is at or above this fraction of |pv_base| is dropped
+  // (at 0, any exclusion drops it); an exclusion of unknown premium is never admitted.
+  double max_excluded_premium_frac{0.0};
   unsigned n_threads{0};
   // ADDITIVE (lane D): keep every template's resolution on every base state in
   // `HistoricalVarResult::resolved_legs` (which strike / expiry the relative template
