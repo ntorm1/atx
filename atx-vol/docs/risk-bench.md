@@ -285,7 +285,9 @@ Measured (licensed 2026-10-14, top-100, the 11 buckets 10:00–15:00; lane E): m
 mostly a published expiry entering implied as its calls tighten (70 of the 110 events);
 19 flip twice or more. A Python re-implementation of the rule reproduces both counts
 exactly. Price parity is unchanged by it; Σ|unexplained| / Σ|pnl| on options 1.05 % →
-0.99 %.
+0.99 %. The gate counts chatter — expiries that flip ≥ 2 times across 10:00–15:00, target
+≤ 20 (19 ✔) — because a one-way published → implied entry as an expiry's calls tighten is an
+improvement of its forward basis, not chatter.
 
 Bucket 1000 of 2026-10-14, top-100: **1,758 expiries implied, 155 Published** (10 with
 < 3 calls, 145 on the IQR guard — e.g. TLT / IWM / SPY long-dated, whose calls do not

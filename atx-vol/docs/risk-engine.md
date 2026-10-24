@@ -57,8 +57,12 @@ the box, near the exercise edge, per-Greek refusals) go to the cold route with
   J = ln((S_b − pv_t)/(S_b − pv_b)) − (q_t − q_b)·T_b; per leg `pnl_carry = w·Δ_b·S_b·J`
   (`ExplainResult::pnl_carry`, the 21st per-leg double column; `ExplainTotals::pnl_carry`).
   Exact for the forward-driven price (calls with q_eff ≤ 0 ≤ r, puts with r ≤ 0 ≤ q_eff:
-  ≥ 99.9 % captured); an American put whose early exercise binds over-captures (1.10–1.18×
-  at r = 4.3 %, T = 0.3: its exercise premium's own carry sensitivity stays in unexplained).
+  ≥ 99.9 % captured). **Known limit (accepted for this wave):** the axis is the delta proxy,
+  so an American put whose early exercise binds over-captures its carry P&L by 1.10–1.18×
+  (measured at r = 4.3 %, T = 0.3) — the exercise premium's own carry sensitivity is not in
+  Δ. `pnl_unexplained` absorbs the remainder exactly (it is `pnl_total` minus every axis,
+  carry included, so the row identity still holds to ≤ 2 ulp). Follow-up: an exact carry
+  revaluation for ITM American puts.
   `CarryFrom::Surface` states and a row present in one state only are not decomposed. No
   solve; unmoved carry ⇒ +0.0 and the pre-axis bits.
 - Per-expiry clock (design D22, lane E): `ExpiryCarry::T_override` (finite ⇒ > 0) is THE T
