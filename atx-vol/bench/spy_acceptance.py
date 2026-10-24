@@ -1087,7 +1087,8 @@ def post_fit_proof_checks(native, trial, receipt):
         snapshots = payload["snapshots"]
         checks["phase"] = (marker["schema"] == "atx-vol-post-fit-api-proof-v1" and
             marker["phase"] == "after_cold_publication_and_fit_snapshots" and
-            marker["cold_clock_contract"] == "retained_surface_publication_v1")
+            marker["cold_clock_contract"] == "retained_surface_publication_v1" and
+            native["bench"]["clocks"]["cold_calibration_s"]["contract"] == marker["cold_clock_contract"])
         checks["ownership"] = all(marker[key] is True for key in (
             "same_retained_instance", "audit_completed", "retention_setup_in_cold",
             "retained_owner_released_after_audit")) and marker["failure_reason"] == "" and \

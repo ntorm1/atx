@@ -712,6 +712,8 @@ class ColdClockOracleTests(unittest.TestCase):
             "retained_member_capacity": 2, "retained_fit_capacity": 2,
             "retention_setup_in_cold": True, "retained_owner_released_after_audit": True}
         native["bench"]["post_fit_acceptance_audit"] = marker
+        native["bench"]["clocks"] = {"cold_calibration_s": {
+            "contract": "retained_surface_publication_v1"}}
         native["graded_stats"] = {"acceptance_audit": {"schema": "atx-vol-final-api-audit-v1",
             "phase": "post_fit", "timing_qualifying": False,
             "snapshots": [[{"chain_id": 10}, {"chain_id": 11}]]}}
@@ -746,6 +748,10 @@ class ColdClockOracleTests(unittest.TestCase):
         for field, value in (("phase", "inline"), ("snapshots", [[{"chain_id": 10}]])):
             bad = copy.deepcopy(native)
             bad["graded_stats"]["acceptance_audit"][field] = value
+            self.assertFalse(all(audit.post_fit_proof_checks(bad, trial, self.receipt).values()))
+        for contract in (None, "legacy_destroyed_surface_v1"):
+            bad = copy.deepcopy(native)
+            bad["bench"]["clocks"]["cold_calibration_s"]["contract"] = contract
             self.assertFalse(all(audit.post_fit_proof_checks(bad, trial, self.receipt).values()))
 
     def test_marked_trial_requires_own_full_proof_even_when_predictions_match(self):
