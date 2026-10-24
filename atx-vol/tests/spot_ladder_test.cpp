@@ -129,6 +129,43 @@ TEST(ChainSpotLadder, EveryContractIsCertifiedWithinPolicy) {
   EXPECT_EQ(lad.fallbacks(), 0u);
 }
 
+TEST(ChainSpotLadderAvailability, FinalRebuildAndFallbackOutputsSupplyFiniteEstimates) {
+  SpotLadderPolicy policy;
+  policy.max_rebuilds_per_tick = 2;
+  auto ladder = build_ladder(policy);
+  auto plain_ladder = build_ladder(policy);
+  Outputs out(chain().strike.size()), plain(chain().strike.size());
+  std::vector<GreekFieldMask> requested(out.price.size(), GreekFieldMask::All);
+  std::vector<GreekFieldMask> supported(out.price.size(), GreekFieldMask::All);
+  auto view = out.view();
+  view.requested = requested;
+  view.supported = supported;
+  constexpr auto fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+  bool saw_fallback = false;
+  for (const double spot : {100., 103., 150., 100.}) {
+    ASSERT_TRUE(plain_ladder.refresh(spot, plain.view()));
+    const auto allocations = atx::vol::testkit::count_allocations(
+        [&] { (void)ladder.refresh(spot, view); });
+    EXPECT_EQ(allocations, 0u);
+    for (std::size_t i = 0; i < out.price.size(); ++i) {
+      EXPECT_EQ(requested[i], fields);
+      EXPECT_EQ(supported[i], fields);
+      EXPECT_NE(out.status[i], TickStatus::OutOfWindow);
+      saw_fallback |= out.status[i] == TickStatus::Fallback;
+      EXPECT_EQ(out.status[i], plain.status[i]);
+      EXPECT_TRUE(bits_equal(out.price[i], plain.price[i]));
+      EXPECT_TRUE(bits_equal(out.delta[i], plain.delta[i]));
+      EXPECT_TRUE(bits_equal(out.gamma[i], plain.gamma[i]));
+      EXPECT_TRUE(bits_equal(out.vega[i], plain.vega[i]));
+      EXPECT_TRUE(bits_equal(out.theta[i], plain.theta[i]));
+    }
+  }
+  EXPECT_TRUE(saw_fallback);
+  view.supported = requested;
+  EXPECT_FALSE(ladder.refresh(100., view));
+}
+
 TEST(ChainSpotLadder, TickMatchesTheRecordInsideTheWindow) {
   ChainSpotLadder lad = build_ladder();
   Outputs out(chain().strike.size());

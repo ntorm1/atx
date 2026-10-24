@@ -13,6 +13,7 @@
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "core/parallel_for.hpp" // opt-in refit-time record fan-out
+#include "pricing/chain_tick_availability.hpp"
 
 namespace atx::vol {
 
@@ -26,7 +27,10 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 [[nodiscard]] bool shapes_ok(double spot, const ChainContractsView &chain,
                              const ChainTickOutputs &out) noexcept {
   return std::isfinite(spot) && spot > 0.0 && chain.consistent() && out.consistent() &&
-         out.size() == chain.size();
+         out.size() == chain.size() && !detail::tick_metadata_aliases(out,
+             {std::as_bytes(chain.strike), std::as_bytes(chain.expiry),
+              std::as_bytes(chain.sigma), std::as_bytes(chain.rate),
+              std::as_bytes(chain.carry), std::as_bytes(chain.side)});
 }
 
 void write_nan(const ChainTickOutputs &out, std::size_t i, TickStatus st) noexcept {
@@ -36,6 +40,7 @@ void write_nan(const ChainTickOutputs &out, std::size_t i, TickStatus st) noexce
   out.vega[i] = kNaN;
   out.theta[i] = kNaN;
   out.status[i] = st;
+  detail::write_tick_metadata(out, i, GreekFieldMask::None);
 }
 
 } // namespace
@@ -64,6 +69,8 @@ Status refresh_chain_cached(double spot, const ChainContractsView &chain,
     out.vega[i] = g->vega;
     out.theta[i] = g->theta;
     out.status[i] = usable ? TickStatus::Ok : TickStatus::Fallback;
+    if (detail::tick_has_metadata(out))
+      detail::write_tick_metadata(out, i, detail::tick_producer_support(*g));
   }
   return Ok();
 }
@@ -164,7 +171,8 @@ Result<ChainRecords> ChainRecords::build(double spot, const ChainContractsView &
 
 Status refresh_chain_records(double spot, const ChainContractsView &chain,
                              const ChainRecords &records, const ChainTickOutputs &out) {
-  if (!shapes_ok(spot, chain, out) || records.record_of_contract().size() != chain.size()) {
+  if (!shapes_ok(spot, chain, out) || records.record_of_contract().size() != chain.size() ||
+      detail::tick_metadata_aliases(out, {std::as_bytes(records.record_of_contract())})) {
     return Err(ErrorCode::InvalidArgument,
                "refresh_chain_records: column lengths disagree, spot is not finite > 0, or the "
                "records were built for another chain");
@@ -190,6 +198,8 @@ Status refresh_chain_records(double spot, const ChainContractsView &chain,
     // neither Ok nor Exercised is certified.
     out.status[i] = !g.in_box ? TickStatus::Fallback
                               : (g.exercised ? TickStatus::Exercised : TickStatus::Ok);
+    if (detail::tick_has_metadata(out))
+      detail::write_tick_metadata(out, i, detail::tick_computed_support(out, i));
   }
   return Ok();
 }

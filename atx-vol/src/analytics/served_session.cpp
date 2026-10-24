@@ -18,6 +18,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "pricing/american_greek_availability.hpp"
+#include "pricing/chain_tick_availability.hpp"
 
 namespace atx::vol {
 
@@ -255,7 +256,10 @@ Status ServedSession::serve_chain(ServeBookReader &reader, double spot, std::int
                                   std::span<std::uint64_t> expiry_scratch) const {
   const std::size_t n = chain.size();
   if (!chain.consistent() || !out.consistent() || out.size() != n || statements.size() != n ||
-      expiry_scratch.size() != n || !finite_positive(spot) || now_ns <= 0) {
+      expiry_scratch.size() != n || !finite_positive(spot) || now_ns <= 0 ||
+      detail::tick_metadata_aliases(out, {std::as_bytes(chain.strike),
+          std::as_bytes(chain.expiry), std::as_bytes(chain.side),
+          std::as_bytes(statements), std::as_bytes(expiry_scratch)})) {
     return Err(ErrorCode::InvalidArgument, "ServedSession::serve_chain: lengths, spot or clock");
   }
   for (std::size_t k = 0; k < n; ++k) {
@@ -284,13 +288,18 @@ Status ServedSession::serve_chain(ServeBookReader &reader, double spot, std::int
         st.requested = a.requested;
         st.supported = a.supported;
         st.cold_reasons = a.cold_reasons;
+        detail::write_tick_metadata(out, k, st.supported);
         continue;
       }
       const ServedChainView one{expiry_scratch.subspan(k, 1), chain.strike.subspan(k, 1),
                                 chain.side.subspan(k, 1)};
       const ChainTickOutputs o{out.price.subspan(k, 1), out.delta.subspan(k, 1),
                                out.gamma.subspan(k, 1), out.vega.subspan(k, 1),
-                               out.theta.subspan(k, 1), out.status.subspan(k, 1)};
+                               out.theta.subspan(k, 1), out.status.subspan(k, 1),
+                               out.requested.empty() ? std::span<GreekFieldMask>{}
+                                                     : out.requested.subspan(k, 1),
+                               out.supported.empty() ? std::span<GreekFieldMask>{}
+                                                     : out.supported.subspan(k, 1)};
       const Status served = reader.serve_chain(spot, now_ns, one, ServeTier::Ladder,
                                                ServeTier::Family, o,
                                                std::span<ServedChainStatement>(&st.book, 1));

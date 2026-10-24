@@ -329,3 +329,32 @@ SHA256 00d2012317bfbda0e3664ccc4754f6a37883cbd379ed40af3cb0664fbf603bfc;
 receipts are repair-iv/greek-session-{red,green,final,book-final,python-red,
 python-final,hygiene}.*. General cached/record chain-tick metadata and additive
 backtest price coverage/carry bookkeeping are still separate work.
+
+Raw chain-tick outputs now accept independently optional requested/supported
+mask spans for their five fixed Price/Delta/Gamma/Vega/Theta axes. Cached
+results use the actual producer's support, reasons and finite values. Raw
+ExpiryRecord and spot-ladder fields carry finite-estimate availability only:
+their derivative accuracy/admission remains separate research, and a fallback
+outside a record box gains no certificate. Ladder metadata is written after
+every window exit, rebuild and fallback finishes. Existing prices, derivatives
+and TickStatus values are unchanged; absent metadata skips the ladder's extra
+per-row pass.
+
+ServeBook derives the same common masks from its typed status and six-axis
+record reasons; PriceOnly supports only Price. ServedSession forwards the
+book masks and copies its cold masks without converting reason vocabularies.
+Malformed or refused rows overwrite support with None. New metadata spans are
+shape checked and byte-alias checked against input/output columns and the
+book/session statements and scratch before any writes. Existing calls may
+omit both spans. Numeric output alias contracts are otherwise unchanged.
+
+Four raw-route runtime REDs and three consumer REDs reproduce the previous
+missing masks and alias guards. Final checks pass 35 raw tick/record/ladder,
+6 session and 4 live-book/allocation tests, plus all eight owning PCH-off
+objects. Tests retain each invalid/PriceOnly/crossing/fallback row, pin numeric
+and status bit parity, and count zero allocations with metadata enabled,
+including ladder rebuilds. Receipts are repair-iv/greek-tick-{red,green,final,
+record-final,session-red,session-final,book-red,book-final,hygiene}.*.
+No numerical formula, admission rule, accuracy budget or timing claim changed.
+Python ServeBook mask export and additive backtest price coverage/carry remain
+follow-up work.

@@ -310,6 +310,9 @@ TEST(ServedSessionAvailability, ColdPartialPriceSurvivesWithActualFiveAxisReason
     const std::array<Side, 3> sides{side, side, side};
     std::array<double, 3> price{}, delta{}, gamma{}, vega{}, theta{};
     std::array<TickStatus, 3> ticks{};
+    std::array<GreekFieldMask, 3> requested{}, supported{};
+    requested.fill(GreekFieldMask::All);
+    supported.fill(GreekFieldMask::All);
     std::array<SessionChainStatement, 3> statements{};
     std::array<std::uint64_t, 3> scratch{};
     for (auto &st : statements) {
@@ -317,7 +320,7 @@ TEST(ServedSessionAvailability, ColdPartialPriceSurvivesWithActualFiveAxisReason
       st.cold_reasons.fill(AmericanGreekReason::Exercised);
     }
     ASSERT_TRUE(binding->serve_chain(reader, S, kNow, {strikes, tenors, sides},
-        {price, delta, gamma, vega, theta, ticks}, statements, scratch));
+        {price, delta, gamma, vega, theta, ticks, requested, supported}, statements, scratch));
     EXPECT_EQ(bits(price[0]), bits(answer.price));
     EXPECT_EQ(statements[0].requested, answer.requested);
     EXPECT_EQ(statements[0].supported, answer.supported);
@@ -328,6 +331,10 @@ TEST(ServedSessionAvailability, ColdPartialPriceSurvivesWithActualFiveAxisReason
     EXPECT_EQ(statements[2].supported, GreekFieldMask::None);
     EXPECT_EQ(ticks[2], TickStatus::Unpriceable);
     EXPECT_TRUE(std::isnan(price[2]));
+    for (std::size_t i = 0; i < price.size(); ++i) {
+      EXPECT_EQ(requested[i], statements[i].requested);
+      EXPECT_EQ(supported[i], statements[i].supported);
+    }
   }
 }
 
@@ -352,16 +359,36 @@ TEST(ServedSessionAvailability, BookPriceOnlyAndRefusalNeverSupplyUnusedGreekZer
   const std::array<Side, 2> sides{Side::Put, Side::Put};
   std::array<double, 2> price{}, delta{}, gamma{}, vega{}, theta{};
   std::array<TickStatus, 2> ticks{};
+  std::array<GreekFieldMask, 2> requested{}, supported{};
+  requested.fill(GreekFieldMask::All);
+  supported.fill(GreekFieldMask::All);
   std::array<SessionChainStatement, 2> statements{};
   std::array<std::uint64_t, 2> scratch{};
   for (auto &st : statements) st.supported = GreekFieldMask::All;
   ASSERT_TRUE(binding->serve_chain(reader, 100., kNow, {strikes, tenors, sides},
-      {price, delta, gamma, vega, theta, ticks}, statements, scratch));
+      {price, delta, gamma, vega, theta, ticks, requested, supported}, statements, scratch));
   EXPECT_EQ(statements[0].supported, GreekFieldMask::Price);
   EXPECT_EQ(statements[0].book.greek_reasons, price_only.book.reason);
   EXPECT_EQ(statements[1].supported, GreekFieldMask::None);
   EXPECT_EQ(statements[1].source, SessionServeSource::Refused);
   EXPECT_TRUE(std::isnan(price[1]));
+  for (std::size_t i = 0; i < price.size(); ++i) {
+    EXPECT_EQ(requested[i], statements[i].requested);
+    EXPECT_EQ(supported[i], statements[i].supported);
+  }
+  auto out = ChainTickOutputs{price, delta, gamma, vega, theta, ticks, requested, supported};
+  // Reject the optional mask alias before even writing the expiry scratch.
+  scratch.fill(999);
+  out.requested = {reinterpret_cast<GreekFieldMask *>(scratch.data()), scratch.size()};
+  EXPECT_FALSE(binding->serve_chain(reader, 100., kNow, {strikes, tenors, sides},
+      out, statements, scratch));
+  EXPECT_EQ(scratch[0], 999u);
+  EXPECT_EQ(scratch[1], 999u);
+  out.requested = requested;
+  out.supported = {reinterpret_cast<GreekFieldMask *>(statements.data()), statements.size()};
+  EXPECT_FALSE(binding->serve_chain(reader, 100., kNow, {strikes, tenors, sides},
+      out, statements, scratch));
+  EXPECT_EQ(scratch[0], 999u);
 }
 
 TEST(ServedSession, BindRefusesANullBookABadTAndADuplicate) {

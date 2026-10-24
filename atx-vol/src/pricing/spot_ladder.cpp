@@ -4,6 +4,7 @@
 // policy; this file is the implementation.
 
 #include "atx/vol/api/pricing/chain_tick.hpp"
+#include "pricing/chain_tick_availability.hpp"
 
 #include <algorithm>
 #include <array>
@@ -438,7 +439,7 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
 
 Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
   if (!impl_ || !std::isfinite(spot) || !(spot > 0.0) || !out.consistent() ||
-      out.size() != impl_->n) {
+      out.size() != impl_->n || detail::tick_metadata_aliases(out)) {
     return Err(ErrorCode::InvalidArgument,
                "ChainSpotLadder::refresh: output length mismatch or spot not finite > 0");
   }
@@ -526,6 +527,12 @@ Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
     }
     // The rebuild could not certify a window: build_one refused the contract.
     m.serve_from_record(c, spot, out, k.refused_fallbacks);
+  }
+  // Publish only the final outputs after every exit/rebuild/fallback has been
+  // resolved. Omitted metadata adds no per-lane availability pass.
+  if (detail::tick_has_metadata(out)) {
+    for (std::size_t i = 0; i < n; ++i)
+      detail::write_tick_metadata(out, i, detail::tick_computed_support(out, i));
   }
   return Ok();
 }
