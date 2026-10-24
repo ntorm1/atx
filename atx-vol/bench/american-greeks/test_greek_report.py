@@ -113,6 +113,40 @@ def receipt_fixture():
 
 
 class Receipt(unittest.TestCase):
+    def test_v2_cold_availability_uses_actual_masks_and_reasons(self):
+        report, corpus = receipt_fixture()
+        report['schema'] = 'atx-american-greek-native-v2'
+        for name in ['cold_fd', 'cold_al']:
+            engine = report['cases'][0]['engines'][name]
+            engine.update(native_result_success=True, native_requested_mask=511,
+                          native_supported_mask=511, native_reasons=['ComputedEstimate']*9)
+            for field, entry in engine['fields'].items():
+                if field != 'phi':
+                    entry['reason'] = 'ComputedEstimate'
+        engine = report['cases'][0]['engines']['cold_al']
+        engine['native_supported_mask'] &= ~(1 << 3)
+        engine['native_reasons'][3] = 'StencilCrossing'
+        engine['fields']['theta'].update(supported=False, value=None, reason='StencilCrossing')
+        summary = summarize(report, corpus)
+        self.assertEqual(summary['totals']['cold_al']['theta']['requested'], 1)
+        self.assertEqual(summary['totals']['cold_al']['theta']['compared'], 0)
+        self.assertEqual(summary['totals']['cold_al']['delta']['compared'], 1)
+        mutations = [lambda e:(e['native_reasons'].__setitem__(3, 'NotRequested'),
+                               e['fields']['theta'].update(reason='NotRequested')),
+                     lambda e:e.update(native_supported_mask=True),
+                     lambda e:e.update(native_requested_mask=510),
+                     lambda e:e.update(
+                         native_supported_mask=e['native_supported_mask'] & ~(1 << 8)),
+                     lambda e:e['native_reasons'].__setitem__(3, 'ComputedEstimate'),
+                     lambda e:e['fields']['theta'].update(value=0.),
+                     lambda e:e.pop('native_requested_mask'),
+                     lambda e:e.update(native_result_success=False)]
+        for mutate in mutations:
+            bad = copy.deepcopy(report)
+            mutate(bad['cases'][0]['engines']['cold_al'])
+            with self.assertRaises((ValueError, KeyError)):
+                validate_report(bad, corpus)
+
     def test_execution_requires_the_actual_requested_ids(self):
         report, corpus = receipt_fixture()
         validate_report(report, corpus)  # a standalone declared subset is legitimate

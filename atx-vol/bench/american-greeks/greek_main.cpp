@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -101,13 +102,28 @@ Json cold_bundle(const Contract &c, bool pde) {
   Json fields=Json::object();
   std::array<double,9> values{};
   values.fill(kNan);
+  constexpr std::array<unsigned,9> bit_indices={0,1,2,3,4,9,5,6,7}; // phi is not in the API
+  constexpr std::array<const char *,6> reasons={"NotRequested","ComputedEstimate","Exercised",
+                                               "UnsupportedAxis","StencilCrossing","Nonfinite"};
   if (g) values={g->delta,g->gamma,g->vega,g->theta,g->rho,kNan,g->vanna,g->volga,g->charm};
   for (std::size_t i=0;i<kFields.size();++i) {
-    fields[kFields[i]]=field(values[i],g.has_value() && i!=5,
-                             i==5 ? "NotInApi" : g ? "ApiValueUnqualified" : "ApiRefused");
+    const auto bit=static_cast<GreekFieldMask>(1u<<bit_indices[i]);
+    fields[kFields[i]]=field(values[i],g && i!=5 && has_field(g->supported,bit),
+        i==5 ? "NotInApi" : g ? reasons.at(static_cast<std::size_t>(g->reasons[bit_indices[i]]))
+                                : "ApiRefused");
   }
+  Json native_reasons=Json::array();
+  for (std::size_t i=0;i<9;++i)
+    native_reasons.push_back(g ? reasons.at(static_cast<std::size_t>(g->reasons[i]))
+                               : "NotRequested");
   Json out={{"price",number(g ? g->price : kNan)},
-            {"price_status",g ? "success" : "refused"},{"fields",fields}};
+            {"price_status",g && has_field(g->supported,GreekFieldMask::Price) &&
+                              std::isfinite(g->price)
+                                 ? "success" : "refused"},{"fields",fields},
+            {"native_result_success",g.has_value()},
+            {"native_requested_mask",g ? static_cast<std::uint32_t>(g->requested) : 0u},
+            {"native_supported_mask",g ? static_cast<std::uint32_t>(g->supported) : 0u},
+            {"native_reasons",native_reasons}};
   if (!g) out["code"]=static_cast<unsigned>(g.error().code());
   return out;
 }
@@ -218,7 +234,7 @@ int main(int argc,char **argv) {
     }
     auto resolved=al_fast_profile(std::nullopt); resolved.profile=AlProfile::Reference;
     Json candidate_options=options(resolved); candidate_options["explicit"]=false;
-    Json report={{"schema","atx-american-greek-native-v1"},{"input_case_count",all.size()},
+    Json report={{"schema","atx-american-greek-native-v2"},{"input_case_count",all.size()},
       {"case_count",rows.size()},{"selected_ids",selected},{"requested_fields",kFields},
       {"convention",corpus.at("convention")},{"derivative_tolerances",nullptr},
       {"continuous_carry_only",true},{"reference_independent_method",false},

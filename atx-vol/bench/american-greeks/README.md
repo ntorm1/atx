@@ -29,6 +29,11 @@ The launcher archives the executable, hashes every receipt and runner source,
 records Git/Python/platform identity, and checks the frozen corpus hash. The
 native report preserves exact input rows, schemes, model convention and raw
 price stencils; Python reconstructs derivatives independently of the C++ code.
+Native schema v2 also records the cold APIs' actual request/support masks and
+all nine availability reasons. The verifier checks every field against those
+bits, preserves partial bundles with usable prices, and rejects contradictory
+finite unsupported values. Historical v1 receipts retain their explicitly
+finite-only API inference; they are not rewritten as metadata-aware evidence.
 `--report native.json --output summary.json` reproduces a summary without rerunning
 prices. Add `--require-all` to require exactly all 715 frozen IDs, or
 `--selection selection.json` to require that exact subset. Native execution
