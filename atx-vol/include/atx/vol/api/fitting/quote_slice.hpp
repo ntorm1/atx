@@ -628,6 +628,14 @@ struct QuoteSliceConfig {
   double min_time_value = 1.0e-5;
   double iv_tolerance = 1.0e-7;
   std::uint16_t max_iv_iterations = 64;
+  // Opt-in repaired-node acceleration under an explicit price-error contract.
+  // Both zero preserves historical behavior; both positive require PriceOnly and
+  // continuous carry. A Fast Search candidate must reprice on the cold target map
+  // within min(cap, fraction * raw quote spread), with no spread floor. Duplicate
+  // contracts use the tightest budget; zero spread and unquoted queries retain the
+  // historical fallback. Prices, market constraints and default IV controls do not change.
+  double reimply_price_cap = 0.0;
+  double reimply_spread_fraction = 0.0;
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate; // opt-in (SPY1s P1)
   int discrete_div_steps = kDiscreteDivDefaultSteps;
   // Opt-in carry resolution (quote_slice_carry.hpp). The default Supplied mode
@@ -998,6 +1006,10 @@ struct QuoteSliceFit {
   // archive schema cannot store this policy: add_fit/add_surface explicitly refuse
   // it with UnsupportedRecordVersion / FitRecords rather than lose the guarantee.
   bool terminal_floor_recovery = false;
+  // Explicit runtime repaired-IV acceleration policy. Raw quote budgets live in
+  // reimply_context; archives must refuse this policy until they persist that context.
+  double reimply_price_cap = 0.0;
+  double reimply_spread_fraction = 0.0;
   // Caller-supplied snapshot provenance (clocks, spot and carry versions). fit_quote_slice
   // leaves it default; fit_quote_surface copies QuoteSurfaceExpiry::snapshot.
   QuoteSliceSnapshotInfo snapshot{};
@@ -1011,12 +1023,12 @@ struct QuoteSliceFit {
   // (slice_serve_record.hpp).
   std::shared_ptr<const QuoteSliceServeHandoff> serve_handoff;
   std::shared_ptr<const SliceServeRecord> serve_record;
-  // Runtime-only immutable ownership of the native fit's American family and model
-  // inputs and current typed identifications at repaired nodes. With native fitting
-  // and PriceOnly enabled, repairs reuse its qualified inverse and queries reuse the
-  // published identification. Model/price changes invalidate the corresponding reuse.
-  // Archives do not persist this acceleration: restored fits retain certified prices
-  // but use historical Search and do not retain the native IV root certificate.
+  // Runtime-only immutable ownership of the native family (when available), model
+  // inputs, raw quote budgets and current typed repaired-node identifications.
+  // Native fitting or the explicit price-budget policy retains this context under
+  // PriceOnly; queries reuse published identifications. Model/policy/price changes
+  // invalidate reuse. Archives without the explicit budget policy retain certified
+  // prices but restore historical Search, not the native IV root certificate.
   std::shared_ptr<const QuoteSliceReimplyContext> reimply_context;
 };
 

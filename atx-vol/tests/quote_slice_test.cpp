@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -279,6 +280,26 @@ TEST(QuoteSlice, InvalidSharedInputsFailWithoutPartiallyUsableOutput) {
   market.variance_years = 0.5;
   market.rate = std::numeric_limits<double>::max();
   EXPECT_FALSE(fit_quote_slice(market, {}));
+}
+
+TEST(QuoteSlice, ReimplyPriceBudgetRequiresExplicitConsistentPolicy) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  QuoteSliceConfig config;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  for (const auto [cap, fraction] : {std::pair{0.001, 0.0}, std::pair{0.0, 0.01},
+                                    std::pair{-0.001, 0.01},
+                                    std::pair{0.001, std::numeric_limits<double>::infinity()}}) {
+    config.reimply_price_cap = cap;
+    config.reimply_spread_fraction = fraction;
+    EXPECT_FALSE(fit_quote_slice(market, {}, config));
+  }
+  config.reimply_price_cap = 0.001;
+  config.reimply_spread_fraction = 0.01;
+  config.floor_policy = QuoteSliceFloorPolicy::Legacy;
+  EXPECT_FALSE(fit_quote_slice(market, {}, config));
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  config.dividend_model = QuoteSliceDividendModel::DatedCash;
+  EXPECT_FALSE(fit_quote_slice(market, {}, config));
 }
 
 TEST(QuoteSlice, StrikeSpecificCarryRecoversFlatVolAndRepricesWithLocalYield) {

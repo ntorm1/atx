@@ -38,6 +38,11 @@ namespace atx::vol {
 // Owned by a fit, immutable after construction. The family holder owns the geometry
 // observed by its families, so clearing the thread's fitting memo cannot dangle them.
 struct QuoteSliceReimplyContext {
+  struct PriceBudget {
+    double strike = 0.0;
+    Side side = Side::Call;
+    double error = 0.0;
+  };
   struct Identification {
     double strike = 0.0;
     double price = 0.0;
@@ -46,10 +51,11 @@ struct QuoteSliceReimplyContext {
     detail::VolIdentification id;
   };
   std::shared_ptr<const DeAmSigmaFamilies> families;
-  std::array<std::uint64_t, 13> model{};
+  std::array<std::uint64_t, 15> model{};
   std::optional<AlOpts> confirm_opts;
   bool batch_enabled = false;
   std::array<std::shared_ptr<const sigma_q_family_detail::PremiumTable>, 2> tables;
+  std::shared_ptr<const std::vector<PriceBudget>> price_budgets;
   // At most one current answer per node side, replaced at publication. Queries read
   // immutable snapshots; a calendar trial replaces its own pointer before committing.
   std::vector<std::array<std::optional<Identification>, 2>> identified;
@@ -91,6 +97,13 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
   }
   if (!discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid lattice scheme");
+  }
+  if (!nonnegative(cfg.reimply_price_cap) || !nonnegative(cfg.reimply_spread_fraction) ||
+      ((cfg.reimply_price_cap > 0.0) != (cfg.reimply_spread_fraction > 0.0)) ||
+      (cfg.reimply_price_cap > 0.0 &&
+       (cfg.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
+        cfg.dividend_model == QuoteSliceDividendModel::DatedCash))) {
+    return Err(ErrorCode::InvalidArgument, "quote slice: invalid repaired-IV price budget");
   }
   if (!nonnegative(cfg.quality.min_bid) || !nonnegative(cfg.quality.max_spread_to_mid) ||
       !nonnegative(cfg.quality.max_spread_vol) || !nonnegative(cfg.quality.min_vega_weight) ||
@@ -569,6 +582,8 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.discrete_div_steps = config.discrete_div_steps;
   out.discrete_div_scheme = config.discrete_div_scheme;
   out.floor_policy = config.floor_policy;
+  out.reimply_price_cap = config.reimply_price_cap;
+  out.reimply_spread_fraction = config.reimply_spread_fraction;
   ATX_TRY_VOID(detail::select_call_floor(out, config.call_floor)); // lane C3, opt-in
   out.calendar_parity_clamp = config.repair.calendar_parity_clamp; // K4b (opt-in)
   out.terminal_floor_recovery = config.repair.terminal_floor_recovery;
@@ -1160,13 +1175,13 @@ private:
 // Exactly the fixed arguments of the continuous-carry inverse; strike, side, price
 // and the resolved local q are checked per request. Fixed-size to keep cached reads
 // allocation-free. No identity depends on unrelated contracts' carry points.
-std::array<std::uint64_t, 13> reimply_model_key(const QuoteSliceFit &fit) noexcept {
+std::array<std::uint64_t, 15> reimply_model_key(const QuoteSliceFit &fit) noexcept {
   const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
   const QuoteSliceConfig query;
-  std::array<std::uint64_t, 13> key{bits(fit.market.spot), bits(fit.market.variance_years),
+  std::array<std::uint64_t, 15> key{bits(fit.market.spot), bits(fit.market.variance_years),
       bits(fit.diagnostics.effective_rate), static_cast<std::uint64_t>(fit.dividend_model),
       fit.al_opts ? 1u : 0u, 0u, 0u, 0u, 0u, 0u, 0u, bits(query.iv_tolerance),
-      query.max_iv_iterations};
+      query.max_iv_iterations, bits(fit.reimply_price_cap), bits(fit.reimply_spread_fraction)};
   if (fit.al_opts) {
     const auto &opts = *fit.al_opts;
     key[5] = opts.n_collocation;
@@ -1179,18 +1194,65 @@ std::array<std::uint64_t, 13> reimply_model_key(const QuoteSliceFit &fit) noexce
   return key;
 }
 
-void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
-                            const QuoteSliceConfig &config) {
-  if (cache == nullptr || !config.channel.deam_native_route ||
-      fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly || cache->families() == nullptr) {
-    return;
+auto reimply_budget_key(double strike, Side side) noexcept {
+  return std::pair{strike, static_cast<unsigned>(side)};
+}
+
+std::shared_ptr<const std::vector<QuoteSliceReimplyContext::PriceBudget>> reimply_budgets(
+    std::span<const QuoteSliceQuote> quotes, const QuoteSliceConfig &config) {
+  if (!(config.reimply_price_cap > 0.0)) return {};
+  auto budgets = std::make_shared<std::vector<QuoteSliceReimplyContext::PriceBudget>>();
+  budgets->reserve(quotes.size());
+  for (const auto &quote : quotes) {
+    if (!positive(quote.strike) || !valid_side(quote.side) || !nonnegative(quote.bid) ||
+        !nonnegative(quote.ask) || quote.ask < quote.bid) continue;
+    budgets->push_back({quote.strike, quote.side, std::min(config.reimply_price_cap,
+        config.reimply_spread_fraction * (quote.ask - quote.bid))});
   }
+  std::sort(budgets->begin(), budgets->end(), [](const auto &a, const auto &b) {
+    return reimply_budget_key(a.strike, a.side) < reimply_budget_key(b.strike, b.side);
+  });
+  std::size_t count = 0;
+  for (const auto &entry : *budgets) {
+    if (count > 0 && (*budgets)[count - 1].strike == entry.strike &&
+        (*budgets)[count - 1].side == entry.side) {
+      (*budgets)[count - 1].error = std::min((*budgets)[count - 1].error, entry.error);
+    } else {
+      (*budgets)[count++] = entry;
+    }
+  }
+  budgets->resize(count);
+  return budgets;
+}
+
+std::optional<double> reimply_price_budget(const QuoteSliceFit &fit, double strike, Side side) {
+  const auto &context = fit.reimply_context;
+  if (!(fit.reimply_price_cap > 0.0) || !context || !context->price_budgets ||
+      context->model != reimply_model_key(fit)) return std::nullopt;
+  const auto &budgets = *context->price_budgets;
+  const auto key = reimply_budget_key(strike, side);
+  const auto found = std::lower_bound(budgets.begin(), budgets.end(), key,
+      [](const auto &entry, const auto &value) {
+        return reimply_budget_key(entry.strike, entry.side) < value;
+      });
+  return found != budgets.end() && found->strike == strike && found->side == side
+      ? std::optional<double>{found->error} : std::nullopt;
+}
+
+void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
+                            const QuoteSliceConfig &config,
+                            std::span<const QuoteSliceQuote> quotes) {
+  const bool native = cache != nullptr && config.channel.deam_native_route &&
+      cache->families() != nullptr;
+  if (fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
+      (!native && !(config.reimply_price_cap > 0.0))) return;
   auto context = std::make_shared<QuoteSliceReimplyContext>();
-  context->families = cache->hold_families();
+  if (native) context->families = cache->hold_families();
   context->model = reimply_model_key(fit);
+  context->price_budgets = reimply_budgets(quotes, config);
   context->confirm_opts = config.channel.deam_confirm_kernel == QuoteSliceDeamConfirmKernel::Fast
       ? std::optional<AlOpts>{al_fast_profile(fit.al_opts)} : fit.al_opts;
-  context->batch_enabled = config.channel.deam_native_batch;
+  context->batch_enabled = native && config.channel.deam_native_batch;
   // One immutable tensor snapshot per side; shared across calendar trial/publication
   // contexts. No table construction or allocation is needed by subsequent queries.
   if (context->batch_enabled && simd::use_avx2()) {
@@ -1245,7 +1307,7 @@ std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
     std::span<const QuoteSliceQuote> quotes, std::span<const std::uint8_t> moved,
     ReimplyPublication publication) {
   const auto &context = fit.reimply_context;
-  if (!context || !context->batch_enabled || !fit.prices || !fit.curve ||
+  if (!context || !context->families || !context->batch_enabled || !fit.prices || !fit.curve ||
       fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
       fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
       context->model != reimply_model_key(fit)) return {};
@@ -1931,6 +1993,7 @@ void remember_reimplied_nodes(QuoteSliceFit &fit, std::span<const QuoteSliceQuot
   context->confirm_opts = fit.reimply_context->confirm_opts;
   context->batch_enabled = fit.reimply_context->batch_enabled;
   context->tables = fit.reimply_context->tables;
+  context->price_budgets = fit.reimply_context->price_budgets;
   const auto nodes = fit.prices->nodes();
   context->identified.resize(nodes.size());
   for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
@@ -2665,7 +2728,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     return Ok(std::move(out));
   }
   out.curve = std::move(*curve);
-  retain_reimply_context(out, deam ? &*deam : nullptr, config);
+  retain_reimply_context(out, deam ? &*deam : nullptr, config, quotes);
   certify_and_serve(out, quotes, 0.0, &config.repair, config.grid_kernel,
                     deam ? deam->families() : nullptr, config.channel.deam_native_route);
   return Ok(std::move(out));
@@ -2742,7 +2805,7 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   channel_diag.iterations = d.iterations;
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::jacobian_evals,
                               counters::fit_timing::detail::saturate(d.iterations));
-  retain_reimply_context(out, deam ? &*deam : nullptr, config);
+  retain_reimply_context(out, deam ? &*deam : nullptr, config, quotes);
   certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair,
                     config.grid_kernel, deam ? deam->families() : nullptr,
                     config.channel.deam_native_route);
@@ -3591,7 +3654,7 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
     double price, double q, const IvOpts &opts, const IvPremiumPrepared *prepared) {
   const auto &context = fit.reimply_context;
   auto *const counts = counters::fit_timing::current_counts();
-  if (!context || fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
+  if (!context || !context->families || fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
       context->model != reimply_model_key(fit)) {
     if (counts != nullptr) ++counts->reimply_no_context;
     return std::nullopt;
@@ -3652,6 +3715,32 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
     }
   }
   return accepted ? std::optional<double>{answer.iv} : std::nullopt;
+}
+
+bool native_price_budget_met(const QuoteSliceFit &fit, double strike, Side side,
+    double price, double q, double sigma, double budget) {
+  const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceCheck);
+  auto *const counts = counters::fit_timing::current_counts();
+  const auto &context = fit.reimply_context;
+  // The native caller already checked this model/family; keep the proof local
+  // because economic-only contexts deliberately have no family ownership.
+  if (context && context->families && context->model == reimply_model_key(fit)) {
+    const auto *const family = context->families->of_q(side);
+    const auto *const envelope = context->families->q_envelope(side);
+    if (family != nullptr && envelope != nullptr) {
+      if (counts != nullptr) ++counts->reimply_price_family_checks;
+      const auto bounded = family_price_bounded(*family, *envelope, fit.market.spot,
+                                                strike, sigma, q);
+      if (bounded.status == AlSigmaQFamilyStatus::Ok &&
+          std::abs(bounded.price - price) + bounded.bound_usd <= budget) return true;
+    }
+  }
+  if (counts != nullptr) ++counts->reimply_price_cold_checks;
+  const auto cold = andersen_lake(fit.market.spot, strike, fit.market.variance_years, sigma,
+                                  fit.diagnostics.effective_rate, q, side, fit.al_opts);
+  const bool accepted = cold && std::isfinite(*cold) && std::abs(*cold - price) <= budget;
+  if (!accepted && counts != nullptr) ++counts->reimply_price_rejections;
+  return accepted;
 }
 
 } // namespace
@@ -3717,8 +3806,26 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   opts.max_iter = query.max_iv_iterations;
   opts.al_opts = fit.al_opts;
   opts.refuse_non_monotone = true;
-  if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts, prepared)) {
-    return identified(*root);
+  const auto budget = reimply_price_budget(fit, strike, side);
+  if (!budget || *budget > 0.0) {
+    if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts,
+                                               prepared)) {
+      if (!budget || native_price_budget_met(fit, strike, side, price, q_effective, *root, *budget)) {
+        return identified(*root);
+      }
+    }
+  }
+  if (budget && *budget > 0.0) {
+    const auto candidate = [&] {
+      const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceCandidate);
+      if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_fast_attempts;
+      return american_implied_vol_price_candidate(price, fit.market.spot, strike,
+          fit.market.variance_years, fit.diagnostics.effective_rate, q_effective, side, opts, *budget);
+    }();
+    if (candidate) {
+      if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_fast_roots;
+      return identified(*candidate);
+    }
   }
   const IvSearchResult search = [&] {
     const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Search);

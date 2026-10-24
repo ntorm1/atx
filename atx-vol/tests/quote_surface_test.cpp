@@ -1525,6 +1525,111 @@ TEST(QuoteSliceChannel, NonmonotoneRepairClassifiesWithoutRepeatingSearch) {
       static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)], 0u);
 }
 
+TEST(QuoteSliceChannel, PriceBudgetReimplicationRetainsRawBudgetsWithoutNativeFamily) {
+  const QuoteSliceMarket market{100.0, 5.0, 5.0, 0.05, 0.0, 0.0};
+  std::vector<QuoteSliceQuote> quotes;
+  for (int k = 80; k <= 140; k += 5) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(100.0, static_cast<double>(k), 5.0, 0.2, 0.05, 0.0, side);
+      ASSERT_TRUE(price);
+      quotes.push_back({static_cast<double>(k), side, std::max(0.0, *price - 0.1), *price + 0.1});
+    }
+  }
+  QuoteSliceConfig config;
+  config.side_policy = QuoteSliceSidePolicy::All;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  config.reimply_price_cap = 0.001;
+  config.reimply_spread_fraction = 0.01;
+  const auto target = andersen_lake(100.0, 140.0, 5.0, 0.2, 0.05, 0.0, Side::Put);
+  ASSERT_TRUE(target);
+  auto fit = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_NE(fit->reimply_context, nullptr);
+  EXPECT_EQ(fit->reimply_price_cap, config.reimply_price_cap);
+  EXPECT_EQ(fit->reimply_spread_fraction, config.reimply_spread_fraction);
+  const auto accelerated = detail::reimplied_vol(*fit, 140.0, Side::Put, *target,
+                                                QuoteSliceFloorPolicy::PriceOnly);
+  ASSERT_EQ(accelerated.status, QuoteSliceEvaluationStatus::Success);
+  const auto cold = andersen_lake(100.0, 140.0, 5.0, accelerated.volatility, 0.05, 0.0, Side::Put);
+  ASSERT_TRUE(cold);
+  EXPECT_LE(std::abs(*cold - *target), 0.001);
+  ASSERT_GT(std::abs(*cold - *target), 1e-8);
+  // Changing the public policy cannot reuse an old context. The historical typed
+  // Search classification of this contract is LowVega, with no reported IV.
+  fit->reimply_price_cap = 0.0;
+  const auto stale = detail::reimplied_vol(*fit, 140.0, Side::Put, *target,
+                                         QuoteSliceFloorPolicy::PriceOnly);
+  EXPECT_EQ(stale.status, QuoteSliceEvaluationStatus::PriceOnly);
+  EXPECT_EQ(stale.reason, QuoteSlicePriceOnlyReason::LowVega);
+  fit->reimply_price_cap = config.reimply_price_cap;
+  const auto between = andersen_lake(100.0, 141.0, 5.0, 0.2, 0.05, 0.0, Side::Put);
+  ASSERT_TRUE(between);
+  const auto unknown = detail::reimplied_vol(*fit, 141.0, Side::Put, *between,
+                                           QuoteSliceFloorPolicy::PriceOnly);
+  const auto retained = fit->reimply_context;
+  fit->reimply_context.reset();
+  const auto unknown_plain = detail::reimplied_vol(*fit, 141.0, Side::Put, *between,
+                                                  QuoteSliceFloorPolicy::PriceOnly);
+  EXPECT_EQ(unknown.status, unknown_plain.status);
+  EXPECT_EQ(unknown.reason, unknown_plain.reason);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(unknown.volatility),
+            std::bit_cast<std::uint64_t>(unknown_plain.volatility));
+  fit->reimply_context = retained;
+  // A duplicate raw quote tightens the budget even though most copies have wide
+  // spreads. Zero spread stays zero; it never borrows spread_floor or box_tick.
+  for (const double half_spread : {5e-8, 0.0}) {
+    auto duplicated = quotes;
+    duplicated.push_back({140.0, Side::Put, *target - half_spread, *target + half_spread});
+    auto narrow = fit_quote_slice(market, duplicated, config);
+    ASSERT_TRUE(narrow && narrow->fit_status == QuoteSliceFitStatus::Success);
+    ASSERT_NE(narrow->reimply_context, nullptr);
+    const auto fallback = detail::reimplied_vol(*narrow, 140.0, Side::Put, *target,
+                                               QuoteSliceFloorPolicy::PriceOnly);
+    EXPECT_EQ(fallback.status, stale.status);
+    EXPECT_EQ(fallback.reason, stale.reason);
+  }
+}
+
+TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCachesTheAnswer) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto config = native_repair_config();
+  config.reimply_price_cap = 0.001;
+  config.reimply_spread_fraction = 0.01;
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  const AmericanPriceSlice floor = shifted_slice(*fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder repair;
+  {
+    const timing::ChainScope scope(&repair);
+    ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  }
+  EXPECT_EQ(repair.result().reimply_price_family_checks, repair.result().reimply_native_roots);
+  EXPECT_GT(repair.result().reimply_price_family_checks, 0u);
+  EXPECT_EQ(repair.result().reimply_price_rejections, 0u);
+  timing::ChainRecorder queries;
+  {
+    const timing::ChainScope scope(&queries);
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto &quote = c.quotes[i];
+      const auto answer = query_quote_slice(*fit, quote.strike, quote.side);
+      ASSERT_TRUE(answer && answer->status == QuoteSliceEvaluationStatus::Success);
+      EXPECT_EQ(answer->volatility, fit->rows[i].fitted_iv);
+      const auto price = andersen_lake(c.market.spot, quote.strike, c.market.variance_years,
+          answer->volatility, c.market.rate, c.market.continuous_yield, quote.side);
+      ASSERT_TRUE(price);
+      EXPECT_LE(std::abs(*price - answer->price),
+                std::min(config.reimply_price_cap,
+                         config.reimply_spread_fraction * (quote.ask - quote.bid)));
+    }
+  }
+  EXPECT_EQ(queries.result().reimply_native_attempts, 0u);
+  EXPECT_EQ(queries.result().reimply_fast_attempts, 0u);
+  EXPECT_EQ(queries.result().reimply_price_family_checks, 0u);
+  EXPECT_EQ(queries.result().reimply_price_cold_checks, 0u);
+}
+
 TEST(QuoteSurface, NativeCalendarTrialPreservesTheQualifiedInverseAndPublicAnswer) {
   const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
                                   chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
