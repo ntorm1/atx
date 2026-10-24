@@ -369,3 +369,28 @@ Execution order now:
 4. Repeat the complete economic/API/no-demotion audit and profile the resulting
    candidate. Qualify 100 quiet fresh one-core ThinLTO runs only after the measured
    complete fit is below one second. None of these steps is a promised speedup.
+
+## Expanded long-running mandate, 2026-10-24
+
+The user explicitly requested continued autonomous subagent development and web
+research toward the fastest American equity-options library, including fundamental
+algorithm changes when local tuning stalls. The subsecond complete-SPY gate remains
+the first execution milestone; satisfying it does not finish general library work.
+No further preference question is needed for routine implementation choices.
+
+The broader performance claim must be grounded in reproducible comparisons with
+pinned public implementations under matching models, error budgets and hardware.
+Private HFT implementations cannot be exhaustively ranked from public evidence.
+Keep separate results for cold isolated contracts, amortized batches and family
+construction, whole-surface calibration, live update/serving, and price-plus-Greek
+bundles. Include difficult exercise regions, short maturities, signed carry and
+dated cash dividends, with typed unsupported regimes instead of silent substitution.
+Cold setup, fallback costs, failed attempts, allocation and tail latency belong in
+their respective measured scopes. Optimizing only accepted fast-path requests is
+not an acceptable overall performance claim.
+
+The master sprint plan retains the general pricing/analytics and publication-race
+work packages. New primary-source research and comparator recipes will be tracked
+alongside exact-source correctness and performance receipts. A faster prototype
+that lowers frozen identification or economic correctness remains a failed
+promotion candidate until its algorithm or objective is fixed.
