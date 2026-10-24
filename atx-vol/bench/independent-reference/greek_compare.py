@@ -1,7 +1,6 @@
 """Verify fixed reference receipts, then retain every native candidate comparison."""
 import argparse
 from collections import Counter
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -37,6 +36,23 @@ def verify_row(row, model):
             (nx, nt, domain, row["scheme"]), "inner configuration")
     require(r["american"] is True and r["accuracy_established"] is False and
             r["greek_accuracy_established"] is False, "reference scope")
+    s, k, t, sigma, rate, carry = (model[key] for key in ("S", "K", "T", "sigma", "r", "q"))
+    width = domain*max(.1, 8*sigma*math.sqrt(t)+abs((rate-carry-.5*sigma*sigma)*t),
+                       abs(math.log(k)-math.log(s))+.1)
+    dx = 2*width/(nx-1)
+    require(r["log_half_width"] == width and r["log_spacing"] == dx and
+            r["lcp_tolerance"] == 1e-12*max(1., s, k), "frozen geometry and LCP tolerance")
+    require(type(r["domain"]) is list and len(r["domain"]) == 2 and all(finite(x) for x in r["domain"]),
+            "finite domain endpoints")
+    for actual, expected in zip(r["domain"], (s*math.exp(-width), s*math.exp(width))):
+        require(abs(actual-expected) <= 16*sys.float_info.epsilon*max(1., abs(expected)), "domain extent")
+    stages = nt if row["scheme"] == "cn" else 2*nt-2
+    require(all(type(r[key]) is int and r[key] >= 0 for key in
+                ("stages", "stage_node_updates", "policy_iterations", "max_policy_iterations")), "work integers")
+    require(r["stages"] == stages and r["stage_node_updates"] == stages*(nx-2) and
+            r["max_policy_iterations"] <= nx and
+            r["max_policy_iterations"] <= r["policy_iterations"] <= stages*r["max_policy_iterations"],
+            "fixed stage and bounded policy work")
     require(finite(r["price"]) and finite(r["log_spacing"]) and r["log_spacing"] > 0 and
             finite(r["lcp_tolerance"]) and r["lcp_tolerance"] > 0 and
             finite(r["max_complementarity_residual"]) and
@@ -45,7 +61,7 @@ def verify_row(row, model):
     require(all(type(a) is list and len(a) == 3 and all(finite(x) for x in a) for a in arrays),
             "finite complete stencil")
     spots, values, payoff, continuation = arrays
-    s, k, dx, tol = model["S"], model["K"], r["log_spacing"], r["lcp_tolerance"]
+    tol = r["lcp_tolerance"]
     require(spots[1] == s and r["price"] == values[1], "exact center node")
     for offset, point, value in zip((-1, 0, 1), spots, payoff):
         require(abs(point-s*math.exp(offset*dx)) <= 16*sys.float_info.epsilon*max(1., abs(point)),
@@ -100,7 +116,8 @@ def verify_pilot(directory):
     for name, expected_hash in hashes.items():
         source = directory/"sources"/Path(name).name
         require(digest(source) == expected_hash, "archived source hash")
-        committed = subprocess.check_output(["git", "show", manifest["source"]+":"+name], cwd=root)
+        git_name = name.replace("\\", "/")  # Git object paths always use forward slashes.
+        committed = subprocess.check_output(["git", "show", manifest["source"]+":"+git_name], cwd=root)
         require(source.read_bytes().replace(b"\r\n", b"\n") == committed.replace(b"\r\n", b"\n"),
                 "archive source matches frozen Git commit")
     for name in ("outcomes", "summary"):

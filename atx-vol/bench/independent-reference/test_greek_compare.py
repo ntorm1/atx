@@ -9,13 +9,17 @@ MODEL = dict(id="test", S=50., K=100., T=.5, sigma=.2, r=.05, q=0., side="put")
 
 
 def row():
-    spots = [50.*math.exp(-.001), 50., 50.*math.exp(.001)]
+    width = max(.1, 8*.2*math.sqrt(.5)+abs((.05-.5*.2**2)*.5), abs(math.log(100.)-math.log(50.))+.1)
+    dx = 2*width/4096
+    spots = [50.*math.exp(-dx), 50., 50.*math.exp(dx)]
     values = [100.-s for s in spots]
     return dict(id="test", model=MODEL, scheme="dirk_l", label="center", status="computed",
         options=dict(nx=4097, nt=512, domain_scale=1.), result=dict(
             nx=4097, nt=512, domain_scale=1., scheme="dirk_l", american=True,
             accuracy_established=False, greek_accuracy_established=False,
-            price=50., delta=-1., gamma=0., regime="exercise", log_spacing=.001,
+            price=50., delta=-1., gamma=0., regime="exercise", log_spacing=dx,
+            log_half_width=width, domain=[50.*math.exp(-width), 50.*math.exp(width)],
+            stages=1022, stage_node_updates=1022*4095, policy_iterations=1022, max_policy_iterations=1,
             stencil_spots=spots, stencil_values=values, stencil_payoff=values,
             stencil_continuation=[1., 1., 1.], lcp_tolerance=1e-10,
             max_complementarity_residual=0.))
@@ -47,6 +51,13 @@ class GreekCompareTests(unittest.TestCase):
             lambda r: r["result"]["stencil_payoff"].__setitem__(0, 0.),
             lambda r: r["result"]["stencil_continuation"].__setitem__(1, float("nan")),
             lambda r: r["result"].update(max_complementarity_residual=1.),
+            lambda r: r["result"].update(log_half_width=.1),
+            lambda r: r["result"]["domain"].__setitem__(1, 10000.),
+            lambda r: r["result"].update(lcp_tolerance=1e-5),
+            lambda r: r["result"].update(stages=512),
+            lambda r: r["result"].update(stage_node_updates=0),
+            lambda r: r["result"].update(policy_iterations=-1),
+            lambda r: r["result"].update(max_policy_iterations=50000),
         ]
         for mutate in mutations:
             sample = copy.deepcopy(row())
