@@ -43,7 +43,8 @@ static_assert(std::is_same_v<std::underlying_type_t<Side>, std::uint8_t> &&
 static_assert(std::is_same_v<decltype(ExpiryCarry::expiry_ns), std::int64_t> &&
               std::is_same_v<decltype(ExpiryCarry::pv_divs), double> &&
               std::is_same_v<decltype(ExpiryCarry::rate), double> &&
-              std::is_same_v<decltype(ExpiryCarry::q), double>);
+              std::is_same_v<decltype(ExpiryCarry::q), double> &&
+              std::is_same_v<decltype(ExpiryCarry::T_override), double>);
 static_assert(std::is_same_v<decltype(DividendEvent::ex_date_ns), std::int64_t> &&
               std::is_same_v<decltype(DividendEvent::amount), double>);
 static_assert(std::is_same_v<decltype(VolTimeParams::alpha), double> &&
@@ -198,6 +199,10 @@ inline constexpr PersistFieldSpec kExpiryCarryFields[] = {
     ATX_PERSIST_FIELD(ExpiryCarry, pv_divs),
     ATX_PERSIST_FIELD(ExpiryCarry, rate),
     ATX_PERSIST_FIELD(ExpiryCarry, q),
+    // Lane E (design D22): the per-expiry clock override, stored as-is (NaN = none). The
+    // 32 -> 40 byte row moves the MarketState fingerprint: a 32-byte-row archive is
+    // refused with SchemaMismatch and rebuilt, never misread.
+    ATX_PERSIST_FIELD(ExpiryCarry, T_override),
 };
 inline constexpr PersistFieldSpec kDividendFields[] = {
     ATX_PERSIST_FIELD(DividendEvent, ex_date_ns),
@@ -226,7 +231,7 @@ static_assert(kPersistPod<YieldPillar> && sizeof(YieldPillar) == 16);
 static_assert(kPersistPod<SurfaceIndexRow> && sizeof(SurfaceIndexRow) == 16);
 static_assert(kPersistPod<UidTableRow> && sizeof(UidTableRow) == 8);
 static_assert(persist_fields_tile(kUidTableFields, sizeof(UidTableRow)));
-static_assert(sizeof(ExpiryCarry) == 32 && sizeof(DividendEvent) == 16);
+static_assert(sizeof(ExpiryCarry) == 40 && sizeof(DividendEvent) == 16);
 static_assert(persist_fields_tile(kMetaFields, sizeof(Meta)));
 static_assert(persist_fields_tile(kUnderlierFields, sizeof(UnderlierRow)));
 static_assert(persist_fields_tile(kExpiryCarryFields, sizeof(ExpiryCarry)));

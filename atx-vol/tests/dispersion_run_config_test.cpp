@@ -441,22 +441,29 @@ constexpr const char *kPvHeader =
 
 constexpr const char *kPvRow95 = "0.95\t1\t2\t3\t82\t8\t100\t7\t2026-07-11\t200\t9\n";
 
-void write_valid_projected_var(const fs::path &dir) {
+// RE-PINNED for the risk-engine historical VaR (BREAKING 2026-10-24): two sessions are ONE
+// consecutive-pair scenario; the scenario row carries the engine's explain totals and the
+// summary's reference / VaR / ES recompute from it (reference = mean pv_base = 100, loss =
+// -pnl_total = 10 at every confidence over a one-scenario sample). `n_ok` / `n_excluded` are the
+// row's explain counts; the defaults are the only pair the route's admission rule publishes.
+void write_valid_projected_var(const fs::path &dir, unsigned n_ok = 1u, unsigned n_excluded = 0u) {
   constexpr std::int64_t ts0 = 1'790'884'800'000'000'000LL;
   constexpr std::int64_t day = 86'400'000'000'000LL;
   constexpr std::uint64_t prepared = 7u;
   constexpr std::uint64_t leg_fp0 = 11u;
-  constexpr std::uint64_t leg_fp1 = 13u;
-  const std::uint64_t frame_fp0 = atx::core::hash_combine(prepared, leg_fp0);
-  const std::uint64_t frame_fp1 = atx::core::hash_combine(prepared, leg_fp1);
+  std::uint64_t pair_fp = atx::core::hash_combine(prepared, leg_fp0);
+  pair_fp = pair_fp == 0u ? 1u : pair_fp;
 
   std::ostringstream scenarios;
   scenarios << std::setprecision(17)
-            << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
-               "definition_fingerprint\n"
-            << "2026-10-01\t" << ts0 << "\t90\t1\t2\t3\t4\t1\t0\t" << frame_fp0 << '\n'
-            << "2026-10-02\t" << (ts0 + day) << "\t100\t1\t2\t3\t4\t1\t0\t" << frame_fp1
-            << '\n';
+            << "base_date\tbase_ts_ns\tshifted_date\tshifted_ts_ns\tpv_base\tpv_target\t"
+               "pnl_total\tpnl_delta\tpnl_gamma\tpnl_vega\tpnl_volga\tpnl_vanna\tpnl_theta\t"
+               "pnl_rho\tpnl_charm\tpnl_unexplained\tvol_level\tvol_skew\tvol_curv\tvol_resid\t"
+               "shares_pnl\tn_ok\tn_excluded\texcluded_premium\tpnl_carry\tn_legs_resolved\t"
+               "n_legs_unresolved\tadmitted\tdefinition_fingerprint\n"
+            << "2026-10-01\t" << ts0 << "\t2026-10-02\t" << (ts0 + day)
+            << "\t100\t90\t-10\t-6\t1\t-3\t0\t0\t-0.5\t0\t0\t-1.5\t-2\t-0.5\t-0.25\t-0.25\t0\t"
+            << n_ok << '\t' << n_excluded << "\t0\t0\t1\t0\t1\t" << pair_fp << '\n';
   write_file(dir / "projected_risk_scenarios.tsv", scenarios.str());
 
   std::ostringstream legs;
@@ -464,14 +471,11 @@ void write_valid_projected_var(const fs::path &dir) {
        << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
           "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n"
        << "2026-10-01\t0\t1\tCall\t" << (ts0 + 30 * day)
-       << "\t100\t2\t100\t0.45\t0.5\t0.01\t0.2\t-0.1\t" << leg_fp0 << "\tOk\n"
-       << "2026-10-02\t0\t1\tCall\t" << (ts0 + 31 * day)
-       << "\t101\t2\t100\t0.5\t0.5\t0.01\t0.2\t-0.1\t" << leg_fp1 << "\tOk\n";
+       << "\t100\t2\t100\t0.45\t0.5\t0.01\t0.2\t-0.1\t" << leg_fp0 << "\tok\n";
   write_file(dir / "projected_risk_legs.tsv", legs.str());
 
   const std::string row =
-      "\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t" + std::to_string(ts0 + day) +
-      "\t9\n";
+      "\t100\t10\t10\t1\t1\t100\t7\t2026-10-02\t" + std::to_string(ts0 + day) + "\t9\n";
   write_file(dir / "projected_var.tsv",
              std::string(kPvHeader) + "0.95" + row + "0.99" + row);
 }
@@ -535,7 +539,7 @@ TEST(DispersionProjectedVarGate, GarbageCompanionAndTrailingNumericInputAreRejec
   const fs::path trailing = pv_dir("atx-disp-pv-trailing");
   write_valid_projected_var(trailing);
   std::string summary = std::string(kPvHeader) +
-                        "0.95\t100\t10junk\t10\t2\t1\t100\t7\t2026-10-02\t"
+                        "0.95\t100\t10junk\t10\t1\t1\t100\t7\t2026-10-02\t"
                         "1790971200000000000\t9\n";
   write_file(trailing / "projected_var.tsv", summary);
   EXPECT_FALSE(verify_projected_var_artifacts(trailing, 2));
@@ -543,9 +547,9 @@ TEST(DispersionProjectedVarGate, GarbageCompanionAndTrailingNumericInputAreRejec
 
 TEST(DispersionProjectedVarGate, CountsAsOfBookAndFiniteRiskMustStayConsistent) {
   constexpr const char *row95 =
-      "0.95\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t1790971200000000000\t9\n";
+      "0.95\t100\t10\t10\t1\t1\t100\t7\t2026-10-02\t1790971200000000000\t9\n";
   constexpr const char *row99 =
-      "0.99\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t1790971200000000000\t9\n";
+      "0.99\t100\t10\t10\t1\t1\t100\t7\t2026-10-02\t1790971200000000000\t9\n";
 
   const fs::path count = pv_dir("atx-disp-pv-leg-count");
   write_valid_projected_var(count);
@@ -558,9 +562,9 @@ TEST(DispersionProjectedVarGate, CountsAsOfBookAndFiniteRiskMustStayConsistent) 
   write_valid_projected_var(as_of);
   write_file(as_of / "projected_var.tsv",
              std::string(kPvHeader) +
-                 "0.95\t100\t10\t10\t2\t1\t100\t7\t2026-10-01\t"
+                 "0.95\t100\t10\t10\t1\t1\t100\t7\t2026-10-01\t"
                  "1790884800000000000\t9\n"
-                 "0.99\t100\t10\t10\t2\t1\t100\t7\t2026-10-01\t"
+                 "0.99\t100\t10\t10\t1\t1\t100\t7\t2026-10-01\t"
                  "1790884800000000000\t9\n");
   EXPECT_FALSE(verify_projected_var_artifacts(as_of, 2));
 
@@ -568,7 +572,7 @@ TEST(DispersionProjectedVarGate, CountsAsOfBookAndFiniteRiskMustStayConsistent) 
   write_valid_projected_var(identity);
   write_file(identity / "projected_var.tsv",
              std::string(kPvHeader) + row95 +
-                 "0.99\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t"
+                 "0.99\t100\t10\t10\t1\t1\t100\t7\t2026-10-02\t"
                  "1790971200000000000\t10\n");
   EXPECT_FALSE(verify_projected_var_artifacts(identity, 2));
 
@@ -576,10 +580,36 @@ TEST(DispersionProjectedVarGate, CountsAsOfBookAndFiniteRiskMustStayConsistent) 
   write_valid_projected_var(finite);
   write_file(finite / "projected_var.tsv",
              std::string(kPvHeader) +
-                 "0.95\t100\tnan\t10\t2\t1\t100\t7\t2026-10-02\t"
+                 "0.95\t100\tnan\t10\t1\t1\t100\t7\t2026-10-02\t"
                  "1790971200000000000\t9\n" +
                  row99);
   EXPECT_FALSE(verify_projected_var_artifacts(finite, 2));
+}
+
+// Review 2 of lane D: the verifier re-derives admission from the stored counts instead of
+// trusting the `admitted` bit. The route runs historical_var at max_excluded_premium_frac 0,
+// where a pair is admitted only with a leg in the totals and no exclusion at all. A row that
+// claims `admitted` with an exclusion -- what the pre-fix rule wrote for a leg of unknown
+// premium -- or with no leg is not this writer's output and must not verify.
+TEST(DispersionProjectedVarGate, AdmittedRowWithAnExclusionOrNoLegIsRejected) {
+  const fs::path control = pv_dir("atx-disp-pv-counts-ok");
+  write_valid_projected_var(control, /*n_ok=*/1u, /*n_excluded=*/0u);
+  const Status ok = verify_projected_var_artifacts(control, 2);
+  EXPECT_TRUE(ok) << ok.error().to_string();
+
+  const fs::path excluded = pv_dir("atx-disp-pv-excluded");
+  write_valid_projected_var(excluded, /*n_ok=*/1u, /*n_excluded=*/1u);
+  const Status with_exclusion = verify_projected_var_artifacts(excluded, 2);
+  ASSERT_FALSE(with_exclusion) << "an admitted row with an excluded leg verified";
+  EXPECT_NE(with_exclusion.error().to_string().find("invariants"), std::string::npos)
+      << with_exclusion.error().to_string();
+
+  const fs::path no_leg = pv_dir("atx-disp-pv-no-leg");
+  write_valid_projected_var(no_leg, /*n_ok=*/0u, /*n_excluded=*/0u);
+  const Status without_legs = verify_projected_var_artifacts(no_leg, 2);
+  ASSERT_FALSE(without_legs) << "an admitted row with no leg in its totals verified";
+  EXPECT_NE(without_legs.error().to_string().find("invariants"), std::string::npos)
+      << without_legs.error().to_string();
 }
 
 TEST(DispersionProjectedVarGate, WrongHeaderIsRejected) {

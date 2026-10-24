@@ -79,7 +79,7 @@ set(ATX_VOL_SLICE_storage_STEMS
     zc_view_parity_diag spy_archive_roundtrip track_key track_store track_compact_reconcile
     track_gc sweep_driver run_report chain_export)
 set(ATX_VOL_SLICE_analytics_STEMS
-    contract_projection historical_projection var var_report var_validation event_vol
+    contract_projection event_vol
     scenario_grid pnl_attribution deriv_pnl analytics_primitives analytics_density
     analytics_aggregate analytics_io earnings_term_fit earnings_forecast_loader
     earnings_repro_smoke earnings_validation amzn_earnings realized_vol breakeven)
@@ -117,7 +117,7 @@ set(ATX_VOL_SLICE_PREFIX_RULES
     "listed_dispersion_=dispersion" "dispersion_=dispersion"
     "backtest_=backtest" "strategy_=backtest"
     "risk_=risk" "spiderrock_=risk"
-    "analytics_=analytics" "earnings_=analytics" "var_=analytics"
+    "analytics_=analytics" "earnings_=analytics"
     "opra_=marketdata" "listed_=marketdata" "spy_=marketdata"
     "curve_=fitting" "essvi_=fitting" "cstar_=fitting" "c8_=fitting" "surface_=fitting"
     "oracle_=oracle" "persist_=persist")

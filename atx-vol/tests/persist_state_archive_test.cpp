@@ -15,8 +15,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <span>
@@ -32,6 +34,7 @@
 #include "atx/vol/api/risk/risk_book.hpp"
 #include "atx/vol/api/risk/risk_kernel.hpp"
 #include "atx/vol/api/storage/surface_archive.hpp"
+#include "persist/state_archive_format.hpp"
 #include "support/risk_synthetic_market.hpp"
 
 #if defined(_WIN32)
@@ -116,7 +119,7 @@ struct HandMarket {
   s.term_carries.resize(3);
   s.term_carries[1] = {{kTs + 86400000000000LL * 30, 0.12, 0.036, 0.001},
                        {kTs + 86400000000000LL * 60, 0.24, 0.037, 0.002},
-                       {kTs + 86400000000000LL * 90, 0.31, 0.038, 0.002}};
+                       {kTs + 86400000000000LL * 90, 0.31, 0.038, 0.002, 0.2475}};
   s.dividend_schedules.resize(3);
   constexpr std::int64_t kDay = 86400000000000LL;
   s.dividend_schedules[2] = {{kTs + kDay * 20, 1.25}, {kTs + kDay * 110, 1.3}};
@@ -331,6 +334,23 @@ TEST(PersistStateArchive, RoundTripsStorageBitExact) {
     EXPECT_TRUE(same(got.cash_divs, want->cash_divs));
     EXPECT_EQ(got.yield == nullptr, want->yield == nullptr);
   }
+  // Lane E (design D22): ExpiryCarry::T_override round-trips bit-exactly, NaN (no override)
+  // and finite alike, through the materialized copy and the zero-copy mapped state.
+  const std::vector<ExpiryCarry> &want_carry = h->storage.term_carries[1];
+  ASSERT_EQ(want_carry.size(), 3u);
+  ASSERT_TRUE(std::isnan(want_carry[0].T_override) && std::isnan(want_carry[1].T_override));
+  ASSERT_EQ(want_carry[2].T_override, 0.2475);
+  const UnderlierState *mapped_two = a.state().underlier(2);
+  ASSERT_TRUE(mapped_two != nullptr);
+  const std::span<const ExpiryCarry> copied = m.underliers[0].term_carry;
+  for (const std::span<const ExpiryCarry> got : {copied, mapped_two->term_carry}) {
+    ASSERT_EQ(got.size(), 3u);
+    for (std::size_t r = 0; r < 3; ++r) {
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(got[r].T_override),
+                std::bit_cast<std::uint64_t>(want_carry[r].T_override))
+          << "row " << r;
+    }
+  }
   ASSERT_EQ(m.marks.size(), 2u);
   for (const auto &got : m.marks) {
     const auto want = std::find_if(h->storage.marks.begin(), h->storage.marks.end(),
@@ -374,6 +394,37 @@ TEST(PersistStateArchive, RoundTripsStorageBitExact) {
   bad = in;
   bad.extras = std::span<const MarkExtrasColumns>{h->extras}.first(1);
   EXPECT_EQ(encode_market_state(bad).error().status, PersistStatus::InvalidArgument);
+}
+
+// Lane E re-pin: the term-carry row is the 40-byte ExpiryCarry (T_override appended), so
+// the MarketState fingerprint differs from the 32-byte layout's: an archive written before
+// is refused with SchemaMismatch (and rebuilt by the state store), never misread. The value
+// is pinned so the next layout change is deliberate.
+TEST(PersistStateArchive, FingerprintFollowsTermCarryRow) {
+  namespace sf = atx::vol::state_format;
+  static_assert(sizeof(ExpiryCarry) == 40);
+  const auto carry =
+      std::find_if(std::begin(sf::kSchema), std::end(sf::kSchema),
+                   [](const PersistSectionSpec &s) { return s.name == "term-carry"; });
+  ASSERT_NE(carry, std::end(sf::kSchema));
+  EXPECT_EQ(carry->stride, 40u);
+  ASSERT_EQ(carry->fields.size(), 5u);
+  EXPECT_EQ(carry->fields[4].name, "T_override");
+  EXPECT_EQ(carry->fields[4].offset, 32u);
+  EXPECT_EQ(market_state_fingerprint(), sf::kFingerprint);
+  // The pre-lane-E layout (four fields, stride 32) folds to another fingerprint.
+  std::vector<PersistSectionSpec> old(std::begin(sf::kSchema), std::end(sf::kSchema));
+  PersistSectionSpec &row = old[static_cast<std::size_t>(carry - std::begin(sf::kSchema))];
+  row.stride = 32;
+  row.fields = row.fields.first(4);
+  const std::uint64_t old_fp = persist_fingerprint(persist_salt(kMarketStateSalt), old);
+  EXPECT_NE(old_fp, sf::kFingerprint);
+  std::printf("[persist] MarketState fingerprint 0x%016llx (32-byte carry row: 0x%016llx)\n",
+              static_cast<unsigned long long>(sf::kFingerprint),
+              static_cast<unsigned long long>(old_fp));
+  // Pinned 2026-10-24 (lane E: ExpiryCarry 40 B).
+  constexpr std::uint64_t kPinned = 0xb9738a6408b9ba89ull;
+  EXPECT_EQ(market_state_fingerprint(), kPinned);
 }
 
 TEST(PersistStateArchive, ResolveMatchesInMemoryStateOnEveryMark) {

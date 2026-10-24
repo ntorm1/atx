@@ -32,6 +32,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <vector>
@@ -56,11 +57,23 @@ enum class CarryFrom : std::uint8_t {
 // instant of the cash dividends paid before `expiry_ns`, so the forward is exactly
 //   F = (spot - pv_divs) * exp((rate - q) * T).
 // Rows sorted ascending by expiry_ns; looked up by EXACT expiry_ns.
+//
+// `T_override` (design D22, appended): the year-fraction this expiry is priced at, in
+// place of time_to_expiry(expiry_ns) under the state's TimeSpec. NaN (the default) keeps
+// the TimeSpec clock. Finite => it is THE T of every contract of this (uid, expiry): the
+// kernel's resolution (family geometry, cold lanes), the forward above, and the explain's
+// per-expiry time step dt = T_base - T_shifted (theta / charm roll, `d_time`) whenever
+// either state overrides the expiry. It applies under either CarryFrom (it is a clock, not
+// carry). Validated at MarketState::create: NaN or finite > 0, else InvalidArgument. Why:
+// a vendor's marks are computed on the vendor's own clock (SpiderRock `years`), which no
+// TimeSpec reproduces exactly (NYSE early closes); pricing them on another clock shifts
+// every short-dated price.
 struct ExpiryCarry {
   std::int64_t expiry_ns{0};
   double pv_divs{0.0};
   double rate{0.0};
   double q{0.0};
+  double T_override{std::numeric_limits<double>::quiet_NaN()};
 };
 
 // One underlier's scalars at the state's instant.

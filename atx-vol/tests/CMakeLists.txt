@@ -417,6 +417,9 @@ gtest_discover_tests(atx-vol-persist-alloc-tests
     TEST_PREFIX "persist/"
     PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
+# Wave-3 lane P2: the history formats' allocation contracts
+# (PersistSurfaceTimeline.NoAllocationOnRangeLookup) ride the same counting exe.
+target_sources(atx-vol-persist-alloc-tests PRIVATE persist_history_alloc_test.cpp)
 
 # Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
 # arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
@@ -477,6 +480,7 @@ add_executable(atx-vol-tests
     test_paths_test.cpp
     arb_test.cpp
     risk_book_test.cpp
+    risk_historical_var_test.cpp
     risk_kernel_test.cpp
     risk_market_state_test.cpp
     risk_pnl_explain_test.cpp
@@ -536,10 +540,6 @@ add_executable(atx-vol-tests
     batch_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
-    historical_projection_test.cpp
-    var_test.cpp
-    var_report_test.cpp
-    var_validation_test.cpp
     american_iv_test.cpp
     american_iv_batch_test.cpp
     dividend_test.cpp

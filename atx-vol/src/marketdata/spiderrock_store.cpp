@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <string>
@@ -152,25 +154,38 @@ constexpr double kSdivSentinelCeiling = -9.98;
 enum IntCol : std::size_t { kYr = 0, kMn, kDy, kNumIntCols };
 constexpr std::array<std::string_view, kNumIntCols> kIntNames{"okey_yr", "okey_mn", "okey_dy"};
 
+// OPTIONAL Float64 columns (the licensed drop has them; the synthetic and the older
+// oracle store do not): read when present, a NULL / -99 cell carried as NaN, never a
+// reason to drop a row. The bucket's vector stays EMPTY when no file has the column.
+enum OptCol : std::size_t { kOptDdivPv = 0, kOptSynSpot, kOptYearsC, kNumOptCols };
+constexpr std::array<std::string_view, kNumOptCols> kOptNames{"ddivPv", "synSpot", "yearsC"};
+constexpr std::array<std::vector<double> SpiderRockBucket::*, kNumOptCols> kOptFields{
+    &SpiderRockBucket::ddiv_pv, &SpiderRockBucket::syn_spot, &SpiderRockBucket::vendor_years_c};
+
 // Row filters read from OPTIONAL columns: the licensed intraday drop's exercise
 // style (absent from the synthetic and the older oracle store, where every row is
-// American) and the option root (a root other than the underlier's ticker is an
+// American), its price framework (a Forward-framework row carries a per-expiry forward
+// in uPrc) and the option root (a root other than the underlier's ticker is an
 // adjusted / non-standard deliverable whose (expiry, side, strike) key collides with
 // the standard contract's). An absent column filters nothing.
 constexpr std::string_view kExTypeName = "exType";
 constexpr std::string_view kOptionRootName = "okey_tk";
+constexpr std::string_view kPrcFrameworkName = "prcFramework";
 
 struct RowFilters {
   bool american_only{true};
   bool standard_roots_only{true};
+  bool spot_framework_only{true};
 };
 
 struct ColumnIndex {
   int tk{-1};
   int cp{-1};
-  int ex_type{-1};      // >= 0 only when the column exists AND american_only is set
-  int okey_tk{-1};      // >= 0 only when the column exists AND standard_roots_only is set
-  std::vector<int> all; // projection, flat schema: arrow field index == parquet column
+  int ex_type{-1};       // >= 0 only when the column exists AND american_only is set
+  int okey_tk{-1};       // >= 0 only when the column exists AND standard_roots_only is set
+  int prc_framework{-1}; // >= 0 only when the column exists AND spot_framework_only is set
+  std::array<int, kNumOptCols> opt{-1, -1, -1}; // >= 0 when the optional column exists
+  std::vector<int> all;  // projection, flat schema: arrow field index == parquet column
 };
 
 [[nodiscard]] Result<ColumnIndex> resolve_columns(const arrow::Schema &schema,
@@ -204,6 +219,10 @@ struct ColumnIndex {
   };
   ix.ex_type = optional(filters.american_only, kExTypeName);
   ix.okey_tk = optional(filters.standard_roots_only, kOptionRootName);
+  ix.prc_framework = optional(filters.spot_framework_only, kPrcFrameworkName);
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    ix.opt[c] = optional(true, kOptNames[c]);
+  }
   return Ok(std::move(ix));
 }
 
@@ -313,19 +332,20 @@ struct OpenedFile {
   return std::nullopt;
 }
 
-// exType == "American" (ASCII case-insensitive). A NULL is not American.
-[[nodiscard]] bool is_american(const arrow::Array &ex_type, std::int64_t i) noexcept {
-  if (ex_type.IsNull(i)) {
+// Cell `i` of a string column equals `lower` (a lower-case ASCII word) ignoring ASCII
+// case. A NULL equals nothing.
+[[nodiscard]] bool equals_ci(const arrow::Array &col, std::int64_t i,
+                             std::string_view lower) noexcept {
+  if (col.IsNull(i)) {
     return false;
   }
-  constexpr std::string_view kAmerican = "american";
-  const std::string_view v = string_at(ex_type, i);
-  if (v.size() != kAmerican.size()) {
+  const std::string_view v = string_at(col, i);
+  if (v.size() != lower.size()) {
     return false;
   }
   for (std::size_t k = 0; k < v.size(); ++k) {
     const char c = (v[k] >= 'A' && v[k] <= 'Z') ? static_cast<char>(v[k] - 'A' + 'a') : v[k];
-    if (c != kAmerican[k]) {
+    if (c != lower[k]) {
       return false;
     }
   }
@@ -333,20 +353,25 @@ struct OpenedFile {
 }
 
 // The optional filter columns of one decoded row group (null = column absent or
-// filter off). Both must be string columns (checked by the caller).
+// filter off). All must be string columns (checked by the caller).
 struct FilterArrays {
   const arrow::Array *ex_type{nullptr};
   const arrow::Array *okey_tk{nullptr};
+  const arrow::Array *prc_framework{nullptr};
 };
 
-enum class FilterVerdict : std::uint8_t { Pass, NonAmerican, NonStandardRoot };
+enum class FilterVerdict : std::uint8_t { Pass, NonAmerican, NonSpotFramework, NonStandardRoot };
 
-// Row `i` (non-null ticker `tk`) against the optional filters: exType first, then
-// the option root (a NULL root cannot be judged and passes).
+// Row `i` (non-null ticker `tk`) against the optional filters: exType first (a NULL is
+// not American), then the price framework (a NULL is not Spot), then the option root (a
+// NULL root cannot be judged and passes).
 [[nodiscard]] FilterVerdict row_filter(const FilterArrays &f, std::string_view tk,
                                        std::int64_t i) noexcept {
-  if (f.ex_type != nullptr && !is_american(*f.ex_type, i)) {
+  if (f.ex_type != nullptr && !equals_ci(*f.ex_type, i, "american")) {
     return FilterVerdict::NonAmerican;
+  }
+  if (f.prc_framework != nullptr && !equals_ci(*f.prc_framework, i, "spot")) {
+    return FilterVerdict::NonSpotFramework;
   }
   if (f.okey_tk != nullptr && !f.okey_tk->IsNull(i) && string_at(*f.okey_tk, i) != tk) {
     return FilterVerdict::NonStandardRoot;
@@ -417,6 +442,9 @@ using Admitted = std::optional<std::vector<std::string>>;
   if (f.cols.okey_tk >= 0) {
     cols.push_back(f.cols.okey_tk);
   }
+  if (f.cols.prc_framework >= 0) {
+    cols.push_back(f.cols.prc_framework);
+  }
   auto t = f.reader->ReadRowGroup(g, cols);
   if (!t.ok()) {
     return Err(from_arrow(t.status(), "spiderrock store: read tickers of " + f.path));
@@ -437,12 +465,18 @@ using Admitted = std::optional<std::vector<std::string>>;
   if (f.cols.okey_tk >= 0) {
     ATX_TRY(filters.okey_tk, single_chunk(*table, kOptionRootName, f.path));
   }
-  const bool strings = is_string_type(*tk_arr) &&
-                       (filters.ex_type == nullptr || is_string_type(*filters.ex_type)) &&
-                       (filters.okey_tk == nullptr || is_string_type(*filters.okey_tk));
+  if (f.cols.prc_framework >= 0) {
+    ATX_TRY(filters.prc_framework, single_chunk(*table, kPrcFrameworkName, f.path));
+  }
+  const bool strings =
+      is_string_type(*tk_arr) &&
+      (filters.ex_type == nullptr || is_string_type(*filters.ex_type)) &&
+      (filters.okey_tk == nullptr || is_string_type(*filters.okey_tk)) &&
+      (filters.prc_framework == nullptr || is_string_type(*filters.prc_framework));
   if (!strings) {
     return Err(ErrorCode::InvalidArgument,
-               "spiderrock store: undSecKey_tk/exType/okey_tk is not a string column in " + f.path);
+               "spiderrock store: undSecKey_tk/exType/okey_tk/prcFramework is not a string "
+               "column in " + f.path);
   }
   for (std::int64_t i = 0; i < tk_arr->length(); ++i) {
     if (tk_arr->IsNull(i)) {
@@ -508,9 +542,10 @@ struct GroupArrays {
   std::shared_ptr<arrow::Table> table; // keeps every array below alive
   const arrow::Array *tk{nullptr};
   const arrow::Array *cp{nullptr};
-  FilterArrays filters{}; // optional exType / okey_tk
+  FilterArrays filters{}; // optional exType / okey_tk / prcFramework
   std::array<const arrow::Array *, kNumIntCols> ints{};
   std::array<const arrow::DoubleArray *, kNumCols> nums{};
+  std::array<const arrow::DoubleArray *, kNumOptCols> opt{}; // null = column absent
 };
 
 [[nodiscard]] Error bad_type(std::string_view name, const char *want, const std::string &file) {
@@ -546,6 +581,12 @@ struct GroupArrays {
       return Err(bad_type(kOptionRootName, "a string", f.path));
     }
   }
+  if (f.cols.prc_framework >= 0) {
+    ATX_TRY(a.filters.prc_framework, single_chunk(*a.table, kPrcFrameworkName, f.path));
+    if (!is_string_type(*a.filters.prc_framework)) {
+      return Err(bad_type(kPrcFrameworkName, "a string", f.path));
+    }
+  }
   for (std::size_t c = 0; c < kNumIntCols; ++c) {
     ATX_TRY(a.ints[c], single_chunk(*a.table, kIntNames[c], f.path));
     if (!is_int_type(*a.ints[c])) {
@@ -560,6 +601,17 @@ struct GroupArrays {
     // SAFETY: type id checked to DOUBLE immediately above.
     a.nums[c] = static_cast<const arrow::DoubleArray *>(arr);
   }
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    if (f.cols.opt[c] < 0) {
+      continue;
+    }
+    ATX_TRY(const arrow::Array *arr, single_chunk(*a.table, kOptNames[c], f.path));
+    if (arr->type_id() != arrow::Type::DOUBLE) {
+      return Err(bad_type(kOptNames[c], "Float64", f.path));
+    }
+    // SAFETY: type id checked to DOUBLE immediately above.
+    a.opt[c] = static_cast<const arrow::DoubleArray *>(arr);
+  }
   return Ok(std::move(a));
 }
 
@@ -567,6 +619,7 @@ enum class RowVerdict : std::uint8_t {
   Admitted,
   NotSelected,
   NonAmerican,
+  NonSpotFramework,
   NonStandardRoot,
   Null,
   Bad,
@@ -582,6 +635,7 @@ struct Decoder {
   std::string last_tk{};
   std::uint32_t last_local{0};
   bool have_last{false};
+  std::array<bool, kNumOptCols> opt_seen{}; // some file of the partition has the column
 };
 
 [[nodiscard]] std::int64_t expiry_of(std::int64_t yr, std::int64_t mn, std::int64_t dy,
@@ -661,6 +715,13 @@ void append_row(const GroupArrays &a, std::int64_t i, std::uint32_t local, doubl
   o.bid.push_back(num(kBid));
   o.ask.push_back(num(kAsk));
   o.rows_null_vendor += null_vendor ? 1 : 0;
+  // Every row gets a cell in every optional vector (NaN when this file lacks the
+  // column); finalize_bucket clears a vector no file had.
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    const arrow::DoubleArray *col = a.opt[c];
+    const bool cell = col != nullptr && !col->IsNull(i) && col->Value(i) != kSentinel;
+    (o.*kOptFields[c]).push_back(cell ? col->Value(i) : kNaN);
+  }
 }
 
 [[nodiscard]] RowVerdict decode_row(const GroupArrays &a, std::int64_t i, Decoder &d) {
@@ -673,6 +734,8 @@ void append_row(const GroupArrays &a, std::int64_t i, std::uint32_t local, doubl
     break;
   case FilterVerdict::NonAmerican:
     return RowVerdict::NonAmerican;
+  case FilterVerdict::NonSpotFramework:
+    return RowVerdict::NonSpotFramework;
   case FilterVerdict::NonStandardRoot:
     return RowVerdict::NonStandardRoot;
   }
@@ -710,6 +773,9 @@ void count_verdict(RowVerdict v, SpiderRockBucket &o) noexcept {
   case RowVerdict::NonAmerican:
     ++o.dropped_non_american;
     break;
+  case RowVerdict::NonSpotFramework:
+    ++o.dropped_forward_framework;
+    break;
   case RowVerdict::NonStandardRoot:
     ++o.dropped_nonstandard_root;
     break;
@@ -729,6 +795,9 @@ void count_verdict(RowVerdict v, SpiderRockBucket &o) noexcept {
     const std::unique_ptr<parquet::RowGroupMetaData> rg = f.meta->RowGroup(g);
     const std::int64_t n_rows = rg->num_rows();
     o.rows_read += n_rows;
+    for (std::size_t c = 0; c < kNumOptCols; ++c) {
+      d.opt_seen[c] = d.opt_seen[c] || f.cols.opt[c] >= 0;
+    }
     if (!group_may_hold(*rg, f.cols.tk, d.admitted)) {
       o.rows_not_selected += n_rows; // provably no admitted ticker in this group
       continue;
@@ -806,6 +875,14 @@ void finalize_bucket(Decoder &d, UnderlierTable &table) {
   gather(o.ddiv, perm);
   gather(o.bid, perm);
   gather(o.ask, perm);
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    std::vector<double> &v = o.*kOptFields[c];
+    if (d.opt_seen[c]) {
+      gather(v, perm);
+    } else {
+      std::vector<double>{}.swap(v); // no file has the column: EMPTY, not all-NaN
+    }
+  }
 }
 
 } // namespace
@@ -879,8 +956,10 @@ Result<SpiderRockBucket> load_spiderrock_bucket(const SpiderRockStoreSpec &spec,
   std::vector<OpenedFile> files;
   files.reserve(paths.size());
   for (const fs::path &p : paths) {
-    ATX_TRY(OpenedFile f,
-            open_file(p, RowFilters{spec.american_only, spec.standard_roots_only}));
+    const RowFilters filters{.american_only = spec.american_only,
+                             .standard_roots_only = spec.standard_roots_only,
+                             .spot_framework_only = spec.spot_framework_only};
+    ATX_TRY(OpenedFile f, open_file(p, filters));
     files.push_back(std::move(f));
   }
   ATX_TRY(const Admitted admitted, admitted_set(spec, files));
@@ -889,6 +968,8 @@ Result<SpiderRockBucket> load_spiderrock_bucket(const SpiderRockStoreSpec &spec,
   out.date = spec.date;
   out.bucket_et = std::string{bucket_et};
   out.ts_ns = ts_ns;
+  out.carry_mode = spec.carry_mode;
+  out.clock = spec.clock;
   Decoder d{admitted, out};
   for (const OpenedFile &f : files) {
     ATX_TRY_VOID(decode_file(f, d));
@@ -937,13 +1018,16 @@ namespace {
   return hi >= lo ? hi - lo : 0.0;
 }
 
+
 [[nodiscard]] Status check_bucket_shape(const SpiderRockBucket &b) {
   const std::size_t n = b.sigma.size();
   const bool core = b.uid.size() == n && b.strike.size() == n && b.expiry_ns.size() == n &&
                     b.side.size() == n && b.uprc.size() == n && b.rate.size() == n &&
                     b.sdiv.size() == n && b.ddiv.size() == n;
-  const bool vendor = (b.vendor_price.empty() || b.vendor_price.size() == n) &&
-                      (b.vendor_delta.empty() || b.vendor_delta.size() == n);
+  auto empty_or_n = [n](const std::vector<double> &v) { return v.empty() || v.size() == n; };
+  const bool vendor = empty_or_n(b.vendor_price) && empty_or_n(b.vendor_delta) &&
+                      empty_or_n(b.vendor_T) && empty_or_n(b.bid) && empty_or_n(b.ask) &&
+                      empty_or_n(b.ddiv_pv);
   if (!core || !vendor) {
     return Err(ErrorCode::InvalidArgument,
                "market_state_from_bucket: bucket columns have inconsistent lengths");
@@ -951,12 +1035,228 @@ namespace {
   return Ok();
 }
 
+// ── Implied carry (SpiderRockCarryMode::ImpliedFromCalls) ──────────────────
+
+using Clock = std::chrono::steady_clock;
+
+constexpr double kImpliedLoSpot = 0.2; // F bracket [0.2, 5] x spot
+constexpr double kImpliedHiSpot = 5.0;
+constexpr double kImpliedTolRel = 1e-10;
+constexpr int kImpliedMaxSteps = 100;
+constexpr double kImpliedMinSigma = 0.01; // srVol admitted in (0.01, 3]
+constexpr double kImpliedMaxSigma = 3.0;
+
+[[nodiscard]] double norm_cdf(double x) noexcept {
+  return 0.5 * std::erfc(-x / std::numbers::sqrt2);
+}
+
+struct PriceInF {
+  double f;  // price - target
+  double df; // d price / dF = e^{-rT} N(d1) > 0
+  double d1;
+};
+
+// European Black call on the forward, e^{-rT}[F N(d1) - K N(d2)], minus `target`, with
+// its F-derivative; the price is increasing and convex in F, with
+// d2 price / dF2 = e^{-rT} phi(d1) / (F sd) (curvature()).
+struct BlackCallInF {
+  double target;
+  double K;
+  double sd;   // sigma sqrt(T)
+  double disc; // e^{-rT}
+  [[nodiscard]] PriceInF eval(double F) const noexcept {
+    const double d1 = (std::log(F / K) + 0.5 * sd * sd) / sd;
+    const double n1 = norm_cdf(d1);
+    return {disc * (F * n1 - K * norm_cdf(d1 - sd)) - target, disc * n1, d1};
+  }
+  [[nodiscard]] double curvature(double F, double d1) const noexcept {
+    return disc * std::exp(-0.5 * d1 * d1) / (std::sqrt(2.0 * std::numbers::pi) * F * sd);
+  }
+};
+
+// The forward F in the bracket [lo, hi] at which the European Black call prices
+// `fn.target`, to kImpliedTolRel relative, in <= kImpliedMaxSteps price evaluations:
+// Newton steps from `guess`, each safeguarded by the bracket, which shrinks to every
+// evaluated point (a step that would leave it bisects instead). Converged when the Newton
+// correction dx is within the tolerance, or when the step lands inside the bracket and the
+// error it leaves, (f'' / 2 f') dx^2 by Newton's quadratic convergence, is under a
+// thousandth of the tolerance (saving the confirming evaluation). That estimate is trusted
+// only for a step over which d1 moves by <= 0.01, so the curvature at x bounds the
+// curvature along the step: far from the root (deep in the money, f'' ~ 0) it would
+// otherwise accept a linear extrapolation. The bracket ends are NOT priced up front: a
+// target outside [price(lo), price(hi)] never converges, the bracket collapses onto one
+// end without a sign change, and that is nullopt (as are NaN prices and running out of
+// steps). Pure bisection would need ~36 evaluations per call; a warm-started Newton needs
+// ~2, which keeps a bucket's ~75k inversions near the brief's 20 ms.
+[[nodiscard]] std::optional<double> forward_from_call(const BlackCallInF &fn, double lo,
+                                                      double hi, double guess) noexcept {
+  bool lo_bracketed = false; // an evaluated point below the root (price < target)
+  bool hi_bracketed = false; // an evaluated point above it
+  double x = (std::isfinite(guess) && guess > lo && guess < hi) ? guess : 0.5 * (lo + hi);
+  for (int step = 0; step < kImpliedMaxSteps; ++step) {
+    const auto [fx, dfx, d1x] = fn.eval(x);
+    if (!std::isfinite(fx)) {
+      return std::nullopt;
+    }
+    if (fx == 0.0) {
+      return x;
+    }
+    if (fx < 0.0) {
+      lo = x;
+      lo_bracketed = true;
+    } else {
+      hi = x;
+      hi_bracketed = true;
+    }
+    const double dx = dfx > 0.0 ? fx / dfx : std::numeric_limits<double>::infinity();
+    const double newton = x - dx;
+    if (std::abs(dx) <= kImpliedTolRel * x) { // x is in the bracket; so is newton, to tol
+      return newton;
+    }
+    const bool inside = newton > lo && newton < hi;
+    const bool local = std::abs(dx) <= 0.01 * fn.sd * x; // d1 moves <= 0.01 over the step
+    if (inside && local &&
+        0.5 * fn.curvature(x, d1x) / dfx * dx * dx <= 1e-3 * kImpliedTolRel * newton) {
+      return newton;
+    }
+    const double next = inside ? newton : 0.5 * (lo + hi);
+    if (hi - lo <= kImpliedTolRel * next) {
+      return lo_bracketed && hi_bracketed ? std::optional<double>{next} : std::nullopt;
+    }
+    x = next;
+  }
+  return std::nullopt;
+}
+
+// Linear interpolation between the order statistics of sorted `v` at (n - 1) p.
+[[nodiscard]] double sorted_quantile(std::span<const double> v, double p) noexcept {
+  const double pos = p * static_cast<double>(v.size() - 1);
+  const auto i = static_cast<std::size_t>(pos);
+  const double frac = pos - static_cast<double>(i);
+  return i + 1 < v.size() ? v[i] + frac * (v[i + 1] - v[i]) : v[i];
+}
+
+struct ImpliedForward {
+  double forward{kNaN};
+  double iqr_rel{kNaN};
+  std::size_t n_calls{0};
+  bool accepted{false};
+};
+
+// The forward the expiry's OTM calls imply (SpiderRockCarryMode in the header): `run` is
+// the (uid, expiry) rows, `c` its Published row (rate, and the Newton start), `T` the
+// expiry's median vendor `years` (the clock srPrc was computed on).
+[[nodiscard]] ImpliedForward implied_forward(const SpiderRockBucket &b,
+                                             std::span<const std::size_t> run, double spot,
+                                             const ExpiryCarry &c, double T,
+                                             std::vector<double> &fs) {
+  ImpliedForward out;
+  if (!(std::isfinite(T) && T > 0.0 && std::isfinite(c.rate))) {
+    return out;
+  }
+  const double disc = std::exp(-c.rate * T);
+  // Newton starts at the Published forward, then at the previous call's F: the calls of
+  // one expiry imply nearly one forward, so a warm start converges in ~3 evaluations.
+  double guess = (spot - c.pv_divs) * std::exp((c.rate - c.q) * T);
+  fs.clear();
+  for (const std::size_t r : run) {
+    const double K = b.strike[r];
+    const double price = b.vendor_price[r];
+    const double sigma = b.sigma[r];
+    const bool usable = b.side[r] == Side::Call && K >= spot && b.bid[r] > 0.0 &&
+                        b.ask[r] >= b.bid[r] && std::isfinite(price) && price > 0.0 &&
+                        sigma > kImpliedMinSigma && sigma <= kImpliedMaxSigma;
+    if (!usable) {
+      continue;
+    }
+    const BlackCallInF fn{.target = price, .K = K, .sd = sigma * std::sqrt(T), .disc = disc};
+    if (const std::optional<double> F =
+            forward_from_call(fn, kImpliedLoSpot * spot, kImpliedHiSpot * spot, guess)) {
+      fs.push_back(*F);
+      guess = *F;
+    }
+  }
+  out.n_calls = fs.size();
+  if (fs.empty()) {
+    return out;
+  }
+  std::sort(fs.begin(), fs.end());
+  out.forward = sorted_quantile(fs, 0.5);
+  out.iqr_rel = (sorted_quantile(fs, 0.75) - sorted_quantile(fs, 0.25)) / out.forward;
+  out.accepted = out.n_calls >= kImpliedCarryMinCalls && out.iqr_rel <= kImpliedCarryMaxIqrRel;
+  return out;
+}
+
+// ── Per-uid state rows ───────────────────────────────────────────────────────
+
+// Everything one state build threads through its per-uid steps.
+struct StateBuild {
+  const SpiderRockBucket &b;
+  const TimeSpec &time;
+  bool implied; // ImpliedFromCalls AND the vendor price / years / quote columns exist
+  bool vendor_clock; // SpiderRockClock::VendorYears AND the years column exists
+  BucketStateReport &rep;
+  std::vector<SpiderRockExpiryForward> *forwards;
+  // Design D23b: the previous bucket's table (validated ascending); null = no sticky mode.
+  const std::vector<SpiderRockExpiryForward> *previous{nullptr};
+  std::vector<double> scratch{};
+  std::vector<double> fs{};
+};
+
+// T on the state's clock; NaN when the clock refuses (VolTime outside its calendar).
+[[nodiscard]] double state_T(const StateBuild &sb, std::int64_t expiry_ns) {
+  const Result<double> T = time_to_expiry_years(sb.b.ts_ns, expiry_ns, sb.time);
+  return T.has_value() ? *T : kNaN;
+}
+
+// The design-D4 row from the medians over the expiry's rows.
+[[nodiscard]] ExpiryCarry published_carry(StateBuild &sb, std::span<const std::size_t> run,
+                                          const UnderlierState &u) {
+  const SpiderRockBucket &b = sb.b;
+  ExpiryCarry c;
+  c.expiry_ns = b.expiry_ns[run.front()];
+  // D4 wants the PRESENT value: ddivPv when the column exists and the expiry has a finite
+  // cell, else ddiv. The spread is measured on the column the expiry actually used.
+  const double pv_median = b.ddiv_pv.empty() ? kNaN : median_of(b.ddiv_pv, run, sb.scratch);
+  const bool use_pv = std::isfinite(pv_median);
+  c.pv_divs = use_pv ? pv_median : or_else(median_of(b.ddiv, run, sb.scratch), 0.0);
+  c.rate = or_else(median_of(b.rate, run, sb.scratch), u.flat_rate);
+  c.q = or_else(median_of(b.sdiv, run, sb.scratch), u.flat_q);
+  sb.rep.max_ddiv_spread =
+      std::max(sb.rep.max_ddiv_spread, finite_spread(use_pv ? b.ddiv_pv : b.ddiv, run));
+  return c;
+}
+
+// The `previous` entry of (uid, expiry_ns) (design D23b); null without one.
+[[nodiscard]] const SpiderRockExpiryForward *
+previous_entry(const std::vector<SpiderRockExpiryForward> *previous, std::uint32_t uid,
+               std::int64_t expiry_ns) noexcept {
+  if (previous == nullptr) {
+    return nullptr;
+  }
+  const auto key = std::pair{uid, expiry_ns};
+  const auto it = std::lower_bound(
+      previous->begin(), previous->end(), key,
+      [](const SpiderRockExpiryForward &e, const std::pair<std::uint32_t, std::int64_t> &k) {
+        return std::pair{e.uid, e.expiry_ns} < k;
+      });
+  return it != previous->end() && it->uid == uid && it->expiry_ns == expiry_ns ? &*it : nullptr;
+}
+
+// Design D23b: the guard of an expiry whose previous-bucket row was on `before` — hold an
+// implied row up to 3x the IQR guard, enter implied only with a 2x margin.
+[[nodiscard]] bool sticky_accepts(const ImpliedForward &imp, SpiderRockCarryMode before) noexcept {
+  const double factor = before == SpiderRockCarryMode::ImpliedFromCalls
+                            ? kImpliedCarryStickyHoldFactor
+                            : kImpliedCarryStickyEnterFactor;
+  return imp.n_calls >= kImpliedCarryMinCalls && imp.iqr_rel <= factor * kImpliedCarryMaxIqrRel;
+}
+
 // The (uid, expiry) carry rows of one uid; `rows` is the uid's run in key order.
-[[nodiscard]] std::vector<ExpiryCarry> expiry_carries(const SpiderRockBucket &b,
+[[nodiscard]] std::vector<ExpiryCarry> expiry_carries(StateBuild &sb,
                                                       std::span<const std::size_t> rows,
-                                                      const UnderlierState &u,
-                                                      BucketStateReport &rep,
-                                                      std::vector<double> &scratch) {
+                                                      const UnderlierState &u) {
+  const SpiderRockBucket &b = sb.b;
   std::vector<ExpiryCarry> out;
   for (std::size_t lo = 0; lo < rows.size();) {
     std::size_t hi = lo + 1;
@@ -964,12 +1264,59 @@ namespace {
       ++hi;
     }
     const std::span<const std::size_t> run = rows.subspan(lo, hi - lo);
-    ExpiryCarry c;
-    c.expiry_ns = b.expiry_ns[rows[lo]];
-    c.pv_divs = or_else(median_of(b.ddiv, run, scratch), 0.0);
-    c.rate = or_else(median_of(b.rate, run, scratch), u.flat_rate);
-    c.q = or_else(median_of(b.sdiv, run, scratch), u.flat_q);
-    rep.max_ddiv_spread = std::max(rep.max_ddiv_spread, finite_spread(b.ddiv, run));
+    ExpiryCarry c = published_carry(sb, run, u);
+    SpiderRockExpiryForward diag;
+    diag.uid = u.uid;
+    diag.expiry_ns = c.expiry_ns;
+    diag.T_vendor = b.vendor_T.empty() ? kNaN : median_of(b.vendor_T, run, sb.scratch);
+    // Design D22: under the vendor clock the expiry's T IS the vendor's (median) years, for
+    // the kernel, the explain and the implied q alike; one clock, so spot e^{(rate - q) T}
+    // reproduces the implied F on exactly the T the kernel prices at.
+    if (sb.vendor_clock && std::isfinite(diag.T_vendor) && diag.T_vendor > 0.0) {
+      c.T_override = diag.T_vendor;
+      ++sb.rep.n_expiries_vendor_T;
+    }
+    const double T = std::isfinite(c.T_override) ? c.T_override : state_T(sb, c.expiry_ns);
+    if (T > 0.0 && c.pv_divs < u.spot) {
+      diag.published_forward = (u.spot - c.pv_divs) * std::exp((c.rate - c.q) * T);
+    }
+    const SpiderRockExpiryForward *before = previous_entry(sb.previous, u.uid, c.expiry_ns);
+    if (sb.implied) {
+      const Clock::time_point t0 = Clock::now();
+      const ImpliedForward imp = implied_forward(b, run, u.spot, c, diag.T_vendor, sb.fs);
+      sb.rep.implied_carry_seconds += std::chrono::duration<double>(Clock::now() - t0).count();
+      diag.implied_forward = imp.forward;
+      diag.n_calls = imp.n_calls;
+      diag.iqr_rel = imp.iqr_rel;
+      // Design D23b: an expiry the previous bucket saw takes the sticky guard instead.
+      const bool guard = imp.accepted && T > 0.0;
+      const bool take =
+          (before == nullptr ? imp.accepted : sticky_accepts(imp, before->mode)) && T > 0.0;
+      if (take != guard) {
+        diag.sticky = true;
+        ++(take ? sb.rep.n_expiries_sticky_implied : sb.rep.n_expiries_sticky_published);
+      }
+      if (take) {
+        c.pv_divs = 0.0;
+        c.q = c.rate - std::log(imp.forward / u.spot) / T; // spot e^{(rate - q) T} == F
+        diag.mode = SpiderRockCarryMode::ImpliedFromCalls;
+        if (std::isfinite(diag.published_forward)) {
+          sb.rep.max_implied_vs_published_forward_rel =
+              std::max(sb.rep.max_implied_vs_published_forward_rel,
+                       std::abs(imp.forward / diag.published_forward - 1.0));
+        }
+      }
+    }
+    const bool implied_row = diag.mode == SpiderRockCarryMode::ImpliedFromCalls;
+    sb.rep.n_expiries_implied += implied_row ? 1u : 0u;
+    sb.rep.n_expiries_published += implied_row ? 0u : 1u;
+    if (before != nullptr && before->mode != diag.mode) {
+      diag.mode_flipped = true;
+      ++sb.rep.n_mode_flips;
+    }
+    if (sb.forwards != nullptr) {
+      sb.forwards->push_back(diag);
+    }
     out.push_back(c);
     lo = hi;
   }
@@ -1011,28 +1358,28 @@ namespace {
   return m;
 }
 
-void add_uid(const SpiderRockBucket &b, std::span<const std::size_t> rows, MarketStateStorage &s,
-             BucketStateReport &rep, std::vector<double> &scratch) {
+void add_uid(StateBuild &sb, std::span<const std::size_t> rows, MarketStateStorage &s) {
+  const SpiderRockBucket &b = sb.b;
   const std::uint32_t uid = b.uid[rows.front()];
-  const double spot = median_of(b.uprc, rows, scratch);
+  const double spot = median_of(b.uprc, rows, sb.scratch);
   if (!(std::isfinite(spot) && spot > 0.0)) {
-    ++rep.n_uids_dropped;
+    ++sb.rep.n_uids_dropped;
     return;
   }
   UnderlierState u;
   u.uid = uid;
   u.spot = spot;
-  u.flat_rate = or_else(median_of(b.rate, rows, scratch), 0.0);
-  u.flat_q = or_else(median_of(b.sdiv, rows, scratch), 0.0);
+  u.flat_rate = or_else(median_of(b.rate, rows, sb.scratch), 0.0);
+  u.flat_q = or_else(median_of(b.sdiv, rows, sb.scratch), 0.0);
   u.carry = CarryFrom::State;
-  std::vector<ExpiryCarry> carries = expiry_carries(b, rows, u, rep, scratch);
+  std::vector<ExpiryCarry> carries = expiry_carries(sb, rows, u);
   const bool any_divs = std::any_of(carries.begin(), carries.end(),
                                     [](const ExpiryCarry &c) { return c.pv_divs > 0.0; });
-  rep.n_uids_with_divs += any_divs ? 1u : 0u;
-  rep.n_expiry_rows += carries.size();
-  MarketStateStorage::MarksColumns marks = uid_marks(b, rows, uid, rep);
-  rep.n_marks += marks.sigma.size();
-  ++rep.n_uids;
+  sb.rep.n_uids_with_divs += any_divs ? 1u : 0u;
+  sb.rep.n_expiry_rows += carries.size();
+  MarketStateStorage::MarksColumns marks = uid_marks(b, rows, uid, sb.rep);
+  sb.rep.n_marks += marks.sigma.size();
+  ++sb.rep.n_uids;
   s.underliers.push_back(u);
   s.term_carries.push_back(std::move(carries));
   s.marks.push_back(std::move(marks));
@@ -1043,21 +1390,69 @@ void add_uid(const SpiderRockBucket &b, std::span<const std::size_t> rows, Marke
 Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                     const TimeSpec &time,
                                                     BucketStateReport *report) {
+  return market_state_from_bucket(bucket, time, report, nullptr);
+}
+
+Result<MarketStateStorage>
+market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
+                         BucketStateReport *report,
+                         std::vector<SpiderRockExpiryForward> *forwards) {
+  return market_state_from_bucket(bucket, time, report, forwards, nullptr);
+}
+
+Result<MarketStateStorage>
+market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
+                         BucketStateReport *report,
+                         std::vector<SpiderRockExpiryForward> *forwards,
+                         const std::vector<SpiderRockExpiryForward> *previous) {
   ATX_TRY_VOID(check_bucket_shape(bucket));
+  if (previous != nullptr) {
+    if (previous == forwards) {
+      return Err(ErrorCode::InvalidArgument,
+                 "market_state_from_bucket: `previous` must not alias `forwards`");
+    }
+    for (std::size_t i = 1; i < previous->size(); ++i) {
+      const SpiderRockExpiryForward &a = (*previous)[i - 1];
+      const SpiderRockExpiryForward &b = (*previous)[i];
+      if (!(std::pair{a.uid, a.expiry_ns} < std::pair{b.uid, b.expiry_ns})) {
+        return Err(ErrorCode::InvalidArgument,
+                   "market_state_from_bucket: `previous` is not strictly ascending in "
+                   "(uid, expiry)");
+      }
+    }
+  }
   const std::vector<std::size_t> order =
       key_order(bucket.uid, bucket.expiry_ns, bucket.side, bucket.strike);
   MarketStateStorage s;
   s.ts_ns = bucket.ts_ns;
   s.time = time;
   BucketStateReport rep;
-  std::vector<double> scratch;
+  rep.pv_divs_from_ddiv_pv = !bucket.ddiv_pv.empty();
+  if (forwards != nullptr) {
+    forwards->clear();
+  }
+  // The inversion reads srPrc, years and the quote; a bucket without them (hand-built)
+  // cannot imply anything and keeps every row Published.
+  const std::size_t n = bucket.size();
+  const bool implied = bucket.carry_mode == SpiderRockCarryMode::ImpliedFromCalls &&
+                       bucket.vendor_price.size() == n && bucket.vendor_T.size() == n &&
+                       bucket.bid.size() == n && bucket.ask.size() == n;
+  const bool vendor_clock =
+      bucket.clock == SpiderRockClock::VendorYears && bucket.vendor_T.size() == n;
+  StateBuild sb{.b = bucket,
+                .time = time,
+                .implied = implied,
+                .vendor_clock = vendor_clock,
+                .rep = rep,
+                .forwards = forwards,
+                .previous = previous};
   const std::span<const std::size_t> all{order};
   for (std::size_t lo = 0; lo < all.size();) {
     std::size_t hi = lo + 1;
     while (hi < all.size() && bucket.uid[all[hi]] == bucket.uid[all[lo]]) {
       ++hi;
     }
-    add_uid(bucket, all.subspan(lo, hi - lo), s, rep, scratch);
+    add_uid(sb, all.subspan(lo, hi - lo), s);
     lo = hi;
   }
   // Point every underlier at its carry rows only now: `term_carries` no longer

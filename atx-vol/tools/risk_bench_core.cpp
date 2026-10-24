@@ -57,13 +57,14 @@ constexpr std::array<const char *, kRouteCount> kRouteNames{
 constexpr std::array<const char *, kFlagCount> kFlagNames{
     "TenorExtrapolated", "MoneynessExtrapolated", "NearExerciseEdge", "MarkMissing",
     "SurfaceMissing",    "OutsideFamilyBox",      "Rolled",           "PivotFromMarks",
-    "VendorParityAvailable", "ColdFallback",      "CarryFromSurface"};
+    "VendorParityAvailable", "ColdFallback",      "CarryFromSurface",
+    "FamilyUneconomic",  "ShortTenor"};
 constexpr std::array<const char *, kRiskLaneStatusCount> kStatusNames{
     "Ok", "ModelUnavailable", "NumericError", "InvalidContract", "Rolled", "Refused"};
 
 static_assert(static_cast<std::size_t>(RiskRoute::Refused) + 1 == kRouteCount,
               "kRouteCount must cover every RiskRoute");
-static_assert(static_cast<std::uint32_t>(RiskFlag::CarryFromSurface) == (1u << (kFlagCount - 1)),
+static_assert(static_cast<std::uint32_t>(RiskFlag::ShortTenor) == (1u << (kFlagCount - 1)),
               "kFlagCount must cover every RiskFlag bit");
 static_assert(static_cast<std::size_t>(RiskLaneStatus::Refused) + 1 == kRiskLaneStatusCount,
               "kStatusNames must cover every RiskLaneStatus");
@@ -162,6 +163,17 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
 
 [[nodiscard]] Status parse_choice(ArgCursor &c, std::string_view flag, RiskBenchArgs &a) {
   const std::optional<std::string_view> v = c.value();
+  if (flag == "--time") {
+    if (!v.has_value() || (*v != "vendor" && *v != "voltime" && *v != "calendar365")) {
+      return Err(usage_error("--time must be vendor|voltime|calendar365"));
+    }
+    a.time_choice = *v == "vendor"    ? BenchTime::Vendor
+                    : *v == "voltime" ? BenchTime::VolTime
+                                      : BenchTime::Calendar365;
+    // The TimeSpec under the vendor clock is Calendar365 (BenchTime in risk_bench.hpp).
+    a.time = *v == "voltime" ? TimeConvention::VolTime : TimeConvention::Calendar365;
+    return Ok();
+  }
   if (flag == "--kernel") {
     const std::optional<BenchKernel> k = v.has_value() ? parse_kernel(*v) : std::nullopt;
     if (!k.has_value()) {
@@ -177,8 +189,82 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
   return Ok();
 }
 
+// ── Lane A2: family-kernel policy overrides ────────────────────────────────
+
+[[nodiscard]] std::optional<double> parse_finite(std::string_view s) noexcept {
+  double value{};
+  const char *first = s.data();
+  const char *last = first + s.size();
+  const auto [ptr, ec] = std::from_chars(first, last, value);
+  if (s.empty() || ec != std::errc{} || ptr != last || !std::isfinite(value)) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+// One of the on|off / static|dynamic switches: `yes` names the true spelling.
+[[nodiscard]] Status set_switch(ArgCursor &c, std::string_view flag, std::string_view yes,
+                                std::string_view no, std::optional<bool> &out) {
+  const std::optional<std::string_view> v = c.value();
+  if (!v.has_value() || (*v != yes && *v != no)) {
+    return Err(usage_error(std::string{flag} + " must be " + std::string{yes} + "|" +
+                           std::string{no}));
+  }
+  out = *v == yes;
+  return Ok();
+}
+
+// The family-policy flag `flag` into `a`, or nullopt when `flag` is not one of them.
+[[nodiscard]] std::optional<Status> parse_family_flag(ArgCursor &c, std::string_view flag,
+                                                      RiskBenchArgs &a) {
+  constexpr std::array<std::pair<std::string_view, std::optional<std::uint16_t> RiskBenchArgs::*>,
+                       3>
+      kCounts{{{"--n-sigma", &RiskBenchArgs::n_sigma},
+               {"--n-sigma-min", &RiskBenchArgs::n_sigma_min},
+               {"--n-sigma-min-short", &RiskBenchArgs::n_sigma_min_short}}};
+  for (const auto &[name, field] : kCounts) {
+    if (flag != name) {
+      continue;
+    }
+    std::uint16_t n{0};
+    if (Status st = set_number(c, flag, n); !st.has_value()) {
+      return st;
+    }
+    a.*field = n;
+    return Ok();
+  }
+  constexpr std::array<std::pair<std::string_view, std::optional<double> RiskBenchArgs::*>, 5>
+      kDoubles{{{"--sigma-box-pad", &RiskBenchArgs::sigma_box_pad},
+                {"--sigma-node-spacing", &RiskBenchArgs::sigma_node_spacing},
+                {"--family-node-cost-us", &RiskBenchArgs::family_node_cost_us},
+                {"--cold-lane-cost-us", &RiskBenchArgs::cold_lane_cost_us},
+                {"--short-box-tau", &RiskBenchArgs::short_box_tau}}};
+  for (const auto &[name, field] : kDoubles) {
+    if (flag != name) {
+      continue;
+    }
+    const std::optional<std::string_view> v = c.value();
+    const std::optional<double> x = v.has_value() ? parse_finite(*v) : std::nullopt;
+    if (!x.has_value()) {
+      return Status{Err(usage_error("bad or missing value for " + std::string{flag}))};
+    }
+    a.*field = *x;
+    return Ok();
+  }
+  if (flag == "--family-economics") {
+    return set_switch(c, flag, "on", "off", a.family_economics);
+  }
+  if (flag == "--family-schedule") {
+    return set_switch(c, flag, "dynamic", "static", a.family_dynamic_schedule);
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] Status parse_one(ArgCursor &c, RiskBenchArgs &a) {
   const std::string_view flag = c.argv[c.i] != nullptr ? c.argv[c.i] : "";
+  if (std::optional<Status> st = parse_family_flag(c, flag, a); st.has_value()) {
+    return *st;
+  }
   for (const BoolFlag &f : kBoolFlags) {
     if (flag == f.name) {
       a.*f.field = true;
@@ -201,8 +287,11 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
   if (flag == "--seed") {
     return set_number(c, flag, a.seed);
   }
-  if (flag == "--kernel" || flag == "--needs") {
+  if (flag == "--kernel" || flag == "--needs" || flag == "--time") {
     return parse_choice(c, flag, a);
+  }
+  if (flag == "--sticky-carry") {
+    return set_switch(c, flag, "on", "off", a.sticky_carry);
   }
   return Err(usage_error("unknown flag: " + std::string{flag}));
 }
@@ -258,6 +347,13 @@ std::string risk_bench_usage() {
          "  --kernel K           family | cold | both (family)\n"
          "  --threads N          kernel / explain fan-out degree, 0 = auto (8)\n"
          "  --needs rho|none     evaluate the rho axis (none)\n"
+         "  --time vendor|voltime|calendar365\n"
+         "                       the clock every expiry is priced on: vendor = the\n"
+         "                       vendor's per-expiry years (default under --store),\n"
+         "                       calendar365 (default under --synthetic) or voltime\n"
+         "  --sticky-carry on|off  carry mode sticky across buckets: an implied expiry\n"
+         "                       holds to 3x the IQR guard, a published one enters at\n"
+         "                       half of it (default on under --store, off --synthetic)\n"
          "  --trapezoid          trapezoid second-order explain terms\n"
          "  --determinism        shadow threads=1 stream; totals must be bit-equal\n"
          "  --out <file>         JSON report (stdout when absent)\n"
@@ -266,6 +362,17 @@ std::string risk_bench_usage() {
          "                       per-leg explain (columns in docs/risk-bench.md)\n"
          "  --dump-steps N       steps written to --dump-legs, the first N; 0 = all (1)\n"
          "  --seed N             book selection seed (1)\n"
+         "  family-kernel policy overrides (FamilyKernelPolicy defaults when absent):\n"
+         "  --n-sigma N          sigma-node ceiling n_sigma\n"
+         "  --n-sigma-min N      adaptive node floor n_sigma_min, capped at n_sigma\n"
+         "                       (both floors >= n_sigma: the fixed count n_sigma)\n"
+         "  --short-box-tau X    blocks with T < X (years) take the short floor; 0 = off\n"
+         "  --n-sigma-min-short N  the short floor n_sigma_min_short, capped at n_sigma\n"
+         "  --sigma-box-pad X    sigma box pad\n"
+         "  --sigma-node-spacing X  adaptive log-sigma node spacing\n"
+         "  --family-economics on|off  route uneconomic groups cold-analytic\n"
+         "  --family-node-cost-us X / --cold-lane-cost-us X  the economics cost constants\n"
+         "  --family-schedule static|dynamic  block fan-out: run_blocks | run_dynamic\n"
          "  --help               this text\n"
          "exit: 0 ok, 1 runtime error, 2 usage error\n";
 }
@@ -280,6 +387,58 @@ const char *to_string(BenchKernel kernel) noexcept {
     return "both";
   }
   return "family";
+}
+
+const char *time_name(TimeConvention time) noexcept {
+  switch (time) {
+  case TimeConvention::Calendar365:
+    return "calendar365";
+  case TimeConvention::VolTime:
+    return "voltime";
+  }
+  return "calendar365";
+}
+
+BenchTime bench_time(const RiskBenchArgs &args) noexcept {
+  if (args.time_choice.has_value()) {
+    return *args.time_choice;
+  }
+  // A caller that set the TimeSpec to VolTime directly (the pre-v3 spelling) meant that clock.
+  if (args.time == TimeConvention::VolTime) {
+    return BenchTime::VolTime;
+  }
+  return args.synthetic_dir.empty() ? BenchTime::Vendor : BenchTime::Calendar365;
+}
+
+const char *bench_time_name(BenchTime time) noexcept {
+  switch (time) {
+  case BenchTime::Vendor:
+    return "vendor";
+  case BenchTime::VolTime:
+    return "voltime";
+  case BenchTime::Calendar365:
+    return "calendar365";
+  }
+  return "calendar365";
+}
+
+const char *carry_mode_name(SpiderRockCarryMode mode) noexcept {
+  switch (mode) {
+  case SpiderRockCarryMode::Published:
+    return "published";
+  case SpiderRockCarryMode::ImpliedFromCalls:
+    return "implied_from_calls";
+  }
+  return "published";
+}
+
+SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept {
+  return args.synthetic_dir.empty() ? SpiderRockCarryMode::ImpliedFromCalls
+                                    : SpiderRockCarryMode::Published;
+}
+
+bool bench_sticky_carry(const RiskBenchArgs &args) noexcept {
+  return args.sticky_carry.value_or(args.synthetic_dir.empty());
 }
 
 const char *to_string(PlaZone zone) noexcept {
@@ -453,6 +612,26 @@ double nearest_rank(std::span<const double> values, double q) {
 }
 
 // ═══ Data selection ══════════════════════════════════════════════════════════
+
+std::size_t mode_flips(std::span<const SpiderRockExpiryForward> prev,
+                       std::span<const SpiderRockExpiryForward> cur,
+                       std::vector<std::pair<std::uint32_t, std::int64_t>> &flipped) {
+  std::size_t n = 0;
+  std::size_t i = 0; // merge walk: both tables ascend in (uid, expiry)
+  for (const SpiderRockExpiryForward &c : cur) {
+    const auto key = std::pair{c.uid, c.expiry_ns};
+    while (i < prev.size() && std::pair{prev[i].uid, prev[i].expiry_ns} < key) {
+      ++i;
+    }
+    const bool same_key =
+        i < prev.size() && prev[i].uid == c.uid && prev[i].expiry_ns == c.expiry_ns;
+    if (same_key && prev[i].mode != c.mode) {
+      ++n;
+      flipped.push_back(key);
+    }
+  }
+  return n;
+}
 
 std::vector<std::string> select_buckets(std::span<const std::string> all, std::string_view from,
                                         std::string_view to) {
@@ -731,6 +910,9 @@ RiskBenchReport report_skeleton(const RiskBenchArgs &args) {
   r.requested_options = args.options;
   r.requested_shares = args.shares;
   r.host_threads = std::thread::hardware_concurrency();
+  r.time = bench_time_name(bench_time(args));
+  r.carry_mode = carry_mode_name(bench_carry_mode(args));
+  r.sticky_carry = bench_sticky_carry(args);
   return r;
 }
 
@@ -1264,7 +1446,7 @@ struct AxisField {
   const char *name;
   double AxisTotals::*field;
 };
-constexpr std::array<AxisField, 14> kAxisFields{{{"delta", &AxisTotals::delta},
+constexpr std::array<AxisField, 15> kAxisFields{{{"delta", &AxisTotals::delta},
                                                  {"gamma", &AxisTotals::gamma},
                                                  {"vega", &AxisTotals::vega},
                                                  {"volga", &AxisTotals::volga},
@@ -1277,7 +1459,8 @@ constexpr std::array<AxisField, 14> kAxisFields{{{"delta", &AxisTotals::delta},
                                                  {"vol_skew", &AxisTotals::vol_skew},
                                                  {"vol_curv", &AxisTotals::vol_curv},
                                                  {"vol_resid", &AxisTotals::vol_resid},
-                                                 {"shares", &AxisTotals::shares}}};
+                                                 {"shares", &AxisTotals::shares},
+                                                 {"carry", &AxisTotals::carry}}};
 
 [[nodiscard]] Json axes_json(const AxisTotals &a) {
   Json o = obj({});
@@ -1315,7 +1498,7 @@ struct ColdField {
   const char *name;
   double ColdComparison::*field;
 };
-constexpr std::array<ColdField, 11> kColdFields{
+constexpr std::array<ColdField, 12> kColdFields{
     {{"evaluate_seconds", &ColdComparison::evaluate_seconds},
      {"speedup", &ColdComparison::speedup},
      {"max_abs_price", &ColdComparison::max_abs_price},
@@ -1326,7 +1509,8 @@ constexpr std::array<ColdField, 11> kColdFields{
      {"max_abs_vanna", &ColdComparison::max_abs_vanna},
      {"max_abs_volga", &ColdComparison::max_abs_volga},
      {"max_abs_charm", &ColdComparison::max_abs_charm},
-     {"max_abs_pnl_total", &ColdComparison::max_abs_pnl_total}}};
+     {"max_abs_pnl_total", &ColdComparison::max_abs_pnl_total},
+     {"max_rel_price_family", &ColdComparison::max_rel_price_family}}};
 
 [[nodiscard]] Json cold_json(const ColdComparison &c) {
   Json o = obj({{"ran", jbool(c.ran)}, {"n_compared", jnumber(c.n_compared)}});
@@ -1359,6 +1543,7 @@ constexpr std::array<ColdField, 11> kColdFields{
                     {"cold_rows", jnumber(t.cold_rows)},
                     {"exercised_rows", jnumber(t.exercised_rows)},
                     {"refused_rows", jnumber(t.refused_rows)},
+                    {"family_nodes", jnumber(t.family_nodes)},
                     {"routes", named_counts(t.routes, kRouteNames)},
                     {"flags", named_counts(t.flags, kFlagNames)}});
   Json explain = obj({{"n_legs", jnumber(t.n_legs)},
@@ -1417,6 +1602,7 @@ void frame_from(const Fields &f, StepReport &t) {
   t.cold_rows = f.integer<std::uint64_t>("cold_rows");
   t.exercised_rows = f.integer<std::uint64_t>("exercised_rows");
   t.refused_rows = f.integer<std::uint64_t>("refused_rows");
+  t.family_nodes = f.integer<std::uint64_t>("family_nodes");
   read_named_counts(f.object("routes"), kRouteNames, t.routes);
   read_named_counts(f.object("flags"), kFlagNames, t.flags);
 }
@@ -1522,7 +1708,17 @@ void explain_from(const Fields &e, StepReport &t) {
               {"n_uids", jnumber(b.n_uids)},
               {"n_marks", jnumber(b.n_marks)},
               {"n_uids_with_divs", jnumber(b.n_uids_with_divs)},
-              {"max_ddiv_spread", num(b.max_ddiv_spread)}});
+              {"max_ddiv_spread", num(b.max_ddiv_spread)},
+              {"dropped_forward_framework", jnumber(b.dropped_forward_framework)},
+              {"pv_divs_from_ddiv_pv", jbool(b.pv_divs_from_ddiv_pv)},
+              {"n_expiries_implied", jnumber(b.n_expiries_implied)},
+              {"n_expiries_published", jnumber(b.n_expiries_published)},
+              {"max_forward_gap_rel", num(b.max_forward_gap_rel)},
+              {"implied_carry_seconds", num(b.implied_carry_seconds)},
+              {"n_expiries_vendor_T", jnumber(b.n_expiries_vendor_T)},
+              {"n_expiries_sticky_implied", jnumber(b.n_expiries_sticky_implied)},
+              {"n_expiries_sticky_published", jnumber(b.n_expiries_sticky_published)},
+              {"n_mode_flips", jnumber(b.n_mode_flips)}});
 }
 
 [[nodiscard]] BucketLoad bucket_load_from(const Fields &o) {
@@ -1540,6 +1736,16 @@ void explain_from(const Fields &e, StepReport &t) {
   b.n_marks = o.integer<std::size_t>("n_marks");
   b.n_uids_with_divs = o.integer<std::size_t>("n_uids_with_divs");
   b.max_ddiv_spread = o.num("max_ddiv_spread");
+  b.dropped_forward_framework = o.integer<std::int64_t>("dropped_forward_framework");
+  b.pv_divs_from_ddiv_pv = o.boolean("pv_divs_from_ddiv_pv");
+  b.n_expiries_implied = o.integer<std::size_t>("n_expiries_implied");
+  b.n_expiries_published = o.integer<std::size_t>("n_expiries_published");
+  b.max_forward_gap_rel = o.num("max_forward_gap_rel");
+  b.implied_carry_seconds = o.num("implied_carry_seconds");
+  b.n_expiries_vendor_T = o.integer<std::size_t>("n_expiries_vendor_T");
+  b.n_expiries_sticky_implied = o.integer<std::size_t>("n_expiries_sticky_implied");
+  b.n_expiries_sticky_published = o.integer<std::size_t>("n_expiries_sticky_published");
+  b.n_mode_flips = o.integer<std::size_t>("n_mode_flips");
   return b;
 }
 
@@ -1558,7 +1764,11 @@ void explain_from(const Fields &e, StepReport &t) {
               {"requested_underliers", jnumber(r.requested_underliers)},
               {"requested_options", jnumber(r.requested_options)},
               {"requested_shares", jnumber(r.requested_shares)},
-              {"host_threads", jnumber(r.host_threads)}});
+              {"host_threads", jnumber(r.host_threads)},
+              {"time", jstr(r.time)},
+              {"carry_mode", jstr(r.carry_mode)},
+              {"family_policy", jstr(r.family_policy)},
+              {"sticky_carry", jbool(r.sticky_carry)}});
 }
 
 void inputs_from(const Fields &o, RiskBenchReport &r) {
@@ -1577,6 +1787,10 @@ void inputs_from(const Fields &o, RiskBenchReport &r) {
   r.requested_options = o.integer<std::size_t>("requested_options");
   r.requested_shares = o.integer<std::size_t>("requested_shares");
   r.host_threads = o.integer<unsigned>("host_threads");
+  r.time = o.text("time");
+  r.carry_mode = o.text("carry_mode");
+  r.family_policy = o.text("family_policy");
+  r.sticky_carry = o.boolean("sticky_carry");
 }
 
 void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
@@ -1611,6 +1825,7 @@ void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
     r.steps.push_back(step_from(j.element(steps[i], i)));
   }
   r.summary = summary_from(j.object("summary"));
+  r.n_expiries_mode_flipped = j.integer<std::size_t>("n_expiries_mode_flipped");
   return r;
 }
 
@@ -1642,6 +1857,7 @@ std::string report_to_json(const RiskBenchReport &r) {
                                     {"shortfall", jnumber(r.book_shortfall)}})},
                       {"buckets", buckets},
                       {"bucket_loads", loads},
+                      {"n_expiries_mode_flipped", jnumber(r.n_expiries_mode_flipped)},
                       {"start", obj({{"state_seconds", num(r.start_state_seconds)},
                                      {"evaluate_seconds", num(r.start_evaluate_seconds)}})},
                       {"steps", steps},
@@ -1746,6 +1962,9 @@ std::string report_to_markdown(const RiskBenchReport &r) {
   md += "- kernel " + r.kernel + ", threads " + std::to_string(r.threads) + " (host " +
         std::to_string(r.host_threads) + "), needs_rho " + (r.needs_rho ? "yes" : "no") +
         ", trapezoid " + (r.trapezoid ? "yes" : "no") + ", seed " + std::to_string(r.seed) + "\n";
+  if (!r.family_policy.empty()) {
+    md += "- family policy: " + r.family_policy + "\n";
+  }
   md += "- book: " + std::to_string(r.n_option_legs) + " option legs (" +
         std::to_string(r.n_unique_options) + " unique) + " + std::to_string(r.n_share_legs) +
         " share legs on " + std::to_string(r.n_underliers) + " underliers (shortfall " +
@@ -1793,20 +2012,25 @@ static_assert(static_cast<std::size_t>(CarrySource::Absent) + 1 == kCarrySourceN
               "kCarrySourceNames must cover every CarrySource");
 
 // The columns in write order: append_leg_dump_csv writes exactly these, one cell each.
-constexpr std::array<std::string_view, 63> kLegDumpColumns{
-    "step",          "leg_index",     "leg_id",       "prepared_row", "ticker",
-    "uid",           "uid_slot",      "strike",       "expiry",       "side",
-    "qty",           "multiplier",    "T",            "sigma",        "spot",
-    "forward",       "rate",          "q_eff",        "carry_source", "carry_rate",
-    "carry_q",       "pv_divs",       "q_eff_d4",     "route",        "flags",
-    "status",        "leg_status",    "price",        "delta",        "gamma",
-    "vega",          "theta",         "vanna",        "volga",        "charm",
-    "vendor_price",  "vendor_delta",  "vendor_vega",  "vendor_theta", "price_abs_err",
-    "price_sym_rel", "sr_prc",        "sr_de",        "sr_ga",        "sr_ve",
-    "sr_th",         "sr_years",      "sr_uprc",      "sr_rate",      "sr_sdiv",
-    "sr_ddiv",       "sr_bid",        "sr_ask",       "pnl_total",    "pnl_delta",
-    "pnl_gamma",     "pnl_vega",      "pnl_volga",    "pnl_vanna",    "pnl_theta",
-    "pnl_rho",       "pnl_charm",     "pnl_unexplained"};
+constexpr std::array<std::string_view, 69> kLegDumpColumns{
+    "step",            "leg_index",         "leg_id",       "prepared_row",
+    "ticker",          "uid",               "uid_slot",     "strike",
+    "expiry",          "side",              "qty",          "multiplier",
+    "T",               "sigma",             "spot",         "forward",
+    "rate",            "q_eff",             "carry_source", "carry_rate",
+    "carry_q",         "pv_divs",           "q_eff_d4",     "carry_mode",
+    "implied_forward", "published_forward", "route",        "flags",
+    "status",          "leg_status",        "price",        "delta",
+    "gamma",           "vega",              "theta",        "vanna",
+    "volga",           "charm",             "vendor_price", "vendor_delta",
+    "vendor_vega",     "vendor_theta",      "price_abs_err", "price_sym_rel",
+    "sr_prc",          "sr_de",             "sr_ga",        "sr_ve",
+    "sr_th",           "sr_years",          "sr_uprc",      "sr_synspot",
+    "sr_rate",         "sr_sdiv",           "sr_ddiv",      "sr_bid",
+    "sr_ask",          "pnl_total",         "pnl_delta",    "pnl_gamma",
+    "pnl_vega",        "pnl_volga",         "pnl_vanna",    "pnl_theta",
+    "pnl_rho",         "pnl_charm",         "pnl_unexplained", "T_vendor",
+    "pnl_carry"};
 
 // One CSV line under construction: every cell call writes the separator first.
 class CsvLine {
@@ -1886,6 +2110,7 @@ void set_leg_dump_vendor(LegDumpRow &row, const SpiderRockBucket &b, std::size_t
   row.sr_th = cell_at(b.vendor_theta, r);
   row.sr_years = cell_at(b.vendor_T, r);
   row.sr_uprc = cell_at(b.uprc, r);
+  row.sr_synspot = cell_at(b.syn_spot, r);
   row.sr_rate = cell_at(b.rate, r);
   row.sr_sdiv = cell_at(b.sdiv, r);
   row.sr_ddiv = cell_at(b.ddiv, r);
@@ -1936,6 +2161,9 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
   line.number(row.carry_q);
   line.number(row.pv_divs);
   line.number(q_eff_d4);
+  line.text(row.carry_mode);
+  line.number(row.implied_forward);
+  line.number(row.published_forward);
   line.text(row.route);
   line.text(row.flags);
   line.text(row.status);
@@ -1949,8 +2177,8 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
   line.number(abs_err);
   line.number(sym_rel);
   for (const double v : {row.sr_prc, row.sr_de, row.sr_ga, row.sr_ve, row.sr_th, row.sr_years,
-                         row.sr_uprc, row.sr_rate, row.sr_sdiv, row.sr_ddiv, row.sr_bid,
-                         row.sr_ask}) {
+                         row.sr_uprc, row.sr_synspot, row.sr_rate, row.sr_sdiv, row.sr_ddiv,
+                         row.sr_bid, row.sr_ask}) {
     line.number(v);
   }
   for (const double v : {row.pnl_total, row.pnl_delta, row.pnl_gamma, row.pnl_vega,
@@ -1958,6 +2186,9 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
                          row.pnl_unexplained}) {
     line.number(v);
   }
+  // Lane E: appended, so the earlier columns keep their positions.
+  line.number(row.T_vendor);
+  line.number(row.pnl_carry);
   line.end();
 }
 

@@ -35,13 +35,15 @@ namespace {
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
 
-// The eight Taylor columns of row i, summed left to right in the kernel's order.
+// The eight Taylor columns of row i, summed left to right in the kernel's order, plus the
+// carry axis (design D23a; +0.0 when the carry did not move, which leaves the sum as is).
 [[nodiscard]] double explained(const ExplainResult &e, std::size_t i) noexcept {
-  return ((((((e.pnl_delta[i] + e.pnl_gamma[i]) + e.pnl_vega[i]) + e.pnl_volga[i]) +
-            e.pnl_vanna[i]) +
-           e.pnl_theta[i]) +
-          e.pnl_rho[i]) +
-         e.pnl_charm[i];
+  return (((((((e.pnl_delta[i] + e.pnl_gamma[i]) + e.pnl_vega[i]) + e.pnl_volga[i]) +
+             e.pnl_vanna[i]) +
+            e.pnl_theta[i]) +
+           e.pnl_rho[i]) +
+          e.pnl_charm[i]) +
+         e.pnl_carry[i];
 }
 
 // Two frames of one book over a (base, shifted) state pair.
@@ -100,6 +102,15 @@ constexpr std::array<TotalsField, 18> kTotalsFields{
     &ExplainTotals::pnl_rho,         &ExplainTotals::pnl_charm,  &ExplainTotals::pnl_unexplained,
     &ExplainTotals::vol_level,       &ExplainTotals::vol_skew,   &ExplainTotals::vol_curv,
     &ExplainTotals::vol_resid,       &ExplainTotals::shares_pnl, &ExplainTotals::excluded_premium};
+// ... and the lane E carry axis (kept apart: the pin below covers the eighteen above).
+constexpr std::array<TotalsField, 19> kAllTotalsFields{
+    &ExplainTotals::pv_base,         &ExplainTotals::pv_target,  &ExplainTotals::pnl_total,
+    &ExplainTotals::pnl_delta,       &ExplainTotals::pnl_gamma,  &ExplainTotals::pnl_vega,
+    &ExplainTotals::pnl_volga,       &ExplainTotals::pnl_vanna,  &ExplainTotals::pnl_theta,
+    &ExplainTotals::pnl_rho,         &ExplainTotals::pnl_charm,  &ExplainTotals::pnl_unexplained,
+    &ExplainTotals::vol_level,       &ExplainTotals::vol_skew,   &ExplainTotals::vol_curv,
+    &ExplainTotals::vol_resid,       &ExplainTotals::shares_pnl, &ExplainTotals::excluded_premium,
+    &ExplainTotals::pnl_carry};
 
 void expect_invalid_argument(const Result<ExplainResult> &r) {
   ASSERT_FALSE(r.has_value());
@@ -534,7 +545,7 @@ TEST(RiskExplain, ExcludedLanesCarryPremiumAndNeverNaN) {
   EXPECT_NEAR(e.total.excluded_premium, rolled_premium + missing_premium + share_premium,
               1e-12 * (rolled_premium + missing_premium + share_premium));
   // Never NaN in a total or a bucket.
-  for (const TotalsField f : kTotalsFields) {
+  for (const TotalsField f : kAllTotalsFields) {
     EXPECT_TRUE(std::isfinite(e.total.*f));
     for (const ExplainBucket &bk : e.by_uid) {
       EXPECT_TRUE(std::isfinite(bk.totals.*f));
@@ -584,7 +595,7 @@ TEST(RiskExplain, ThreadCountBitIdentical) {
         &ExplainResult::pnl_rho, &ExplainResult::pnl_charm, &ExplainResult::pnl_unexplained,
         &ExplainResult::vol_level, &ExplainResult::vol_skew, &ExplainResult::vol_curv,
         &ExplainResult::vol_resid, &ExplainResult::d_spot, &ExplainResult::d_vol,
-        &ExplainResult::d_time, &ExplainResult::d_rate}) {
+        &ExplainResult::d_time, &ExplainResult::d_rate, &ExplainResult::pnl_carry}) {
     EXPECT_TRUE(bytes_equal(a.*col, b.*col));
   }
   EXPECT_TRUE(bytes_equal(a.route_base, b.route_base));
@@ -622,7 +633,7 @@ TEST(RiskExplain, BucketsSumToTotal) {
       n_ok += bk.totals.n_ok;
     }
     EXPECT_EQ(n_ok, e.total.n_ok);
-    for (const TotalsField f : kTotalsFields) {
+    for (const TotalsField f : kAllTotalsFields) {
       double sum = 0.0;
       double gross = 0.0;
       for (const ExplainBucket &bk : *buckets) {
@@ -738,4 +749,565 @@ TEST(RiskExplain, RefusesInvalidZRefAndRefusedStep) {
   b.state = make_market_state(b.storage).value();
   expect_invalid_argument(
       explain(*s->prep, b.state, s->fb, s->shifted->state, s->ft, ExplainOptions{}));
+}
+
+namespace {
+
+// Marks-only twin of a fixture state: per uid, ContractMarks over a 1 %-step strike grid
+// (0.80 .. 1.20 S, every book strike on it) at every live pillar expiry, both sides,
+// sigma = the surface's iv(K, T); no surface. The vega-split pivots then come from
+// marks (sample_marks), the path every SpiderRock state takes.
+[[nodiscard]] std::unique_ptr<MarketStateStorage> marks_only_twin(const rt::OwnedState &src) {
+  auto st = std::make_unique<MarketStateStorage>();
+  st->ts_ns = src.storage.ts_ns;
+  for (std::size_t ui = 0; ui < src.surfaces.size(); ++ui) {
+    const PricedSurface &surf = src.surfaces[ui];
+    UnderlierState u;
+    u.uid = rt::kUnderliers[ui].uid;
+    u.spot = surf.pricing().S;
+    u.flat_rate = surf.pricing().r;
+    u.flat_q = rt::kUnderliers[ui].q;
+    u.carry = CarryFrom::State;
+    st->underliers.push_back(u);
+    MarketStateStorage::MarksColumns m;
+    m.uid = u.uid;
+    for (std::size_t ei = 0; ei < rt::kExpiryUnits.size(); ++ei) {
+      const double T = static_cast<double>(rt::expiry_ns(ei) - st->ts_ns) / kCalendarYearNs;
+      if (!(T > 0.0)) {
+        continue;
+      }
+      for (const Side side : {Side::Call, Side::Put}) {
+        for (int j = 0; j <= 40; ++j) {
+          const double K = std::round(rt::kUnderliers[ui].spot * (0.80 + 0.01 * j) * 2.0) / 2.0;
+          m.strike.push_back(K);
+          m.expiry_ns.push_back(rt::expiry_ns(ei));
+          m.side.push_back(side);
+          m.sigma.push_back(surf.iv(K, T));
+        }
+      }
+    }
+    st->marks.push_back(std::move(m));
+  }
+  st->normalize_marks();
+  return st;
+}
+
+// The irregular-grid cases of the pivot mark pairing (sample_marks pairs every base mark
+// with the FIRST mark of the same (expiry, side, K) on the other side, or none): rewrites
+// a normalized marks-only twin in place, per uid and (expiry, side) run, so that its k-th
+// row (k from 0)
+//   is dropped when `drop` and k % 3 == 1 and no book leg sits on that strike;
+//   is followed by a duplicate of its key at sigma x `dup_scale` when k == 20 (the first
+//     row stays first, so a pairing that took the later one would move the pivots);
+//   is followed by an off-grid row at K + 0.25 (between grid strikes: every fixture grid
+//     step is >= 0.5) at sigma x 1.002 when `extra` and k % 5 == 2.
+// Rows stay sorted by (expiry, side, K); the duplicate stays (normalize_marks would drop
+// it; make_market_state accepts a non-decreasing key).
+[[nodiscard]] std::unique_ptr<MarketStateStorage>
+irregular_twin(std::unique_ptr<MarketStateStorage> st, const std::vector<OptionLeg> &legs,
+               bool drop, bool extra, double dup_scale) {
+  for (MarketStateStorage::MarksColumns &m : st->marks) {
+    MarketStateStorage::MarksColumns out;
+    out.uid = m.uid;
+    const auto push = [&out](std::int64_t e, Side s, double K, double sigma) {
+      out.expiry_ns.push_back(e);
+      out.side.push_back(s);
+      out.strike.push_back(K);
+      out.sigma.push_back(sigma);
+    };
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < m.sigma.size(); ++i) {
+      if (i > 0 && (m.expiry_ns[i] != m.expiry_ns[i - 1] || m.side[i] != m.side[i - 1])) {
+        k = 0;
+      }
+      const bool on_book = std::any_of(legs.begin(), legs.end(), [&](const OptionLeg &leg) {
+        return leg.uid == m.uid && leg.K == m.strike[i];
+      });
+      if (!(drop && k % 3u == 1u && !on_book)) {
+        push(m.expiry_ns[i], m.side[i], m.strike[i], m.sigma[i]);
+      }
+      if (k == 20u) {
+        push(m.expiry_ns[i], m.side[i], m.strike[i], m.sigma[i] * dup_scale);
+      }
+      if (extra && k % 5u == 2u) {
+        push(m.expiry_ns[i], m.side[i], m.strike[i] + 0.25, m.sigma[i] * 1.002);
+      }
+      ++k;
+    }
+    m = std::move(out);
+  }
+  return st;
+}
+
+// FNV-1a over the bytes of every per-leg column of `e` (the pin's per-leg half).
+[[nodiscard]] std::uint64_t legs_digest(const ExplainResult &e) {
+  std::uint64_t h = 1469598103934665603ULL;
+  const auto mix = [&h](const void *p, std::size_t n) {
+    const auto *b = static_cast<const unsigned char *>(p);
+    for (std::size_t i = 0; i < n; ++i) {
+      h = (h ^ b[i]) * 1099511628211ULL;
+    }
+  };
+  for (const auto col :
+       {&ExplainResult::pv_base, &ExplainResult::pv_target, &ExplainResult::pnl_total,
+        &ExplainResult::pnl_delta, &ExplainResult::pnl_gamma, &ExplainResult::pnl_vega,
+        &ExplainResult::pnl_volga, &ExplainResult::pnl_vanna, &ExplainResult::pnl_theta,
+        &ExplainResult::pnl_rho, &ExplainResult::pnl_charm, &ExplainResult::pnl_unexplained,
+        &ExplainResult::vol_level, &ExplainResult::vol_skew, &ExplainResult::vol_curv,
+        &ExplainResult::vol_resid, &ExplainResult::d_spot, &ExplainResult::d_vol,
+        &ExplainResult::d_time, &ExplainResult::d_rate}) {
+    mix((e.*col).data(), (e.*col).size() * sizeof(double));
+  }
+  mix(e.flags.data(), e.flags.size() * sizeof(RiskFlags));
+  mix(e.status.data(), e.status.size() * sizeof(RiskLaneStatus));
+  return h;
+}
+
+} // namespace
+
+// The explain fan-out (pivot sampling and the per-leg rows) gives the same bits for any
+// worker count (the totals, every bucket and every per-leg column compared across worker
+// counts), AND the same bits as the explain this lane started from: the totals and a
+// digest of every per-leg column are pinned to the values printed by the pre-A2 explain
+// (lane A @ 4469d3e5) on marks-only states, so an explain speed-up can never move a
+// number. Frames come from the cold kernel (no family policy involved).
+TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
+  const auto b_owned = rt::make_state(rt::StateMove{});
+  const auto t_owned = rt::make_state(rt::shifted_move());
+  const auto b_store = marks_only_twin(*b_owned);
+  const auto t_store = marks_only_twin(*t_owned);
+  const MarketState base = make_market_state(*b_store).value();
+  const MarketState shifted = make_market_state(*t_store).value();
+  const RiskBook book = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const RiskKernel kernel = RiskKernel::cold();
+  RiskFrame fb;
+  RiskFrame ft;
+  RiskWorkspace ws;
+  ASSERT_TRUE(kernel.evaluate(prep, base, RiskNeeds{}, fb, ws).has_value());
+  ASSERT_TRUE(kernel.evaluate(prep, shifted, RiskNeeds{}, ft, ws).has_value());
+
+  ExplainOptions one;
+  one.n_threads = 1;
+  const ExplainResult ref = explain(prep, base, fb, shifted, ft, one).value();
+  ASSERT_EQ(ref.total.n_ok, ref.size()) << "every leg must be explained";
+  std::size_t from_marks = 0;
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    from_marks += has_flag(ref.flags[i], RiskFlag::PivotFromMarks) ? 1u : 0u;
+  }
+  EXPECT_EQ(from_marks, book.n_option_legs()) << "the pivots must come from marks";
+
+  for (const unsigned nt : {2u, 3u, 5u, 8u, 16u}) {
+    ExplainOptions opts;
+    opts.n_threads = nt;
+    ExplainResult e;
+    ASSERT_TRUE(explain_into(prep, base, fb, shifted, ft, opts, e).has_value());
+    EXPECT_EQ(legs_digest(e), legs_digest(ref)) << "threads " << nt;
+    EXPECT_TRUE(bytes_equal(e.pnl_carry, ref.pnl_carry)) << "threads " << nt; // lane E column
+    EXPECT_TRUE(totals_equal(e.total, ref.total)) << "threads " << nt;
+    ASSERT_EQ(e.by_uid.size(), ref.by_uid.size());
+    for (std::size_t k = 0; k < e.by_uid.size(); ++k) {
+      EXPECT_TRUE(totals_equal(e.by_uid[k].totals, ref.by_uid[k].totals)) << nt << " uid " << k;
+    }
+    ASSERT_EQ(e.by_expiry.size(), ref.by_expiry.size());
+    for (std::size_t k = 0; k < e.by_expiry.size(); ++k) {
+      EXPECT_TRUE(totals_equal(e.by_expiry[k].totals, ref.by_expiry[k].totals))
+          << nt << " expiry " << k;
+    }
+    EXPECT_EQ(e.n_pivot_groups, ref.n_pivot_groups);
+    EXPECT_EQ(e.n_pivot_edge_fallback, ref.n_pivot_edge_fallback);
+  }
+
+  // The pin (pre-A2 bits). Printed so a deliberate re-pin can read them off the log.
+  std::cout << "[RiskExplain] pin: legs digest 0x" << std::hex << legs_digest(ref) << " totals";
+  for (const TotalsField f : kTotalsFields) {
+    std::cout << " 0x" << std::bit_cast<std::uint64_t>(ref.total.*f);
+  }
+  std::cout << std::dec << " pivot groups " << ref.n_pivot_groups << "\n";
+  constexpr std::uint64_t kPinnedDigest = 0x5660a61510ac3e32ULL;
+  constexpr std::array<std::uint64_t, 18> kPinnedTotals{
+      0xc0b65d5f0cf24b1eULL, 0xc0b4fc5b70eb93f9ULL, 0x40761039c06b723aULL, 0x408b5ffa407a3848ULL,
+      0xc01020c400b10519ULL, 0xc07ac4f301d262ccULL, 0xc00332f9be70a8a0ULL, 0x400cca2e984d58d1ULL,
+      0x403295a8af607cb7ULL, 0x0ULL,                0x3ff4b74fe1c1f001ULL, 0xc05bee13ccfd6a57ULL,
+      0xc07e36e8c1c68d71ULL, 0xc04b583ce502c5b7ULL, 0xc03d10be264bcdddULL, 0x40615c127df28075ULL,
+      0x40607ffffffffff7ULL, 0x0ULL};
+  EXPECT_EQ(ref.n_pivot_groups, 12u);
+  EXPECT_EQ(legs_digest(ref), kPinnedDigest);
+  // Lane E (design D23a): the carry is identical in the two states, so the carry axis is
+  // +0.0 on every leg and in the totals, and the pinned columns above did not move.
+  ASSERT_EQ(ref.pnl_carry.size(), ref.size());
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.pnl_carry[i]), 0u) << "leg " << i;
+  }
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.pnl_carry), 0u);
+  for (std::size_t k = 0; k < kTotalsFields.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.*kTotalsFields[k]), kPinnedTotals[k])
+        << "totals field " << k;
+  }
+}
+
+namespace {
+
+// A marks-only state for uid 1 (spot 100) at `ts_ns`: one ExpiryCarry row per fixture
+// expiry (`rate`, `q`, `pv_divs[e]`) carrying `T_override[e]` (NaN keeps the clock),
+// and a mark for every contract of `legs` (the same smile in every state). Heap-pinned:
+// the underlier's term_carry span points into the storage.
+[[nodiscard]] std::unique_ptr<MarketStateStorage>
+clock_state(std::int64_t ts_ns, const std::vector<OptionLeg> &legs,
+            const std::array<double, 4> &T_override, const std::array<double, 4> &q,
+            const std::array<double, 4> &pv_divs, double rate = rt::kRate) {
+  auto st = std::make_unique<MarketStateStorage>();
+  st->ts_ns = ts_ns;
+  UnderlierState u;
+  u.uid = 1u;
+  u.spot = 100.0;
+  u.flat_rate = rate;
+  u.flat_q = 0.015;
+  u.carry = CarryFrom::State;
+  st->underliers.push_back(u);
+  std::vector<ExpiryCarry> carry;
+  for (std::size_t e = 0; e < rt::kExpiryUnits.size(); ++e) {
+    carry.push_back(ExpiryCarry{rt::expiry_ns(e), pv_divs[e], rate, q[e], T_override[e]});
+  }
+  st->term_carries.push_back(std::move(carry));
+  MarketStateStorage::MarksColumns m;
+  m.uid = 1u;
+  for (const OptionLeg &l : legs) {
+    m.strike.push_back(l.K);
+    m.expiry_ns.push_back(l.expiry_ns);
+    m.side.push_back(l.side);
+    m.sigma.push_back(0.24 - 0.12 * std::log(l.K / 100.0));
+  }
+  st->marks.push_back(std::move(m));
+  st->normalize_marks();
+  st->underliers[0].term_carry = st->term_carries[0];
+  return st;
+}
+
+[[nodiscard]] std::size_t expiry_index(std::int64_t expiry_ns) {
+  return static_cast<std::size_t>(std::find(rt::kExpiryUnits.begin(), rt::kExpiryUnits.end(),
+                                            (expiry_ns - rt::kT0) / rt::kUnitNs) -
+                                  rt::kExpiryUnits.begin());
+}
+
+// Frames of `book` on two states (cold kernel: no family policy involved).
+struct ClockPair {
+  RiskFrame fb;
+  RiskFrame ft;
+};
+
+[[nodiscard]] ClockPair clock_frames(const PreparedRiskBook &prep, const MarketState &b,
+                                     const MarketState &t) {
+  ClockPair p;
+  RiskWorkspace ws;
+  EXPECT_TRUE(RiskKernel::cold().evaluate(prep, b, RiskNeeds{}, p.fb, ws).has_value());
+  EXPECT_TRUE(RiskKernel::cold().evaluate(prep, t, RiskNeeds{}, p.ft, ws).has_value());
+  return p;
+}
+
+} // namespace
+
+// Design D22: with per-expiry T overrides the explain's time step is per expiry,
+// dt_e = T_base(e) - T_shifted(e) (the contract's own roll), not the instants' calendar
+// step. Two states one fixture day apart whose overrides roll each expiry by a DIFFERENT
+// dt_e (and nothing else moves): every leg's d_time is dt_e, its theta term is exactly
+// w (theta_b dt_e), the remainder identity holds to 2 ulp, and theta explains the roll
+// (the calendar step would not). ExplainResult::dt_years stays the calendar step.
+TEST(RiskExplain, ExpiryTOverrideDrivesTheta) {
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  const std::int64_t t1 = rt::instant_ns(rt::kDayUnits);
+  std::array<double, 4> T_b{};
+  std::array<double, 4> T_t{};
+  std::array<double, 4> dt_e{};
+  for (std::size_t e = 0; e < T_b.size(); ++e) {
+    T_b[e] = rt::years(rt::kExpiryUnits[e]) + 0.004; // the vendor's clock runs ahead
+    dt_e[e] = 0.0005 * static_cast<double>(e + 1u);  // 0.18 .. 0.73 calendar days
+    T_t[e] = T_b[e] - dt_e[e];
+    dt_e[e] = T_b[e] - T_t[e]; // the explain's own subtraction
+  }
+  const std::array<double, 4> q{0.015, 0.015, 0.015, 0.015};
+  const std::array<double, 4> pv{0.0, 0.0, 0.0, 0.0};
+  const auto sb = clock_state(rt::kT0, legs, T_b, q, pv);
+  const auto st = clock_state(t1, legs, T_t, q, pv);
+  const MarketState base = make_market_state(*sb).value();
+  const MarketState shifted = make_market_state(*st).value();
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const ClockPair f = clock_frames(prep, base, shifted);
+  const ExplainResult e = explain(prep, base, f.fb, shifted, f.ft).value();
+  const double dt_cal = rt::years(rt::kDayUnits);
+  EXPECT_TRUE(same_bits(e.dt_years, dt_cal));
+
+  double sum_total = 0.0;
+  double sum_unexpl = 0.0;
+  double sum_unexpl_calendar = 0.0;
+  for (std::size_t i = 0; i < legs.size(); ++i) {
+    ASSERT_EQ(e.status[i], RiskLaneStatus::Ok) << i;
+    const std::uint32_t r = prep.leg_prepared_row()[i];
+    const double w = prep.leg_weight()[i];
+    const std::size_t x = expiry_index(legs[i].expiry_ns);
+    ASSERT_LT(x, dt_e.size());
+    EXPECT_TRUE(same_bits(e.d_time[i], dt_e[x])) << i;
+    EXPECT_TRUE(same_bits(e.pnl_theta[i], w * (f.fb.theta[r] * dt_e[x]))) << i;
+    const double gap = std::fabs((explained(e, i) + e.pnl_unexplained[i]) - e.pnl_total[i]);
+    EXPECT_LE(gap, 2.0 * ulp(e.pnl_total[i])) << i;
+    sum_total += std::fabs(e.pnl_total[i]);
+    sum_unexpl += std::fabs(e.pnl_unexplained[i]);
+    sum_unexpl_calendar += std::fabs(e.pnl_total[i] - w * (f.fb.theta[r] * dt_cal));
+  }
+  std::cout << "[RiskExplain] per-expiry dt: sum|pnl|=" << sum_total
+            << " sum|unexplained| per-expiry dt=" << sum_unexpl
+            << " (calendar dt would leave " << sum_unexpl_calendar << ")\n";
+  EXPECT_GT(sum_total, 0.0);
+  EXPECT_LE(sum_unexpl, 0.02 * sum_total);
+  EXPECT_GT(sum_unexpl_calendar, 10.0 * sum_unexpl);
+}
+
+namespace {
+
+constexpr std::array<double, 4> kNoOverride{std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN()};
+
+} // namespace
+
+// Design D23a: a re-mark of ONE expiry's carry inputs (nothing else moves: same instant,
+// spot, marks, rate) is explained by the carry axis. Two first-order moves on expiry 2
+// (T ~ 0.3): q + 1 bp (the forward moves -0.3 bp) and pv_divs 0.50 -> 0.52 (-2 bp).
+//
+// The axis is the forward (Black) first-order term delta S J: exact wherever the American
+// price is a function of the forward, i.e. where early exercise cannot pay. A call never
+// exercises early when q_eff <= 0 <= r, a put when r <= 0 <= q_eff, so each side is pinned
+// in its own regime: calls at r = 4.3 %, q = -2 % (q_eff <= 0 even with the dividend);
+// puts at r = 0, q = +2 %. There every leg captures >= 99 % of its pnl_total and the moved
+// legs' unexplained is <= 1 % of their P&L. In the realistic regime (r = 4.3 %, q = 1.5 %)
+// the calls still do (their early exercise barely binds), while the puts' early-exercise
+// premium has its own carry sensitivity (the holder can take K now) that a Taylor term on
+// the frame's Greeks cannot see: measured pnl_carry / pnl_total = 1.10 / 1.14 / 1.18 on the
+// 92 / 97 / 100 puts, bounded here in [1, 1.25] with the axis still shrinking those legs'
+// unexplained to <= 1/4 of their P&L. On every leg of every regime the remainder identity
+// holds to 2 ulp, legs of the other expiries carry no P&L and no carry, and the axis is
+// bit-identical across thread counts.
+TEST(RiskExplain, CarryAxisExplainsForwardRemark) {
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  struct Regime {
+    const char *name;
+    double rate;
+    double q;
+    bool calls_exact; // the calls cannot exercise early (or barely do): >= 99 %
+    bool puts_exact;  // the puts cannot exercise early: >= 99 %
+    bool puts_bound;  // the puts' boundary binds: the measured over-capture bound
+  };
+  const std::array<Regime, 3> regimes{{
+      {"calls European", rt::kRate, -0.02, true, false, false},
+      {"puts European", 0.0, 0.02, false, true, false},
+      {"realistic", rt::kRate, 0.015, true, false, true},
+  }};
+  for (const Regime &g : regimes) {
+    const std::array<double, 4> q_b{g.q, g.q, g.q, g.q};
+    const std::array<double, 4> pv_b{0.0, 0.0, 0.50, 0.0};
+    struct Move {
+      const char *name;
+      std::array<double, 4> q;
+      std::array<double, 4> pv;
+    };
+    const std::array<Move, 2> moves{{
+        {"q +1bp", {g.q, g.q, g.q + 1e-4, g.q}, pv_b},
+        {"pv_divs +0.02", q_b, {0.0, 0.0, 0.52, 0.0}},
+    }};
+    const auto sb = clock_state(rt::kT0, legs, kNoOverride, q_b, pv_b, g.rate);
+    const MarketState base = make_market_state(*sb).value();
+    for (const Move &m : moves) {
+      const auto st = clock_state(rt::kT0, legs, kNoOverride, m.q, m.pv, g.rate);
+      const MarketState shifted = make_market_state(*st).value();
+      const ClockPair f = clock_frames(prep, base, shifted);
+      ExplainOptions one;
+      one.n_threads = 1;
+      ExplainOptions eight;
+      eight.n_threads = 8;
+      const ExplainResult e = explain(prep, base, f.fb, shifted, f.ft, one).value();
+      const ExplainResult e8 = explain(prep, base, f.fb, shifted, f.ft, eight).value();
+      EXPECT_TRUE(bytes_equal(e.pnl_carry, e8.pnl_carry)) << m.name;
+      EXPECT_TRUE(bytes_equal(e.pnl_unexplained, e8.pnl_unexplained)) << m.name;
+      EXPECT_TRUE(totals_equal(e.total, e8.total)) << m.name;
+
+      std::size_t moved = 0;
+      std::size_t exact = 0;
+      double worst_exact = 0.0; // over the legs the forward term must explain to 1 %
+      double worst_put = 0.0;   // the binding puts' measured over-capture
+      double sum_total = 0.0;
+      double sum_unexpl = 0.0;
+      for (std::size_t i = 0; i < legs.size(); ++i) {
+        ASSERT_EQ(e.status[i], RiskLaneStatus::Ok) << g.name << " " << m.name << " leg " << i;
+        const double gap =
+            std::fabs((explained(e, i) + e.pnl_unexplained[i]) - e.pnl_total[i]);
+        EXPECT_LE(gap, 2.0 * ulp(e.pnl_total[i])) << m.name << " leg " << i;
+        if (expiry_index(legs[i].expiry_ns) != 2u) {
+          EXPECT_EQ(e.pnl_total[i], 0.0) << m.name << " leg " << i;
+          EXPECT_EQ(std::bit_cast<std::uint64_t>(e.pnl_carry[i]), 0u) << m.name << " leg " << i;
+          continue;
+        }
+        ASSERT_NE(e.pnl_total[i], 0.0) << m.name << " leg " << i;
+        ++moved;
+        const bool call = legs[i].side == Side::Call;
+        const double capture = e.pnl_carry[i] / e.pnl_total[i];
+        if (call ? g.calls_exact : g.puts_exact) {
+          EXPECT_GE(capture, 0.99) << g.name << " " << m.name << " K " << legs[i].K;
+          EXPECT_LE(capture, 1.01) << g.name << " " << m.name << " K " << legs[i].K;
+          worst_exact = std::max(worst_exact, std::fabs(capture - 1.0));
+          sum_total += std::fabs(e.pnl_total[i]);
+          sum_unexpl += std::fabs(e.pnl_unexplained[i]);
+          ++exact;
+        } else if (!call && g.puts_bound) {
+          EXPECT_GE(capture, 1.0) << g.name << " " << m.name << " K " << legs[i].K;
+          EXPECT_LE(capture, 1.25) << g.name << " " << m.name << " K " << legs[i].K;
+          EXPECT_LE(4.0 * std::fabs(e.pnl_unexplained[i]), std::fabs(e.pnl_total[i]))
+              << g.name << " " << m.name << " K " << legs[i].K;
+          worst_put = std::max(worst_put, capture);
+        }
+      }
+      std::cout << "[RiskExplain] carry re-mark (" << g.name << ") " << m.name << ": "
+                << exact << " of " << moved << " moved legs forward-exact, worst |pnl_carry / "
+                << "pnl_total - 1| = " << worst_exact << " (sum|unexplained| " << sum_unexpl
+                << " of sum|pnl| " << sum_total << ")";
+      if (g.puts_bound) {
+        std::cout << ", American puts max pnl_carry / pnl_total = " << worst_put;
+      }
+      std::cout << "\n";
+      EXPECT_EQ(moved, 5u);
+      EXPECT_GE(exact, 2u);
+      EXPECT_LE(sum_unexpl, 0.01 * sum_total) << g.name << " " << m.name;
+    }
+  }
+}
+
+// Design D23a: when the carry inputs are identical in the two states, the carry axis is
+// +0.0 on every leg and in every total and the other columns keep the pre-axis bits (the
+// A2 pin in ExplainBitEqualAcrossLegFanout holds that on marks-only states). Here: (a)
+// identical rows with only the clock moving (T overrides one day apart), (b) the standard
+// surface scenarios, whose CarryFrom::Surface states are never decomposed, (c) a flat-q
+// CarryFrom::State pair that moves spot / vol / rate / time but not q.
+TEST(RiskExplain, CarryAxisZeroWhenCarryUnchanged) {
+  const auto all_zero = [](const ExplainResult &e) {
+    bool ok = std::bit_cast<std::uint64_t>(e.total.pnl_carry) == 0u;
+    for (const double x : e.pnl_carry) {
+      ok = ok && std::bit_cast<std::uint64_t>(x) == 0u;
+    }
+    for (const ExplainBucket &b : e.by_uid) {
+      ok = ok && std::bit_cast<std::uint64_t>(b.totals.pnl_carry) == 0u;
+    }
+    for (const ExplainBucket &b : e.by_expiry) {
+      ok = ok && std::bit_cast<std::uint64_t>(b.totals.pnl_carry) == 0u;
+    }
+    return ok;
+  };
+  // (a) the clock alone.
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  std::array<double, 4> T_b{};
+  std::array<double, 4> T_t{};
+  for (std::size_t x = 0; x < T_b.size(); ++x) {
+    T_b[x] = rt::years(rt::kExpiryUnits[x]);
+    T_t[x] = rt::years(rt::kExpiryUnits[x] - rt::kDayUnits);
+  }
+  const std::array<double, 4> q{0.015, 0.012, 0.015, 0.02};
+  const std::array<double, 4> pv{0.0, 0.3, 0.5, 0.0};
+  const auto sb = clock_state(rt::kT0, legs, T_b, q, pv);
+  const auto st = clock_state(rt::instant_ns(rt::kDayUnits), legs, T_t, q, pv);
+  const MarketState base = make_market_state(*sb).value();
+  const MarketState shifted = make_market_state(*st).value();
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const ClockPair f = clock_frames(prep, base, shifted);
+  const ExplainResult a = explain(prep, base, f.fb, shifted, f.ft).value();
+  EXPECT_TRUE(all_zero(a)) << "clock only";
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    ASSERT_EQ(a.status[i], RiskLaneStatus::Ok);
+    EXPECT_NE(a.pnl_theta[i], 0.0) << "the clock moved";
+  }
+  // (b) surface states, every option convention.
+  for (const VolMoveConvention conv :
+       {VolMoveConvention::ContractOwn, VolMoveConvention::CommonBaseMaturity}) {
+    const auto s = standard_scenario(RiskKernel::family());
+    ExplainOptions opts;
+    opts.vol_move = conv;
+    EXPECT_TRUE(all_zero(run(*s, opts))) << "surface carry";
+  }
+  // (c) flat-q State carry on both sides; everything but q moves.
+  const auto cb = rt::make_state(rt::StateMove{}, CarryFrom::State);
+  const auto ct = rt::make_state(rt::shifted_move(), CarryFrom::State);
+  const RiskBook full = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
+  const PreparedRiskBook full_prep = PreparedRiskBook::create(full).value();
+  const ClockPair g = clock_frames(full_prep, cb->state, ct->state);
+  const ExplainResult c = explain(full_prep, cb->state, g.fb, ct->state, g.ft).value();
+  EXPECT_TRUE(all_zero(c)) << "flat q unchanged";
+  EXPECT_NE(c.total.pnl_total, 0.0);
+}
+
+// Lane A2 review 1: the merge walk that pairs pivot marks (0e0a6d18) must reproduce the
+// lower_bound pairing it replaced on IRREGULAR grids too -- shifted marks missing some
+// base strikes, extra off-grid shifted strikes, and a duplicated key on each side (the
+// first row of a key must win). The digest, the totals and the pivot counts are pinned
+// to the values printed by the pre-A2 explain (the lower_bound pairing, as at 5ae50be1)
+// on these states.
+TEST(RiskExplain, MarksPairingIrregularGridPinned) {
+  const std::vector<OptionLeg> legs = rt::make_option_legs();
+  const auto b_owned = rt::make_state(rt::StateMove{});
+  const auto t_owned = rt::make_state(rt::shifted_move());
+  const auto b_store = irregular_twin(marks_only_twin(*b_owned), legs, false, false, 0.97);
+  const auto t_store = irregular_twin(marks_only_twin(*t_owned), legs, true, true, 1.05);
+  // The premise: the two sides' grids differ (rows dropped and added on the shifted side).
+  ASSERT_EQ(b_store->marks.size(), t_store->marks.size());
+  for (std::size_t u = 0; u < b_store->marks.size(); ++u) {
+    ASSERT_NE(b_store->marks[u].sigma.size(), t_store->marks[u].sigma.size()) << u;
+  }
+  const MarketState base = make_market_state(*b_store).value();
+  const MarketState shifted = make_market_state(*t_store).value();
+  const RiskBook book = RiskBook::create(legs, rt::make_share_legs()).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const RiskKernel kernel = RiskKernel::cold();
+  RiskFrame fb;
+  RiskFrame ft;
+  RiskWorkspace ws;
+  ASSERT_TRUE(kernel.evaluate(prep, base, RiskNeeds{}, fb, ws).has_value());
+  ASSERT_TRUE(kernel.evaluate(prep, shifted, RiskNeeds{}, ft, ws).has_value());
+
+  ExplainOptions one;
+  one.n_threads = 1;
+  const ExplainResult ref = explain(prep, base, fb, shifted, ft, one).value();
+  std::size_t from_marks = 0;
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    from_marks += has_flag(ref.flags[i], RiskFlag::PivotFromMarks) ? 1u : 0u;
+  }
+  EXPECT_GT(from_marks, 0u) << "the vega split must still come from marks";
+  ExplainOptions eight;
+  eight.n_threads = 8;
+  const ExplainResult e8 = explain(prep, base, fb, shifted, ft, eight).value();
+  EXPECT_EQ(legs_digest(e8), legs_digest(ref));
+  EXPECT_TRUE(totals_equal(e8.total, ref.total));
+
+  std::cout << "[RiskExplain] irregular pin: legs digest 0x" << std::hex << legs_digest(ref)
+            << " totals";
+  for (const TotalsField f : kTotalsFields) {
+    std::cout << " 0x" << std::bit_cast<std::uint64_t>(ref.total.*f);
+  }
+  std::cout << std::dec << " pivot groups " << ref.n_pivot_groups << " edge "
+            << ref.n_pivot_edge_fallback << " from marks " << from_marks << "\n";
+  constexpr std::uint64_t kPinnedDigest = 0x1271741b9de2fee4ULL;
+  constexpr std::array<std::uint64_t, 18> kPinnedTotals{
+      0xc0b65d5f0cf24b1eULL, 0xc0b4fc5b70eb93f9ULL, 0x40761039c06b723aULL, 0x408b5ffa407a3848ULL,
+      0xc01020c400b10519ULL, 0xc07ac4f301d262ccULL, 0xc00332f9be70a8a0ULL, 0x400cca2e984d58d1ULL,
+      0x403295a8af607cb7ULL, 0x0ULL,                0x3ff4b74fe1c1f001ULL, 0xc05bee13ccfd6a57ULL,
+      0xc07d6c9d0e0f8684ULL, 0xc04ef99c7f2b8241ULL, 0xc04150eb3857aaecULL, 0x406161f6065b12b5ULL,
+      0x40607ffffffffff7ULL, 0x0ULL};
+  EXPECT_EQ(ref.n_pivot_groups, 12u);
+  EXPECT_EQ(ref.n_pivot_edge_fallback, 0u);
+  EXPECT_EQ(from_marks, 61u);
+  EXPECT_EQ(legs_digest(ref), kPinnedDigest);
+  for (std::size_t k = 0; k < kTotalsFields.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.*kTotalsFields[k]), kPinnedTotals[k])
+        << "totals field " << k;
+  }
 }
