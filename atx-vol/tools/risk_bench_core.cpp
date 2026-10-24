@@ -10,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <ostream>
 #include <random>
@@ -131,21 +133,23 @@ struct StringFlag {
   std::string_view name;
   std::string RiskBenchArgs::*field;
 };
-constexpr std::array<StringFlag, 7> kStringFlags{{{"--store", &RiskBenchArgs::store},
+constexpr std::array<StringFlag, 8> kStringFlags{{{"--store", &RiskBenchArgs::store},
                                                   {"--date", &RiskBenchArgs::date},
                                                   {"--from", &RiskBenchArgs::from},
                                                   {"--to", &RiskBenchArgs::to},
                                                   {"--synthetic", &RiskBenchArgs::synthetic_dir},
                                                   {"--out", &RiskBenchArgs::out_json},
-                                                  {"--md", &RiskBenchArgs::out_md}}};
+                                                  {"--md", &RiskBenchArgs::out_md},
+                                                  {"--dump-legs", &RiskBenchArgs::dump_legs}}};
 
 struct SizeFlag {
   std::string_view name;
   std::size_t RiskBenchArgs::*field;
 };
-constexpr std::array<SizeFlag, 3> kSizeFlags{{{"--underliers", &RiskBenchArgs::underliers},
+constexpr std::array<SizeFlag, 4> kSizeFlags{{{"--underliers", &RiskBenchArgs::underliers},
                                               {"--options", &RiskBenchArgs::options},
-                                              {"--shares", &RiskBenchArgs::shares}}};
+                                              {"--shares", &RiskBenchArgs::shares},
+                                              {"--dump-steps", &RiskBenchArgs::dump_steps}}};
 
 struct BoolFlag {
   std::string_view name;
@@ -258,6 +262,9 @@ std::string risk_bench_usage() {
          "  --determinism        shadow threads=1 stream; totals must be bit-equal\n"
          "  --out <file>         JSON report (stdout when absent)\n"
          "  --md <file>          markdown summary\n"
+         "  --dump-legs <file>   per-option-leg CSV of the base frame, vendor row and\n"
+         "                       per-leg explain (columns in docs/risk-bench.md)\n"
+         "  --dump-steps N       steps written to --dump-legs, the first N; 0 = all (1)\n"
          "  --seed N             book selection seed (1)\n"
          "  --help               this text\n"
          "exit: 0 ok, 1 runtime error, 2 usage error\n";
@@ -1681,6 +1688,37 @@ void steps_table(std::string &md, const RiskBenchReport &r) {
   }
 }
 
+// "Name count, Name count" over the nonzero entries; "none" when all are zero.
+template <std::size_t N>
+[[nodiscard]] std::string nonzero_counts(const std::array<std::uint32_t, N> &counts,
+                                         const std::array<const char *, N> &names) {
+  std::string s;
+  for (std::size_t i = 0; i < N; ++i) {
+    if (counts[i] == 0) {
+      continue;
+    }
+    if (!s.empty()) {
+      s += ", ";
+    }
+    s += std::string(names[i]) + " " + std::to_string(counts[i]);
+  }
+  return s.empty() ? "none" : s;
+}
+
+// One line per step: the shifted frame's FrameCounters, routes and nonzero flags.
+void frame_lines(std::string &md, const RiskBenchReport &r) {
+  md += "\n## Frame routes and flags (shifted frame of each step)\n\n";
+  for (const StepReport &t : r.steps) {
+    md += "- " + t.bucket_from + "->" + t.bucket_to + ": families_built " +
+          std::to_string(t.families_built) + ", carry_sets_built " +
+          std::to_string(t.carry_sets_built) + ", family_rows " + std::to_string(t.family_rows) +
+          ", cold_rows " + std::to_string(t.cold_rows) + ", exercised_rows " +
+          std::to_string(t.exercised_rows) + ", refused_rows " + std::to_string(t.refused_rows) +
+          "; routes " + nonzero_counts(t.routes, kRouteNames) + "; flags " +
+          nonzero_counts(t.flags, kFlagNames) + "\n";
+  }
+}
+
 } // namespace
 
 std::string report_to_markdown(const RiskBenchReport &r) {
@@ -1724,7 +1762,200 @@ std::string report_to_markdown(const RiskBenchReport &r) {
                                           : "not checked") +
         "; cold speedup p50: " + fmt_num("%.1f", s.cold_speedup_p50) + "x\n";
   steps_table(md, r);
+  frame_lines(md, r);
   return md;
+}
+
+// ── Per-leg dump (--dump-legs) ──────────────────────────────────────────────
+
+namespace {
+
+constexpr std::array<const char *, 5> kCarrySourceNames{"term_carry", "flat",
+                                                        "flat_curve_or_divs", "surface",
+                                                        "absent"};
+static_assert(static_cast<std::size_t>(CarrySource::Absent) + 1 == kCarrySourceNames.size(),
+              "kCarrySourceNames must cover every CarrySource");
+
+// The columns in write order: append_leg_dump_csv writes exactly these, one cell each.
+constexpr std::array<std::string_view, 63> kLegDumpColumns{
+    "step",          "leg_index",     "leg_id",       "prepared_row", "ticker",
+    "uid",           "uid_slot",      "strike",       "expiry",       "side",
+    "qty",           "multiplier",    "T",            "sigma",        "spot",
+    "forward",       "rate",          "q_eff",        "carry_source", "carry_rate",
+    "carry_q",       "pv_divs",       "q_eff_d4",     "route",        "flags",
+    "status",        "leg_status",    "price",        "delta",        "gamma",
+    "vega",          "theta",         "vanna",        "volga",        "charm",
+    "vendor_price",  "vendor_delta",  "vendor_vega",  "vendor_theta", "price_abs_err",
+    "price_sym_rel", "sr_prc",        "sr_de",        "sr_ga",        "sr_ve",
+    "sr_th",         "sr_years",      "sr_uprc",      "sr_rate",      "sr_sdiv",
+    "sr_ddiv",       "sr_bid",        "sr_ask",       "pnl_total",    "pnl_delta",
+    "pnl_gamma",     "pnl_vega",      "pnl_volga",    "pnl_vanna",    "pnl_theta",
+    "pnl_rho",       "pnl_charm",     "pnl_unexplained"};
+
+// One CSV line under construction: every cell call writes the separator first.
+class CsvLine {
+public:
+  explicit CsvLine(std::string &out) : out_(out) {}
+
+  void number(double v) {
+    next();
+    if (!std::isfinite(v)) {
+      return; // non-finite => empty cell
+    }
+    std::array<char, 40> buf{};
+    const auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), v);
+    if (ec == std::errc{}) {
+      out_.append(buf.data(), ptr);
+    }
+  }
+  void count(std::uint64_t v) {
+    next();
+    out_ += std::to_string(v);
+  }
+  void text(std::string_view s) {
+    next();
+    if (s.find_first_of(",\"\r\n") == std::string_view::npos) {
+      out_ += s;
+      return;
+    }
+    out_.push_back('"');
+    for (const char c : s) {
+      if (c == '"') {
+        out_.push_back('"');
+      }
+      out_.push_back(c);
+    }
+    out_.push_back('"');
+  }
+  void end() { out_.push_back('\n'); }
+
+private:
+  void next() {
+    if (!first_) {
+      out_.push_back(',');
+    }
+    first_ = false;
+  }
+  std::string &out_;
+  bool first_{true};
+};
+
+[[nodiscard]] std::string utc_date(std::int64_t ns) {
+  namespace chr = std::chrono;
+  const chr::sys_time<chr::nanoseconds> t{chr::nanoseconds{ns}};
+  const chr::year_month_day ymd{chr::floor<chr::days>(t)};
+  std::array<char, 16> buf{};
+  const int n = std::snprintf(buf.data(), buf.size(), "%04d-%02u-%02u",
+                              static_cast<int>(ymd.year()), static_cast<unsigned>(ymd.month()),
+                              static_cast<unsigned>(ymd.day()));
+  return std::string(buf.data(), static_cast<std::size_t>(std::clamp(n, 0, 15)));
+}
+
+[[nodiscard]] double cell_at(const std::vector<double> &column, std::size_t r) noexcept {
+  return r < column.size() ? column[r] : kNaN;
+}
+
+} // namespace
+
+const char *to_string(CarrySource source) noexcept {
+  const auto i = static_cast<std::size_t>(source);
+  return i < kCarrySourceNames.size() ? kCarrySourceNames[i] : "absent";
+}
+
+void set_leg_dump_vendor(LegDumpRow &row, const SpiderRockBucket &b, std::size_t r) {
+  row.sr_prc = cell_at(b.vendor_price, r);
+  row.sr_de = cell_at(b.vendor_delta, r);
+  row.sr_ga = cell_at(b.vendor_gamma, r);
+  row.sr_ve = cell_at(b.vendor_vega, r);
+  row.sr_th = cell_at(b.vendor_theta, r);
+  row.sr_years = cell_at(b.vendor_T, r);
+  row.sr_uprc = cell_at(b.uprc, r);
+  row.sr_rate = cell_at(b.rate, r);
+  row.sr_sdiv = cell_at(b.sdiv, r);
+  row.sr_ddiv = cell_at(b.ddiv, r);
+  row.sr_bid = cell_at(b.bid, r);
+  row.sr_ask = cell_at(b.ask, r);
+}
+
+std::string leg_dump_csv_header() {
+  std::string out;
+  CsvLine line{out};
+  for (const std::string_view name : kLegDumpColumns) {
+    line.text(name);
+  }
+  line.end();
+  return out;
+}
+
+void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
+  const double q_eff_d4 = spiderrock_q_eff(row.spot, row.pv_divs, row.carry_rate, row.carry_q,
+                                           row.T);
+  const bool priced = std::isfinite(row.price) && std::isfinite(row.vendor_price);
+  const double abs_err = priced ? std::abs(row.price - row.vendor_price) : kNaN;
+  const double sym_rel =
+      priced ? abs_err / std::max({std::abs(row.price), std::abs(row.vendor_price),
+                                   kParityPriceFloor})
+             : kNaN;
+  CsvLine line{out};
+  line.text(row.step);
+  line.count(row.leg_index);
+  line.count(row.leg_id);
+  line.count(row.prepared_row);
+  line.text(row.ticker);
+  line.count(row.uid);
+  line.count(row.uid_slot);
+  line.number(row.strike);
+  line.text(utc_date(row.expiry_ns));
+  line.text(row.side == Side::Put ? "put" : "call");
+  line.number(row.qty);
+  line.number(row.multiplier);
+  line.number(row.T);
+  line.number(row.sigma);
+  line.number(row.spot);
+  line.number(row.forward);
+  line.number(row.rate);
+  line.number(row.q_eff);
+  line.text(to_string(row.carry_source));
+  line.number(row.carry_rate);
+  line.number(row.carry_q);
+  line.number(row.pv_divs);
+  line.number(q_eff_d4);
+  line.text(row.route);
+  line.text(row.flags);
+  line.text(row.status);
+  line.text(row.leg_status);
+  for (const double v : {row.price, row.delta, row.gamma, row.vega, row.theta, row.vanna,
+                         row.volga, row.charm, row.vendor_price, row.vendor_delta}) {
+    line.number(v);
+  }
+  line.number(row.sr_ve / kSpiderRockVegaScale);
+  line.number(row.sr_th / kSpiderRockThetaScale);
+  line.number(abs_err);
+  line.number(sym_rel);
+  for (const double v : {row.sr_prc, row.sr_de, row.sr_ga, row.sr_ve, row.sr_th, row.sr_years,
+                         row.sr_uprc, row.sr_rate, row.sr_sdiv, row.sr_ddiv, row.sr_bid,
+                         row.sr_ask}) {
+    line.number(v);
+  }
+  for (const double v : {row.pnl_total, row.pnl_delta, row.pnl_gamma, row.pnl_vega,
+                         row.pnl_volga, row.pnl_vanna, row.pnl_theta, row.pnl_rho, row.pnl_charm,
+                         row.pnl_unexplained}) {
+    line.number(v);
+  }
+  line.end();
+}
+
+std::vector<std::size_t> leg_dump_order(std::span<const std::uint32_t> leg_prepared_row) {
+  std::vector<std::size_t> order(leg_prepared_row.size());
+  std::iota(order.begin(), order.end(), std::size_t{0});
+  std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    return leg_prepared_row[a] < leg_prepared_row[b];
+  });
+  return order;
+}
+
+bool dump_step_selected(std::size_t limit, std::size_t step) noexcept {
+  return limit == 0 || step <= limit;
 }
 
 Status write_text_file(const std::string &path, std::string_view text) {
