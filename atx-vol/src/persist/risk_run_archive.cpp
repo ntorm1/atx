@@ -269,8 +269,18 @@ struct WriterCore {
     return std::uint64_t{rows} * (kRiskExplainColumnCount * 8u + 1u + 1u + 4u + 1u);
   }
 
-  // One reservation sized to the segment threshold (capped), so the first segment
-  // grows nothing and later segments reuse the capacity (Staging::clear keeps it).
+  // Size a staging column for `n` elements and touch every page once (resize writes
+  // zeros, clear keeps the capacity): steady-state appends are then pure memcpy, with
+  // neither a reallocation nor a first-touch page fault inside the append path.
+  template <class T> static void prefault(std::vector<T> &v, std::size_t n) {
+    if (v.capacity() >= n) return;
+    v.resize(n);
+    v.clear();
+  }
+
+  // One reservation sized to the segment threshold (capped at 64 steps), paid by the
+  // first append, so the first segment grows nothing and later segments reuse the
+  // capacity (Staging::clear keeps it).
   void reserve_once() {
     if (reserved) return;
     reserved = true;
@@ -278,24 +288,24 @@ struct WriterCore {
                                    sizeof(RiskRunStep) + sizeof(ExplainTotals);
     const std::uint64_t want = options.segment_bytes / std::max<std::uint64_t>(per_step, 1u) + 1u;
     const auto steps = static_cast<std::size_t>(std::clamp<std::uint64_t>(want, 1u, 64u));
-    staging.steps.reserve(steps);
-    staging.totals.reserve(steps);
+    prefault(staging.steps, steps);
+    prefault(staging.totals, steps);
     if (options.frames) {
-      for (auto &c : staging.frame_f64) c.reserve(steps * book.n_unique);
-      staging.frame_route.reserve(steps * book.n_unique);
-      staging.frame_flags.reserve(steps * book.n_unique);
-      staging.frame_status.reserve(steps * book.n_unique);
-      staging.uid_spot.reserve(steps * book.n_uids);
-      staging.uid_rate.reserve(steps * book.n_uids);
-      staging.uid_status.reserve(steps * book.n_uids);
-      staging.share_mark.reserve(steps * book.n_share_legs);
-      staging.share_status.reserve(steps * book.n_share_legs);
+      for (auto &c : staging.frame_f64) prefault(c, steps * book.n_unique);
+      prefault(staging.frame_route, steps * book.n_unique);
+      prefault(staging.frame_flags, steps * book.n_unique);
+      prefault(staging.frame_status, steps * book.n_unique);
+      prefault(staging.uid_spot, steps * book.n_uids);
+      prefault(staging.uid_rate, steps * book.n_uids);
+      prefault(staging.uid_status, steps * book.n_uids);
+      prefault(staging.share_mark, steps * book.n_share_legs);
+      prefault(staging.share_status, steps * book.n_share_legs);
     }
-    for (auto &c : staging.explain_f64) c.reserve(steps * n_legs());
-    staging.route_base.reserve(steps * n_legs());
-    staging.route_shifted.reserve(steps * n_legs());
-    staging.explain_flags.reserve(steps * n_legs());
-    staging.explain_status.reserve(steps * n_legs());
+    for (auto &c : staging.explain_f64) prefault(c, steps * n_legs());
+    prefault(staging.route_base, steps * n_legs());
+    prefault(staging.route_shifted, steps * n_legs());
+    prefault(staging.explain_flags, steps * n_legs());
+    prefault(staging.explain_status, steps * n_legs());
   }
 
   [[nodiscard]] PersistOutcome seal() {
