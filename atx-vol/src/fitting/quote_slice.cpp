@@ -1269,6 +1269,12 @@ void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
 
 enum class ReimplyPublication { Certification, Calendar };
 
+struct ReimplyPriceTarget {
+  double strike = 0.0;
+  Side side = Side::Call;
+  double price = std::numeric_limits<double>::quiet_NaN();
+};
+
 // Only work that publication will consume. PriceOnly calendar rows keep their status,
 // but their changed price still needs the fresh reason/interval produced by align_with_query.
 std::optional<double> reimply_publication_target(const QuoteSliceFit &fit,
@@ -1299,17 +1305,22 @@ std::optional<double> reimply_publication_target(const QuoteSliceFit &fit,
   return *price;
 }
 
-// Allocation is bounded by the publication's quote count: one result per quote, plus
-// reusable request/index/result buffers for one side. Nothing is retained per repair.
-std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
-    std::span<const QuoteSliceQuote> quotes, std::span<const std::uint8_t> moved,
-    ReimplyPublication publication) {
+bool can_prepare_reimplied_targets(const QuoteSliceFit &fit) noexcept {
   const auto &context = fit.reimply_context;
-  if (!context || !context->families || !context->batch_enabled || !fit.prices || !fit.curve ||
-      fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
-      fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
-      context->model != reimply_model_key(fit)) return {};
-  std::vector<IvPremiumPrepared> prepared(quotes.size());
+  return context && context->families && context->batch_enabled &&
+      fit.floor_policy == QuoteSliceFloorPolicy::PriceOnly &&
+      fit.dividend_model != QuoteSliceDividendModel::DatedCash &&
+      context->model == reimply_model_key(fit);
+}
+
+// Explicit final prices need neither a provisional curve nor public row statuses.
+// A NaN price denotes a collector's skipped target; output indices always match input.
+// Allocation is bounded by target count, with reusable work buffers for one side.
+std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fit,
+    std::span<const ReimplyPriceTarget> targets) {
+  const auto &context = fit.reimply_context;
+  if (!can_prepare_reimplied_targets(fit)) return {};
+  std::vector<IvPremiumPrepared> prepared(targets.size());
   std::vector<IvNativeBatchRequest> requests;
   std::vector<std::size_t> where;
   std::vector<IvPremiumPrepared> part;
@@ -1321,18 +1332,16 @@ std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
     if (family == nullptr) continue;
     requests.clear();
     where.clear();
-    for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
-      const auto &quote = quotes[i];
-      if (quote.side != side) continue;
-      const auto price = reimply_publication_target(fit, quote, fit.rows[i], moved, publication);
-      if (!price) continue;
-      const double q = effective_yield(fit, calendar_yield_at(fit, quote.strike));
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+      const auto &target = targets[i];
+      if (target.side != side || !positive(target.strike) || !nonnegative(target.price)) continue;
+      const double q = effective_yield(fit, calendar_yield_at(fit, target.strike));
       if (q < family->q_lo() || q > family->q_hi() ||
-          !iv_premium_native_window(*price, fit.market.spot, quote.strike,
+          !iv_premium_native_window(target.price, fit.market.spot, target.strike,
               fit.market.variance_years, fit.diagnostics.effective_rate, q, side, fit.al_opts)) {
         continue;
       }
-      requests.push_back(IvNativeBatchRequest{*price, fit.market.spot, quote.strike,
+      requests.push_back(IvNativeBatchRequest{target.price, fit.market.spot, target.strike,
           fit.market.variance_years, fit.diagnostics.effective_rate, q, side,
           query.iv_tolerance, nullptr});
       where.push_back(i);
@@ -1357,6 +1366,18 @@ std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
     counts->reimply_batch_confirm_ns += work.confirm_ns;
   }
   return prepared;
+}
+
+std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
+    std::span<const QuoteSliceQuote> quotes, std::span<const std::uint8_t> moved,
+    ReimplyPublication publication) {
+  if (!fit.prices || !fit.curve || !can_prepare_reimplied_targets(fit)) return {};
+  std::vector<ReimplyPriceTarget> targets(quotes.size());
+  for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
+    const auto price = reimply_publication_target(fit, quotes[i], fit.rows[i], moved, publication);
+    if (price) targets[i] = ReimplyPriceTarget{quotes[i].strike, quotes[i].side, *price};
+  }
+  return prepare_reimplied_targets(fit, targets);
 }
 
 const IvPremiumPrepared *prepared_at(std::span<const IvPremiumPrepared> prepared,
