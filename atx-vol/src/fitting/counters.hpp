@@ -1147,11 +1147,12 @@ static_assert(every_name_present(kBucketNames),
 
 // Non-overlapping repaired-IV work, excluding batch preparation (reported separately).
 enum class ReimplyStage : unsigned {
-  Native = 0, Search, Legacy, Nonmonotone, Plateau, PriceCheck, PriceCandidate, Count_
+  Native = 0, Search, Legacy, Nonmonotone, Plateau, PriceCheck, PriceCandidate, PriceSeed, Count_
 };
 inline constexpr unsigned kReimplyStageCount = static_cast<unsigned>(ReimplyStage::Count_);
 inline constexpr const char *kReimplyStageNames[kReimplyStageCount] = {
-    "native", "search", "legacy", "nonmonotone", "plateau", "price_check", "price_candidate"};
+    "native", "search", "legacy", "nonmonotone", "plateau", "price_check", "price_candidate",
+    "price_seed"};
 static_assert(every_name_present(kReimplyStageNames));
 
 // One chain's counters (the interface later lanes read by name).
@@ -1187,6 +1188,8 @@ struct FitTimingCounters {
   std::uint32_t reimply_price_rejections{0};
   std::uint32_t reimply_fast_attempts{0};
   std::uint32_t reimply_fast_roots{0};
+  std::uint32_t reimply_seed_attempts{0};
+  std::uint32_t reimply_seed_roots{0};
   // RootAcceptanceKind / RootAcceptanceReason, exactly as deam_accept_by_* below.
   std::array<std::uint32_t, 5> reimply_accept_by_kind{};
   std::array<std::uint32_t, 9> reimply_accept_by_reason{};

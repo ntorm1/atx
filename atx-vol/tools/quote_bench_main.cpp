@@ -882,6 +882,8 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_price_rejections", t.reimply_price_rejections},
           {"reimply_fast_attempts", t.reimply_fast_attempts},
           {"reimply_fast_roots", t.reimply_fast_roots},
+          {"reimply_seed_attempts", t.reimply_seed_attempts},
+          {"reimply_seed_roots", t.reimply_seed_roots},
           {"reimply_native_max_bound_iv", t.reimply_native_max_bound_iv},
           {"reimply_cache_hits", t.reimply_cache_hits},
           {"reimply_uncached", t.reimply_uncached},

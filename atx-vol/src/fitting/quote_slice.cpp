@@ -1332,26 +1332,39 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
     if (family == nullptr) continue;
     requests.clear();
     where.clear();
-    for (std::size_t i = 0; i < targets.size(); ++i) {
-      const auto &target = targets[i];
-      if (target.side != side || !positive(target.strike) || !nonnegative(target.price)) continue;
-      const double q = effective_yield(fit, calendar_yield_at(fit, target.strike));
-      if (q < family->q_lo() || q > family->q_hi() ||
-          !iv_premium_native_window(target.price, fit.market.spot, target.strike,
-              fit.market.variance_years, fit.diagnostics.effective_rate, q, side, fit.al_opts)) {
-        continue;
+    std::size_t native_count = 0;
+    // Keep the historical native requests first and unchanged. Additional
+    // budget-enabled seeds use only the family lane, never its K3 acceptance.
+    for (const bool economic_seed : {false, true}) {
+      if (economic_seed && !(fit.reimply_price_cap > 0.0)) continue;
+      for (std::size_t i = 0; i < targets.size(); ++i) {
+        const auto &target = targets[i];
+        if (target.side != side || !positive(target.strike) || !nonnegative(target.price)) continue;
+        const double q = effective_yield(fit, calendar_yield_at(fit, target.strike));
+        if (q < family->q_lo() || q > family->q_hi()) continue;
+        const bool native_window = iv_premium_native_window(target.price, fit.market.spot,
+            target.strike, fit.market.variance_years, fit.diagnostics.effective_rate,
+            q, side, fit.al_opts);
+        if (native_window == economic_seed) continue;
+        if (economic_seed) {
+          const auto budget = reimply_price_budget(fit, target.strike, side);
+          if (!budget || !(*budget > 0.0)) continue;
+        }
+        requests.push_back(IvNativeBatchRequest{target.price, fit.market.spot, target.strike,
+            fit.market.variance_years, fit.diagnostics.effective_rate, q, side,
+            query.iv_tolerance, nullptr});
+        where.push_back(i);
       }
-      requests.push_back(IvNativeBatchRequest{target.price, fit.market.spot, target.strike,
-          fit.market.variance_years, fit.diagnostics.effective_rate, q, side,
-          query.iv_tolerance, nullptr});
-      where.push_back(i);
+      if (!economic_seed) native_count = requests.size();
     }
     if (requests.empty()) continue;
     part.assign(requests.size(), IvPremiumPrepared{});
     const auto &table = context->tables[side == Side::Call ? 0u : 1u];
     iv_native_prepare_lanes(*family, table.get(), requests, part, counts != nullptr, work);
-    iv_native_prepare_acceptance(*family, context->families->q_envelope(side), requests,
-        part, context->confirm_opts, table != nullptr && simd::use_avx2(), counts != nullptr, work);
+    iv_native_prepare_acceptance(*family, context->families->q_envelope(side),
+        std::span<const IvNativeBatchRequest>(requests).first(native_count),
+        std::span<IvPremiumPrepared>(part).first(native_count), context->confirm_opts,
+        table != nullptr && simd::use_avx2(), counts != nullptr, work);
     for (std::size_t j = 0; j < where.size(); ++j) prepared[where[j]] = part[j];
   }
   if (counts != nullptr) {
@@ -3864,6 +3877,26 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
     }
   }
   if (budget && *budget > 0.0) {
+    if (prepared != nullptr) {
+      const auto &lane = prepared->lane;
+      const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
+      if (lane.valid && lane.status == iv_batch::InverseStatus::Converged &&
+          bits(lane.S) == bits(fit.market.spot) && bits(lane.K) == bits(strike) &&
+          bits(lane.target) == bits(price) && bits(lane.q) == bits(q_effective) &&
+          bits(lane.tol) == bits(opts.tol)) {
+        const auto seed = [&] {
+          const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceSeed);
+          if (auto *const c = counters::fit_timing::current_counts()) ++c->reimply_seed_attempts;
+          return american_implied_vol_price_seed(price, fit.market.spot, strike,
+              fit.market.variance_years, fit.diagnostics.effective_rate, q_effective,
+              side, opts, *budget, lane.sigma);
+        }();
+        if (seed) {
+          if (auto *const c = counters::fit_timing::current_counts()) ++c->reimply_seed_roots;
+          return identified(*seed);
+        }
+      }
+    }
     const auto candidate = [&] {
       const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceCandidate);
       if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_fast_attempts;

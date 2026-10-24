@@ -28,6 +28,7 @@
 #include "fitting/expiry_schedule.hpp" // ScopedExpiryDispatchTrace (fan-out order seam)
 #include "fitting/quote_slice_nodes.hpp" // repaired-price identification contract
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
+#include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
 namespace {
@@ -1554,6 +1555,44 @@ TEST(QuoteSliceChannel, PriceBudgetReimplicationRetainsRawBudgetsWithoutNativeFa
   ASSERT_TRUE(cold);
   EXPECT_LE(std::abs(*cold - *target), 0.001);
   ASSERT_GT(std::abs(*cold - *target), 1e-8);
+  // A prepared family sigma is an untrusted seed, even without native family
+  // ownership here. Its exact request must match and cold acceptance must run.
+  IvPremiumPrepared prepared;
+  prepared.lane.valid = true;
+  prepared.lane.S = market.spot;
+  prepared.lane.K = 140.0;
+  prepared.lane.target = *target;
+  prepared.lane.q = 0.0;
+  prepared.lane.tol = QuoteSliceConfig{}.iv_tolerance;
+  prepared.lane.status = iv_batch::InverseStatus::Converged;
+  prepared.lane.sigma = accelerated.volatility;
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder seed_work;
+  const auto seeded = [&] {
+    const timing::ChainScope scope(&seed_work);
+    return detail::reimplied_vol(*fit, 140.0, Side::Put, *target,
+                                QuoteSliceFloorPolicy::PriceOnly, &prepared);
+  }();
+  ASSERT_EQ(seeded.status, QuoteSliceEvaluationStatus::Success);
+  EXPECT_DOUBLE_EQ(seeded.volatility, prepared.lane.sigma);
+  EXPECT_EQ(seed_work.result().iv_newton_iters, 0u);
+  EXPECT_EQ(seed_work.result().reimply_fast_attempts, 0u);
+  EXPECT_EQ(seed_work.result().reimply_seed_attempts, 1u);
+  EXPECT_EQ(seed_work.result().reimply_seed_roots, 1u);
+  for (const bool stale_key : {false, true}) {
+    auto rejected = prepared;
+    if (stale_key) rejected.lane.target = std::nextafter(*target, *target + 1.0);
+    else rejected.lane.sigma = 0.4;
+    timing::ChainRecorder fallback_work;
+    const auto fallback = [&] {
+      const timing::ChainScope scope(&fallback_work);
+      return detail::reimplied_vol(*fit, 140.0, Side::Put, *target,
+                                  QuoteSliceFloorPolicy::PriceOnly, &rejected);
+    }();
+    EXPECT_EQ(fallback.status, accelerated.status);
+    EXPECT_EQ(fallback.volatility, accelerated.volatility);
+    EXPECT_EQ(fallback_work.result().reimply_fast_attempts, 1u);
+  }
   // Changing the public policy cannot reuse an old context. The historical typed
   // Search classification of this contract is LowVega, with no reported IV.
   fit->reimply_price_cap = 0.0;
