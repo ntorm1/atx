@@ -1,5 +1,9 @@
 #include "fitting/joint_inbox_projection.hpp"
 
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+#include "fitting/joint_row_census.hpp"
+#endif
+
 #if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
 #include "../../bench/joint-centrality/qp_control.hpp"
 #endif
@@ -538,9 +542,43 @@ void prepare_centrality(std::optional<CentralityWorkspace> &scratch,
   return step;
 }
 
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+struct CensusContext {
+  research::JointRowObserver *observer;
+  std::span<const JointInboxSlice> slices;
+  const research::JointRowRawSource *raw;
+};
+void observe_built(const Problem &p, const Vector &x, std::size_t budget,
+                   const CensusContext &census) noexcept {
+  if (!census.observer) return;
+  struct RowSource { const Problem &problem; const Vector &initial; } rows{p, x};
+  const auto at = [](const void *context, std::size_t i) noexcept {
+    const auto &source = *static_cast<const RowSource *>(context);
+    const auto &row = source.problem.rows[i];
+    return research::JointRowView{row.index, row.coef, row.count, row.b,
+                                 row.value(source.initial)};
+  };
+  const auto slice_at = [](const void *context, std::size_t i) noexcept {
+    const auto slices = *static_cast<const std::span<const JointInboxSlice> *>(context);
+    const auto &slice = slices[i];
+    return research::JointRowSliceView{slice.nodes, slice.boxes, slice.bounds,
+                                      slice.terminal_discount, slice.terminal_prepaid};
+  };
+  census.observer->built({census.slices.size(), &census.slices, slice_at,
+      p.offsets, p.variable, p.fixed,
+      p.lower, p.upper, p.target, std::span(x.data(), static_cast<std::size_t>(x.size())),
+      &rows, at, p.rows.size(), budget, kFeasibilityTolerance,
+      census.raw ? *census.raw : research::JointRowRawSource{}});
+}
+#endif
+
 [[nodiscard]] bool solve(const Problem &p, std::size_t budget, Vector &x, std::size_t &used,
                          JointInboxDiagnostics &diagnostics, JointInboxProfile *profile,
-                         bool centrality) {
+                          bool centrality
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+                          , const CensusContext &census
+#endif
+                          ) {
   const auto n = static_cast<Eigen::Index>(p.target.size());
   const auto m = static_cast<Eigen::Index>(p.rows.size());
   x.resize(n);
@@ -548,6 +586,9 @@ void prepare_centrality(std::optional<CentralityWorkspace> &scratch,
     const auto k = static_cast<std::size_t>(i);
     x[i] = std::clamp(p.target[k], p.lower[k], p.upper[k]);
   }
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+  observe_built(p, x, budget, census);
+#endif
   if (m == 0) return true;
   if (std::all_of(p.rows.begin(), p.rows.end(), [&](const Row &r) {
         return r.value(x) >= -kFeasibilityTolerance;
@@ -689,7 +730,23 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
                                            std::size_t max_iterations,
                                            JointInboxDiagnostics *diagnostics,
                                            JointInboxProfile *profile,
-                                           JointDirectionMode mode) {
+                                            JointDirectionMode mode,
+                                            research::JointRowObserver *observer,
+                                            const research::JointRowRawSource *raw_census) {
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+  // Resolve only the calling thread's live owner. An arbitrary supplied pointer
+  // never grants permission to dereference another thread's recorder.
+  auto *current_observer = research::joint_row_census_observer();
+  if (observer && observer != current_observer) {
+    if (current_observer) current_observer->invalidate(research::JointRowCaptureError::WrongPhase);
+    current_observer = nullptr;
+  }
+  observer = current_observer;
+  if (observer) observer->attempt();
+#else
+  static_cast<void>(observer);
+  static_cast<void>(raw_census);
+#endif
   if (profile) *profile = {};
   ProfileSpan total_timer(profile ? &profile->total_ns : nullptr);
   ProfileSpan build_timer(profile ? &profile->build_ns : nullptr);
@@ -745,7 +802,11 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
     for (const Row &row : p.rows) ++profile->row_arities[row.count];
   }
   build_timer.finish();
-  if (!solve(p, max_iterations, x, result.sweeps, record, profile, centrality)) {
+  if (!solve(p, max_iterations, x, result.sweeps, record, profile, centrality
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+             , CensusContext{observer, slices, raw_census}
+#endif
+             )) {
     result.outcome = JointProjectionOutcome::NonConverged;
     return result;
   }
@@ -756,6 +817,10 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
   }
   certificate_timer.finish();
   record.certificate_passed = true;
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+  if (observer) observer->published({nodes,
+      std::span(x.data(), static_cast<std::size_t>(x.size())), result.sweeps, &record, profile});
+#endif
   for (std::size_t s = 0; s < slices.size(); ++s) {
     std::copy(nodes[s].begin(), nodes[s].end(), slices[s].nodes.begin());
   }

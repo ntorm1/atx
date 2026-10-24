@@ -342,6 +342,14 @@ if(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS)
         COMPILE_DEFINITIONS ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS=1)
 endif()
 
+# Private observation only; no reduced solver or numerical dispatch.
+option(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH "Research-only complete joint row observation" OFF)
+target_sources(atx-vol PRIVATE src/fitting/joint_row_census.cpp)
+if(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+    set_property(SOURCE src/fitting/joint_inbox_projection.cpp
+        src/fitting/joint_row_census.cpp src/fitting/raw_price_draft.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_JOINT_ROW_CENSUS_RESEARCH=1)
+endif()
 # Private whole-QP experiment, separately gated from the standalone primitive.
 option(ATX_VOL_JOINT_CENTRALITY_RESEARCH "Research-only joint centrality correction" OFF)
 if(ATX_VOL_JOINT_CENTRALITY_RESEARCH)

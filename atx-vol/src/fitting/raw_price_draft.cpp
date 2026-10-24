@@ -1,5 +1,9 @@
 #include "fitting/raw_price_draft.hpp"
 
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+#include "fitting/joint_row_census.hpp"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -138,7 +142,21 @@ JointProjectionResult project_raw_price_drafts(std::span<RawPriceDraft> drafts,
     slices.push_back({nodes[s], draft.boxes, draft.bounds,
                      draft.prepared.diagnostics.discount, draft.terminal_prepaid});
   }
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+  struct RawSource {
+    std::span<const RawPriceDraft> drafts;
+    std::span<const std::size_t> order;
+  } source{drafts, order};
+  const research::JointRowRawSource raw{&source,
+      [](const void *context, std::size_t i) noexcept -> std::span<const AmericanPriceNode> {
+        const auto &view = *static_cast<const RawSource *>(context);
+        return view.drafts[view.order[i]].raw_targets;
+      }};
+  auto result = project_joint_in_box(slices, max_iterations, diagnostics, profile,
+                                    JointDirectionMode::Compiled, nullptr, &raw);
+#else
   auto result = project_joint_in_box(slices, max_iterations, diagnostics, profile);
+#endif
   if (result.outcome != JointProjectionOutcome::Feasible) return result;
   std::vector<AmericanPriceSlice> certified;
   certified.reserve(drafts.size());

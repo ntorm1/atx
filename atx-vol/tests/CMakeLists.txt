@@ -70,6 +70,19 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
 endif()
 
+if(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+    add_executable(atx-vol-joint-row-census-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-row-census/tests.cpp
+        support/alloc_counter.cpp)
+    target_include_directories(atx-vol-joint-row-census-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(atx-vol-joint-row-census-tests PRIVATE
+        atx::vol GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json)
+    add_test(NAME atx-vol-joint-row-census COMMAND atx-vol-joint-row-census-tests)
+    set_tests_properties(atx-vol-joint-row-census PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]" LABELS "atx_vol_research")
+endif()
+
 option(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH "Build isolated joint centrality controls" OFF)
 if(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH)
     set(JOINT_CENTRALITY_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-centrality")
