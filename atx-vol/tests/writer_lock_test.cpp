@@ -41,8 +41,19 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 
 #include <gtest/gtest.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "storage/backtest_db.hpp"
 #include "atx/vol/api/storage/surface_db.hpp"
@@ -169,6 +180,89 @@ TEST(WriterLockTest, StaleLockWithDeadOwnerPidIsTakenOver) {
   ASSERT_TRUE(guard.has_value())
       << (guard ? "" : guard.error().to_string()) << " -- stale lock (dead owner) was not taken over";
   EXPECT_TRUE(fs::exists(lock));
+}
+
+#if defined(_WIN32)
+// The previous holder's release deletes the lock file. Between the delete disposition
+// being set and that handle closing (inside fs::remove), the name is DELETE-PENDING and
+// CREATE_NEW on it fails with ERROR_ACCESS_DENIED. `delete_pending_lock` holds that state
+// open deterministically: a lock file naming this (live) process, opened with DELETE access
+// and marked for deletion. Closing the returned handle completes the delete. nullptr (with
+// `why`) when the state cannot be produced on this file system.
+[[nodiscard]] HANDLE delete_pending_lock(const fs::path &lock, std::string &why) {
+  write_text(lock, std::to_string(::GetCurrentProcessId()));
+  HANDLE h = ::CreateFileW(lock.wstring().c_str(), DELETE | GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    why = "open for delete failed: " + std::to_string(::GetLastError());
+    return nullptr;
+  }
+  FILE_DISPOSITION_INFO disposition{};
+  disposition.DeleteFile = TRUE;
+  if (::SetFileInformationByHandle(h, FileDispositionInfo, &disposition, sizeof disposition) ==
+      FALSE) {
+    why = "delete disposition refused: " + std::to_string(::GetLastError());
+    ::CloseHandle(h);
+    return nullptr;
+  }
+  const DWORD attrs = ::GetFileAttributesW(lock.wstring().c_str());
+  const DWORD error = attrs == INVALID_FILE_ATTRIBUTES ? ::GetLastError() : 0;
+  if (error != ERROR_ACCESS_DENIED) {
+    ::CloseHandle(h);
+    why = "no delete-pending state on this file system (attributes error " +
+          std::to_string(error) + ")";
+    return nullptr;
+  }
+  return h;
+}
+#endif
+
+// Measured before this test existed: PersistDirectory.LockSerializesConcurrentPublishers
+// lost 2 of 60 repeats to an IoError "win32 error=5" from exactly this state. A
+// delete-pending lock file is the previous holder still leaving, not a failure: acquire
+// retries it inside its timeout and takes the lock once the name clears.
+TEST(WriterLockTest, DeletePendingLockFileIsRetriedUntilItClears) {
+#if !defined(_WIN32)
+  GTEST_SKIP() << "delete-pending is a Windows file state";
+#else
+  const fs::path lock = scratch_dir("delete-pending") / "manifest.lock";
+  std::string why;
+  HANDLE probe = delete_pending_lock(lock, why);
+  if (probe == nullptr) GTEST_SKIP() << why;
+  std::thread closer([probe] {
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    ::CloseHandle(probe);
+  });
+  auto next = WriterLock::acquire(lock.string(), std::chrono::milliseconds{5000});
+  closer.join();
+  ASSERT_TRUE(next.has_value()) << next.error().to_string()
+                                << " -- a delete-pending lock file was treated as a failure";
+  EXPECT_TRUE(fs::exists(lock));
+#endif
+}
+
+// ...but a refusal that outlasts the timeout is not contention: it surfaces as IoError
+// naming the Win32 code (a genuine permission failure stays distinguishable from
+// Unavailable), and only after the retry budget was spent.
+TEST(WriterLockTest, PersistentAccessDeniedIsIoErrorAfterTheDeadline) {
+#if !defined(_WIN32)
+  GTEST_SKIP() << "delete-pending is a Windows file state";
+#else
+  const fs::path lock = scratch_dir("access-denied") / "manifest.lock";
+  std::string why;
+  HANDLE probe = delete_pending_lock(lock, why);
+  if (probe == nullptr) GTEST_SKIP() << why;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto next = WriterLock::acquire(lock.string(), std::chrono::milliseconds{150});
+  const auto waited = std::chrono::steady_clock::now() - t0;
+  ::CloseHandle(probe);
+  ASSERT_FALSE(next.has_value());
+  EXPECT_EQ(next.error().code(), atx::core::ErrorCode::IoError);
+  EXPECT_NE(next.error().to_string().find("win32 error=5"), std::string::npos)
+      << next.error().to_string();
+  EXPECT_GE(waited, std::chrono::milliseconds{140}) << "refused before the deadline";
+#endif
 }
 
 TEST(WriterLockTest, EmptyLockPathIsInvalidArgument) {

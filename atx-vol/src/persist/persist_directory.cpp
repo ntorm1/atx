@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -18,7 +17,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -85,25 +83,6 @@ template <std::size_t N>
 template <std::size_t N> void put_name(std::array<char, N> &a, std::string_view s) noexcept {
   a.fill('\0');
   std::copy_n(s.begin(), std::min(s.size(), N - 1), a.begin());
-}
-
-// WriterLock::acquire reports CREATE_NEW's ERROR_ACCESS_DENIED as IoError, and that is
-// also what Windows returns while the previous holder's lock file is DELETE-PENDING (its
-// release deletes the file): a transient state, not a failure. Measured: 2 of 1080
-// publishes under PersistDirectory.LockSerializesConcurrentPublishers. Retry an IoError
-// inside the same budget the lock spends on a live contender; a persistent IoError still
-// surfaces. (The root fix belongs in src/storage/writer_lock.cpp, which this lane does not
-// own.)
-[[nodiscard]] atx::core::Result<detail::WriterLock> acquire_publish_lock(const std::string &path) {
-  const auto deadline = std::chrono::steady_clock::now() + detail::WriterLock::kDefaultTimeout;
-  for (;;) {
-    auto lock = detail::WriterLock::acquire(path);
-    if (lock || lock.error().code() != ErrorCode::IoError ||
-        std::chrono::steady_clock::now() >= deadline) {
-      return lock;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds{5});
-  }
 }
 
 [[nodiscard]] PersistOutcome check_entries(std::span<const PersistManifestEntry> entries) {
@@ -266,7 +245,7 @@ PersistResult<PersistManifestEntry> PersistDirectory::publish(std::string_view d
   fs::create_directories(root, ec);
   if (!fs::is_directory(root, ec)) return persist_error(PersistStatus::IoError);
 
-  auto lock = acquire_publish_lock((root / std::string(kPersistLockFileName)).string());
+  auto lock = detail::WriterLock::acquire((root / std::string(kPersistLockFileName)).string());
   if (!lock) {
     const bool busy = lock.error().code() == ErrorCode::Unavailable;
     return persist_error(busy ? PersistStatus::Busy : PersistStatus::IoError);
