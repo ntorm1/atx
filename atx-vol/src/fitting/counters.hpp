@@ -1187,11 +1187,16 @@ struct FitTimingCounters {
   std::uint32_t reimply_price_enclosure_hits{0};
   std::uint32_t reimply_price_cold_checks{0};
   std::uint32_t reimply_price_rejections{0};
+  // Historical aggregate names: the candidate chain may now begin with Screen.
   std::uint32_t reimply_fast_attempts{0};
   std::uint32_t reimply_fast_roots{0};
+  // Fast-only proposal outcomes, after any preceding Screen refusal.
   std::uint32_t reimply_proposal_stops{0};
   std::uint32_t reimply_proposal_roots{0};
   std::uint32_t reimply_proposal_retries{0};
+  std::uint32_t reimply_screen_attempts{0};
+  std::uint32_t reimply_screen_stops{0};
+  std::uint32_t reimply_screen_roots{0};
   std::uint32_t reimply_seed_attempts{0};
   std::uint32_t reimply_seed_roots{0};
   // Explicit monetary-policy candidates: never counted as strict K3 roots.

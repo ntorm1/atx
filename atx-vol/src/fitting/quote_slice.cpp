@@ -4207,6 +4207,9 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
         counts->reimply_proposal_stops += stats.stopped_early ? 1u : 0u;
         counts->reimply_proposal_roots += stats.accepted_early ? 1u : 0u;
         counts->reimply_proposal_retries += stats.retried_full_search ? 1u : 0u;
+        counts->reimply_screen_attempts += stats.screen_attempted ? 1u : 0u;
+        counts->reimply_screen_stops += stats.screen_stopped_early ? 1u : 0u;
+        counts->reimply_screen_roots += stats.screen_accepted ? 1u : 0u;
       }
       return result;
     }();
