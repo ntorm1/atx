@@ -376,7 +376,9 @@ struct FileCore {
   // touch (or the open). Racing first touches compute the same CRC of the same
   // immutable bytes and store the same verdict, so the race is benign; seq_cst.
   std::unique_ptr<std::atomic<std::uint8_t>[]> state;
-  std::vector<std::vector<Block64>> decoded; // codec sections' owned buffers
+  // Codec sections' owned buffers, allocated for overwrite (no zero fill: the decode
+  // writes every byte served; the tail of the last block is never read).
+  std::vector<std::unique_ptr<Block64[]>> decoded;
 
   [[nodiscard]] std::size_t index_of(std::uint32_t type) const noexcept {
     const auto it = std::lower_bound(by_type.begin(), by_type.end(), type,
@@ -477,7 +479,7 @@ struct FileCore {
 // Decode every codec section into an owned 64-byte aligned buffer and verify both of
 // its CRCs (codec sections are always verified at open: nothing allocates later).
 [[nodiscard]] PersistOutcome decode_sections(FileCore &a) {
-  std::vector<std::byte> scratch;
+  persist_detail::CodecScratch scratch;
   for (std::size_t i = 0; i < a.entries.size(); ++i) {
     const PersistSectionEntry &e = a.entries[i];
     if (e.codec == static_cast<std::uint8_t>(PersistCodec::None)) continue;
@@ -492,8 +494,10 @@ struct FileCore {
     }
     std::span<std::byte> out;
     try {
-      auto &buffer = a.decoded.emplace_back(static_cast<std::size_t>((e.raw_length + 63u) / 64u));
-      out = std::as_writable_bytes(std::span{buffer}).first(static_cast<std::size_t>(e.raw_length));
+      const auto blocks = static_cast<std::size_t>((e.raw_length + 63u) / 64u);
+      auto &buffer = a.decoded.emplace_back(std::make_unique_for_overwrite<Block64[]>(blocks));
+      out = std::as_writable_bytes(std::span{buffer.get(), blocks})
+                .first(static_cast<std::size_t>(e.raw_length));
       if (PersistOutcome ok = persist_detail::decode_zstd(a.stored(i), e.element_stride,
                                                           static_cast<PersistFilter>(e.filter),
                                                           out, scratch);
