@@ -893,7 +893,7 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   if ((entry.computed & DeAmQuoteIv::kBand) != 0u) {
     return entry;
   }
-  prepare_native_batch(); // K4b: the work group first (once per cache; no-op off that route)
+  prepare_native_batch(true); // First channel use fills the deferred bid/ask lanes.
   // Filled into a local copy and published, with the kBand bit, only once complete:
   // an exception mid-fill (a model price or inversion throwing std::bad_alloc) leaves
   // the entry without the bit, so a later call refills it instead of serving a
@@ -1002,11 +1002,16 @@ namespace {
 
 } // namespace
 
-void DeAmIvView::prepare_native_batch() {
-  if (cache_.native_prepared || !confirm_.native_batch || !native()) return;
-  cache_.native_prepared = true;
-  ensure_families();
-  if (!cache_.families) return;
+void DeAmIvView::prepare_native_batch(bool include_bands) {
+  if (!confirm_.native_batch || !native() ||
+      (cache_.native_prepared && (!include_bands || cache_.native_bands_prepared))) return;
+  const bool prepare_mids = !cache_.native_prepared;
+  if (prepare_mids) ensure_families();
+  if (!cache_.families) {
+    cache_.native_prepared = true;
+    if (include_bands) cache_.native_bands_prepared = true;
+    return;
+  }
   namespace ft = counters::fit_timing;
   namespace sq = sigma_q_family_detail;
   ft::FitTimingCounters *const timing = ft::current_counts();
@@ -1014,8 +1019,14 @@ void DeAmIvView::prepare_native_batch() {
                                     : std::chrono::steady_clock::time_point{};
   const std::size_t n = quotes_.size();
   // 1. The edge decisions of every band the channel builder reads (the endpoints stage).
-  std::vector<std::uint8_t> ready(n, 0u);
-  for (std::size_t i = 0; i < n; ++i) {
+  if (prepare_mids) {
+    cache_.native_ready.assign(n, 0u);
+    cache_.native_band_carry.assign(n, IvPremiumNativeCarry{});
+    cache_.prepared.assign(n, std::array<IvPremiumPrepared, 3>{});
+  }
+  auto &ready = cache_.native_ready;
+  auto &carries = cache_.native_band_carry;
+  for (std::size_t i = 0; prepare_mids && i < n; ++i) {
     const QuoteSliceQuote &quote = quotes_[i];
     if (!channel_quote(quote)) continue;
     DeAmQuoteIv &entry = carry(i);
@@ -1028,14 +1039,13 @@ void DeAmIvView::prepare_native_batch() {
                          : DeAmQuoteIv::kEdgeFailed;
     entry.computed = static_cast<std::uint8_t>(entry.computed | DeAmQuoteIv::kEdges);
     ready[i] = ok ? 1u : 0u;
+    if ((entry.computed & DeAmQuoteIv::kMid) != 0u) carries[i] = entry.mid_memory.carry;
   }
-  cache_.prepared.assign(n, std::array<IvPremiumPrepared, 3>{});
   const bool confirm_fast = confirm_.kernel == QuoteSliceDeamConfirmKernel::Fast;
   IvNativeBatchWork work;
   std::vector<IvNativeBatchRequest> requests;
   std::vector<IvPremiumPrepared> out;
   std::vector<std::pair<std::size_t, std::size_t>> where; // (quote, slot)
-  std::vector<IvPremiumNativeCarry> carries(n);
   for (const Side side : {Side::Put, Side::Call}) {
     const AlSigmaQFamily *f = cache_.families->of_q(side);
     if (f == nullptr) continue;
@@ -1066,7 +1076,7 @@ void DeAmIvView::prepare_native_batch() {
     // 2. The mids (band(): the mid first when it lies inside the identifiable range).
     requests.clear();
     where.clear();
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; prepare_mids && i < n; ++i) {
       if (ready[i] == 0u || quotes_[i].side != side) continue;
       if (!bits(i, kGates | DeAmQuoteIv::kEdgeMidInside)) continue;
       if ((cache_.ivs[i].computed & DeAmQuoteIv::kMid) != 0u) continue;
@@ -1081,21 +1091,21 @@ void DeAmIvView::prepare_native_batch() {
     }
     // 3. The bids and asks, each from its mid's outcome (band(): a copy of the mid's memory
     // when the mid lies inside the range; the carry is the mid lane's).
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; include_bands && i < n; ++i) {
       if (ready[i] == 0u || quotes_[i].side != side || !bits(i, kGates)) continue;
       const IvPremiumNativeCarry *carry = nullptr;
       if (bits(i, DeAmQuoteIv::kEdgeMidInside)) {
-        carry = (cache_.ivs[i].computed & DeAmQuoteIv::kMid) != 0u ? &cache_.ivs[i].mid_memory.carry
-                                                                   : &carries[i];
+        // Frozen before midpoint K3 acceptance. Reading mid_memory here would make
+        // later band requests use a different bracket than the original eager batch.
+        carry = &carries[i];
       }
       if (bits(i, DeAmQuoteIv::kEdgeBidAboveFloor)) add(i, 1, quotes_[i].bid, carry);
       if (bits(i, DeAmQuoteIv::kEdgeAskBelowCap)) add(i, 2, quotes_[i].ask, carry);
     }
     out.resize(requests.size(), IvPremiumPrepared{});
-    const std::span<const IvNativeBatchRequest> edge_requests(requests.data() + mids,
-                                                              requests.size() - mids);
+    const auto edge_requests = std::span<const IvNativeBatchRequest>(requests).subspan(mids);
     iv_native_prepare_lanes(*f, table.get(), edge_requests,
-                            std::span<IvPremiumPrepared>(out.data() + mids, out.size() - mids),
+                            std::span<IvPremiumPrepared>(out).subspan(mids),
                             timing != nullptr, work);
     // 4. The K3 acceptance of every lane the route accepts: the enclosure and, on AVX2, the
     // first confirm price.
@@ -1107,6 +1117,10 @@ void DeAmIvView::prepare_native_batch() {
       cache_.prepared[where[k].first][where[k].second] = out[k];
     }
   }
+  // Publish phase completion after allocation and pricing succeed. A failed fill
+  // retries without treating partially sized readiness/carry arrays as complete.
+  cache_.native_prepared = true;
+  if (include_bands) cache_.native_bands_prepared = true;
   work_.batch_lanes += work.lanes;
   work_.batch_confirms += work.decisive;
   if (timing != nullptr) {

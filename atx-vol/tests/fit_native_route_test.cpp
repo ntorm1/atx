@@ -17,8 +17,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -769,6 +771,124 @@ BatchPair fit_batch_pair(const Chain &c,
   run(batched, out.batched, out.batched_ivs, out.batched_counts);
   deam_iv_memo_clear();
   return out;
+}
+
+// Point rungs do not consume bid/ask inversions. A later channel rung must add
+// exactly those deferred lanes, seeded from the original midpoint lane rather
+// than the tighter carry its K3 acceptance may have written in the meantime.
+TEST(FitNativeRoute, PointBatchDefersBandsAndLaterChannelKeepsTheOriginalLaneSeeds) {
+  const IsaOverride scalar(simd::SimdIsa::ForceScalar);
+  const Chain c = spy_chain(0.15);
+  QuoteSliceConfig plain = native_config(true);
+  QuoteSliceConfig batched = plain;
+  batched.channel.deam_native_batch = true;
+  deam_iv_memo_clear();
+  const auto plain_point = fit_quote_slice(c.market, c.quotes, plain);
+  const auto plain_channel = fit_quote_slice_channel(c.market, c.quotes, plain, nullptr);
+  ASSERT_TRUE(plain_point && plain_channel);
+  bool reused = false;
+  const auto plain_cache = deam_iv_memo(deam_iv_key(*plain_channel, c.quotes, plain),
+                                        c.quotes.size(), reused);
+  ASSERT_TRUE(reused);
+  const auto plain_ivs = plain_cache->ivs;
+  deam_iv_memo_clear();
+
+  ft::ChainRecorder point_counts;
+  std::optional<QuoteSliceFit> point;
+  {
+    const ft::ChainScope timing(&point_counts, 1);
+    auto fit = fit_quote_slice(c.market, c.quotes, batched);
+    ASSERT_TRUE(fit);
+    point = std::move(*fit);
+  }
+  const auto cache = deam_iv_memo(deam_iv_key(*point, c.quotes, batched),
+                                  c.quotes.size(), reused);
+  ASSERT_TRUE(reused);
+  ASSERT_TRUE(cache->native_prepared);
+  EXPECT_FALSE(cache->native_bands_prepared);
+  ASSERT_EQ(cache->prepared.size(), c.quotes.size());
+  std::size_t prepared_mids = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    prepared_mids += cache->prepared[i][0].lane.valid ? 1u : 0u;
+    for (const std::size_t slot : {1u, 2u}) {
+      EXPECT_FALSE(cache->prepared[i][slot].lane.valid) << i;
+      EXPECT_FALSE(cache->prepared[i][slot].enclosure.valid) << i;
+      EXPECT_FALSE(cache->prepared[i][slot].confirm.valid) << i;
+    }
+    EXPECT_TRUE(same_bits(point->rows[i].market_iv, plain_point->rows[i].market_iv)) << i;
+    EXPECT_TRUE(same_bits(point->rows[i].fitted_price, plain_point->rows[i].fitted_price)) << i;
+  }
+  ASSERT_GT(prepared_mids, 0u);
+  EXPECT_EQ(point_counts.result().deam_batch_lanes, prepared_mids);
+  EXPECT_EQ(point_counts.result().channel_solves, 0u);
+  const auto original_prepared = cache->prepared;
+
+  ft::ChainRecorder band_counts;
+  std::optional<QuoteSliceFit> channel;
+  {
+    const ft::ChainScope timing(&band_counts, 2);
+    auto fit = fit_quote_slice_channel(c.market, c.quotes, batched, nullptr);
+    ASSERT_TRUE(fit);
+    channel = std::move(*fit);
+  }
+  EXPECT_TRUE(channel->diagnostics.deam.reused);
+  EXPECT_TRUE(cache->native_bands_prepared);
+  std::size_t prepared_edges = 0, checked_seeds = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    const auto &old_mid = original_prepared[i][0];
+    const auto &mid = cache->prepared[i][0];
+    EXPECT_EQ(mid.lane.valid, old_mid.lane.valid) << i;
+    EXPECT_TRUE(same_bits(mid.lane.sigma, old_mid.lane.sigma)) << i;
+    EXPECT_TRUE(same_bits(mid.lane.target, old_mid.lane.target)) << i;
+    EXPECT_EQ(mid.enclosure.valid, old_mid.enclosure.valid) << i;
+    EXPECT_TRUE(same_bits(mid.enclosure.enclosure.root, old_mid.enclosure.enclosure.root)) << i;
+    EXPECT_EQ(mid.confirm.valid, old_mid.confirm.valid) << i;
+    for (const std::size_t slot : {1u, 2u}) {
+      const auto &edge = cache->prepared[i][slot].lane;
+      if (!edge.valid) continue;
+      ++prepared_edges;
+      if (!old_mid.lane.valid) continue;
+      const auto &quote = c.quotes[i];
+      const double target = slot == 1u ? quote.bid : quote.ask;
+      const auto carry = iv_native_lane_carry(old_mid.lane, 0.5 * quote.bid + 0.5 * quote.ask);
+      const IvNativeBatchRequest request{target, c.market.spot, quote.strike,
+          c.market.variance_years, c.market.rate, cache->ivs[i].q_effective, quote.side,
+          batched.iv_tolerance, &carry};
+      IvPremiumPrepared expected;
+      IvNativeBatchWork work;
+      iv_native_prepare_lanes(*cache->families->of_q(quote.side), nullptr,
+          std::span<const IvNativeBatchRequest>(&request, 1),
+          std::span<IvPremiumPrepared>(&expected, 1), false, work);
+      ASSERT_TRUE(expected.lane.valid);
+      EXPECT_TRUE(same_bits(edge.seed, expected.lane.seed)) << i << ':' << slot;
+      EXPECT_TRUE(same_bits(edge.bracket_lo, expected.lane.bracket_lo)) << i << ':' << slot;
+      EXPECT_TRUE(same_bits(edge.bracket_hi, expected.lane.bracket_hi)) << i << ':' << slot;
+      EXPECT_TRUE(same_bits(edge.sigma, expected.lane.sigma)) << i << ':' << slot;
+      EXPECT_EQ(edge.status, expected.lane.status) << i << ':' << slot;
+      ++checked_seeds;
+    }
+    const auto &x = plain_ivs[i];
+    const auto &y = cache->ivs[i];
+    EXPECT_TRUE(same_bits(x.mid_iv, y.mid_iv)) << i;
+    EXPECT_TRUE(same_bits(x.bid_iv, y.bid_iv)) << i;
+    EXPECT_TRUE(same_bits(x.ask_iv, y.ask_iv)) << i;
+    EXPECT_EQ(x.mid_route, y.mid_route) << i;
+    EXPECT_EQ(x.bid_route, y.bid_route) << i;
+    EXPECT_EQ(x.ask_route, y.ask_route) << i;
+    EXPECT_EQ(x.well_posed, y.well_posed) << i;
+    EXPECT_TRUE(same_bits(channel->rows[i].fitted_price, plain_channel->rows[i].fitted_price)) << i;
+  }
+  EXPECT_GT(checked_seeds, 0u);
+  EXPECT_EQ(band_counts.result().deam_batch_lanes, prepared_edges);
+  EXPECT_EQ(band_counts.result().deam_batch_lane_misses, 0u);
+  RecordProperty("point_lanes", point_counts.result().deam_batch_lanes);
+  RecordProperty("deferred_band_lanes", band_counts.result().deam_batch_lanes);
+  RecordProperty("original_seeds_checked", checked_seeds);
+  const auto again = fit_quote_slice_channel(c.market, c.quotes, batched, nullptr);
+  ASSERT_TRUE(again);
+  EXPECT_EQ(again->diagnostics.deam.batch_lanes, 0u);
+  EXPECT_EQ(again->diagnostics.deam.inversions, 0u);
+  deam_iv_memo_clear();
 }
 
 // K4b deliverable 1 (bit identity): on the scalar map (ForceScalar) the batched route - every

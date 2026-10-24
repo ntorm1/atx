@@ -272,9 +272,13 @@ struct DeAmIvCache {
   // are keyed words, so every fit sharing the cache shares one budget and spends it in the
   // order the fits ask, deterministically).
   IvReferenceBudget reference_budget{};
-  // K4b: the batched native route (deam_native_batch): whether this cache's work group was
-  // prepared, and the values prepared per input quote (mid, bid, ask; empty until then).
+  // Native midpoint preparation retains the original edge decisions and pre-acceptance
+  // midpoint carries. Bid/ask lanes are deferred until a channel actually asks for a band;
+  // their seeds must not depend on which midpoints have since consumed K3 acceptance.
   bool native_prepared = false;
+  bool native_bands_prepared = false;
+  std::vector<std::uint8_t> native_ready;
+  std::vector<IvPremiumNativeCarry> native_band_carry;
   std::vector<std::array<IvPremiumPrepared, 3>> prepared;
 };
 
@@ -535,11 +539,10 @@ private:
   // no inversion). Precondition: a positive local forward and a finite carry.
   [[nodiscard]] bool band_edges(const QuoteSliceQuote &quote, DeAmQuoteIv &filled,
                                 EdgeDecision &edges);
-  // K4b (deam_native_batch on the native route; once per cache): prepares the work group -
-  // every channel quote's edge decisions, then per side the mids' lanes, the bids' and asks'
-  // lanes from their mids' outcomes, and the acceptance (iv_native_prepare_*). A no-op off
-  // the batched route or when the cache has no family.
-  void prepare_native_batch();
+  // Prepares edge decisions and midpoint lanes once. include_bands additionally prepares
+  // bid/ask lanes once, using retained pre-acceptance midpoint carries and preserving all
+  // midpoint slots. A point-only fit never pays for these unused bid/ask lanes.
+  void prepare_native_batch(bool include_bands = false);
   // The prepared values of quote `i`'s request `slot` (0 mid, 1 bid, 2 ask), nullptr: none.
   [[nodiscard]] const IvPremiumPrepared *prepared_for(std::size_t i, std::size_t slot) const;
 
