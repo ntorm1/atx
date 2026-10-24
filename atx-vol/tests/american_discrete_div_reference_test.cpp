@@ -272,6 +272,16 @@ TEST(DiscreteDivReferenceDiagnostics, CountsActualSweepsAndPreservesEveryResultF
       EXPECT_EQ(observed->time_steps, original->time_steps);
       EXPECT_EQ(observed->max_policy_iterations, original->max_policy_iterations);
       EXPECT_EQ(observed->lcp_rounding_ties, original->lcp_rounding_ties);
+      EXPECT_EQ(diagnostic.coefficient_steps.size(),
+                static_cast<std::size_t>(observed->time_steps));
+      std::uint64_t step_sweeps = 0, step_rows = 0;
+      for (const auto &step : diagnostic.coefficient_steps) {
+        step_sweeps += step.thomas_sweeps;
+        step_rows += step.continuation_rows;
+        EXPECT_GT(step.max_run_length, 0U);
+      }
+      EXPECT_EQ(step_sweeps, diagnostic.thomas_sweeps);
+      EXPECT_EQ(step_rows, diagnostic.continuation_rows);
       EXPECT_GE(diagnostic.thomas_sweeps, static_cast<std::uint64_t>(observed->time_steps));
       EXPECT_EQ(diagnostic.forward_rows, diagnostic.thomas_sweeps * 80U);
       EXPECT_EQ(diagnostic.forward_rows, diagnostic.identity_rows + diagnostic.continuation_rows);
@@ -300,10 +310,12 @@ TEST(DiscreteDivReferenceDiagnostics, RefusalClearsPriorCensus) {
   atx::vol::ddiv_ref::PdeDiagnostics diagnostic;
   diagnostic.thomas_sweeps = 42;
   diagnostic.continuation_run_lengths = {1, 2};
+  diagnostic.coefficient_steps.emplace_back();
   const auto refused = pde_price({}, {}, &diagnostic);
   ASSERT_FALSE(refused);
   EXPECT_EQ(diagnostic.thomas_sweeps, 0U);
   EXPECT_TRUE(diagnostic.continuation_run_lengths.empty());
+  EXPECT_TRUE(diagnostic.coefficient_steps.empty());
 }
 
 TEST(DiscreteDivReferenceValidate, RefusesMalformedInputsWithTypedErrors) {

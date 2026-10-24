@@ -236,6 +236,13 @@ struct PdeResult {
 // Optional work census. Reset on entry, including refusals; owned by the caller
 // and borrowed only for this solve. No clocks. A null pointer performs no census
 // traversal/allocation. It does not alter prices, grids, policies or stopping.
+struct PdeCoefficientStep {
+  std::array<std::uint64_t, 3> coefficient_bits{}; // exact lo/di/up
+  std::uint64_t thomas_sweeps = 0;
+  std::uint64_t continuation_rows = 0;
+  std::uint64_t max_run_length = 0;
+};
+
 struct PdeDiagnostics {
   std::uint64_t thomas_sweeps = 0;
   std::uint64_t fresh_seed_sweeps = 0;
@@ -248,6 +255,7 @@ struct PdeDiagnostics {
   // This counts an opportunity; no coefficient cache is used by the solver.
   std::uint64_t exact_key_coefficient_rows = 0;
   std::vector<std::uint64_t> continuation_run_lengths; // index = run length
+  std::vector<PdeCoefficientStep> coefficient_steps; // backward solve order
 };
 
 // One PDE solve. Errors: `validate`'s; InvalidArgument for a grid outside

@@ -461,6 +461,70 @@ compares against the prior frozen replay bit for bit and independently recompute
 every row/histogram identity. These counts justify a bounded experiment, not a
 claim that the extra cache machinery will be faster.
 
+### Exact coefficient streams across contracts
+
+The follow-up diagnostic records each actual implicit step's rounded binary64
+`(lo,di,up)` bits, Thomas sweep count, continuation-row count and longest free run.
+This records the operator used by the solver, rather than guessing equality from
+volatility, maturity or a nominal grid. The optional census remains caller-owned;
+the default solve performs no additional recording, allocation or numerical work.
+
+For each declared grid, all 50 requests form **41 identical ordered coefficient
+streams**. Six shared groups contain 15 requests; 35 requests are singletons:
+`C8p/C8c`, `D12p/D12c`, `E1c/E5p/E5c`, `E20p/E20c`, `E64p/E64c`, and
+`ILp/ILc/ISp/ISc`. Equality includes the actual space count and every coefficient
+bit at every step. Equal recurrence coefficients do not imply equal jump maps,
+cash models, policies or prices. In particular, IL/IS retain their different
+liquidator/survivor models. No cash-model pooling is used to score accuracy.
+
+The inventory simulates one lazy coefficient table per identical stream, clearing
+it whenever the exact coefficient key changes. At each step the table need only
+reach the longest continuation run across its members; each member retains its
+own policy, RHS and backsolve. Replaying this rule for singleton groups exactly
+reproduces the prior single-contract recurrence count.
+
+| Grid | Original coefficient rows | Single-contract reuse | Exact grouped reuse | Additional rows avoided by grouping |
+|---|---:|---:|---:|---:|
+| 400 x 200 | 4,096,079 | 3,659,938 | 3,067,514 | 592,424 (14.46% of original) |
+| 800 x 400 | 16,067,975 | 14,529,779 | 12,178,280 | 2,351,499 (14.63%) |
+| 1600 x 800 | 63,867,434 | 57,772,232 | 48,449,011 | 9,323,221 (14.60%) |
+
+Total coefficient recurrence reuse at the finest grid is 24.14%. Only one of the
+two continuation divisions belongs to this recurrence, so this represents about
+12.07% of those divisions before cache loads and lookup costs. It removes none
+of the contract-specific RHS, backsolve, obstacle or jump work. For the 44
+spot-liquidator requests, 37 exact streams require 43,698,305 coefficient rows
+instead of 56,429,343, or 22.56% reuse. These are work counts, not wall-time savings.
+
+A pair of binary64 tables for `cp` and the exact denominator needs at most 25,600
+payload bytes for one active 1600-node stream, or 1,049,600 bytes for all 41 streams
+if retained simultaneously, before ownership/index metadata. There are 25,622
+distinct step keys across the 40,376 implicit steps. Full grid and event setup,
+group discovery, exact key comparisons, allocation, policy-mask checks, table
+loads and scalar refusals must be charged in any future cold batch measurement.
+The inventory export itself is diagnostic overhead and is not a production
+grouping implementation. No cache has been introduced or timed.
+
+All 150 prior result fields are bit-identical, including grids, prices, solver
+work and empirical price classifications. The finest DSPYp remains uncertain;
+the spot-liquidator denominator is still 43 pass and one uncertain. Two focused
+census tests and six manifest/replay tests pass. Owning reference source and both
+changed test TUs compile with PCH disabled. Evidence is
+`calendar/cash-pde-batch-keys-v1/`: runtime red/green, archived executables,
+`export/replay.json`, `verify_batch_keys.py` and `receipt.json`. The verifier checks
+the old receipt hash, every prior field, per-step accounting, singleton recurrence
+counts and exact stream identities. Coefficients are decimal uint64 strings in
+JSON to preserve all bits. Replay SHA256 is
+`d4b5c2e81c8971cd9d37abd601139217ba8e71161eee38c3ada7c1dba60343cc`.
+
+This ceiling does not justify prioritizing a recurrence cache alone. The next
+structural study is SIMD across contracts with heterogeneous coefficients: each
+lane can preserve its own exact operator, mask and recurrence while sharing the
+instruction stream. That requires a separate inventory of compatible schedules,
+inactive-lane divergence, layout conversion and complete cold setup cost. It must
+retain every model and requested outcome; no sigma/strike quantization or
+reference-driven selection is justified by the coefficient inventory.
+
 ## 7. Later methods and promotion boundary
 
 If prepared PDE geometry and batched obstacle work do not win the measured

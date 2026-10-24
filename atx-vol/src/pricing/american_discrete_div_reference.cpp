@@ -503,6 +503,8 @@ void record_thomas_sweep(PdeState &s, double lo, double di, double up) {
   }
   auto &d = *s.diagnostics;
   ++d.thomas_sweeps;
+  auto &step = d.coefficient_steps.back(); // theta_step records before every solve
+  ++step.thomas_sweeps;
   d.forward_rows += static_cast<std::uint64_t>(s.grid.n);
   const std::array key{std::bit_cast<std::uint64_t>(lo), std::bit_cast<std::uint64_t>(di),
                        std::bit_cast<std::uint64_t>(up)};
@@ -516,6 +518,7 @@ void record_thomas_sweep(PdeState &s, double lo, double di, double up) {
     const bool identity = i == s.grid.n || s.active[static_cast<std::size_t>(i)] != 0U;
     if (!identity) {
       ++d.continuation_rows;
+      ++step.continuation_rows;
       ++run;
       continue;
     }
@@ -523,6 +526,7 @@ void record_thomas_sweep(PdeState &s, double lo, double di, double up) {
     if (run != 0) {
       ++d.continuation_runs;
       ++d.continuation_run_lengths[run];
+      step.max_run_length = std::max(step.max_run_length, static_cast<std::uint64_t>(run));
       if (run > s.diagnostic_max_run) {
         d.exact_key_coefficient_rows += run - s.diagnostic_max_run;
         s.diagnostic_max_run = run;
@@ -694,6 +698,11 @@ Status theta_step(PdeState &s, double dt, double theta, int seg, double t_new) {
     return Err(ErrorCode::OutOfRange,
                "discrete-dividend reference PDE: implicit rows outside supported "
                "M-matrix domain");
+  }
+  if (s.diagnostics != nullptr) {
+    s.diagnostics->coefficient_steps.push_back(
+        {{std::bit_cast<std::uint64_t>(rows.lo), std::bit_cast<std::uint64_t>(rows.di),
+          std::bit_cast<std::uint64_t>(rows.up)}, 0, 0, 0});
   }
   ++s.implicit_solves;
   if (!m.american) {

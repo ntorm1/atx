@@ -503,6 +503,17 @@ TEST(DiscreteDivProductionManifest, MonetaryGateRetainsUncertaintyAndModelDenomi
                         {"continuation_runs", diagnostics.continuation_runs},
                         {"exact_key_coefficient_rows", diagnostics.exact_key_coefficient_rows},
                         {"continuation_run_lengths", std::move(lengths)}};
+  Json steps = Json::array();
+  for (const auto &step : diagnostics.coefficient_steps) {
+    steps.push_back({{"coefficient_bits_u64",
+                      {std::to_string(step.coefficient_bits[0]),
+                       std::to_string(step.coefficient_bits[1]),
+                       std::to_string(step.coefficient_bits[2])}},
+                     {"thomas_sweeps", step.thomas_sweeps},
+                     {"continuation_rows", step.continuation_rows},
+                     {"max_run_length", step.max_run_length}});
+  }
+  row["work_census"]["coefficient_steps"] = std::move(steps);
   return row;
 }
 
