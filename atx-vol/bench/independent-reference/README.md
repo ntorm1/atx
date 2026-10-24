@@ -120,3 +120,9 @@ the exact historical v2 baseline and clean source. Its new schema retains all
 twelve requests, all stage work and all 714 other corpus contracts as uncomputed.
 It cannot update historical decisions or substitute for a complete144 experiment.
 The fixed twelve requests have not executed at this source checkpoint.
+
+The subsequent reviewed run at `8f4f8124` completed once: eight requests compute
+and four retain typed refusals at the original tolerance. Both coarse-time
+requests recover, but neither Greek is promoted. The
+[complete result](../../docs/independent-lcp-control-20261024.md) retains every
+outcome, actual work and four failed-stage arrays; no full144 run followed.
