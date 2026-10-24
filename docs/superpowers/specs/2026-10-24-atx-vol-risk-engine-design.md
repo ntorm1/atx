@@ -23,6 +23,12 @@ library leads with.
 
 ## 0.1 Status log
 
+- 2026-10-24 session 2 (orchestrator resumed from HANDOFF.md): integration tip c534bfca = 8110f6ee +
+  merge of main @ 163c4f8d (60 commits: American Greek availability metadata, SPY r7 cold floors,
+  portfolio pricer / deriv book / priced surface). Zero conflicts; risk 110/110, umbrella 10/10,
+  regression slices 246/246 on the merged tip. Lanes C follow-up 2, A2 and D resumed by fresh Opus
+  builders off c534bfca. D21 below. Wave 3 planning opened: binary persistence (lane P) and a
+  universe fit-robustness benchmark (lane F) on the licensed store.
 - 2026-10-24 20:30 UTC: wave 1 landed on `feat/vol-risk-engine-20261024` @ 4469d3e5 (A @ 15ea7410
   after a BLOCK/fix round on RiskStream's failure-path lifetime; B @ 39bd5360 after two minor
   rounds; C @ 75293b21 APPROVE, follow-up in flight). Integration: risk suites 104/104, E2E green,
@@ -600,6 +606,15 @@ suite. Wave 2: lane D on one slot. Integration 2: full `atx_vol_fast` label on `
   is a signed residual. D4 stays the published-data fallback and the synthetic default.
   (iii) PRICE FRAMEWORK — `prcFramework != Spot` rows are dropped and counted (D16 extension):
   OEX carries a per-expiry forward in `uPrc`. Also `pv_divs` reads `ddivPv` (PV) not `ddiv`.
+
+- **D21 (session 2, lane D request):** `api/risk/historical_var.hpp` gains three ADDITIVE declarations:
+  `HistoricalVarConfig::keep_resolved_legs{false}`, `HistoricalVarResult::resolved_legs`
+  (scenario-major `ResolvedTheo`, the dispersion per-leg artifact) and
+  `summarize_historical_var(std::vector<HistoricalVarFrame>, std::span<const double>)` so the
+  memory-bounded window loop, the artifact verifier and the dispersion route share ONE nearest-rank
+  VaR / ES implementation. Nothing frozen is removed or changed. Dispersion keeps the ATM-forward +
+  relative-maturity template mapping (the American-delta mapping belonged to the deleted
+  `var.hpp` positions dispersion never used).
 
 ## 10. Left to the builder
 
