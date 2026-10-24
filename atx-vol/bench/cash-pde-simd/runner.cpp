@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -82,8 +83,8 @@ struct Published {
 };
 
 // The measured scope owns request adapters, every PDE workspace, temporary
-// outputs and any refusal text. All of these are destroyed before it returns.
-// Only fixed-size published result copies survive for untimed report encoding.
+// outputs. These are destroyed before it returns. Published result copies and
+// refusal text survive for untimed encoding; qualification requires no refusals.
 void execute(const Args &args, const std::vector<fixture::InputCase> &cases,
              std::array<Published, 50> &published) {
   std::vector<ref::Problem> problems;

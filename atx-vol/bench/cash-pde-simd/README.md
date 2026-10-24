@@ -132,6 +132,13 @@ SMT sibling below 5%, whole-system busy below 10%, and no detected jobs before o
 after any run. Missing load/topology is a failed gate. Source/binary hashes must
 remain unchanged. These checks are conservative and specific to the declared
 host; passing only the numerical audit never qualifies a time.
+Both initial and final source-cleanliness checks fail closed on a nonzero git
+exit code. The launcher regression reproduces the old failure to detect an
+unreadable status, then checks the corrected refusal before creating output or
+launching native work. Retained refusal strings, like published result copies,
+survive the measured scope for report encoding; qualified runs require zero
+refusals. Follow-up evidence is `calendar/cash-pde-batch-runner-v3b/`; the earlier
+`v3/` retains a test-mock scope error that was corrected before these controls.
 
 ```powershell
 ./scripts/atx-build.ps1 build atx-vol-cash-pde-batch-research -Preset vol-rel -Jobs 2

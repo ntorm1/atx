@@ -12,6 +12,12 @@ function Hash([string] $Path) {
   (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Assert-CleanSource([string] $Root) {
+  $dirty = @(& git -C $Root status --porcelain)
+  if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source cleanliness' }
+  if ($dirty.Count -ne 0) { throw 'Source must be frozen and clean before timing' }
+}
+
 function Host-Jobs {
   # Conservative process gate, in addition to native CPU/SMT interval samples.
   # No process is killed or suspended. Unknown external load is also reflected
@@ -30,8 +36,7 @@ $Reference = (Resolve-Path -LiteralPath $Reference).Path
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $sourceSha = (& git -C $SourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read source SHA' }
-$dirty = @(& git -C $SourceRoot status --porcelain)
-if ($dirty.Count -ne 0) { throw 'Source must be frozen and clean before timing' }
+Assert-CleanSource $SourceRoot
 $referenceSha = Hash $Reference
 if ($referenceSha -ne 'd4b5c2e81c8971cd9d37abd601139217ba8e71161eee38c3ada7c1dba60343cc') {
   throw 'Wrong frozen reference replay'
@@ -100,9 +105,10 @@ try {
       }
     }
   }
-  if ((Hash $Binary) -ne $binarySha -or
-      (& git -C $SourceRoot rev-parse HEAD).Trim() -ne $sourceSha -or
-      @(& git -C $SourceRoot status --porcelain).Count -ne 0) {
+  $finalSha = (& git -C $SourceRoot rev-parse HEAD).Trim()
+  if ($LASTEXITCODE -ne 0) { throw 'Cannot read final source SHA' }
+  Assert-CleanSource $SourceRoot
+  if ((Hash $Binary) -ne $binarySha -or $finalSha -ne $sourceSha) {
     throw 'Source or binary changed before campaign completion'
   }
   $summary = Join-Path $OutDir 'numerical-audit.json'
