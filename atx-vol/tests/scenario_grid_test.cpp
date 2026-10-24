@@ -378,6 +378,152 @@ constexpr double kMinT = 1.0e-6;
 
 } // namespace
 
+namespace {
+[[nodiscard]] PricedSurface partial_scenario_surface() {
+  constexpr double S = 772.99, T = .0682, r = .04496, q = .00162193, sigma = .12;
+  const double F = S * std::exp((r - q) * T);
+  EssviParams params{};
+  params.T = T;
+  params.F = F;
+  params.theta = sigma * sigma * T;
+  params.phi = params.rho = 0.;
+  params.psi = params.p = params.lambda = .5;
+  CurveSurface curves;
+  curves.push(std::make_unique<EssviCurve>(params, std::exp(-r * T)));
+  auto opts = al_fast_profile(std::nullopt);
+  opts.profile = AlProfile::Reference;
+  auto result = PricedSurface::create(std::move(curves),
+      {SliceContext{T, F, 0., q, 100u, 1u}}, make_pricing(1u, S, r, kNow, opts));
+  EXPECT_TRUE(result);
+  return std::move(*result);
+}
+} // namespace
+
+TEST(ScenarioGridAvailability, PartialPricesServeExactAndOnlySuppliedTaylorAxes) {
+  const auto surface = partial_scenario_surface();
+  const auto base = set_of({&surface});
+  constexpr double K = 811.6395, T = .0682;
+  const auto g = surface.greeks(K, T, Side::Put);
+  ASSERT_TRUE(g);
+  ASSERT_TRUE(has_field(g->supported, GreekFieldMask::Price));
+  ASSERT_TRUE(has_field(g->supported, GreekFieldMask::Rho));
+  ASSERT_EQ(g->reasons[1], AmericanGreekReason::StencilCrossing);
+  const std::vector<Position> book{
+      {1u, {1u, K, T, Side::Put}, 1., 1.},
+      {2u, {1u, K, T, Side::Put}, 2., 1.},
+      {3u, {99u, K, T, Side::Put}, 1., 1.}};
+  ScenarioGridSpec spec;
+  spec.spot_pct = {0., .001, .2};
+  spec.vol_bump = {0.};
+  const auto grid = scenario_grid(book, base, spec);
+  ASSERT_TRUE(grid);
+  EXPECT_EQ(grid->n_ok, 0u);
+  EXPECT_EQ(grid->n_failed, 2u);
+  EXPECT_EQ(grid->n_priced, 1u);
+  EXPECT_EQ(grid->n_exact_price_scratch_slots, 1u);
+  ASSERT_EQ(grid->pnl.size(), 3u);
+  EXPECT_DOUBLE_EQ(grid->pnl[0], 0.);
+  EXPECT_TRUE(std::isnan(grid->pnl[1]));
+  const auto exact = exact_pershare(surface, K, T, Side::Put, .2, 0., 0., 0.);
+  ASSERT_TRUE(exact);
+  EXPECT_DOUBLE_EQ(grid->pnl[2], *exact + 2. * (*exact));
+  EXPECT_EQ(grid->n_contributing_positions, (std::vector<std::size_t>{2u, 0u, 2u}));
+  EXPECT_EQ(grid->n_excluded_positions, (std::vector<std::size_t>{1u, 1u, 1u}));
+  EXPECT_EQ(grid->n_unavailable_positions, (std::vector<std::size_t>{0u, 2u, 0u}));
+  spec.n_threads = 4u;
+  const auto parallel = scenario_grid(book, base, spec);
+  ASSERT_TRUE(parallel);
+  EXPECT_EQ(parallel->n_priced, grid->n_priced);
+  EXPECT_EQ(parallel->n_contributing_positions, grid->n_contributing_positions);
+  EXPECT_EQ(parallel->n_excluded_positions, grid->n_excluded_positions);
+  EXPECT_EQ(parallel->n_unavailable_positions, grid->n_unavailable_positions);
+  for (std::size_t c = 0; c < grid->pnl.size(); ++c) {
+    EXPECT_TRUE(bits_equal(parallel->pnl[c], grid->pnl[c]));
+  }
+  spec.spot_pct = {0.};
+  spec.dr = .0001;
+  const auto rate = scenario_grid(book, base, spec);
+  ASSERT_TRUE(rate);
+  EXPECT_DOUBLE_EQ(rate->pnl[0], g->rho * .0001 + (2. * g->rho) * .0001);
+  EXPECT_EQ(rate->n_contributing_positions, (std::vector<std::size_t>{2u}));
+  EXPECT_EQ(rate->n_excluded_positions, (std::vector<std::size_t>{1u}));
+  EXPECT_EQ(rate->n_unavailable_positions, (std::vector<std::size_t>{0u}));
+}
+
+TEST(ScenarioGridAvailability, ExactFallbackRetainsMissingActiveRiskAndZeroWeightIdentity) {
+  const auto surface = partial_scenario_surface();
+  const auto base = set_of({&surface});
+  const std::vector<Position> book{
+      {1u, {1u, 811.6395, .0682, Side::Put}, 1., 1.},
+      {2u, {1u, 811.6395, .0682, Side::Put}, 2., 1.},
+      {3u, {1u, 811.6395, .0682, Side::Put}, 0., 1.}};
+  ScenarioGridSpec spec;
+  spec.spot_pct = {-1.1}; // Invalid shocked spot forces the existing Exact fallback.
+  spec.vol_bump = {0.};
+  const auto grid = scenario_grid(book, base, spec);
+  ASSERT_TRUE(grid);
+  EXPECT_EQ(grid->route[0], static_cast<std::uint8_t>(ScenarioRoute::Exact));
+  EXPECT_EQ(grid->n_exact_fallback_lanes, 1u); // Unique-contract units, not positions.
+  EXPECT_EQ(grid->n_priced, 1u);
+  EXPECT_EQ(grid->n_contributing_positions, (std::vector<std::size_t>{1u}));
+  EXPECT_EQ(grid->n_excluded_positions, (std::vector<std::size_t>{0u}));
+  EXPECT_EQ(grid->n_unavailable_positions, (std::vector<std::size_t>{2u}));
+  EXPECT_TRUE(std::isnan(grid->pnl[0]));
+  const auto zero = scenario_grid({book.back()}, base, spec);
+  ASSERT_TRUE(zero);
+  EXPECT_DOUBLE_EQ(zero->pnl[0], 0.);
+  EXPECT_EQ(zero->n_contributing_positions, (std::vector<std::size_t>{1u}));
+  EXPECT_EQ(zero->n_unavailable_positions, (std::vector<std::size_t>{0u}));
+}
+
+TEST(ScenarioGridAvailability, DuplicateScaledOverflowCannotHideBehindUniqueCounts) {
+  const auto surface = make_essvi(1u, 5);
+  const auto base = set_of({&surface});
+  std::vector<Position> book{
+      {1u, {1u, 100., .25, Side::Call}, (std::numeric_limits<double>::max)(), 2.},
+      {2u, {1u, 100., .25, Side::Call}, 1., 1.}};
+  ScenarioGridSpec spec;
+  spec.spot_pct = {.001, .2};
+  spec.vol_bump = {0.};
+  for (unsigned order = 0; order < 2u; ++order) {
+    const auto grid = scenario_grid(book, base, spec);
+    ASSERT_TRUE(grid);
+    EXPECT_EQ(grid->n_ok, 0u);
+    EXPECT_EQ(grid->n_failed, 1u);
+    EXPECT_EQ(grid->n_priced, 1u);
+    EXPECT_EQ(grid->n_contributing_positions, (std::vector<std::size_t>{1u, 1u}));
+    EXPECT_EQ(grid->n_excluded_positions, (std::vector<std::size_t>{0u, 0u}));
+    EXPECT_EQ(grid->n_unavailable_positions, (std::vector<std::size_t>{1u, 1u}));
+    EXPECT_TRUE(std::isnan(grid->pnl[0]));
+    EXPECT_TRUE(std::isnan(grid->pnl[1]));
+    std::reverse(book.begin(), book.end());
+  }
+}
+
+TEST(ScenarioGridAvailability, FinitePositionContributionsCanOverflowOnlyTheAggregate) {
+  const auto surface = make_essvi(1u, 5);
+  const auto base = set_of({&surface});
+  const auto change = exact_pershare(surface, 100., .25, Side::Call, .2, 0., 0., 0.);
+  ASSERT_TRUE(change);
+  ASSERT_GT(*change, 1.);
+  const double weight = (.75 * (std::numeric_limits<double>::max)()) / *change;
+  const double contribution = *change * weight;
+  ASSERT_TRUE(std::isfinite(contribution));
+  ASSERT_FALSE(std::isfinite(contribution + contribution));
+  ScenarioGridSpec spec;
+  spec.spot_pct = {.2};
+  spec.vol_bump = {0.};
+  const auto grid = scenario_grid({
+      {1u, {1u, 100., .25, Side::Call}, weight, 1.},
+      {2u, {1u, 100., .25, Side::Call}, weight, 1.}}, base, spec);
+  ASSERT_TRUE(grid);
+  EXPECT_EQ(grid->n_priced, 1u);
+  EXPECT_EQ(grid->n_contributing_positions, (std::vector<std::size_t>{2u}));
+  EXPECT_EQ(grid->n_excluded_positions, (std::vector<std::size_t>{0u}));
+  EXPECT_EQ(grid->n_unavailable_positions, (std::vector<std::size_t>{0u}));
+  EXPECT_TRUE(std::isnan(grid->pnl[0]));
+}
+
 // A production-shaped sparse-Exact regression. The legacy dense scratch allocated
 // all 100x100 cells x all 10,000 uniques = 100,000,000 doubles (~800 MB), even
 // though only the final vol column routes Exact and only one unique priced Ok. The
@@ -1207,6 +1353,10 @@ TEST(ScenarioGridDeriv, DerivLegLeavesTheOptionLegByteIdentical) {
   }
   EXPECT_EQ(only_options->n_ok, with_derivs->n_ok);
   EXPECT_EQ(only_options->n_failed, with_derivs->n_failed);
+  EXPECT_EQ(only_options->n_priced, with_derivs->n_priced);
+  EXPECT_EQ(only_options->n_contributing_positions, with_derivs->n_contributing_positions);
+  EXPECT_EQ(only_options->n_excluded_positions, with_derivs->n_excluded_positions);
+  EXPECT_EQ(only_options->n_unavailable_positions, with_derivs->n_unavailable_positions);
   EXPECT_EQ(only_options->n_exact_fallback_lanes, with_derivs->n_exact_fallback_lanes);
 
   // And the option-only overload leaves the deriv columns EMPTY rather than

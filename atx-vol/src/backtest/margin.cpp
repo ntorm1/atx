@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <span>
 #include <vector>
 
@@ -45,7 +46,12 @@ Result<double> scenario_margin(const PortfolioPricer &pricer, const SurfaceSet &
   // result's own row-major cell order, which `scenario_grid` documents as
   // bit-identical at any thread count, so this reduction is deterministic too.
   double worst = 0.0;
-  for (const double pnl : result.pnl) {
+  for (std::size_t c = 0; c < result.pnl.size(); ++c) {
+    const double pnl = result.pnl[c];
+    if (result.n_excluded_positions[c] != 0u || result.n_unavailable_positions[c] != 0u ||
+        !std::isfinite(pnl)) {
+      return Err(ErrorCode::Unavailable, "scenario_margin: incomplete or nonfinite cell");
+    }
     if (pnl < worst) {
       worst = pnl;
     }

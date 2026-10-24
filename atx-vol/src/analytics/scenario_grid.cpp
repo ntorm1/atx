@@ -26,6 +26,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/api/pricing/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
 
+#include "analytics/scenario_greek_availability.hpp"
 #include "analytics/scenario_grid_detail.hpp" // detail::scenario_grid_product_is_representable
 #include "pricing/american_boundary.hpp" // amer:: boundary seam (A7 spot-axis reuse)
 #include "pricing/deriv_ref_bridge.hpp" // Task F-8: deriv_price_shocked_on_ref
@@ -58,7 +59,7 @@ inline constexpr double kMinT = 1.0e-6;       // min T' after a dt time roll pas
 
 // Per-unique base state for the Exact route: the once-resolved base surface point,
 // the base price P0, and the pricer scalars the shocked reprice reuses. Built only
-// for uniques whose Greek solve succeeded (uni_ok); `ready` records that the base
+// for uniques with a supplied base price; `ready` records that the base
 // reprice itself produced a finite P0.
 struct UniExact {
   double S{0.0};
@@ -128,7 +129,8 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   }
   const std::size_t n_cells = n_spot * n_vol;
   if (!vector_count_is_representable<double>(n_cells) ||
-      !vector_count_is_representable<std::uint8_t>(n_cells)) {
+      !vector_count_is_representable<std::uint8_t>(n_cells) ||
+      !vector_count_is_representable<std::size_t>(n_cells)) {
     return Err(ErrorCode::InvalidArgument,
                "scenario_grid: result cell count exceeds vector element capacity");
   }
@@ -147,56 +149,57 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   const std::size_t n_unique = portfolio.n_contracts();
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-  // ── Per-position precompute: Ok flag, per-surface spot, scaled greeks. ──────
-  // A position is included in a cell only when its (unique) contract solved Ok;
-  // its uid then has a registered surface, so `base.find(uid)->pricing().S` is a
-  // finite spot. Failed lanes keep NaN spot but are gated out of every cell.
-  std::vector<std::uint8_t> pos_ok(n_pos, 0u);
+  // Keep price eligibility separate from complete risk. Scaled duplicate rows
+  // can differ in supply (one weight can overflow), so preserve each row's mask.
+  std::vector<std::uint8_t> pos_priced(n_pos, 0u);
   std::vector<double> pos_spot(n_pos, kNaN);
-  std::vector<AmericanGreeks> pos_greeks(n_pos); // position-scaled (qty*mult*per-share)
-  // Exact-route per-position bookkeeping: the unique index this position reprices
-  // through, and its weight qty * eff_multiplier (the SAME scale the Taylor greeks
-  // already carry — see eff_multiplier above).
+  std::vector<AmericanGreeks> pos_greeks(n_pos);
   std::vector<std::uint32_t> pos_uni(n_pos, 0u);
   std::vector<double> pos_w(n_pos, 0.0);
-
-  // Per-UNIQUE outcome: every position that shares a contract carries the same
-  // status, so counting Ok uniques here (not positions) yields the unique-contract
-  // n_ok / n_failed the API reports.
-  std::vector<std::uint8_t> uni_ok(n_unique, 0u);
+  std::vector<std::uint8_t> uni_ok(n_unique, 1u);
+  std::vector<std::uint8_t> uni_priced(n_unique, 0u);
 
   for (std::size_t i = 0; i < n_pos; ++i) {
-    const bool ok = frame.status[i] == PriceStatus::Ok;
-    pos_ok[i] = ok ? 1u : 0u;
     pos_uni[i] = portfolio.contract_ix(i);
-    uni_ok[pos_uni[i]] = ok ? 1u : 0u;
-    if (!ok) {
+    const bool complete = frame.status[i] == PriceStatus::Ok;
+    uni_ok[pos_uni[i]] &= complete ? 1u : 0u;
+    AmericanGreeks &g = pos_greeks[i];
+    g = AmericanGreeks{frame.delta[i], frame.gamma[i], frame.vega[i], frame.theta[i],
+                      frame.rho[i], frame.vanna[i], frame.volga[i], frame.charm[i], frame.price[i]};
+    g.requested = frame.requested[i];
+    g.supported = frame.supported[i];
+    g.reasons = frame.reasons[i];
+    if ((frame.status[i] != PriceStatus::Ok &&
+         frame.status[i] != PriceStatus::GreeksUnavailable) ||
+        !detail::american_greeks_support(g, GreekFieldMask::Price)) {
       continue;
     }
-    pos_w[i] = positions[i].qty * eff_multiplier(positions[i].multiplier);
     const SurfaceRef surf = base.find(positions[i].contract.uid);
-    // Ok implies the surface was found during the solve; guard defensively anyway.
-    pos_spot[i] = (surf != nullptr) ? surf->pricing().S : kNaN;
-    pos_greeks[i] = AmericanGreeks{frame.delta[i], frame.gamma[i], frame.vega[i],
-                                   frame.theta[i], frame.rho[i],   frame.vanna[i],
-                                   frame.volga[i], frame.charm[i], 0.0};
+    if (surf == nullptr || !std::isfinite(surf->pricing().S) || !(surf->pricing().S > 0.0)) {
+      continue;
+    }
+    pos_priced[i] = 1u;
+    uni_priced[pos_uni[i]] = 1u;
+    pos_spot[i] = surf->pricing().S;
+    pos_w[i] = positions[i].qty * eff_multiplier(positions[i].multiplier);
   }
 
   std::size_t n_ok = 0;
-  for (const std::uint8_t v : uni_ok) {
-    n_ok += v;
+  std::size_t n_priced = 0;
+  for (std::size_t u = 0; u < n_unique; ++u) {
+    n_ok += uni_ok[u];
+    n_priced += uni_priced[u];
   }
 
-  // Compact successful-unique columns are stable because Portfolio contracts and
-  // this scan are both deterministic. Failed uniques never need an Exact-price
-  // slot: their positions are excluded from every cell.
+  // Compact price-eligible columns follow deterministic Portfolio contract order.
+  // Missing-price uniques need no scratch; partial-risk uniques still reprice.
   std::vector<std::size_t> exact_col_by_unique(n_unique, kNoIndex);
-  std::vector<std::size_t> ok_unique;
-  ok_unique.reserve(n_ok);
+  std::vector<std::size_t> priced_unique;
+  priced_unique.reserve(n_priced);
   for (std::size_t u = 0; u < n_unique; ++u) {
-    if (uni_ok[u] != 0u) {
-      exact_col_by_unique[u] = ok_unique.size();
-      ok_unique.push_back(u);
+    if (uni_priced[u] != 0u) {
+      exact_col_by_unique[u] = priced_unique.size();
+      priced_unique.push_back(u);
     }
   }
 
@@ -252,21 +255,21 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   }
   const bool any_exact = n_exact_cells != 0u;
 
-  if (!detail::scenario_grid_product_is_representable(n_exact_cells, n_ok)) {
+  if (!detail::scenario_grid_product_is_representable(n_exact_cells, n_priced)) {
     return Err(ErrorCode::InvalidArgument,
-               "scenario_grid: Exact cells x successful uniques overflows size_t");
+               "scenario_grid: Exact cells x priced uniques overflows size_t");
   }
-  const std::size_t n_exact_price_slots = n_exact_cells * n_ok;
+  const std::size_t n_exact_price_slots = n_exact_cells * n_priced;
   if (!vector_count_is_representable<double>(n_exact_price_slots)) {
     return Err(ErrorCode::InvalidArgument,
                "scenario_grid: compact Exact-price scratch exceeds vector element capacity");
   }
-  if (!detail::scenario_grid_product_is_representable(exact_cols.size(), n_ok)) {
+  if (!detail::scenario_grid_product_is_representable(exact_cols.size(), n_priced)) {
     return Err(ErrorCode::InvalidArgument,
-               "scenario_grid: Exact columns x successful uniques task count overflows size_t");
+               "scenario_grid: Exact columns x priced uniques task count overflows size_t");
   }
-  const std::size_t n_exact_tasks = exact_cols.size() * n_ok;
-  if (any_exact && !vector_count_is_representable<UniExact>(n_ok)) {
+  const std::size_t n_exact_tasks = exact_cols.size() * n_priced;
+  if (any_exact && !vector_count_is_representable<UniExact>(n_priced)) {
     return Err(ErrorCode::InvalidArgument,
                "scenario_grid: Exact unique state exceeds vector element capacity");
   }
@@ -274,20 +277,20 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   const std::span<const OptionContract> contracts = portfolio.contracts();
   std::vector<UniExact> uni;
   if (any_exact) {
-    uni.assign(n_ok, UniExact{});
-    for (std::size_t ok_col = 0; ok_col < n_ok; ++ok_col) {
-      const std::size_t u = ok_unique[ok_col];
+    uni.assign(n_priced, UniExact{});
+    for (std::size_t priced_col = 0; priced_col < n_priced; ++priced_col) {
+      const std::size_t u = priced_unique[priced_col];
       const OptionContract &oc = contracts[u];
       const SurfaceRef surf = base.find(oc.uid);
       if (surf == nullptr) {
-        continue; // defensive: uni_ok implies a registered surface
+        continue; // defensive: uni_priced implies a registered surface
       }
       const PricedSurface::ResolvedSurfacePoint rp = surf->resolve(oc.K, oc.T);
       if (!rp.valid) {
         continue; // ready stays false => Exact cells fall back to Taylor for this unique
       }
       const PricingContext &pc = surf->pricing();
-      UniExact &ue = uni[ok_col];
+      UniExact &ue = uni[priced_col];
       ue.S = pc.S;
       ue.K = oc.K;
       ue.T = oc.T;
@@ -322,9 +325,13 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   r.n_spot = n_spot;
   r.n_vol = n_vol;
   r.pnl.assign(n_cells, 0.0);
+  r.n_contributing_positions.assign(n_cells, 0u);
+  r.n_excluded_positions.assign(n_cells, 0u);
+  r.n_unavailable_positions.assign(n_cells, 0u);
   r.route.assign(n_cells, static_cast<std::uint8_t>(ScenarioRoute::Taylor));
   r.n_ok = n_ok;
   r.n_failed = n_unique - n_ok;
+  r.n_priced = n_priced;
   r.n_exact_price_scratch_slots = n_exact_price_slots;
 
   // ── Per-cell fill (parallel over cells, serial within a cell). ──────────────
@@ -354,21 +361,21 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   // ── Phase A (A7 / GR-P3-S): the shocked reprices, HOISTED out of the cell loop. ──
   //
   // Pre-A7 this ran inside the per-cell body: one cold `american_price` per
-  // (Exact cell x Ok unique), so every cell re-solved every unique's exercise
+  // (Exact cell x priced unique), so every cell re-solved every unique's exercise
   // boundary from a Barone-Adesi-Whaley seed even though — for a put — the boundary
   // is the SAME object in every cell of a vol column (see `boundary_spot_invariant`).
   //
-  // The fan-out is over (successful unique x Exact-bearing vol column). Each task
+  // The fan-out is over (priced unique x Exact-bearing vol column). Each task
   // solves that unique's boundary once and prices every Exact spot shock in that
-  // column against it. Tasks write disjoint compact (Exact row, successful unique)
+  // column against it. Tasks write disjoint compact (Exact row, priced unique)
   // slots, so the matrix is
   // bit-identical at any n_threads AND the solve count is a property of the grid
   // shape rather than of the thread partition (pinned by
   // ScenarioGrid.ExactArmSolveCountIsThreadInvariant). The (unique x column) grain is
   // also wider than the old per-cell grain on any realistic book.
   //
-  // `pprime_all` is compact [Exact cell][successful unique] scratch. Exact rows keep
-  // public row-major order via exact_row_of(); successful-unique columns keep
+  // `pprime_all` is compact [Exact cell][priced unique] scratch. Exact rows keep
+  // public row-major order via exact_row_of(); priced-unique columns keep
   // Portfolio contract order. Taylor cells and failed uniques therefore consume no
   // slots, while each destination remains deterministic and single-writer.
   std::vector<double> pprime_all; // NaN => fallback lane
@@ -377,10 +384,10 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
     if (n_exact_tasks != 0u) {
       double *pp = pprime_all.data();
       pricing_executor().run_blocks(n_exact_tasks, spec.n_threads, [&](std::size_t t) {
-        const std::size_t ok_col = t / exact_cols.size();
+        const std::size_t priced_col = t / exact_cols.size();
         const std::size_t compact_j = t % exact_cols.size();
         const std::size_t j = exact_cols[compact_j];
-        const UniExact &ue = uni[ok_col];
+        const UniExact &ue = uni[priced_col];
         if (!ue.ready) {
           return; // base reprice failed -> NaN -> counted once per Exact cell in Phase B
         }
@@ -410,7 +417,7 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
               const double v =
                   amer::al_put_price_from_boundary(bnd, ws, Sp, ue.K, Tp, sig, rp_rate, ue.q_eff);
               if (std::isfinite(v)) {
-                pp[exact_row_of(i, j) * n_ok + ok_col] = v;
+                pp[exact_row_of(i, j) * n_priced + priced_col] = v;
               }
             }
             return;
@@ -428,7 +435,7 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
           }
           const double v = shocked_price_cold(ue, ue.S * (1.0 + sp), sig, rp_rate, Tp);
           if (std::isfinite(v)) {
-            pp[exact_row_of(i, j) * n_ok + ok_col] = v;
+            pp[exact_row_of(i, j) * n_priced + priced_col] = v;
           }
         }
       });
@@ -444,54 +451,62 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
     const double dvol = vol_bump[j_vol];
     const bool exact = is_exact(i_spot, j_vol);
 
-    if (!exact) {
-      // Taylor cell: second-order reconstruction from the one Greek bundle.
-      double acc = 0.0;
-      for (std::size_t p = 0; p < n_pos; ++p) {
-        if (pos_ok[p] == 0u) {
-          continue;
+    const double *pprime = nullptr;
+    if (exact) {
+      const std::size_t exact_row = exact_row_of(i_spot, j_vol);
+      pprime = n_priced == 0u ? nullptr : pprime_base + exact_row * n_priced;
+      std::size_t nfb = 0;
+      for (std::size_t col = 0; col < n_priced; ++col) {
+        if (!std::isfinite(pprime[col])) {
+          ++nfb;
         }
-        const double dS = sp * pos_spot[p];
-        acc += scenario_taylor_leg(pos_greeks[p], dS, dvol, dt, dr);
       }
-      pnl[c] = acc;
-      route[c] = static_cast<std::uint8_t>(ScenarioRoute::Taylor);
-      return;
+      fallback[exact_row] = nfb;
     }
 
-    // Exact cell — Phase A already filled this cell's row of shocked reprices (one
-    // per Ok unique, P0 amortized). A unique whose base wasn't ready or whose shocked
-    // solve failed left NaN there; count those once for this cell. The tally is an
-    // integer add over a fixed index range, so it is order-independent and matches
-    // the pre-A7 in-line count lane for lane.
-    const std::size_t exact_row = exact_row_of(i_spot, j_vol);
-    const double *pprime = n_ok == 0u ? nullptr : pprime_base + exact_row * n_ok;
-    std::size_t nfb = 0;
-    for (std::size_t ok_col = 0; ok_col < n_ok; ++ok_col) {
-      if (!std::isfinite(pprime[ok_col])) {
-        ++nfb;
-      }
-    }
-
-    // Phase B: reduce over positions in fixed input order. A position whose unique
-    // repriced falls to (P' - P0) * weight; a fallback position takes its Taylor leg.
+    // Reduce in original position order. A priced row is never silently dropped
+    // because the active Taylor fields or an Exact contribution are unavailable.
     double acc = 0.0;
+    std::size_t contributed = 0;
+    std::size_t excluded = 0;
+    std::size_t unavailable = 0;
     for (std::size_t p = 0; p < n_pos; ++p) {
-      if (pos_ok[p] == 0u) {
+      if (pos_priced[p] == 0u) {
+        ++excluded;
         continue;
       }
-      const std::uint32_t u = pos_uni[p];
-      const std::size_t ok_col = exact_col_by_unique[u];
-      if (std::isfinite(pprime[ok_col])) {
-        acc += (pprime[ok_col] - uni[ok_col].P0) * pos_w[p];
+      double value = kNaN;
+      double next = acc;
+      const std::size_t col = exact_col_by_unique[pos_uni[p]];
+      if (pos_w[p] == 0.0) {
+        value = 0.0;
+      } else if (exact && std::isfinite(pprime[col])) {
+        value = (pprime[col] - uni[col].P0) * pos_w[p];
+        // Keep the existing multiply/add expression (including compiler
+        // contraction) while checking the standalone position contribution.
+        next = acc + (pprime[col] - uni[col].P0) * pos_w[p];
       } else {
         const double dS = sp * pos_spot[p];
-        acc += scenario_taylor_leg(pos_greeks[p], dS, dvol, dt, dr);
+        const auto fields = detail::scenario_taylor_fields(dS, dvol, dt, dr);
+        if (fields == GreekFieldMask::None) {
+          value = 0.0;
+        } else if (detail::american_greeks_support(pos_greeks[p], fields)) {
+          value = detail::scenario_taylor_active_leg(pos_greeks[p], dS, dvol, dt, dr);
+          next = acc + value;
+        }
+      }
+      if (std::isfinite(value)) {
+        ++contributed;
+        acc = next;
+      } else {
+        ++unavailable;
       }
     }
-    pnl[c] = acc;
-    route[c] = static_cast<std::uint8_t>(ScenarioRoute::Exact);
-    fallback[exact_row] = nfb;
+    r.n_contributing_positions[c] = contributed;
+    r.n_excluded_positions[c] = excluded;
+    r.n_unavailable_positions[c] = unavailable;
+    pnl[c] = unavailable == 0u && std::isfinite(acc) ? acc : kNaN;
+    route[c] = static_cast<std::uint8_t>(exact ? ScenarioRoute::Exact : ScenarioRoute::Taylor);
   });
 
   std::size_t n_fallback = 0;

@@ -477,3 +477,46 @@ result bits against the original public kernel. Runtime RED is retained; the
 corrected stack passes all11 scoped strategy/quant tests and two owning PCH-off
 objects (repair-iv/greek-conditional-inactive-*). Active sensitivity admission is
 unchanged. The initial helper is not promoted independently of this correction.
+
+
+The option scenario grid now keeps supported base prices eligible for Exact
+repricing even when the base risk bundle is partial. Taylor cells and failed
+Exact reprices require only their actual active shock fields through the same
+private conditional helper. A priced position with missing active supply or a
+nonfinite contribution makes the cell P&L NaN instead of disappearing from its
+denominator. Zero-weight or zero-shock positions retain their exact identity.
+The original Exact accumulation expression is preserved, including its compiler
+contraction; a separate check accounts for a nonfinite position contribution.
+
+`ScenarioGridResult::n_ok`/`n_failed` retain unique-contract complete-risk units;
+all duplicate rows must be complete for their unique to count as complete.
+The additive `n_priced` counts unique contracts with supplied base prices.
+The three new per-cell position counts are `n_contributing_positions`,
+`n_excluded_positions`, and `n_unavailable_positions`. They sum to the input
+position count, retain duplicates, and distinguish absent base prices from
+unavailable active risk. Finite contributions can overflow only their sum: that
+cell is NaN without fabricating an unavailable position. Exact fallback counts
+remain per unique and per Exact cell; compact price scratch now includes every
+base-priced unique. The append-only result arity pin moves from14 to18.
+
+`scenario_margin` refuses Unavailable if any cell excludes a position, has an
+unavailable contribution, or is nonfinite. A partial-price contract can still
+produce valid margin when every active cell has a successful Exact reprice.
+The non-served Python scenario-grid API remains the documented missing-product;
+this correction does not invent a new binding or alter the separate served API.
+Derivative-leg eligibility and its existing counters are unchanged.
+
+Runtime RED retained the actual near-exercise put whose Exact P&L was silently
+zero instead of -115.94892268356153 and whose supplied Rho scenario was zero
+instead of -0.00013608947251242398. A missing-position margin also incorrectly
+returned zero. Final checks pass all46 ScenarioGrid tests and all15 margin,
+Reg-T and engine controls, plus four owning PCH-off objects. Additional controls
+cover duplicate scaled overflow in both row orders, fallback refusal, exact
+zero weight, finite-position aggregate overflow, thread bits and the option/
+derivative wrapper. An intermediate finite-check materialization changed three
+Exact aggregate cells by1-2ULP; its failed receipt is retained, and the original
+strict bitwise oracle passes after restoring the accumulation expression.
+Evidence is repair-iv/greek-{scenario,margin}-{red,green,final}.*,
+greek-scenario-order-{build,green}.log, greek-scenario-hygiene.log, and
+greek-scenario-final-receipt.json. These are availability/consumer fixes, not a
+new Greek accuracy or latency qualification.

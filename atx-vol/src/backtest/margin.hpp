@@ -114,9 +114,9 @@ struct MarginScenarioSpec {
 // `ScenarioGridSpec` from `spec` and calls `scenario_grid(book, base, ...)`
 // wholesale; no revaluation logic is duplicated here.
 //
-// @return whatever `scenario_grid` itself returns: InvalidArgument on a
-// malformed grid or an empty book/axis, otherwise the propagated pricer
-// error.
+// @return Unavailable if any cell excludes a position, lacks an active sensitivity,
+// or is nonfinite. Partial base Greeks are allowed when Exact repricing supplies
+// every requested cell. Other grid/pricer errors propagate. Empty books return 0.
 [[nodiscard]] Result<double> scenario_margin(const PortfolioPricer &pricer, const SurfaceSet &base,
                                              const MarginScenarioSpec &spec);
 
