@@ -523,10 +523,6 @@ add_executable(atx-vol-tests
     batch_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
-    historical_projection_test.cpp
-    var_test.cpp
-    var_report_test.cpp
-    var_validation_test.cpp
     american_iv_test.cpp
     american_iv_batch_test.cpp
     dividend_test.cpp

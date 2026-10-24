@@ -256,10 +256,6 @@ set(ATX_VOL_STORAGE_SOURCES
 set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/rv_lognormal.cpp
     src/analytics/contract_projection.cpp
-    src/analytics/historical_projection.cpp
-    src/analytics/var.cpp
-    src/analytics/var_report.cpp
-    src/analytics/var_validation.cpp
     src/analytics/event_vol.cpp
     src/analytics/scenario_grid.cpp
     src/analytics/pnl_attribution.cpp
