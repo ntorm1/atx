@@ -118,3 +118,42 @@ finite-price/nonfinite-gamma test uses the existing tiny-spot fixture on unchang
 numerical arithmetic; the subsequent exercise-admission component must replace
 that fixture with a genuine stencil refusal when it supplies exact exercised
 derivatives. The partial-result contract itself is unchanged by that migration.
+
+Portfolio price frames now retain a valid mark and PV under the append-only
+`GreeksUnavailable` status. Their requested/supported masks and nine reasons
+describe each scaled risk field independently. `price_into` accepts optional
+metadata spans, validates their sizes and byte-range separation before any
+write, and reuses caller storage. Returning frames allocate three metadata
+columns; their allocation and byte counters include those columns.
+
+`PriceTotals` and risk buckets sum all priced rows. `n_priced` reports price
+coverage, `n_ok` complete requested bundles, and `n_greeks_unavailable` priced
+rows with partial risk. Wholly unpriced rows remain outside the sum, so callers
+must compare `n_priced` with the full position count before interpreting PV as
+complete book coverage. A missing requested derivative on any nonzero-weight
+priced row makes that aggregate NaN/unsupported instead of shrinking its
+denominator. Other available fields remain usable. An exactly zero weight
+contributes exact zero to aggregate risk while its row retains the refusal.
+The aggregate Price bit describes the priced-row PV sum, not an unqualified
+claim that every position was valued.
+
+Adjusted Delta computes its internal Vega dependency even when the caller omits
+the Vega output group, then narrows outward metadata. A missing slope or Vega
+refuses Delta rather than substituting the unadjusted value. Cached raw Greek
+bundles remain unadjusted for Taylor P&L; a partial cached bundle is rechecked
+against the actual Taylor request, so an unused unavailable rho cannot veto a
+no-rate-move explanation. A missing requested Taylor coefficient still refuses
+the explanation. Derivative-book combination, backtest coverage reporting and
+Python exposure are separate downstream components, not completed by this change.
+
+The lost-price/partial-total regression first failed at runtime; a second RED
+case caught overly broad rejection of a cached partial bundle. The combined
+exercise-admission build passes all 98 portfolio/seed/target-seed tests and 33
+focused batch/shared-gate tests. Five owning PCH-off objects pass. Existing
+overflow fixtures were replaced by the frozen real crossing and its call dual;
+the old tiny-spot put now has a positive exact-exercise Gamma regression. One
+synthetic reducer fixture now supplies explicit metadata for its manufactured
+finite mark. Receipts are `repair-iv/greek-portfolio-{red,first,scoped,final}.*`,
+`greek-batch-migration.*`, and `greek-portfolio-hygiene.log`. No fit or Greek
+latency claim, derivative budget, or native-adjoint/cached accuracy qualification
+is inferred from these checks.

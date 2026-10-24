@@ -103,7 +103,7 @@ template <std::size_t N>
 }
 
 [[nodiscard]] bool price_frame_view_overlaps(const PriceFrameView &out, bool want_greeks) noexcept {
-  const std::array<ByteRange, 15> ranges{
+  const std::array<ByteRange, 18> ranges{
       byte_range(out.id),
       byte_range(out.uid),
       byte_range(out.pv),
@@ -119,6 +119,9 @@ template <std::size_t N>
       byte_range(out.charm, want_greeks),
       byte_range(out.status),
       byte_range(*out.total),
+      byte_range(out.requested),
+      byte_range(out.supported),
+      byte_range(out.reasons),
   };
   return any_byte_ranges_overlap(ranges);
 }
@@ -454,6 +457,115 @@ struct ContractPx {
   PriceStatus status{PriceStatus::ModelUnavailable};
 };
 
+[[nodiscard]] bool priced(PriceStatus status) noexcept {
+  return status == PriceStatus::Ok || status == PriceStatus::GreeksUnavailable;
+}
+
+[[nodiscard]] GreekFieldMask price_request(bool want_greeks,
+                                          PricedSurface::GreekNeeds needs) noexcept {
+  return want_greeks ? detail::american_greek_request(needs.vega, needs.rho, needs.charm)
+                    : GreekFieldMask::Price;
+}
+
+[[nodiscard]] PricedSurface::GreekNeeds compute_needs(PricedSurface::GreekNeeds needs,
+                                                     bool skew_delta) noexcept {
+  // Vega is an internal dependency of adjusted delta even when its own output
+  // group was not requested. The outward mask is narrowed after adjustment.
+  needs.vega = needs.vega || skew_delta;
+  return needs;
+}
+
+[[nodiscard]] AmericanGreeks position_greeks(const ContractPx &c, double weight,
+                                            bool want_greeks, bool skew_delta,
+                                            GreekFieldMask requested) noexcept {
+  AmericanGreeks g = c.g;
+  if (!priced(c.status)) {
+    g = AmericanGreeks{};
+    detail::mark_american_greek_fields(g, requested, AmericanGreekReason::Nonfinite);
+    return g;
+  }
+  if (!want_greeks) {
+    g.price = c.fair_value;
+    detail::mark_american_greek_fields(g, GreekFieldMask::Price,
+                                     AmericanGreekReason::ComputedEstimate);
+  }
+  if (want_greeks && skew_delta) {
+    if (detail::american_greeks_support(g, GreekFieldMask::Delta | GreekFieldMask::Vega) &&
+        std::isfinite(c.vega_slope)) {
+      g.delta += c.vega_slope * g.vega;
+      detail::mark_american_greek_fields(g, GreekFieldMask::Delta,
+                                       AmericanGreekReason::ComputedEstimate);
+    } else {
+      detail::mark_american_greek_fields(g, GreekFieldMask::Delta,
+                                       AmericanGreekReason::UnsupportedAxis);
+    }
+  }
+  detail::narrow_american_greek_request(g, requested);
+  for (std::size_t i = 0; i < 8u; ++i) {
+    g.*detail::kAmericanGreekMembers[i] *= weight;
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    if (has_field(g.supported, field)) {
+      detail::mark_american_greek_fields(g, field, g.reasons[i]);
+    }
+  }
+  return g;
+}
+
+constexpr std::array<double PriceTotals::*, 8> kTotalGreekMembers{
+    &PriceTotals::delta, &PriceTotals::gamma, &PriceTotals::vega, &PriceTotals::theta,
+    &PriceTotals::rho, &PriceTotals::vanna, &PriceTotals::volga, &PriceTotals::charm};
+
+void initialize_price_totals(PriceTotals &t, GreekFieldMask requested) noexcept {
+  t.requested = t.supported = requested;
+  for (std::size_t i = 0; i < t.reasons.size(); ++i) {
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    t.reasons[i] = has_field(requested, field) ? AmericanGreekReason::ComputedEstimate
+                                            : AmericanGreekReason::NotRequested;
+  }
+  if (requested == GreekFieldMask::Price) {
+    for (const auto member : kTotalGreekMembers) t.*member = kNaN;
+  } else {
+    t.abs_vega = has_field(requested, GreekFieldMask::Vega) ? 0.0 : kNaN;
+  }
+}
+
+void refuse_total_field(PriceTotals &t, std::size_t i, AmericanGreekReason reason) noexcept {
+  t.supported = static_cast<GreekFieldMask>(static_cast<std::uint32_t>(t.supported) &
+                                           ~(std::uint32_t{1} << i));
+  t.reasons[i] = detail::american_greek_supplied_reason(reason) ||
+                        reason == AmericanGreekReason::NotRequested
+                    ? AmericanGreekReason::Nonfinite : reason;
+}
+
+void add_priced_row(PriceTotals &t, const AmericanGreeks &g, double pv,
+                    PriceStatus status, bool zero_weight) noexcept {
+  t.pv += pv;
+  if (!std::isfinite(t.pv)) refuse_total_field(t, 8u, AmericanGreekReason::Nonfinite);
+  for (std::size_t i = 0; i < kTotalGreekMembers.size(); ++i) {
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    if (!has_field(t.requested, field)) continue;
+    double &sum = t.*kTotalGreekMembers[i];
+    // An exactly zero position contributes exact zero without requiring the
+    // unavailable per-share derivative. Its row still reports the refusal.
+    const double contribution = zero_weight ? 0.0 : g.*detail::kAmericanGreekMembers[i];
+    if ((!zero_weight && !detail::american_greeks_support(g, field)) ||
+        !std::isfinite(contribution)) {
+      if (has_field(t.supported, field)) refuse_total_field(t, i, g.reasons[i]);
+      sum = kNaN;
+    } else {
+      sum += contribution;
+      if (!std::isfinite(sum) && has_field(t.supported, field))
+        refuse_total_field(t, i, AmericanGreekReason::Nonfinite);
+    }
+    if (field == GreekFieldMask::Vega) {
+      t.abs_vega = has_field(t.supported, field) ? t.abs_vega + std::fabs(contribution) : kNaN;
+    }
+  }
+  ++t.n_priced;
+  if (status == PriceStatus::Ok) ++t.n_ok;
+  else ++t.n_greeks_unavailable;
+}
+
 // Per-unique-contract P&L solve result (indexed by the ORIGINAL Portfolio contract
 // index). `gb` are the base American (cold-FD) Greeks — the Taylor coefficients;
 // `price_base`/`price_target` are the base/shifted American marks; the `d*` are the
@@ -484,23 +596,8 @@ struct TargetRiskPx {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
-// G1 (GR-P2-1): a finite mark no longer certifies an Ok Greek lane. The scalar
-// production bundles (american_greeks_fd / american_greeks_al) can return SUCCESS
-// with a NON-finite differenced Greek — e.g. an extreme spot where the FD gamma
-// denominator hS*hS underflows to 0 while the deep-ITM mark stays finite — yet
-// PriceTotals / reduce_pnl_totals gate on STATUS only, so one such lane poisons the
-// whole book's totals (violating the frame's "no NaN enters a total" contract). The
-// AVX2 laned kernel already guards exactly this (simd/american_greeks_avx2.cpp);
-// this sweeps every REQUESTED column finite at the scalar Ok-stamp before Ok:
-// price/delta/gamma/theta always, vega/volga/vanna, rho, charm per GreekNeeds. A
-// non-finite requested column demotes the lane to NumericError (NaN-isolated like
-// every other error lane).
-//
-// FIX-5/M3: this used to be a verbatim copy of `detail::requested_greeks_finite`
-// (src/laned_greek_run.hpp), despite that header's own comment insisting on a
-// SINGLE definition for every Greek route. Two copies of a predicate whose whole
-// job is to make two routes agree is the defect shape one layer up, so the name is
-// kept — it is the one every stamp in this file reads — and the body now delegates.
+// Complete-bundle gate for seed reuse and Taylor risk. Portfolio marks use
+// separate per-field availability and can retain an incomplete risk bundle.
 [[nodiscard]] bool greeks_all_finite(const AmericanGreeks &g,
                                      PricedSurface::GreekNeeds needs) noexcept {
   return detail::requested_greeks_finite(g, needs);
@@ -584,7 +681,8 @@ struct TargetRiskPx {
 [[nodiscard]] bool same_greeks(const AmericanGreeks &a, const AmericanGreeks &b) noexcept {
   return same_bits(a.delta, b.delta) && same_bits(a.gamma, b.gamma) && same_bits(a.vega, b.vega) &&
          same_bits(a.theta, b.theta) && same_bits(a.rho, b.rho) && same_bits(a.vanna, b.vanna) &&
-         same_bits(a.volga, b.volga) && same_bits(a.charm, b.charm) && same_bits(a.price, b.price);
+         same_bits(a.volga, b.volga) && same_bits(a.charm, b.charm) && same_bits(a.price, b.price) &&
+         a.requested == b.requested && a.supported == b.supported && a.reasons == b.reasons;
 }
 
 [[nodiscard]] bool same_seed_payload(const FullGreekSeed &a, const FullGreekSeed &b) noexcept {
@@ -773,6 +871,8 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
                    std::vector<Status> &b_status, std::span<const ContractPx> staged_seeds = {},
                    std::span<const std::uint8_t> accepted_seeds = {}) {
   const std::size_t n_unique = pp.n_unique();
+  const GreekFieldMask outward_request = price_request(want_greeks, greek_needs);
+  const PricedSurface::GreekNeeds calculation_needs = compute_needs(greek_needs, skew_adjusted_delta);
   using EF = PricedSurface::EvalField;
   // WS-P P3 adjoint A/B: request IV ONLY from evaluate_batch (priced_surface.cpp:
   // "Iv-only: no pricer solve"). The FD greek bundle is never computed, AND the mark's
@@ -847,7 +947,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     const Status batch_status =
         surf->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                              fields, analytic, soa, resolved_price_isa, query_execution,
-                             greek_needs);
+                             calculation_needs);
     if (!batch_status.has_value()) {
       for (std::uint32_t p = s; p < e; ++p) {
         b_iv[p] = kNaN;
@@ -893,69 +993,58 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         const Result<AmericanGreeks> ga = detail::american_greeks_adjoint(
             surf->pricing().S, kcol[p], tcol[p], rp.sigma, rp.rate, rp.q_eff, scol[p],
             std::optional<AlOpts>{surf->pricing().al_opts}, &took);
-        // FIX-5/I1: the FOURTH Ok-stamp. This arm used to gate on isfinite(price)
-        // alone — the exact predicate FIX-1/F2, FIX-2/F2-B and FIX-3/F3-A each
-        // replaced — fourteen lines above the correctly guarded stamp below, and it
-        // is the SOLE gate on this route (`fields` is EF::Iv only, so nothing
-        // upstream normalizes). american_greeks_adjoint hands its unclaimed corners
-        // to american_greeks_fd, which returns SUCCESS with a non-finite differenced
-        // Greek at the extreme documented above; PriceTotals sums on STATUS alone,
-        // so such a lane was counted in n_ok and poisoned the book totals. Same
-        // shape as the non-adjoint stamp: normalize the UNREQUESTED slots first
-        // (FIX-1/F3's load-bearing half — a consumer's `g.rho * dr` is NaN even when
-        // dr is 0.0), then sweep the REQUESTED set finite.
+        // Preserve a valid mark independently of requested derivative support.
         if (!ga.has_value()) {
           out.status = PriceStatus::NumericError;
           continue;
         }
         AmericanGreeks gg = *ga;
-        detail::normalize_unrequested_greeks(gg, greek_needs);
-        if (!greeks_all_finite(gg, greek_needs)) {
+        detail::normalize_unrequested_greeks(gg, calculation_needs);
+        if (!std::isfinite(out.iv) ||
+            !detail::american_greeks_support(gg, GreekFieldMask::Price)) {
           out.status = PriceStatus::NumericError;
           continue;
         }
-        // S1-T1/1.4: the VegaSlope is part of the REQUESTED delta under
-        // skew_adjusted_delta, so it is swept finite BEFORE the Ok-stamp exactly
-        // like the Greek columns above — a NaN slope demotes the lane instead of
-        // riding an Ok status into the book's delta total.
+        // A missing adjustment input refuses Delta only, preserving the mark
+        // and independent derivatives. No silent unadjusted-Delta fallback.
         double adjoint_vega_slope = 0.0; // a no-op multiplier when the flag is off
         if (skew_adjusted_delta) {
           const std::optional<double> slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
-          if (!slope.has_value()) {
-            out.status = PriceStatus::NumericError;
-            continue;
-          }
-          adjoint_vega_slope = *slope;
+          adjoint_vega_slope = slope.value_or(kNaN);
         }
         b_greeks[p] = gg;
         out.fair_value = gg.price;
         out.g = gg;
         out.vega_slope = adjoint_vega_slope;
-        out.status = PriceStatus::Ok;
+        out.status = PriceStatus::GreeksUnavailable;
+        out.status = detail::american_greeks_support(
+                         position_greeks(out, 1.0, true, skew_adjusted_delta, outward_request),
+                         outward_request)
+                         ? PriceStatus::Ok : PriceStatus::GreeksUnavailable;
         continue;
       }
-      if (!b_status[p].has_value() || !greeks_all_finite(b_greeks[p], greek_needs)) {
+      // A batch lane can refuse the requested risk while retaining its valid
+      // mark. The exact Price stamp and finite IV admit that partial payload.
+      if (!std::isfinite(out.iv) ||
+          !detail::american_greeks_support(b_greeks[p], GreekFieldMask::Price)) {
         out.status = PriceStatus::NumericError;
         continue;
       }
-      // S1-T1/1.4: sweep the VegaSlope finite BEFORE the Ok-stamp (see the adjoint
-      // arm above) — under skew_adjusted_delta it is a REQUESTED input to the
-      // published delta, so a non-finite one must quarantine its lane, not poison
-      // the book.
+      // Adjustment inputs have the same per-field semantics on both routes.
       double lane_vega_slope = 0.0; // a no-op multiplier when the flag is off
       if (skew_adjusted_delta) {
         const std::optional<double> slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
-        if (!slope.has_value()) {
-          out.status = PriceStatus::NumericError;
-          continue;
-        }
-        lane_vega_slope = *slope;
+        lane_vega_slope = slope.value_or(kNaN);
       }
       // greeks().price IS the American fair_value (bit-identical, cold-FD invariant).
       out.fair_value = b_greeks[p].price;
       out.g = b_greeks[p];
       out.vega_slope = lane_vega_slope;
-      out.status = PriceStatus::Ok;
+      out.status = PriceStatus::GreeksUnavailable;
+      out.status = detail::american_greeks_support(
+                       position_greeks(out, 1.0, true, skew_adjusted_delta, outward_request),
+                       outward_request)
+                       ? PriceStatus::Ok : PriceStatus::GreeksUnavailable;
     }
   };
 
@@ -1025,102 +1114,51 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   });
 }
 
-// Cache-line-disjoint SoA scatter into the caller's output view. `want_greeks`
-// gates the eight Greek columns; under Marks those spans are empty and are NEVER
-// touched (the 64 B/pos saving). Bit-identical to price()'s scatter for the
-// columns it writes.
+// Scatter and totals consume the same scaled payload, preserving both the
+// fixed input-order arithmetic and the exact per-field availability.
 void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
                   std::span<const ContractPx> px, bool want_greeks, bool skew_adjusted_delta,
-                  unsigned n_threads, const PriceFrameView &out) {
-  const std::size_t n = positions.size();
-  pricing_executor().run_blocks(n, n_threads, [&](std::size_t i) {
+                  GreekFieldMask requested, unsigned n_threads, const PriceFrameView &out) {
+  pricing_executor().run_blocks(positions.size(), n_threads, [&](std::size_t i) {
     const Position &p = positions[i];
     const ContractPx &c = px[pf.contract_ix(i)];
     const double w = p.qty * eff_multiplier(p.multiplier);
+    const AmericanGreeks g = position_greeks(c, w, want_greeks, skew_adjusted_delta, requested);
     out.id[i] = p.id;
     out.uid[i] = p.contract.uid;
     out.status[i] = c.status;
     out.iv[i] = c.iv;
-    if (c.status != PriceStatus::Ok) {
-      out.pv[i] = kNaN;
-      out.price[i] = kNaN;
-      if (want_greeks) {
-        out.delta[i] = out.gamma[i] = out.vega[i] = out.theta[i] = out.rho[i] = kNaN;
-        out.vanna[i] = out.volga[i] = out.charm[i] = kNaN;
-      }
-      return;
-    }
-    const AmericanGreeks &g = c.g;
-    out.price[i] = c.fair_value; // American per-share mark
-    out.pv[i] = w * c.fair_value;
+    out.price[i] = priced(c.status) ? c.fair_value : kNaN;
+    out.pv[i] = priced(c.status) ? w * c.fair_value : kNaN;
     if (want_greeks) {
-      // Skew-adjusted (SpiderRock) delta: delta + VegaSlope * vega, VegaSlope
-      // precomputed per unique contract in solve_span (c.vega_slope). Off by
-      // default -> delta_ps == g.delta, bit-identical to the pre-I6 path.
-      const double delta_ps = skew_adjusted_delta ? (g.delta + c.vega_slope * g.vega) : g.delta;
-      out.delta[i] = w * delta_ps;
-      out.gamma[i] = w * g.gamma;
-      out.vega[i] = w * g.vega;
-      out.theta[i] = w * g.theta;
-      out.rho[i] = w * g.rho;
-      out.vanna[i] = w * g.vanna;
-      out.volga[i] = w * g.volga;
-      out.charm[i] = w * g.charm;
+      const std::array<std::span<double>, 8> columns{
+          out.delta, out.gamma, out.vega, out.theta, out.rho, out.vanna, out.volga, out.charm};
+      for (std::size_t j = 0; j < columns.size(); ++j)
+        columns[j][i] = priced(c.status) ? g.*detail::kAmericanGreekMembers[j] : kNaN;
+      if (priced(c.status) && !detail::american_greeks_support(g, requested))
+        out.status[i] = PriceStatus::GreeksUnavailable;
     }
+    if (!out.requested.empty()) out.requested[i] = g.requested;
+    if (!out.supported.empty()) out.supported[i] = g.supported;
+    if (!out.reasons.empty()) out.reasons[i] = g.reasons;
   });
 }
 
-// Fixed-input-order totals reduction over the Ok lanes — the deterministic sum
-// (same order, same operand association) price() has always used, so totals are
-// bit-identical across thread counts AND across price()/price_into/price_totals.
-// Reducing `w * c.fair_value` here yields the same bits the scatter stored into
-// the pv column (IEEE double round-trips losslessly). Under !want_greeks the
-// Greek sums stay NaN (a clean 0.0 would read as a genuinely vega-flat book).
-// `t` must be zero-initialized by the caller.
+// Unpriced rows remain outside the priced-row aggregate; n_priced exposes that
+// coverage. Partial risk never silently shrinks a requested Greek denominator.
 void reduce_price_totals(std::span<const Position> positions, const Portfolio &pf,
                          std::span<const ContractPx> px, bool want_greeks, bool skew_adjusted_delta,
-                         PriceTotals &t) {
-  if (!want_greeks) {
-    t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
-    t.vanna = t.volga = t.charm = kNaN;
-  } else {
-    // C-3: `PriceTotals::abs_vega` defaults to NaN ("not computed" — a clean 0.0
-    // would read as a genuinely gross-vega-flat book, the same convention
-    // `dP_dq` uses). This reduction DOES compute it, so open the accumulator
-    // here rather than relying on the caller's zero-initialization.
-    t.abs_vega = 0.0;
-  }
-  const std::size_t n = positions.size();
-  for (std::size_t i = 0; i < n; ++i) {
+                         GreekFieldMask requested, PriceTotals &t) {
+  initialize_price_totals(t, requested);
+  for (std::size_t i = 0; i < positions.size(); ++i) {
     const Position &p = positions[i];
     const ContractPx &c = px[pf.contract_ix(i)];
-    if (c.status != PriceStatus::Ok) {
-      continue;
-    }
+    if (!priced(c.status)) continue;
     const double w = p.qty * eff_multiplier(p.multiplier);
-    t.pv += w * c.fair_value;
-    if (want_greeks) {
-      const AmericanGreeks &g = c.g;
-      // Same skew adjustment as scatter_rows, applied independently (this
-      // reduction never reads the scattered frame) so both stay bit-identical
-      // to each other and to the pre-I6 path when the flag is off.
-      const double delta_ps = skew_adjusted_delta ? (g.delta + c.vega_slope * g.vega) : g.delta;
-      t.delta += w * delta_ps;
-      t.gamma += w * g.gamma;
-      const double leg_vega = w * g.vega;
-      t.vega += leg_vega;
-      // C-3: the GROSS companion, accumulated in the same fixed input order so
-      // it is thread-count invariant exactly as the signed sum is. `t.vega` is
-      // still `+= w * g.vega` bit-for-bit (the named temporary is the same
-      // value), so no existing number moves.
-      t.abs_vega += std::fabs(leg_vega);
-      t.theta += w * g.theta;
-      t.rho += w * g.rho;
-      t.vanna += w * g.vanna;
-      t.volga += w * g.volga;
-      t.charm += w * g.charm;
-    }
-    ++t.n_ok;
+    const AmericanGreeks g = position_greeks(c, w, want_greeks, skew_adjusted_delta, requested);
+    const PriceStatus status = detail::american_greeks_support(g, requested)
+                                   ? PriceStatus::Ok : PriceStatus::GreeksUnavailable;
+    add_priced_row(t, g, w * c.fair_value, status, w == 0.0);
   }
 }
 
@@ -1280,6 +1318,11 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   if (!marks_ok) {
     return Err(ErrorCode::InvalidArgument, "price_into: marks span/size mismatch");
   }
+  if ((!out.requested.empty() && out.requested.size() != n) ||
+      (!out.supported.empty() && out.supported.size() != n) ||
+      (!out.reasons.empty() && out.reasons.size() != n)) {
+    return Err(ErrorCode::InvalidArgument, "price_into: metadata span/size mismatch");
+  }
   if (want_greeks) {
     const bool greeks_ok = out.delta.size() == n && out.gamma.size() == n && out.vega.size() == n &&
                            out.theta.size() == n && out.rho.size() == n && out.vanna.size() == n &&
@@ -1318,7 +1361,8 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, seeds.size());
     } else {
       const SeedStageCounts counts = stage_full_greek_seeds(
-          surfaces, contracts, analytic, opts.query_execution, opts.greek_needs,
+          surfaces, contracts, analytic, opts.query_execution,
+          compute_needs(opts.greek_needs, opts.skew_adjusted_delta),
           opts.skew_adjusted_delta, opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order,
           w.seed_candidate_matched);
       (void)counts;
@@ -1339,10 +1383,15 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
   // reserved, so the hot path allocates no frame memory (n_threads>1 still
   // allocates a worker-thread vector; see PortfolioWorkspace).
   ATX_VOL_COUNT_N(FrameBytes, n * bytes_per_position(fields));
+  ATX_VOL_COUNT_N(FrameBytes, out.requested.size_bytes() + out.supported.size_bytes() +
+                                 out.reasons.size_bytes());
 
-  scatter_rows(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, opts.n_threads, out);
+  const GreekFieldMask requested = price_request(want_greeks, opts.greek_needs);
+  scatter_rows(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, requested,
+               opts.n_threads, out);
   *out.total = PriceTotals{};
-  reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, *out.total);
+  reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, requested,
+                      *out.total);
   // Adjoint mode is compute-only: leave base_risk_valid false so a later pnl_totals
   // cannot reuse adjoint-computed base risk under an FD assumption (it recomputes).
   if (want_greeks && !use_adjoint) {
@@ -1388,7 +1437,8 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
   // input order straight off the unique-result SoA — bit-identical to
   // price(...).total.
   PriceTotals t{};
-  reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta, t);
+  reduce_price_totals(positions, pf_, w.px, want_greeks, opts.skew_adjusted_delta,
+                      price_request(want_greeks, opts.greek_needs), t);
   if (want_greeks && !use_adjoint) {
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
@@ -1414,21 +1464,24 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   const bool want_greeks = has_field(fields, PriceFieldMask::Greeks);
 
   // The returning API is a thin wrapper over price_into over a locally-owned
-  // frame + workspace. Allocate EXACTLY the columns the mask materializes: the
-  // six marks columns always, the eight Greek columns only under FullGreeks.
+  // frame + workspace. Allocate six marks and three availability columns, plus
+  // eight Greek columns under FullGreeks.
   // FrameAllocations counts the ACTUAL frame column allocations here (not a
   // hard-coded 14); the in-place price_into path emits none.
   PriceFrame f;
-  // Six marks columns always; the eight Greek columns only under FullGreeks. The
+  // Nine mark/availability columns always; eight Greeks under FullGreeks. The
   // count is inlined (not a local) so it does not read as unused when the OFF
   // build expands ATX_VOL_COUNT_N to ((void)0).
-  ATX_VOL_COUNT_N(FrameAllocations, n > 0 ? (want_greeks ? 14u : 6u) : 0u);
+  ATX_VOL_COUNT_N(FrameAllocations, n > 0 ? (want_greeks ? 17u : 9u) : 0u);
   f.id.resize(n);
   f.uid.resize(n);
   f.pv.resize(n);
   f.price.resize(n);
   f.iv.resize(n);
   f.status.resize(n);
+  f.requested.resize(n);
+  f.supported.resize(n);
+  f.reasons.resize(n);
   if (want_greeks) {
     f.delta.resize(n);
     f.gamma.resize(n);
@@ -1441,7 +1494,8 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   }
 
   PriceFrameView view{f.id,    f.uid, f.pv,    f.price, f.iv,    f.delta,  f.gamma, f.vega,
-                      f.theta, f.rho, f.vanna, f.volga, f.charm, f.status, &f.total};
+                      f.theta, f.rho, f.vanna, f.volga, f.charm, f.status, &f.total,
+                      f.requested, f.supported, f.reasons};
   // The workspace is PER CALL. H4 hung a `mutable unique_ptr<PortfolioWorkspace>`
   // off the pricer so a per-bar returning-API caller kept the PreparedPortfolio +
   // scratch SoA across calls — but BOTH returning overloads are const, and
@@ -1464,21 +1518,21 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   // analytic-AL carry tier (american_carry_greeks_al) at each contract's resolved
   // (sigma, rate, q_eff). SERIAL per position, so the column and its total are
   // thread-count invariant by construction; it lives off the caller-owned in-place
-  // path (no PriceFrameView span). Non-Ok / model-missing lanes stay NaN; the total
-  // sums the position-scaled column over Ok lanes in input order. `total.dP_dq`
+  // path (no PriceFrameView span). Unpriced/model-missing lanes stay NaN; the total
+  // sums the position-scaled column over all priced lanes in input order. `total.dP_dq`
   // otherwise stays NaN (from PriceTotals{}), never read as a carry-flat book.
   if (want_greeks && opts.carry_greeks) {
     const std::span<const Position> positions = pf_.positions();
     f.dP_dq.assign(n, kNaN);
     double total_dP_dq = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
-      if (f.status[i] != PriceStatus::Ok) {
+      if (!priced(f.status[i])) {
         continue;
       }
       const Position &p = positions[i];
       const SurfaceRef surf = surfaces.find(p.contract.uid);
       if (surf == nullptr) {
-        continue; // defensive: an Ok lane always resolved a surface
+        continue; // defensive: a priced lane always resolved a surface
       }
       const PricedSurface::ResolvedSurfacePoint rp = surf->resolve(p.contract.K, p.contract.T);
       const Result<CarryGreeks> cg = american_carry_greeks_al(
@@ -1925,7 +1979,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         target_mark_ok = s_status[p].has_value() && std::isfinite(target_price);
       }
       const ContractPx *const cached = reuse_base ? &cached_base[orig] : nullptr;
-      if (cached != nullptr && cached->status != PriceStatus::Ok) {
+      if (cached != nullptr && !priced(cached->status)) {
         out.status = cached->status;
         continue;
       }
@@ -2703,7 +2757,8 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
   const bool carry = frame.carry_materialized();
   const bool marks_shape_ok = frame.uid.size() == n && frame.pv.size() == n &&
                               frame.price.size() == n && frame.iv.size() == n &&
-                              frame.status.size() == n;
+                              frame.status.size() == n && frame.requested.size() == n &&
+                              frame.supported.size() == n && frame.reasons.size() == n;
   const bool greek_shape_ok =
       greeks ? frame.gamma.size() == n && frame.vega.size() == n && frame.theta.size() == n &&
                    frame.rho.size() == n && frame.vanna.size() == n && frame.volga.size() == n &&
@@ -2713,6 +2768,11 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
                    frame.volga.empty() && frame.charm.empty();
   if (!marks_shape_ok || !greek_shape_ok || (!carry && !frame.dP_dq.empty())) {
     return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: malformed price frame");
+  }
+  const auto request_bits = static_cast<std::uint32_t>(frame.total.requested);
+  if (!has_field(frame.total.requested, GreekFieldMask::Price) ||
+      (request_bits & ~static_cast<std::uint32_t>(GreekFieldMask::All)) != 0u) {
+    return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: malformed field request");
   }
   // A delta ladder over a marks-only frame would put the WHOLE book in the
   // unkeyed bucket and read as "no position has a delta", which is a different
@@ -2726,47 +2786,39 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
       return Err(ErrorCode::InvalidArgument,
                  "reduce_risk_buckets: frame row identity/order mismatch");
     }
+    if (frame.requested[i] != frame.total.requested ||
+        (static_cast<std::uint32_t>(frame.supported[i]) & ~request_bits) != 0u) {
+      return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: inconsistent field metadata");
+    }
   }
 
-  // A fresh subtotal matched to what the frame materialized: pv/greeks accumulate
-  // from 0; unmaterialized Greek columns stay NaN (never a false 0); dP_dq starts
-  // at 0 when the carry column is present, else stays NaN.
   const auto fresh = [&]() noexcept {
-    PriceTotals t{}; // pv/greeks 0, abs_vega NaN, dP_dq NaN, n_ok 0
-    if (greeks) {
-      // L7-T3: `abs_vega` follows the vega column it sums, so it opens its
-      // accumulator exactly where `reduce_price_totals` opens its own — a 0.0
-      // here under a marks-only frame would report a gross-vega-flat bucket.
-      t.abs_vega = 0.0;
-    } else {
-      t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
-      t.vanna = t.volga = t.charm = kNaN;
-    }
-    if (carry) {
-      t.dP_dq = 0.0;
-    }
+    PriceTotals t{};
+    initialize_price_totals(t, frame.total.requested);
+    if (carry) t.dP_dq = 0.0;
     return t;
   };
   const auto add_row = [&](PriceTotals &t, std::size_t i) noexcept {
-    t.pv += frame.pv[i];
+    AmericanGreeks g{};
+    g.price = frame.price[i];
+    g.requested = frame.requested[i];
+    g.supported = frame.supported[i];
+    g.reasons = frame.reasons[i];
     if (greeks) {
-      t.delta += frame.delta[i];
-      t.gamma += frame.gamma[i];
-      t.vega += frame.vega[i];
-      // Accumulated over the same lanes in the same input order as the signed
-      // sum immediately above, so the gross companion is thread-count invariant
-      // for exactly the reason the signed one is. `t.vega` is untouched.
-      t.abs_vega += std::fabs(frame.vega[i]);
-      t.theta += frame.theta[i];
-      t.rho += frame.rho[i];
-      t.vanna += frame.vanna[i];
-      t.volga += frame.volga[i];
-      t.charm += frame.charm[i];
+      g.delta = frame.delta[i];
+      g.gamma = frame.gamma[i];
+      g.vega = frame.vega[i];
+      g.theta = frame.theta[i];
+      g.rho = frame.rho[i];
+      g.vanna = frame.vanna[i];
+      g.volga = frame.volga[i];
+      g.charm = frame.charm[i];
     }
-    if (carry) {
-      t.dP_dq += frame.dP_dq[i];
-    }
-    ++t.n_ok;
+    const PriceStatus status = detail::american_greeks_support(g, t.requested)
+                                   ? PriceStatus::Ok : PriceStatus::GreeksUnavailable;
+    const double weight = positions[i].qty * eff_multiplier(positions[i].multiplier);
+    add_priced_row(t, g, frame.pv[i], status, weight == 0.0);
+    if (carry) t.dP_dq += frame.dP_dq[i];
   };
 
   std::vector<RiskBucket> buckets;
@@ -2776,7 +2828,7 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
   // presentation step and cannot change within-bucket association.
   std::unordered_map<std::uint64_t, std::size_t> bucket_slots;
   for (std::size_t i = 0; i < n; ++i) {
-    if (frame.status[i] != PriceStatus::Ok) {
+    if (!priced(frame.status[i])) {
       continue;
     }
     std::uint64_t key = 0;
@@ -2841,6 +2893,19 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
         g.dP_dq += b.totals.dP_dq;
       }
       g.n_ok += b.totals.n_ok;
+      g.n_priced += b.totals.n_priced;
+      g.n_greeks_unavailable += b.totals.n_greeks_unavailable;
+      for (std::size_t j = 0; j < g.reasons.size(); ++j) {
+        const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << j);
+        if (has_field(g.supported, field) && !has_field(b.totals.supported, field))
+          refuse_total_field(g, j, b.totals.reasons[j]);
+      }
+    }
+    if (!std::isfinite(g.pv)) refuse_total_field(g, 8u, AmericanGreekReason::Nonfinite);
+    for (std::size_t j = 0; j < kTotalGreekMembers.size(); ++j) {
+      const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << j);
+      if (has_field(g.supported, field) && !std::isfinite(g.*kTotalGreekMembers[j]))
+        refuse_total_field(g, j, AmericanGreekReason::Nonfinite);
     }
     *grand = g;
   }
