@@ -102,6 +102,12 @@ struct FamilyKernelPolicy {
   bool family_economics{true};
   double family_node_cost_us{33.0}; // measured: one node of AlSigmaFamily::prepare
   double cold_lane_cost_us{140.0};  // measured: one american_greeks_al lane (vega, charm)
+  // BLOCK SCHEDULE. The (uid, expiry) blocks the kernel fans out are very uneven (a
+  // short-tenor cold block, a one-lane family, a forty-lane family): false hands each
+  // worker one contiguous static chunk (pricing_executor run_blocks), true lets workers
+  // claim blocks one at a time (run_dynamic). Every block writes only its own rows,
+  // slots and counters, so both give the same bits for any thread count.
+  bool dynamic_schedule{false};
 };
 
 struct ColdKernelPolicy {

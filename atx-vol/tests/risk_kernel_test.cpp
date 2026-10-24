@@ -346,13 +346,18 @@ TEST(RiskKernel, ThreadCountBitIdentical) {
   const auto owned = rt::make_state(rt::shifted_move());
   const RiskBook book = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
   const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
-  // Lane A2: the shipped family policy (economics + adaptive nodes) AND the
-  // every-group-keeps-its-family one, with and without rho, beside the cold kernel.
+  // Lane A2: the shipped family policy (economics + adaptive nodes), the
+  // every-group-keeps-its-family one and the shipped one on the other block schedule, with
+  // and without rho, beside the cold kernel. The schedule never moves a bit either.
   for (const bool rho : {true, false}) {
     RiskNeeds needs;
     needs.rho = rho;
-    for (const int kind : {0, 1, 2}) {
+    std::optional<RiskFrame> shipped;
+    for (const int kind : {0, 1, 2, 3}) {
       FamilyKernelPolicy fp = kind == 1 ? families_always() : FamilyKernelPolicy{};
+      if (kind == 3) {
+        fp.dynamic_schedule = !fp.dynamic_schedule;
+      }
       ColdKernelPolicy cp;
       const auto make = [&] {
         return kind == 2 ? RiskKernel::cold(cp) : RiskKernel::family(fp);
@@ -364,6 +369,11 @@ TEST(RiskKernel, ThreadCountBitIdentical) {
       cp.n_threads = 8;
       const RiskFrame eight = evaluate_or_die(make(), prep, owned->state, needs);
       EXPECT_TRUE(frames_byte_equal(one, eight)) << "kernel " << kind << " rho " << rho;
+      if (kind == 0) {
+        shipped = eight;
+      } else if (kind == 3) {
+        EXPECT_TRUE(frames_byte_equal(*shipped, eight)) << "schedule, rho " << rho;
+      }
     }
   }
 }

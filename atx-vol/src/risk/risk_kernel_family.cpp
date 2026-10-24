@@ -392,8 +392,13 @@ void evaluate_family(const PreparedRiskBook &book, const MarketState &state, Ris
                      const FamilyKernelPolicy &policy, RiskFrame &out, WorkspaceState &ws) {
   const BlockCtx c{book, state, needs, policy, out, ws, mask_of(needs)};
   // Each block is owned by exactly one worker: it writes only its own rows, its own
-  // geometry / family / carry slots and its own counters, so the frame does not
-  // depend on the thread count.
+  // geometry / family / carry slots and its own counters, so the frame depends neither
+  // on the thread count nor on which worker claims which block (the schedule).
+  if (policy.dynamic_schedule) {
+    pricing_executor().run_dynamic(ws.blocks.size(), policy.n_threads,
+                                   [&c](std::size_t b, unsigned) { process_block(c, b); });
+    return;
+  }
   pricing_executor().run_blocks(ws.blocks.size(), policy.n_threads,
                                 [&c](std::size_t b) { process_block(c, b); });
 }
