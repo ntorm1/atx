@@ -607,3 +607,52 @@ indicators around0.00036USD. Its two European control groups differ from closed
 forms by at most3.82e-6 and4.19e-6USD. Finite double-boundary PDE results do not
 create shipping double-boundary support. Greek and cash-dividend accuracy remain
 separate requirements; a price residual cannot certify a hedge sensitivity.
+
+
+## Release follow-up: Screen proposals and compact projection rows
+
+Source `126447ef614ce5c1f7783eaa5973566eafa91a8d` passes all thirteen
+actual-API gates with the family=always economic policy. Three fresh one-worker,
+P-core6 ThinLTO processes measure native cold fits of
+1.0288362, 1.0897724, 1.0305445 seconds;
+median 1.0305445 s and maximum
+1.0897724 s. Every SMT-sibling reading is0%.
+Process wall medians are 1.1828621 s including
+I/O and startup. All results remain above one second. This is not the required
+100-process qualification. Development measured1.0338457s; all release and
+development predictions are byte-identical.
+
+Coverage remains33/33 expiries,12866/12866 rows,12851 inside original quotes,
+12850 identified IVs and16 truthful PriceOnly rows. All price/shape/parity/
+calendar/floor checks pass. Maximum cold Reference residual remains
+0.0005012966094284366USD/share,50.1297% of its immutable raw-spread budget;
+no roundoff-only passes. Strict identification still exposes only the two
+explicitly reviewed changed-target floor transitions. Price and status bytes
+are identical to the preceding family=always candidate;551 IVs change.
+
+The quiet development profile records684 cold-checked Screen acceptances from
+700 candidate attempts. Fast-only early-stop counters are zero; the16 remaining
+refusals retain typed fallback. Calendar364.361ms, family213.195ms and
+certification408.026ms explain the remaining cost; certification includes
+candidate108.856ms, strict native62.054ms, price checks56.857ms and prepared
+seed checks23.770ms. Historical `reimply_fast_*` fields are aggregate aliases;
+new `reimply_candidate_*`, `reimply_screen_*` and Fast-only proposal subsets
+make attribution explicit. All15 pricing and47 identification/final-price/native
+route tests pass; two external fixtures are skipped in that unit run and the
+full native API audit supplies their complete SPY evidence. Owning counter/source
+exporter PCH-off checks pass.
+
+Exact r7 evidence:
+
+- `screen-proposal-compact-v1-lto-profile/manifest.json`, SHA256
+  `197aedc99cf7e413992aac77d1bb0c8bb9a97af579c685e8028a5efb34c4e260`;
+- `acceptance/integrated-screen-proposal-compact-lto-v1-audit/summary-v1.json`;
+- release executable `78e64e2c7c69ce5f2125952304ff251e78b18349920ea0560bfc5c74c42a3e0b` archived under `binaries/`;
+- native audit `ecc32477bc9da11f41254d75c67f225785152e98a8056b32964c56ed195c26d1`;
+- predictions `04f13351165dfb48943aa19022976100c311ebcfbaae6271e24abed0534db9a3`.
+
+Next work is measured family tensor preparation and attribution of the remaining
+bounded-candidate refusals. The calendar ordering/cached-factor experiments did
+not beat the existing solver and stay unpromoted. Public Greek validity repair
+and independent reference refinement continue separately. No default promotion,
+main merge, full Greek/cash qualification or worldwide speed claim is made.
