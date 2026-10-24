@@ -148,10 +148,29 @@ extrema, so the full-range bound also bounds each input-to-canonical change.
   the corrected v3 fixture certifies all 33 slices/12,866 prices in 40 iterations,
   exactly 15 departures; development test wall 471 ms includes JSON and repeated
   certification and is NOT a full fit or a qualified performance measurement.
-- Native repair inversion: `ee94ee72` review in progress. A cached Search root is
+- Native repair inversion and published-node reuse: `ee94ee72` + `16c7102e`,
+  reviewed by integrator and acceptance, integrated as `4ddd9abf` + `d0bde8ad`.
+  The final stack includes `b5e1378b` (integrated as `23065059`) to invalidate a
+  published identification when its public PriceOnly bit changes. All 66 focused
+  author tests pass; integrator ran 86 tests on the preceding integrated stack
+  plus the new sticky-mask regression after rebuilding. A cached Search root is
   not an adequate accuracy oracle for the cold kernel: one comparison differed by
   1.44e-7, while direct cold-kernel endpoint prices bracketed the native root.
   Use tight bisection of the declared cold forward map for that accuracy test.
+- Global repair scheduling: `a3895c53`, reviewed by calendar. Attempt one coupled
+  projection of every served expiry before the existing calendar retry ladder.
+  A regression proves feasible crossings are repaired without expiry refits;
+  27 focused tests pass. Refused projections retain the existing fallback.
+- Acceptance review caught a false timing pass: one native 50-second trial could
+  be presented as 100 half-second trials by a contradictory launcher summary.
+  `cd88e5c6`, independently reviewed by repair-IV and integrated as `afe8fc23`,
+  now requires actual trial count, native clocks, process creation identities,
+  affinity and prediction evidence to agree. All 20 verifier regressions and
+  3 native CLI tests pass in the integrator tree. The latter invoke this tree's
+  explicit executable with `pytest --noconftest`; no Python extension is used.
+  A bare pytest run correctly rejected the host's editable extension from a
+  different checkout. This was a benchmark verifier defect, not an observed
+  production fit speed.
 
 No release or main integration is claimed here. Append the exact reviewed source
 commits, tests, full SPY oracle result, before/after stage and solve counters,
