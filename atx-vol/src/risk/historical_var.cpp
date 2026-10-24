@@ -29,7 +29,9 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/pricing/pricing_executor.hpp"
+#include "risk/historical_var_detail.hpp"
 #include "risk/risk_neumaier.hpp"
 
 namespace atx::vol {
@@ -178,13 +180,20 @@ struct UidGroup {
   return 0u;
 }
 
-// Admission: some leg made it into the totals, and the excluded premium (if any) stays
-// within the configured fraction of the book's base value.
-[[nodiscard]] bool admit(const ExplainTotals &t, double max_frac) noexcept {
-  if (t.n_ok == 0u) {
-    return false;
+// The pair's scenario-level refusals, tested exactly as the kernel and explain test them:
+// either state's TimeSpec refuses one of the book's expiries (RiskKernel::evaluate), or the
+// base TimeSpec refuses the step (explain_into). Both report these as InvalidArgument, like a
+// structural error, so they are told apart here, before either runs.
+[[nodiscard]] bool time_refuses(const PreparedRiskBook &prepared, const MarketState &base,
+                                const MarketState &shifted) {
+  for (const RiskGroup &g : prepared.groups()) {
+    if (!base.time_to_expiry(g.expiry_ns).has_value() ||
+        !shifted.time_to_expiry(g.expiry_ns).has_value()) {
+      return true;
+    }
   }
-  return t.n_excluded == 0u || t.excluded_premium <= max_frac * std::fabs(t.pv_base);
+  const Result<double> dt = time_to_expiry_years(base.ts_ns(), shifted.ts_ns(), base.time());
+  return !dt.has_value() || !std::isfinite(*dt);
 }
 
 // Per-worker scratch, reused across the scenarios a worker runs. Each scenario has its own
@@ -240,38 +249,6 @@ struct Context {
   return Ok();
 }
 
-// Evaluate both frames and explain base -> shifted into `s.explained`. False when the pair
-// refuses (a TimeSpec that rejects an expiry or the step): a scenario-level outcome.
-[[nodiscard]] bool evaluate_and_explain(const Context &c, const HistoricalVarScenario &sc,
-                                        const PreparedRiskBook &prepared, Scratch &s) {
-  s.ws.reserve(prepared);
-  s.base.book_logical_id = 0u;
-  s.shifted.book_logical_id = 0u;
-  const RiskNeeds needs = c.config.needs;
-  if (!c.kernel.evaluate(prepared, *sc.base, needs, s.base, s.ws).has_value() ||
-      !c.kernel.evaluate(prepared, *sc.shifted, needs, s.shifted, s.ws).has_value() ||
-      !explain_into(prepared, *sc.base, s.base, *sc.shifted, s.shifted, c.config.explain,
-                    s.explained)
-           .has_value()) {
-    return false;
-  }
-  if (s.explained.rate_move_without_rho && !needs.rho) {
-    // The pair moves the rate but the base frame carries no rho: materialize it (on the
-    // family kernel it costs the carry-bump sets, hence only when a rate actually moved) so
-    // the move is attributed to pnl_rho instead of the unexplained remainder. pnl_total is
-    // P_t - P_b either way.
-    RiskNeeds with_rho = needs;
-    with_rho.rho = true;
-    if (!c.kernel.evaluate(prepared, *sc.base, with_rho, s.base, s.ws).has_value() ||
-        !explain_into(prepared, *sc.base, s.base, *sc.shifted, s.shifted, c.config.explain,
-                      s.explained)
-             .has_value()) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void run_scenario(const Context &c, std::size_t i, Scratch &s) {
   const HistoricalVarScenario &sc = c.scenarios[i];
   HistoricalVarFrame &f = c.frames[i];
@@ -311,11 +288,29 @@ void run_scenario(const Context &c, std::size_t i, Scratch &s) {
     c.status[i] = Err(prepared.error());
     return;
   }
-  if (!evaluate_and_explain(c, sc, *prepared, s)) {
+  // RE-BIND RELIANCE. The workspace and frames serve a new RiskBook every scenario. The kernel
+  // refuses a workspace or frame bound to another book, so they are re-bound here: the frames
+  // by clearing their logical id, the workspace by RiskWorkspace::reserve, which today calls
+  // WorkspaceState::bind and so re-binds it (risk_kernel.cpp). The header promises only
+  // "Pre-size for a prepared book. Idempotent, grow-only." (risk_kernel.hpp, RiskWorkspace),
+  // not the re-bind. If that ever changes, evaluate_pair reports the kernel's "workspace
+  // bound to a different book" refusal as the call's error (structural), never as a dropped
+  // scenario (HistoricalVar.ForeignWorkspaceIsAnErrorNotADroppedScenario).
+  s.ws.reserve(*prepared);
+  s.base.book_logical_id = 0u;
+  s.shifted.book_logical_id = 0u;
+  Result<historical_var_detail::PairOutcome> outcome = historical_var_detail::evaluate_pair(
+      c.kernel, *prepared, sc, c.config.needs, c.config.explain, s.ws, s.base, s.shifted,
+      s.explained);
+  if (!outcome.has_value()) {
+    c.status[i] = Err(outcome.error());
+    return;
+  }
+  if (*outcome == historical_var_detail::PairOutcome::Refused) {
     return; // not admitted
   }
   f.totals = s.explained.total;
-  f.admitted = admit(f.totals, c.config.max_excluded_premium_frac);
+  f.admitted = historical_var_detail::admit(s.explained, c.config.max_excluded_premium_frac);
 }
 
 // Neumaier field-wise mean over a fixed order (the tail, sorted by loss): a pure function of
@@ -402,6 +397,55 @@ private:
 
 } // namespace
 
+namespace historical_var_detail {
+
+Result<PairOutcome> evaluate_pair(const RiskKernel &kernel, const PreparedRiskBook &prepared,
+                                  const HistoricalVarScenario &scenario, const RiskNeeds &needs,
+                                  const ExplainOptions &opts, RiskWorkspace &ws, RiskFrame &base,
+                                  RiskFrame &shifted, ExplainResult &out) {
+  const MarketState &b = *scenario.base;
+  const MarketState &t = *scenario.shifted;
+  if (time_refuses(prepared, b, t)) {
+    return PairOutcome::Refused;
+  }
+  ATX_TRY_VOID(kernel.evaluate(prepared, b, needs, base, ws));
+  ATX_TRY_VOID(kernel.evaluate(prepared, t, needs, shifted, ws));
+  ATX_TRY_VOID(explain_into(prepared, b, base, t, shifted, opts, out));
+  if (out.rate_move_without_rho && !needs.rho) {
+    // The pair moves the rate but the base frame carries no rho: materialize it (on the
+    // family kernel it costs the carry-bump sets, hence only when a rate actually moved) so
+    // the move is attributed to pnl_rho instead of the unexplained remainder. pnl_total is
+    // P_t - P_b either way.
+    RiskNeeds with_rho = needs;
+    with_rho.rho = true;
+    ATX_TRY_VOID(kernel.evaluate(prepared, b, with_rho, base, ws));
+    ATX_TRY_VOID(explain_into(prepared, b, base, t, shifted, opts, out));
+  }
+  return PairOutcome::Explained;
+}
+
+bool admit(const ExplainResult &explained, double max_excluded_premium_frac) noexcept {
+  const ExplainTotals &t = explained.total;
+  if (t.n_ok == 0u) {
+    return false;
+  }
+  if (t.n_excluded == 0u) {
+    return true;
+  }
+  // explain books an excluded leg whose base value is unavailable at premium 0 (pnl_explain.cpp
+  // reduce_totals): that premium is unknown, so it can never be shown to be below the bound.
+  for (std::size_t i = 0; i < explained.size(); ++i) {
+    if (explained.status[i] != RiskLaneStatus::Ok && !std::isfinite(explained.pv_base[i])) {
+      return false;
+    }
+  }
+  // Strictly below (historical_var.hpp): at the default fraction 0 any exclusion drops the
+  // scenario, even one of known zero premium.
+  return t.excluded_premium < max_excluded_premium_frac * std::fabs(t.pv_base);
+}
+
+} // namespace historical_var_detail
+
 Result<HistoricalVarResult> summarize_historical_var(std::vector<HistoricalVarFrame> frames,
                                                      std::span<const double> confidences) {
   for (const double c : confidences) {
@@ -416,10 +460,19 @@ Result<HistoricalVarResult> summarize_historical_var(std::vector<HistoricalVarFr
   sorted.reserve(frames.size());
   risk_detail::NeumaierSum pv;
   for (std::size_t i = 0; i < frames.size(); ++i) {
-    if (frames[i].admitted) {
-      sorted.push_back(i);
-      pv.add(frames[i].totals.pv_base);
+    if (!frames[i].admitted) {
+      continue; // not in the sample: its contents are never read
     }
+    // A NaN loss has no rank (it would break the sort's strict weak ordering) and a
+    // non-finite loss or base value has no mean. historical_var never admits one; a caller
+    // summarizing frames of its own (a verifier reading them back) is told so.
+    if (!std::isfinite(frames[i].totals.pnl_total) || !std::isfinite(frames[i].totals.pv_base)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "summarize_historical_var: an admitted frame has a non-finite pnl_total or "
+                 "pv_base (scenario " + std::to_string(i) + ")");
+    }
+    sorted.push_back(i);
+    pv.add(frames[i].totals.pv_base);
   }
   std::stable_sort(sorted.begin(), sorted.end(), [&frames](std::size_t a, std::size_t b) {
     return -frames[a].totals.pnl_total < -frames[b].totals.pnl_total;
