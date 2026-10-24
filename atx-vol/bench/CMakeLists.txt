@@ -58,7 +58,6 @@ target_link_libraries(atx-vol-portfolio-bench
 add_executable(atx-vol-projection-bench
     bench_main.cpp
     contract_projection_bench.cpp
-    var_bench.cpp
 )
 target_link_libraries(atx-vol-projection-bench
     PRIVATE

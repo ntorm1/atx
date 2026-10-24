@@ -256,10 +256,6 @@ set(ATX_VOL_STORAGE_SOURCES
 set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/rv_lognormal.cpp
     src/analytics/contract_projection.cpp
-    src/analytics/historical_projection.cpp
-    src/analytics/var.cpp
-    src/analytics/var_report.cpp
-    src/analytics/var_validation.cpp
     src/analytics/event_vol.cpp
     src/analytics/scenario_grid.cpp
     src/analytics/pnl_attribution.cpp
@@ -305,6 +301,7 @@ set(ATX_VOL_RISK_SOURCES
     src/risk/american_delta_solve.cpp
     src/risk/strike_coord.cpp
     src/risk/theo_contract.cpp
+    src/risk/historical_var.cpp
 )
 
 # Wave-3 lane P: binary persistence (docs/storage/PERSIST_FORMAT.md) over the frozen

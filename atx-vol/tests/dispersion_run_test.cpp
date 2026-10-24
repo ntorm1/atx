@@ -1159,22 +1159,20 @@ TEST(DispersionReferenceReconcile, M10_ContractMarksWithNoStatusColumnIsRejected
 
 // ── REVIEW C-1: the projected-VaR book must be the AS-OF book ───────────────
 //
-// `dispersion_book_var` defines the VaR reference as the LAST frame's value
-// (listed_dispersion_pipeline.cpp:508-516) and every loss as
-// `reference_value - frame.value` (historical_projection.cpp:118-147). That is
-// historical-simulation VaR, and it is only VaR if the book being re-valued is
-// the book held AT the reference date. The route used to resolve membership and
-// size quantities on `snapshots.front()` — the OLDEST session — so the published
-// number was the risk of a book nobody holds: a reconstituted-away name still in
-// it, a current name missing from it, and quantities sized on stale spot/vol.
+// `dispersion_book_var` is historical-simulation VaR on the risk engine: the
+// as-of book's relative templates are re-resolved on every session and each
+// consecutive pair (session_i -> session_{i+1}) is one scenario of its one-period
+// P&L. That is only VaR if the book being re-valued is the book held AT the as-of
+// date. The route used to resolve membership and size quantities on
+// `snapshots.front()` — the OLDEST session — so the published number was the risk
+// of a book nobody holds: a reconstituted-away name still in it, a current name
+// missing from it, and quantities sized on stale spot/vol.
 //
 // AS-OF SEMANTICS (recorded deliberately, per the brief): the as-of is the LAST
-// QUALIFIED SNAPSHOT IN THE MANIFEST CLOCK. Chosen over a caller-supplied as-of
-// because the reference value is not a free parameter — it is `frames.back()`,
-// fixed by the seam — so any anchor other than the last session re-opens exactly
-// the mismatch this closes. A caller who wants a different as-of moves `date_hi`,
-// which already bounds the manifest. The artifact records which session was used
-// so no reader has to infer it.
+// QUALIFIED SNAPSHOT IN THE MANIFEST CLOCK — the most recent session, whose book is
+// the one at risk. A caller who wants a different as-of moves `date_hi`, which
+// already bounds the manifest. The artifact records which session was used so no
+// reader has to infer it.
 
 // The fixture's own contract. `make_pit_universe_resolver` resolves on
 // `utc_date_from_ns(snapshot.ts_ns())`, so if this drifts the universe blocks
@@ -1233,16 +1231,28 @@ TEST(DispersionProjectedVar, C1_BookIsResolvedAndSizedAtTheAsOfSnapshotNotTheFir
     EXPECT_NE(summary[row][book_fp_col], "0");
   }
 
-  // The reference the losses are measured from is the as-of session's own value,
-  // which is what makes the number VaR rather than a drift between two books.
+  // RE-PINNED (risk-engine historical VaR, BREAKING 2026-10-24): one scenario per
+  // CONSECUTIVE session pair, the last pair ending ON the as-of session, and the
+  // reference is the as-of book's mean base value over the pairs (it used to be the
+  // as-of session's value with every loss a level difference against it).
   const std::vector<std::vector<std::string>> frames =
       read_tsv_rows(fixture.dir / "projected_risk_scenarios.tsv");
-  ASSERT_EQ(frames.size(), fixture.dates.size() + 1u);
-  const std::size_t frame_value_col = column_of(frames.front(), "value");
+  ASSERT_EQ(frames.size(), fixture.dates.size()); // header + (dates - 1) pairs
+  const std::size_t shifted_date_col = column_of(frames.front(), "shifted_date");
+  const std::size_t pv_base_col = column_of(frames.front(), "pv_base");
   const std::size_t ref_col = column_of(summary.front(), "reference_value");
-  ASSERT_NE(frame_value_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(shifted_date_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(pv_base_col, static_cast<std::size_t>(-1));
   ASSERT_NE(ref_col, static_cast<std::size_t>(-1));
-  EXPECT_EQ(summary[1][ref_col], frames.back()[frame_value_col]);
+  EXPECT_EQ(frames.back()[shifted_date_col], fixture.dates.back());
+  double mean_pv_base = 0.0;
+  for (std::size_t row = 1; row < frames.size(); ++row) {
+    mean_pv_base += std::stod(frames[row][pv_base_col]) / static_cast<double>(frames.size() - 1u);
+  }
+  const double reference = std::stod(summary[1][ref_col]);
+  EXPECT_NEAR(reference, mean_pv_base, 1e-9 * std::fabs(mean_pv_base));
+  // ...and the published points recompute bit-for-bit from the scenario rows.
+  EXPECT_TRUE(verify_projected_var_artifacts(fixture.dir, fixture.dates.size()));
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);

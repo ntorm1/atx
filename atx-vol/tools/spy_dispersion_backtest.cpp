@@ -34,7 +34,6 @@
 #include "atx/vol/research/dispersion_backtest.hpp"
 #include "atx/vol/research/dispersion_run.hpp"
 #include "atx/vol/research/dispersion_workflow.hpp"
-#include "analytics/historical_projection.hpp"
 #include "atx/vol/api/backtest/listed_dispersion.hpp"
 #include "atx/vol/research/listed_dispersion_pipeline.hpp"
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp"

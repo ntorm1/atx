@@ -26,6 +26,62 @@ Tool `atx-vol-risk-bench` + `scripts/spiderrock_intraday_to_store.py` run the 10
 filters to American exercise and standard option roots. Docs: `docs/risk-engine.md`, `docs/risk-bench.md`,
 design `docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md`.
 
+### BREAKING — historical VaR rebuilt on the risk engine
+
+No compatibility shim. The prepared-portfolio VaR pipeline is deleted: `src/analytics/var.*`
+(`run_historical_var`, `PreparedVarPortfolio`, `VarPosition` / `VarOptionPosition` /
+`VarStockPosition`, `VarRunConfig`), `var_report.*` (per-scenario TSV, per-underlier rollup),
+`var_validation.*` (Kupiec POF, Christoffersen independence), `historical_projection.*`
+(`PreparedHistoricalProjection`, `projected_historical_var`, `ProjectedHistoricalVar`), their four
+test files, `bench/var_bench.cpp` (the `var/prepared/…` rows of `atx-vol-projection-bench`; its
+projection rows stay), `bench/run_historical_projection_gate.ps1`, `bench/plot_var_scenario_pnl.py`
+and `docs/historical-var-engine-status.md`. All of it was internal (`src/analytics/`): no api/ header
+and no Python binding is removed. Why: one engine now prices and explains every book (design D13),
+and the old engine measured each scenario's value against the LAST scenario's value, a level
+difference rather than a one-period P&L.
+
+- **New**: `historical_var(book, scenarios, config)` (`api/risk/historical_var.hpp`). The book is
+  relative templates (`TheoLeg`) plus share legs; the scenarios are (base, shifted) pairs of
+  surface-backed `MarketState`s. Per pair the templates are resolved on the base surface, priced
+  with the sigma-family kernel (or the cold kernel) and explained to the shifted state. Output:
+  nearest-rank VaR / ES per confidence with `tail_mean`, the Greek split of the tail.
+  `summarize_historical_var(frames, confidences)` is the quantile half on its own (windowed
+  evaluation, artifact verification); `HistoricalVarConfig::keep_resolved_legs` keeps each
+  template's resolution per base state in `HistoricalVarResult::resolved_legs`.
+- **Numbers change — `dispersion_book_var`** (`research/listed_dispersion_pipeline.hpp`) keeps its
+  name and call sites, but its scenarios are now the CONSECUTIVE pairs of the historical surface
+  sets: N sets give N − 1 scenarios (was N, each against the last set's value). The loss is minus
+  the pair's explained P&L, and the reference value is the mean `pv_base` over admitted pairs (was
+  the last scenario's value). Signature: `std::span<const DispersionVarSnapshot>` (timestamp +
+  `SurfaceSet *`) and a `HistoricalVarConfig` whose `confidences` replace the separate span; the
+  bounded overload's `DispersionProjectionEvaluator` now drives a window runner. The result is
+  `DispersionBookVar{HistoricalVarResult var; std::vector<ResolvedTheo> legs; n_positions;
+  prepared_fingerprint}` (was `frames` / `legs` / `risks`). Templates keep the old mapping: same
+  uid / side / multiplier / qty, the ATM-forward strike (`StrikeCoord::log_moneyness(0)`), and the
+  caller's relative maturity (`days(N)` as a fixed N-day year fraction). A pair with an unresolved
+  template, or one the engine did not admit, makes the call `Unavailable` (as the old
+  incomplete-frame gate did). Fewer than two snapshots is `InvalidArgument`. The VaR pins in the
+  `ListedDispersionPipeline`, `DispersionRun` and `DispersionProjectedVarGate` tests are re-pinned.
+- **Artifacts change**: `projected_risk_scenarios.tsv` has one row per pair and 28 columns (pair
+  dates and timestamps, every `ExplainTotals` field, counts, `admitted`, definition fingerprint).
+  It had one row per session and 10 columns. `projected_risk_legs.tsv` keeps its 15 columns, with
+  one row per (pair, template) dated at the pair's base session and status `ok`.
+  `projected_var.tsv` keeps its 11 columns, with `n_scenarios` = admitted pairs = sessions − 1.
+  `verify_projected_var_artifacts` enforces the sessions − 1 rule and recomputes every point
+  bit-for-bit through `summarize_historical_var`. A run directory written before this change
+  fails verification on the scenario header (`ParseError`); regenerate it.
+- **Migration**:
+  - `VarOptionPosition{underlier, tte, abs_delta, side, qty, multiplier}` becomes
+    `TheoLeg{TheoContract{uid, MaturitySpec::…, StrikeCoord::delta(±abs_delta,
+    DeltaConvention::American), side, multiplier}, qty}`.
+  - `VarStockPosition` becomes `ShareLeg{id, uid, shares}`.
+  - `run_historical_var(db, …)` becomes one `MarketState` per session
+    (`market_state_from_surfaces` + `make_market_state`), consecutive sessions as
+    `HistoricalVarScenario` pairs, then `historical_var`.
+  - `var_report`: use the per-uid buckets of `explain` per scenario; there is no packaged report.
+  - `var_validation`: Kupiec / Christoffersen have no replacement.
+  - Full table: `docs/historical-var.md`.
+
 ### NEW — coupled calendar feasibility and explicit terminal-floor recovery
 
 The opt-in `QuoteSliceRepairConfig::inbox_projection` calendar path solves calls and puts
