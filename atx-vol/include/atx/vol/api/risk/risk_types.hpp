@@ -49,9 +49,12 @@ enum class RiskFlag : std::uint32_t {
   // WITHOUT the family having refused it, so a report separates these from
   // ColdFallback's "the family refused this lane".
   FamilyUneconomic = 1u << 11, // the group's family could not amortize (FamilyKernelPolicy
-                               // economics): priced cold-analytic, no family built
-  ShortTenor = 1u << 12,       // T < kAlSigmaFamilyMinTau: no family exists for the block
-                               // (set together with ColdFallback, the pre-A2 flag)
+                               // economics, active only with a cold route): no family built;
+                               // flagged lanes: priced cold-analytic, or Refused when the
+                               // cold solve fails
+  ShortTenor = 1u << 12,       // T < kAlSigmaFamilyMinTau: no family exists for the block;
+                               // flagged lanes: priced cold (with ColdFallback), or Refused
+                               // when cold_fallback is off or the cold solve fails
 };
 using RiskFlags = std::uint32_t;
 

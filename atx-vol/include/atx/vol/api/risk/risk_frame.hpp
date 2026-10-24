@@ -41,8 +41,10 @@ struct FrameCounters {
   double family_build_seconds{0.0};    // of which: family (+carry) preparation
   // Appended by lane A2 (2026-10-24, additive).
   std::uint64_t family_nodes{0};       // sigma nodes solved over the families built
-  std::uint64_t uneconomic_rows{0};    // rows priced cold because the family could not pay
-  std::uint64_t short_tenor_rows{0};   // rows priced cold below kAlSigmaFamilyMinTau
+  std::uint64_t uneconomic_rows{0};    // FamilyUneconomic rows: priced cold, or Refused
+                                       // when the cold solve fails
+  std::uint64_t short_tenor_rows{0};   // ShortTenor rows: priced cold, or Refused when
+                                       // cold_fallback is off or the cold solve fails
 };
 
 struct RiskFrame {
