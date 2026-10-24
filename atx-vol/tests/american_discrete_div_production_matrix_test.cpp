@@ -244,11 +244,13 @@ using Json = nlohmann::ordered_json;
 
 // A dollar-price comparison. The stored uncertainty is empirical; neither this
 // gate nor the historical IV-status label is a proof of reference error.
-[[nodiscard]] Json empirical_price_gate(const Case &c, double candidate) {
+[[nodiscard]] Json empirical_price_gate(
+    const Case &c, double candidate,
+    ref::CashProcess candidate_process = ref::CashProcess::SpotLiquidator) {
   constexpr double budget = 0.001;
   Json gate{{"budget_usd", budget}, {"status", "invalid_reference"},
             {"absolute_difference", nullptr}, {"difference_plus_uncertainty", nullptr}};
-  if (c.process != ref::CashProcess::SpotLiquidator) {
+  if (c.process != candidate_process) {
     gate["status"] = "model_mismatch";
   } else if (!std::isfinite(candidate)) {
     gate["status"] = "candidate_refused";
@@ -340,18 +342,19 @@ using Json = nlohmann::ordered_json;
   return out;
 }
 
-[[nodiscard]] std::optional<std::string> manifest_output_directory() {
+[[nodiscard]] std::optional<std::string> manifest_output_directory(
+    const char *name = "ATX_VOL_DDIV_MANIFEST_OUT") {
 #ifdef _MSC_VER
   char *value = nullptr;
   std::size_t size = 0;
-  const int status = ::_dupenv_s(&value, &size, "ATX_VOL_DDIV_MANIFEST_OUT");
+  const int status = ::_dupenv_s(&value, &size, name);
   const std::unique_ptr<char, decltype(&std::free)> owned(value, &std::free);
   if (status != 0 || value == nullptr) {
     return std::nullopt;
   }
   return std::string(value);
 #else
-  const char *value = std::getenv("ATX_VOL_DDIV_MANIFEST_OUT");
+  const char *value = std::getenv(name);
   return value == nullptr ? std::nullopt : std::optional<std::string>(value);
 #endif
 }
@@ -457,6 +460,127 @@ TEST(DiscreteDivProductionManifest, MonetaryGateRetainsUncertaintyAndModelDenomi
   EXPECT_EQ(empirical_price_gate(c, 0.0).at("status"), "model_mismatch");
   c.process = ref::CashProcess::SpotSurvivor;
   EXPECT_EQ(empirical_price_gate(c, 0.0).at("status"), "model_mismatch");
+}
+
+[[nodiscard]] Json pde_record(const Case &c, const ref::PdeGrid &grid) {
+  const ref::Problem problem{.S = c.S, .K = c.K, .T = c.T, .sigma = c.sigma,
+                            .r = c.r, .q = c.q, .side = c.side,
+                            .exercise = ExerciseStyle::American,
+                            .process = c.process, .dividends = c.divs};
+  const auto priced = ref::pde_price(problem, grid);
+  Json row{{"status", priced ? "priced" : "refused"}, {"price", nullptr},
+           {"cash_process", ref::to_string(c.process)},
+           {"grid", {{"space_base", grid.space_base}, {"space_level", grid.space_level},
+                     {"time_base", grid.time_base}, {"time_level", grid.time_level},
+                     {"width_sd", grid.width_sd}, {"rannacher_steps", grid.rannacher_steps},
+                     {"domain_sigma", grid.domain_sigma}, {"time_grading", grid.time_grading}}},
+           {"empirical_price_gate",
+            empirical_price_gate(c, priced ? priced->price : kNaN, c.process)}};
+  if (!priced) {
+    row["error_code"] = static_cast<int>(priced.error().code());
+    row["error"] = priced.error().to_string();
+    return row;
+  }
+  row["price"] = priced->price;
+  row["work"] = {{"space_intervals", priced->space_intervals},
+                 {"implicit_solves", priced->time_steps},
+                 {"max_policy_iterations", priced->max_policy_iterations},
+                 {"worst_policy_calendar_time", priced->max_policy_time},
+                 {"max_lcp_violation", priced->max_lcp_violation},
+                 {"lcp_rounding_ties", priced->lcp_rounding_ties}};
+  return row;
+}
+
+[[nodiscard]] Json pde_replay_manifest() {
+  auto out = price_manifest();
+  out["schema"] = "atx-vol-cash-pde-three-grid-v1";
+  out["production_cash_process"] = out.at("candidate_cash_process");
+  out.erase("candidate_cash_process");
+  out["pde_method"] = "event-aligned-cn-rannacher-howard";
+  out["pde_extrapolation"] = false;
+  out["pde_reference_model"] = "each_original_case_process";
+  out["work_limit"] = "maximum policy iterations is not a total sweep counter";
+  const auto cases = matrix();
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    auto &results = out["cases"][i]["pde_grids"];
+    results = Json::array();
+    // Three declared complete solves, with no tuning, extrapolation or selection.
+    for (const int scale : {1, 2, 4}) {
+      ref::PdeGrid grid;
+      grid.space_base = 400 * scale;
+      grid.time_base = 200 * scale;
+      results.push_back(pde_record(cases[i], grid));
+    }
+  }
+  return out;
+}
+
+TEST(DiscreteDivProductionMatrix, DiagnosticThreeGridPdeReplay) {
+  const auto manifest = pde_replay_manifest();
+  ASSERT_TRUE(manifest.contains("cases"));
+  ASSERT_EQ(manifest.at("cases").size(), 50U);
+  const auto roundtrip = Json::parse(manifest.dump());
+  const auto cases = matrix();
+  std::size_t requested = 0;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const auto &c = cases[i];
+    SCOPED_TRACE(c.id);
+    const auto &row = roundtrip.at("cases").at(i);
+    EXPECT_EQ(row.at("id"), c.id);
+    ASSERT_EQ(row.at("pde_grids").size(), 3U);
+    for (std::size_t level = 0; level < 3; ++level) {
+      ++requested;
+      const auto &pde = row.at("pde_grids").at(level);
+      EXPECT_EQ(pde.at("cash_process"), ref::to_string(c.process));
+      EXPECT_EQ(pde.at("grid").at("space_base"), 400U << level);
+      EXPECT_EQ(pde.at("grid").at("time_base"), 200U << level);
+      EXPECT_EQ(pde.at("grid").at("space_level"), 0);
+      EXPECT_EQ(pde.at("grid").at("time_level"), 0);
+      EXPECT_EQ(pde.at("grid").at("width_sd"), 8.0);
+      EXPECT_EQ(pde.at("grid").at("rannacher_steps"), 2);
+      EXPECT_EQ(pde.at("grid").at("time_grading"), 2.0);
+      EXPECT_EQ(pde.at("grid").at("domain_sigma"), 0.0);
+      EXPECT_NE(pde.at("empirical_price_gate").at("status"), "model_mismatch");
+      if (pde.at("status") == "priced") {
+        EXPECT_TRUE(std::isfinite(pde.at("price").get<double>()));
+        EXPECT_GT(pde.at("work").at("implicit_solves").get<int>(), 0);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(pde.at("price").get<double>()),
+                  std::bit_cast<std::uint64_t>(manifest.at("cases").at(i)
+                      .at("pde_grids").at(level).at("price").get<double>()));
+      } else {
+        EXPECT_EQ(pde.at("status"), "refused");
+        EXPECT_TRUE(pde.at("price").is_null());
+        EXPECT_TRUE(pde.contains("error_code"));
+      }
+    }
+  }
+  EXPECT_EQ(requested, 150U);
+  ASSERT_FALSE(HasFailure());
+  if (const auto out = manifest_output_directory("ATX_VOL_DDIV_PDE_REPLAY_OUT")) {
+    ASSERT_FALSE(out->empty());
+    ASSERT_TRUE(std::filesystem::create_directory(*out)) << "output directory exists";
+    std::ofstream stream(std::filesystem::path(*out) / "replay.json", std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    stream << manifest.dump(2) << '\n';
+    stream.close();
+    ASSERT_TRUE(stream.good());
+  }
+}
+
+TEST(DiscreteDivProductionManifest, PdeReplayKeepsTypedUnsupportedGridRefusal) {
+  auto c = matrix().front();
+  c.S = 100.0;
+  c.K = 200.0;
+  c.T = 1.0;
+  c.sigma = 0.005;
+  c.r = 0.1;
+  c.q = 0.0;
+  const auto out = pde_record(c, {});
+  ASSERT_TRUE(out.contains("status"));
+  EXPECT_EQ(out.at("status"), "refused");
+  EXPECT_TRUE(out.at("price").is_null());
+  EXPECT_EQ(out.at("error_code"), static_cast<int>(atx::core::ErrorCode::OutOfRange));
+  EXPECT_EQ(out.at("empirical_price_gate").at("status"), "candidate_refused");
 }
 
 TEST(DiscreteDivProductionMatrix, ReScoreAgainstTheIndependentReference) {

@@ -265,6 +265,22 @@ require identical grid, policy decisions, prices and diagnostics to `pde_price`.
 No change to interpolation, damping, stopping rule or reference uncertainty is
 part of this step. Record allocations, setup bytes and setup/run work separately.
 
+A narrower factor reuse experiment is possible even when policy masks differ.
+In `thomas_solve`, every active/Dirichlet identity row resets `cp` to zero. Each
+following continuation run uses the same constant `(lo, di, up)` recurrence:
+`m[j] = di - lo*cp[j-1]`, `cp[j] = up/m[j]`, starting at `cp[0]=0`.
+Thus a step-local table indexed by the current free-run length can reuse these
+coefficients for arbitrary active masks. The contract's RHS recurrence and
+backward substitution still run independently. Initially retain the original
+`dp = (rhs-lo*previous_dp)/m` division, operand order and identity-row treatment;
+do not replace division with reciprocal multiplication and assume bit parity.
+Test all-active, all-free, alternating, multiple disjoint runs, changing masks,
+both exercise sides and unsupported matrices. The table must be invalidated when
+any actual rounded coefficient changes. Its setup cost and memory traffic may
+outweigh savings at one policy iteration, so measure complete solves and actual
+iteration counts before promoting it. This is a source-derived proposal, not an
+implemented or measured optimization.
+
 **C. Test a true batch.** Use block sizes 1,8,32,128, plus the complete expiry
 block, in original input order. First run exact common-model/sigma groups with
 separate values, obstacles and policy vectors, sharing only proven immutable
@@ -356,6 +372,56 @@ unresolved dollar comparisons in this fixture. The manifest SHA256 is
 `def79ede5481a1bc1761fa6e7e126794f5128f9f995905ef2f7d6b1bf95d9810`.
 This is a reproducible numerical baseline, not a latency result or rigorous error
 certificate. No production pricing source changed for this exporter.
+
+### Three declared single-PDE grids: incomplete accuracy coverage
+
+The diagnostic-only replay calls the existing `pde_price` without changing its
+arithmetic or admission. It uses every original case's own cash process, so all
+50 PDE/reference comparisons match models; the 44 spot-liquidator subset is also
+reported for comparison with the production lattice. Each grid uses width 8,
+grading 2, two Rannacher starts per event, no domain-volatility override and no
+extrapolation. Nominal time counts cover the complete maturity, with the existing
+minimum segment sizes and half-step damping preserved.
+
+| Space x nominal time | All 50: pass / fail / uncertain | Spot-liquidator 44 | Implicit time steps, all 50 | Maximum Howard iterations |
+|---|---|---|---:|---:|
+| 400 x 200 | 47 / 3 / 0 | 41 / 3 / 0 | 10,378 | 3 |
+| 800 x 400 | 48 / 2 / 0 | 42 / 2 / 0 | 20,386 | 4 |
+| 1600 x 800 | 49 / 0 / 1 | 43 / 0 / 1 | 40,376 | 4 |
+
+All 150 candidates were priced, with no solver refusals or rounding-tie accepts.
+The coarse failures are D12c and both DSPY sides; the middle failures are both
+DSPY sides. The finest unresolved case is DSPYp:
+candidate `93.31753028217078`, reference `93.31853222508012`, empirical reference
+uncertainty `0.00003251686088225297`. Its absolute difference is
+`0.001001942909340414`; adding uncertainty gives `0.001034459770222667`, while
+subtracting uncertainty drops below `0.001`. It therefore remains **uncertain**,
+not passed. No declared grid meets the complete empirical price contract.
+
+The work fields are the reference solver's existing diagnostics. An implicit
+time step may perform several Howard/Thomas solves, including an unconstrained
+fresh-data seed. The reported maximum policy count is not the total sweep count;
+neither field should be presented as total factorization work. Additional optional
+counts are needed to attribute a continuation-run factor prototype. The finest
+grid alone has over 64 million interior forward-row opportunities before extra
+policy sweeps, but that lower bound is not a measured runtime fraction.
+
+Replay command (a new output directory is required):
+
+```powershell
+$env:ATX_VOL_DDIV_PDE_REPLAY_OUT = 'C:/atx-cache/quote-benchmark/cash-pde-three-grid-new-run'
+build-vol-rel/bin/atx-vol-discrete-div-production-tests.exe --gtest_filter=DiscreteDivProductionMatrix.DiagnosticThreeGridPdeReplay
+```
+
+Evidence under `calendar/cash-pde-three-grid-v1/` includes runtime red/green tests,
+the archived executable, full `export/replay.json`, independent `verify_replay.py`
+and `receipt.json`. All six focused manifest/replay tests and the owning PCH-off
+check pass. The verifier preserves every baseline input/reference/Standard/Refined
+record and independently recomputes all 150 dollar classifications. Replay SHA256:
+`7be5a36e2be3de0e52aef4a94e8cba6a0b9dc040e92dfcb0e4b3bc14d5626d6c`.
+No latency, Greek accuracy or production-PDE promotion is claimed. Resolve the
+remaining price uncertainty with independent time/space/domain evidence before
+calling any subsequent faster execution an accuracy-qualified result.
 
 ## 7. Later methods and promotion boundary
 
