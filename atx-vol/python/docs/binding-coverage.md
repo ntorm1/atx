@@ -22,15 +22,15 @@ the end; the classification column is a judgement and is the part to review.
 |---|---|
 | bound | 36 |
 | bound (new) | 9 |
-| partial | 8 |
-| missing-product | 30 |
+| partial | 9 |
+| missing-product | 29 |
 | missing-internal | 25 |
 | n/a | 1 |
 | **total** | **109** |
 
 `bound (new)` + the new parts of the `partial` rows are the r5/r6 surface this lane added:
 4 new TUs (`fit_archive.cpp`, `serve.cpp`, `served_analytics.cpp`, `region.cpp`) plus the
-`quote_slice.cpp` deltas, 89 bound enum types gated for completeness
+`quote_slice.cpp` deltas, 98 bound enum types gated for completeness
 (`tests/test_binding_enum_parity.py`).
 
 ## Matrix
@@ -46,7 +46,7 @@ the end; the classification column is a judgement and is the part to review.
 | `analytics/pnl_attribution.hpp` | missing-product | non-served P&L attribution (the served path is bound) |
 | `analytics/scenario_grid.hpp` | missing-product | non-served scenario grid (the served path is bound) |
 | `analytics/served_analytics.hpp` | bound (new) | `served_analytics.cpp`: declaration, clock, hedge Greeks, scenarios, attribution, dated-cash scenarios |
-| `analytics/served_session.hpp` | missing-product | `ServedSession` borrows a `VolaSession`, which is not bound |
+| `analytics/served_session.hpp` | partial | new: `ServedSession` over a `PricedSurface` (`served_analytics.cpp`); the `VolaSession` overload needs a `VolaSession` binding, which does not exist |
 | `backtest/backtest.hpp` | bound | `backtest.cpp`, `analytics.cpp`, `dispersion.cpp` |
 | `backtest/deriv_book.hpp` | missing-product | derivative book |
 | `backtest/dispersion.hpp` | bound | `dispersion.cpp`, `strategy.cpp` |
@@ -89,7 +89,7 @@ the end; the classification column is a judgement and is the part to review.
 | `fitting/profile.hpp` | missing-internal | fit-profile plumbing |
 | `fitting/projection.hpp` | missing-internal | C4 projection machinery (its outcome is read through `QuoteSliceFit` / the archive) |
 | `fitting/quote_fit_policy.hpp` | missing-internal | policy plumbing |
-| `fitting/quote_slice.hpp` | bound | `quote_slice.cpp` (+ r5/r6 deltas: grade, call floor, grid bound, withheld nodes / gaps / served price, carry curve, serve record), `fit_archive.cpp` |
+| `fitting/quote_slice.hpp` | bound | `quote_slice.cpp` (+ r5/r6 deltas: grade, call floor, grid bound, withheld nodes / gaps / served price, carry curve, serve record, the repair / box-certificate config and records incl. C4's in-box rung), `fit_archive.cpp` |
 | `fitting/quote_slice_carry.hpp` | missing-internal | carry identification internals |
 | `fitting/s3.hpp` | missing-internal | fitter internals |
 | `fitting/serve_book.hpp` | bound (new) | `serve.cpp`: book, transactions, readers, `serve_chain`, `serve_build` (rebuild callback not bound) |
@@ -149,10 +149,10 @@ the end; the classification column is a judgement and is the part to review.
 
 ## Remainder (missing-product), in the order a research user would want them
 
-1. `analytics/served_session.hpp` and `analytics/common_model_analytics.hpp`: the rest of A1.
-   Both need an upstream object Python cannot build today (`VolaSession`;
-   `AmericanMarkovModel` from `fitting/american_markov_fit.hpp`). Bind the Markov fit and
-   model first, then these two.
+1. `analytics/common_model_analytics.hpp` and the `VolaSession` overload of
+   `ServedSession::bind`: the rest of A1. Both need an upstream object Python cannot build
+   today (`AmericanMarkovModel` from `fitting/american_markov_fit.hpp`; `VolaSession`). Bind
+   the Markov fit and model first.
 2. `pricing/american_markov.hpp` + `fitting/american_markov_fit.hpp`: the Markov pricer
    and fit.
 3. `fitting/arb.hpp`, `fitting/parity.hpp`, `marketdata/implied_forward.hpp`,

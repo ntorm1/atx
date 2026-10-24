@@ -15,7 +15,10 @@
   series and the run's signals exposed as NumPy arrays
 - backtest analytics: `tearsheet` plus the deterministic TSV exports
 - the quote-slice fit (`fit_quote_slice`) with its r5/r6 outputs: surface grade, served
-  call floor, withheld nodes / gaps / served price, carry curve, serving record
+  call floor, withheld nodes / gaps / served price, carry curve, serving record, and the
+  repair / box-certificate sub-config (`QuoteSliceConfig.repair`, including lane C4's
+  opt-in `inbox_projection`) with its records (`fit.repair_record`, `fit.box_record`,
+  `fit.box_record.inbox`)
 - ATXVFA fit archives: `FitArchive` / `FitArchiveSeries` readers with zero-copy numpy
   views, `FitArchiveWriter` and typed `FitArchiveError` refusals
 - serving records and the live serve book (`build_serve_record`, `ServeBook`,
@@ -664,7 +667,14 @@ input) and `REFUSED` are statuses; a refused number is NaN. Scenario cells are n
 arrays shaped `(n_spot, n_vol, n_time)` in the C++ `[spot][vol][time]` order, and the
 exclusion counts gain a trailing axis of length `len(ScenarioExclusion)`.
 `HedgeConvention.REFITTED_SURFACE` serves the price with every Greek NaN and
-`REQUIRES_REFIT` (a refit per bump is the fitter's job, not a read). `ServedSession` and
+`REQUIRES_REFIT` (a refit per bump is the fitter's job, not a read).
+
+`ServedSession.bind(priced_surface, book, [SessionBookExpiry(T, expiry_id), ...])` serves a
+`PricedSurface` through the book: a bound T is answered by the book's record (source
+`BOOK`), any other T by the surface's cold route (source `SESSION_COLD`, ticked
+`FALLBACK` in a chain). `session.serve(reader, K, T, side, spot, now_ns)` and
+`session.serve_chain(reader, spot, now_ns, strike, expiry, side)` mirror the book's API.
+The session keeps the surface alive and co-owns the book. The `VolaSession` overload and
 the common-model European outputs are not bound yet (see the coverage doc).
 
 ## Exercise region and the discrete-dividend batch

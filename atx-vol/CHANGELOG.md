@@ -16,16 +16,18 @@ missing or stale module fails instead of skipping. The suite runs in two process
 vcpkg Arrow 24 and pyarrow 18 cannot share one (README "Known limitation").
 
 New bindings, per header, in `python/docs/binding-coverage.md` (109 public headers:
-36 bound, 9 newly bound, 8 partial, 30 missing-product, 25 missing-internal, 1 n/a):
+36 bound, 9 newly bound, 9 partial, 29 missing-product, 25 missing-internal, 1 n/a):
 `fit_archive.cpp` (ATXVFA reader / writer / series, zero-copy numpy views,
 `FitArchiveError` with the typed `ArchiveStatus`), `serve.cpp` (serving records, the serve
 book, `serve_chain` columns with every `ServedChainStatement` field), `served_analytics.cpp`
-(A1 hedge Greeks, scenarios, attribution, dated-cash scenarios with their declarations),
+(A1 hedge Greeks, scenarios, attribution, dated-cash scenarios with their declarations,
+`ServedSession` over a `PricedSurface`),
 `region.cpp` (exercise-region classifier, classified Andersen-Lake, D1 `DiscreteDivBatch`),
-and the `quote_slice.cpp` r5/r6 deltas. Every bound enum lists every enumerator
-(`ErrorCode` gained `CANCELLED` / `SWAP_FIXING_SCHEDULE_VIOLATION`, `SpreadKind`
+and the `quote_slice.cpp` r5/r6 deltas (including `QuoteSliceConfig.repair` and the
+repair / box records with lane C4's in-box projection record). Every bound enum lists every
+enumerator (`ErrorCode` gained `CANCELLED` / `SWAP_FIXING_SCHEDULE_VIOLATION`, `SpreadKind`
 `QUOTE_SIDE`, `Holding` `FIXED_EXPIRY_RESTRIKE`), pinned by
-`tests/test_binding_enum_parity.py` (static, 89 enums) and the reflection gate in
+`tests/test_binding_enum_parity.py` (static, 98 enums) and the reflection gate in
 `tests/test_python_contract_parity.py`. No library file changed. The wheel recipe builds
 and imports at `1.1.0` (the DLL closure now installs beside `_core`). Sprint note
 `sprints/2026-10-23-PY-bindings-sprint.md`.

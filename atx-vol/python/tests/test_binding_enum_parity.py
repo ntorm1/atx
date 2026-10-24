@@ -54,7 +54,7 @@ def _bound() -> dict[str, dict[str, set[str]]]:
 
 def test_the_scan_sees_the_binding_tus_and_their_enums():
     bound = _bound()
-    # 89 qualified enums at lane PY's close; a collapse to a handful means the regex broke.
+    # 98 qualified enums at lane PY's close; a collapse to a handful means the regex broke.
     assert len(bound) >= 80, sorted(bound)
     assert "ArchiveStatus" in bound and "ServeStatus" in bound and "AlExerciseClass" in bound
 
