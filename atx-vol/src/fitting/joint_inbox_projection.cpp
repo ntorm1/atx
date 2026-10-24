@@ -541,6 +541,14 @@ private:
 
 } // namespace
 
+bool joint_centrality_compiled() noexcept {
+#if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+  return true;
+#else
+  return false;
+#endif
+}
+
 bool recover_terminal_floor_asks(const JointInboxSlice &slice,
                                  std::span<const std::uint8_t> quoted,
                                  std::span<AmericanPriceBox> boxes,
@@ -574,7 +582,8 @@ bool recover_terminal_floor_asks(const JointInboxSlice &slice,
 JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slices,
                                            std::size_t max_iterations,
                                            JointInboxDiagnostics *diagnostics,
-                                           JointInboxProfile *profile) {
+                                           JointInboxProfile *profile,
+                                           JointDirectionMode mode) {
   if (profile) *profile = {};
   ProfileSpan total_timer(profile ? &profile->total_ns : nullptr);
   ProfileSpan build_timer(profile ? &profile->build_ns : nullptr);
@@ -582,6 +591,18 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
   JointInboxDiagnostics local;
   JointInboxDiagnostics &record = diagnostics ? *diagnostics : local;
   record = {};
+  bool centrality = false;
+  switch (mode) {
+    case JointDirectionMode::Compiled: centrality = joint_centrality_compiled(); break;
+    case JointDirectionMode::Original: break;
+    case JointDirectionMode::Centrality:
+      if (!joint_centrality_compiled()) return result;
+      centrality = true;
+      break;
+    default: return result;
+  }
+  if (profile) profile->centrality_enabled = centrality;
+  // Original-direction stub until the independent whole-QP controls are RED.
   if (max_iterations == 0u || slices.empty()) return result;
   Problem p;
   if (!build_variables(slices, p)) return result;
