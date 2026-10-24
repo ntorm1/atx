@@ -344,20 +344,39 @@ TEST(FitRiskProbe, PriceOnlyAndRefusedRowsNeverEvaluated) {
 
 TEST(FitRiskProbe, GreekSanityFlagsInjectedViolations) {
   using fp::SanityBit;
-  EXPECT_EQ(fp::greek_sanity(Side::Call, 0.55, 0.03, 0.2), 0u);
-  EXPECT_EQ(fp::greek_sanity(Side::Put, -0.45, 0.03, 0.2), 0u);
-  EXPECT_EQ(fp::greek_sanity(Side::Call, 1.2, 0.03, 0.2), fp::sanity_mask(SanityBit::DeltaRange));
-  EXPECT_EQ(fp::greek_sanity(Side::Put, 0.1, 0.03, 0.2), fp::sanity_mask(SanityBit::DeltaRange));
-  EXPECT_EQ(fp::greek_sanity(Side::Call, 0.5, -1.0e-3, 0.2),
+  const double q = 0.01;
+  const double T = 0.5;
+  EXPECT_EQ(fp::greek_sanity(Side::Call, 0.55, 0.03, 0.2, q, T), 0u);
+  EXPECT_EQ(fp::greek_sanity(Side::Put, -0.45, 0.03, 0.2, q, T), 0u);
+  EXPECT_EQ(fp::greek_sanity(Side::Call, 1.2, 0.03, 0.2, q, T),
+            fp::sanity_mask(SanityBit::DeltaRange));
+  EXPECT_EQ(fp::greek_sanity(Side::Put, 0.1, 0.03, 0.2, q, T),
+            fp::sanity_mask(SanityBit::DeltaRange));
+  EXPECT_EQ(fp::greek_sanity(Side::Call, 0.5, -1.0e-3, 0.2, q, T),
             fp::sanity_mask(SanityBit::GammaNeg));
-  EXPECT_EQ(fp::greek_sanity(Side::Put, -0.5, 0.01, -0.2), fp::sanity_mask(SanityBit::VegaNeg));
-  EXPECT_EQ(fp::greek_sanity(Side::Call, -0.1, -0.1, -0.1),
+  EXPECT_EQ(fp::greek_sanity(Side::Put, -0.5, 0.01, -0.2, q, T),
+            fp::sanity_mask(SanityBit::VegaNeg));
+  EXPECT_EQ(fp::greek_sanity(Side::Call, -0.1, -0.1, -0.1, q, T),
             fp::sanity_mask(SanityBit::DeltaRange) | fp::sanity_mask(SanityBit::GammaNeg) |
                 fp::sanity_mask(SanityBit::VegaNeg));
-  EXPECT_EQ(fp::greek_sanity(Side::Call, kNaN, 0.01, 0.2), 0u); // availability's job
+  EXPECT_EQ(fp::greek_sanity(Side::Call, kNaN, 0.01, 0.2, q, T), 0u); // availability's job
+  // A q < 0 call is European with delta up to exp(-q T) > 1: in range, not a violation;
+  // deep in-the-money rounding noise on gamma / vega is not a sign failure either.
+  const double neg_q = -0.0017786830430850387;
+  const double short_T = 0.009583023376762872;
+  EXPECT_EQ(fp::greek_sanity(Side::Call, std::exp(-neg_q * short_T), -4.4e-13, -1.4e-11, neg_q,
+                             short_T),
+            0u);
+  EXPECT_EQ(fp::greek_sanity(Side::Call, std::exp(-neg_q * short_T) + 1.0e-6, 0.0, 0.0, neg_q,
+                             short_T),
+            fp::sanity_mask(SanityBit::DeltaRange));
+  EXPECT_EQ(fp::greek_sanity(Side::Put, -std::exp(-neg_q * short_T), 0.0, 0.0, neg_q, short_T),
+            0u);
+  // The American gap is bounded below by exp(-q T); early exercise only raises it.
   EXPECT_FALSE(fp::cp_delta_violation(0.55, -0.44, 0.01, 0.5));
-  EXPECT_TRUE(fp::cp_delta_violation(0.9, -0.9, 0.0, 0.5));
+  EXPECT_FALSE(fp::cp_delta_violation(0.9, -0.9, 0.0, 0.5));
   EXPECT_TRUE(fp::cp_delta_violation(0.1, -0.1, 0.0, 0.5));
+  EXPECT_TRUE(fp::cp_delta_violation(0.45, -0.40, 0.0, 0.5));
 
   // Injected rows fold into the counts: one per sanity kind, one non-finite Greek, a
   // reprice mismatch, and a non-Ok lane that must not count as a sanity failure.

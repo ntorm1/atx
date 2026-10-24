@@ -862,7 +862,7 @@ void evaluate_unit(const Inputs &in, const Unit &unit, const ProbeOptions &optio
       row.gamma = primary.gamma[r];
       row.vega = primary.vega[r];
       row.theta = primary.theta[r];
-      row.sanity = greek_sanity(row.side, row.delta, row.gamma, row.vega);
+      row.sanity = greek_sanity(row.side, row.delta, row.gamma, row.vega, row.q, row.T);
     }
     if (identity.status[r] == RiskLaneStatus::Ok) row.identity_price = identity.price[r];
     if (std::isfinite(row.identity_price) && std::isfinite(row.predicted_price)) {
@@ -1217,15 +1217,19 @@ std::int64_t shadow_expiry_ns(std::int64_t ts_ns, double variance_years,
 
 // ── Public: sanity ──────────────────────────────────────────────────────────
 
-std::uint8_t greek_sanity(Side side, double delta, double gamma, double vega) noexcept {
+std::uint8_t greek_sanity(Side side, double delta, double gamma, double vega, double q,
+                          double T) noexcept {
   std::uint8_t bits = 0;
   if (std::isfinite(delta)) {
-    const bool bad = side == Side::Call ? (delta < 0.0 || delta > 1.0)
-                                        : (delta < -1.0 || delta > 0.0);
+    // A non-finite carry falls back to the q >= 0 bound of 1.
+    const double carry = std::isfinite(q) && std::isfinite(T) ? std::exp(-q * T) : 1.0;
+    const double bound = std::max(1.0, carry) + kSanityTolerance;
+    const bool bad = side == Side::Call ? (delta < -kSanityTolerance || delta > bound)
+                                        : (delta < -bound || delta > kSanityTolerance);
     if (bad) bits |= sanity_mask(SanityBit::DeltaRange);
   }
-  if (std::isfinite(gamma) && gamma < 0.0) bits |= sanity_mask(SanityBit::GammaNeg);
-  if (std::isfinite(vega) && vega < 0.0) bits |= sanity_mask(SanityBit::VegaNeg);
+  if (std::isfinite(gamma) && gamma < -kSanityTolerance) bits |= sanity_mask(SanityBit::GammaNeg);
+  if (std::isfinite(vega) && vega < -kSanityTolerance) bits |= sanity_mask(SanityBit::VegaNeg);
   return bits;
 }
 
@@ -1234,7 +1238,7 @@ bool cp_delta_violation(double call_delta, double put_delta, double q, double T)
       !std::isfinite(T)) {
     return false;
   }
-  return std::fabs((call_delta - put_delta) - std::exp(-q * T)) > kCpDeltaSlack;
+  return (call_delta - put_delta) < std::exp(-q * T) - kCpDeltaSlack;
 }
 
 const char *to_string(ProbeKernel kernel) noexcept {

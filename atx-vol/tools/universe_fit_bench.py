@@ -463,7 +463,7 @@ def cmd_prepare(args: argparse.Namespace) -> dict:
         labels.select("row_id", "reference_price", "reference_vol", "vendor_delta", "vendor_vega") \
             .write_csv(root / b / "probe-labels.csv")
     result = {"buckets": log, "vendor_greek_seconds": time.perf_counter() - started}
-    qb.write_json(root / "prepare-log.json", result)
+    qb.write_json(root / f"prepare-log-{'-'.join(buckets)}.json", result)
     print(json.dumps({"buckets": len(log), "seconds": [round(x["seconds"], 1) for x in log]}))
     return result
 
@@ -526,6 +526,59 @@ def basis_from_native(native: dict, path: Path) -> int:
     return len(rows)
 
 
+def probe_shard(probe: Path, sdir: Path, kernel: str, workers: int, dividends: str,
+                tolerance: float, basis: bool, rows: bool, manifest: Path | None) -> dict:
+    """One atx-vol-fit-risk-probe call on a shard directory (600 s guard)."""
+    cmd = [str(probe), "--quotes", str(sdir / "dataset" / "quotes.csv"),
+           "--predictions", str(sdir / "predictions.csv"), "--out", str(sdir / "probe.json"),
+           "--kernel", kernel, "--threads", str(workers), "--dividends", dividends,
+           "--carry-tolerance", repr(tolerance)]
+    if basis:
+        cmd += ["--basis", str(sdir / "basis.csv")]
+    if rows:
+        cmd += ["--rows", str(sdir / "probe-rows.csv")]
+    if manifest is not None:
+        cmd += ["--labels", str(sdir / "probe-labels.csv"), "--manifest", str(manifest)]
+    result, cost = run_limited(cmd, stdout=subprocess.PIPE, text=True)
+    if result.returncode:
+        raise RuntimeError(f"probe failed on {sdir} (exit {result.returncode})")
+    return {**cost, "stdout": json.loads(result.stdout), "path": str((sdir / "probe.json").resolve()),
+            "probe_sha256": sha256(probe)}
+
+
+def cmd_reprobe(args: argparse.Namespace) -> dict:
+    """Re-run only the probe on every shard of a finished run (a fixed probe binary; the fit
+    outputs are untouched). The previous probe.json is kept as probe-<old sha8>.json."""
+    workers = fit_workers()
+    run_dir = Path(args.run)
+    run = load_run(run_dir)
+    dataset = Path(run["dataset"])
+    manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
+    for shard in run["shards"]:
+        sdir = Path(shard["dataset"]).parent
+        old = sdir / "probe.json"
+        if old.exists():
+            old.replace(sdir / f"probe-{run['probe_sha256'][:8]}.json")
+        labelled = (sdir / "probe-labels.csv").exists()
+        if labelled:
+            require_development(manifest)
+        before = host_load()
+        shard["probe"] = probe_shard(Path(args.probe), sdir, run["kernel"], workers,
+                                     run["dividends"], run["carry_price_tolerance"],
+                                     (sdir / "basis.csv").stat().st_size > len("chain_id,spot\n"),
+                                     args.probe_rows or (sdir / "probe-rows.csv").exists(),
+                                     dataset / "manifest.json" if labelled else None)
+        shard["probe"]["load_before"] = before
+        shard["probe"]["load_after"] = host_load()
+        print(json.dumps({"shard": shard["index"], "probe_wall_s":
+                          round(shard["probe"]["process_wall_s"], 1)}), flush=True)
+    run["probe"] = str(Path(args.probe).resolve())
+    run["probe_sha256"] = sha256(Path(args.probe))
+    run.setdefault("reprobed", []).append(dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
+    qb.write_json(run_dir / "run.json", run)
+    return run
+
+
 def cmd_run(args: argparse.Namespace) -> dict:
     workers = fit_workers()
     dataset = Path(args.dataset)
@@ -569,22 +622,13 @@ def cmd_run(args: argparse.Namespace) -> dict:
         record["receipt"] = str((sdir / "predictions.csv.run.json").resolve())
         native = receipt["native_report"]
         n_basis = basis_from_native(native, sdir / "basis.csv")
-        probe_cmd = [str(args.probe), "--quotes", str(sdir / "dataset" / "quotes.csv"),
-                     "--predictions", str(sdir / "predictions.csv"), "--out", str(sdir / "probe.json"),
-                     "--kernel", args.kernel, "--threads", str(workers),
-                     "--dividends", args.dividends, "--carry-tolerance", repr(tolerance)]
-        if n_basis:
-            probe_cmd += ["--basis", str(sdir / "basis.csv")]
         if labels is not None:
             labels.join(sub.select(pl.col("row_id").cast(pl.UInt64)), on="row_id", how="semi") \
                 .write_csv(sdir / "probe-labels.csv")
-            probe_cmd += ["--labels", str(sdir / "probe-labels.csv"),
-                          "--manifest", str(dataset / "manifest.json")]
-        result, probe_cost = run_limited(probe_cmd, stdout=subprocess.PIPE, text=True)
-        if result.returncode:
-            raise RuntimeError(f"probe failed on shard {k} (exit {result.returncode})")
-        record["probe"] = {**probe_cost, "stdout": json.loads(result.stdout),
-                           "path": str((sdir / "probe.json").resolve())}
+        record["probe"] = probe_shard(Path(args.probe), sdir, args.kernel, workers, args.dividends,
+                                      tolerance, n_basis > 0, args.probe_rows,
+                                      dataset / "manifest.json" if labels is not None else None)
+        probe_cost = record["probe"]
         record["load_after"] = host_load()
         shards.append(record)
         print(json.dumps({"shard": k, "rows": sub.height,
@@ -1330,7 +1374,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--rows-per-shard", type=int, required=True)
     p.add_argument("--kernel", default="both", choices=["family", "cold", "both"])
     p.add_argument("--labels", type=Path, help="probe-labels.csv (development datasets only)")
+    p.add_argument("--probe-rows", action="store_true", help="also write the probe's per-row CSV")
     p.set_defaults(func=cmd_run)
+    p = sub.add_parser("reprobe", help="re-run only the probe on every shard of a run")
+    p.add_argument("--run", required=True, type=Path)
+    p.add_argument("--probe", required=True, type=Path)
+    p.add_argument("--probe-rows", action="store_true")
+    p.set_defaults(func=cmd_reprobe)
     p = sub.add_parser("score", help="chain scorecards -> report JSON")
     p.add_argument("--pair", action="append", required=True, help="DATASET=RUN_DIR (one per bucket)")
     p.add_argument("--tier", required=True, choices=["labelled-panel", "label-free-board"])

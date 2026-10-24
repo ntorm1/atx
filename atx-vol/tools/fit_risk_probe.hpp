@@ -61,11 +61,15 @@ inline constexpr double kRepriceAbs = 1.0e-8;
 inline constexpr double kRepriceVegaFloor = 1.0e-6;
 // The shadow clock's rounding bound, asserted per expiry: |T' - T_v| <= this.
 inline constexpr double kShadowClockTolerance = 1.0e-12;
-// American slack of the call-put delta check: |(Dc - Dp) - exp(-q T)| above this, with
-// neither leg near the exercise edge or exercised, is a sanity failure. European parity
-// makes the gap exactly exp(-q T); early exercise moves it, but not by a tenth of a delta
-// away from the edge band.
+// American slack of the call-put delta check. European parity makes the gap Dc - Dp exactly
+// exp(-q T); an early-exercise premium raises a call's delta and lowers a put's, so an
+// American gap is bounded BELOW by exp(-q T) only (the real panel measures it up to +0.23
+// above on long tenors). A gap more than this below exp(-q T), with neither leg near the
+// exercise edge or exercised, is a sanity failure.
 inline constexpr double kCpDeltaSlack = 0.10;
+// Rounding allowance of the per-row sign / range checks: deep in-the-money cold-analytic
+// Greeks carry |gamma|, |vega| of 1e-13..1e-11 noise around zero.
+inline constexpr double kSanityTolerance = 1.0e-9;
 
 // ── Inputs ─────────────────────────────────────────────────────────────────
 
@@ -148,19 +152,22 @@ struct ChainSpot {
 
 enum class SanityBit : std::uint8_t {
   None = 0,
-  DeltaRange = 1u << 0, // call delta outside [0, 1] or put delta outside [-1, 0]
-  GammaNeg = 1u << 1,   // gamma < 0
-  VegaNeg = 1u << 2,    // vega < 0
-  CpDelta = 1u << 3,    // call-put delta gap off exp(-q T) by more than kCpDeltaSlack
+  DeltaRange = 1u << 0, // call delta outside [0, B] / put outside [-B, 0], B = max(1, e^-qT)
+  GammaNeg = 1u << 1,   // gamma < -kSanityTolerance
+  VegaNeg = 1u << 2,    // vega < -kSanityTolerance
+  CpDelta = 1u << 3,    // call-put delta gap below exp(-q T) by more than kCpDeltaSlack
 };
 inline constexpr std::size_t kSanityKinds = 4;
 [[nodiscard]] constexpr std::uint8_t sanity_mask(SanityBit bit) noexcept {
   return static_cast<std::uint8_t>(bit);
 }
-// The per-row bits of one Greek triple (CpDelta is a pair check, never set here). A
-// non-finite input sets no bit: availability counts it instead.
-[[nodiscard]] std::uint8_t greek_sanity(Side side, double delta, double gamma,
-                                        double vega) noexcept;
+// The per-row bits of one Greek triple (CpDelta is a pair check, never set here). The delta
+// range is carry-aware: |delta| may reach max(1, exp(-q T)) (a q < 0 call is European, with
+// delta exp(-q T) N(d1)); every bound allows kSanityTolerance. A non-finite input sets no
+// bit: availability counts it instead.
+[[nodiscard]] std::uint8_t greek_sanity(Side side, double delta, double gamma, double vega,
+                                        double q, double T) noexcept;
+// True when (Dc - Dp) < exp(-q T) - kCpDeltaSlack (the American lower bound, above).
 [[nodiscard]] bool cp_delta_violation(double call_delta, double put_delta, double q,
                                       double T) noexcept;
 
