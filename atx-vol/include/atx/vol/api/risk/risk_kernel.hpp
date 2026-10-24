@@ -81,9 +81,11 @@ struct FamilyKernelPolicy {
   // ── Appended by lane A2 (2026-10-24, additive): family economics on sparse books ──
   //
   // ADAPTIVE NODE COUNT. A group's family gets
-  //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, n_sigma_min, n_sigma)
-  // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the
-  // ceiling; n_sigma_min == n_sigma (and pad 0.25) restores the pre-A2 fixed count.
+  //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, floor, n_sigma),
+  //   floor = min(n_sigma_min, n_sigma)
+  // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the ceiling
+  // and caps the floor (n_sigma = 4 solves every family at 4 nodes under the default
+  // floor); n_sigma_min >= n_sigma (and pad 0.25) restores the pre-A2 fixed count.
   // Calibrated against the 1e-6 family-vs-cold price gate on BOTH bench stores
   // (atx-vol-risk-bench --kernel both, cold.max_rel_price_family; lane A2 report) and the
   // fixture books (RiskKernel.DISABLED_AdaptiveNodeSpacingSweep): the binding regime is a
@@ -92,7 +94,7 @@ struct FamilyKernelPolicy {
   // (licensed) / 2.5e-8 (synthetic) at 5.2 / 7.7 nodes per family (12 before), and the
   // volga gap is back at the 12-node level. The box is rebuilt from each state's own
   // sigmas, so the pad buys no containment, only width.
-  std::uint16_t n_sigma_min{5};     // in [4, n_sigma]
+  std::uint16_t n_sigma_min{5};     // >= 4; capped at n_sigma (the effective floor)
   double sigma_node_spacing{0.06};  // target log-sigma spacing h of the rule (> 0)
   // FAMILY ECONOMICS. A family costs n * family_node_cost_us to build and serves its
   // lanes at a few us; the cold route costs cold_lane_cost_us per lane. A group with

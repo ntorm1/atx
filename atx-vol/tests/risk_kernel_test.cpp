@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/pricing_executor.hpp"
@@ -547,13 +548,10 @@ TEST(RiskKernel, RefusesInvalidPolicyAndTimeSpec) {
   nan_cold.family_economics = false;
   FamilyKernelPolicy low_min;
   low_min.n_sigma_min = 3;
-  FamilyKernelPolicy min_over_max;
-  min_over_max.n_sigma = 8;
-  min_over_max.n_sigma_min = 9;
   FamilyKernelPolicy no_spacing;
   no_spacing.sigma_node_spacing = 0.0;
   for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor, free_nodes, nan_cold,
-                                        low_min, min_over_max, no_spacing}) {
+                                        low_min, no_spacing}) {
     expect_invalid_argument(
         RiskKernel::family(bad).evaluate(prep, owned->state, RiskNeeds{}, frame, ws));
     expect_cleared(frame);
@@ -1024,9 +1022,9 @@ namespace {
     const double lo = std::max(*lo_it * (1.0 - p.sigma_box_pad), p.sigma_box_floor);
     const double hi = *hi_it * (1.0 + p.sigma_box_pad);
     const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
-    const double n = std::clamp(want, static_cast<double>(p.n_sigma_min),
-                                static_cast<double>(p.n_sigma));
-    n_at_floor += n == static_cast<double>(p.n_sigma_min) ? 1u : 0u;
+    const double floor = static_cast<double>(std::min(p.n_sigma_min, p.n_sigma));
+    const double n = std::clamp(want, floor, static_cast<double>(p.n_sigma));
+    n_at_floor += n == floor ? 1u : 0u;
     total += static_cast<std::uint64_t>(n);
   }
   return total;
@@ -1055,6 +1053,29 @@ namespace {
 }
 
 } // namespace
+
+// The node ceiling caps the floor: n_sigma = 4 under the default n_sigma_min (5) is a valid
+// policy whose every family takes 4 nodes, and n_sigma_min above n_sigma (or equal) gives
+// the fixed count n_sigma. Only n_sigma_min below 4 is refused.
+TEST(RiskKernel, NodeFloorCappedByCeiling) {
+  const auto owned = rt::make_state(rt::StateMove{});
+  const RiskBook book = RiskBook::create(narrow_legs(), {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  for (const auto &[n_sigma, n_min] : {std::pair<std::uint16_t, std::uint16_t>{4, 5},
+                                       {8, 9},
+                                       {6, 16},
+                                       {12, 12}}) {
+    FamilyKernelPolicy p = families_always();
+    p.n_sigma = n_sigma;
+    p.n_sigma_min = n_min;
+    const RiskFrame f = evaluate_or_die(RiskKernel::family(p), prep, owned->state, RiskNeeds{});
+    ASSERT_GT(f.counters.families_built, 0u);
+    EXPECT_EQ(f.counters.family_nodes, n_sigma * f.counters.families_built)
+        << "n_sigma " << n_sigma << " n_sigma_min " << n_min;
+    EXPECT_EQ(f.counters.family_rows + f.counters.exercised_rows + f.counters.cold_rows,
+              prep.n_unique());
+  }
+}
 
 // Lane A2 lever 2. The adaptive node count at the shipped spacing keeps the
 // family-vs-cold gate (price 1e-6, vega 1e-4, delta 1e-4 or adjudicated) on the narrow

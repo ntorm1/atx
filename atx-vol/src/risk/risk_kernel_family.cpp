@@ -177,13 +177,15 @@ struct BlockCarry {
 }
 
 // FamilyKernelPolicy "ADAPTIVE NODE COUNT": ceil(log(hi / lo) / spacing) + 1 clamped to
-// [n_sigma_min, n_sigma]. Clamped in double before the cast (an out-of-range float-to-
-// integer conversion is UB); a non-finite ratio takes the floor count.
+// [floor, n_sigma], floor = min(n_sigma_min, n_sigma) (the ceiling wins). Clamped in
+// double before the cast (an out-of-range float-to-integer conversion is UB); a
+// non-finite ratio takes the floor count.
 [[nodiscard]] std::uint16_t node_count(const FamilyKernelPolicy &p, double lo,
                                        double hi) noexcept {
+  const std::uint16_t floor = std::min(p.n_sigma_min, p.n_sigma);
   const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
-  if (!(want > static_cast<double>(p.n_sigma_min))) {
-    return p.n_sigma_min;
+  if (!(want > static_cast<double>(floor))) {
+    return floor;
   }
   if (want >= static_cast<double>(p.n_sigma)) {
     return p.n_sigma;
