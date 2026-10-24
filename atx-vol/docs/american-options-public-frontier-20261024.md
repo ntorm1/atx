@@ -180,6 +180,31 @@ Retrieve the original and reproduce its workload before turning any slide timing
 into a benchmark target. Do not substitute a third-party summary for that evidence.
 [Primary presentation URL](https://www.cqfinstitute.org/sites/default/files/4%20-%20Jesper%20Andreasen%20american%20cqf%202021.pdf).
 
+### Additional 2026 scope checks
+
+Andersen, Itkin and Kazbek's June 2026 work extends integral equations to
+time-dependent Heston dynamics, using COS and damped-Sinc expectations. Its
+abstract reports approximately one to two seconds per contract against a refined
+finite-difference comparator. This is relevant to a future common stochastic
+volatility model, but it is a different model and workload from the current
+constant-volatility American inverse. It does not set a competitive target for
+our continuous-carry point kernel. Only the abstract was reviewed here; no
+implementation or hardware comparison was performed.
+[Primary paper](https://arxiv.org/abs/2606.27335).
+
+Itkin's October 20, 2026 preprint extends damped-Sinc pricing to non-affine
+stochastic-volatility models and reports agreement within one basis point of
+strike against its finite-difference benchmarks. A strike-relative tolerance
+cannot be equated with the approved raw-spread price budget. Treat this as a
+model-extension research lead, with independent convergence and full setup cost
+still to assess. [Primary abstract](https://arxiv.org/abs/2610.28847).
+
+Fast-Vollib's June 2026 revised announcement explicitly covers European
+Black/Black-Scholes/Merton prices, IVs and Greeks. Its vectorized and GPU IV
+implementations are useful European component comparators, but their timings
+are not American early-exercise comparisons.
+[Primary announcement](https://arxiv.org/abs/2604.27210v2).
+
 ## 3. Freeze comparator versions and execution boundaries
 
 The pinned revisions below were resolved through upstream Git/API metadata on
