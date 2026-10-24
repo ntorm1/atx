@@ -13,6 +13,36 @@ explicitly reported clocks. No warm-cache substitution, hidden parallelism, refe
 labels as fitting inputs, skipped validation, or reclassification of solver failures
 as invalid data.
 
+**User-approved accuracy revision, 2026-10-24:** the calibration acceptance gate
+now bounds the cold Reference repricing error of each reported point IV by
+`min(0.001 USD/share, 0.01 * (raw ask - raw bid))`. The user explicitly selected
+this budget to allow performance improvements while keeping errors economically
+small. Use the tightest budget across duplicate rows at the same node/side;
+do not substitute a spread floor, repaired boxes or widened quotes. Zero-width
+quotes allow no economic error budget. Only a separately reported floating-point
+roundoff allowance is permitted. Preserve and report raw inputs and the budget
+in the acceptance evidence.
+
+Absolute IV error of 1e-7 is now a diagnostic, not a promotion requirement.
+Retain the failed strict audit below as historical evidence. Report low-vega
+conditioning and IV uncertainty rather than implying that a small price residual
+guarantees a precise IV. Greek accuracy needs separate tests; this revision does
+not establish accurate risk or relax price-surface arbitrage, 99.5% containment,
+all-expiry service, one-core execution or the sub-second timing requirement.
+Production acceleration is explicitly opt-in with zero/off defaults and must
+check its candidate against this price budget, retaining a reference fallback.
+
+Re-scoring the frozen wave-1 actual-API export under this approved contract
+passes all 12,183 identified rows, with zero economic-budget or roundoff-only
+failures. The maximum residual is $0.0007096053236921307/share and maximum
+budget utilization is 70.96053237%. All 683 typed PriceOnly rows remain served;
+none were reclassified for this result. The existing all-33-expiry, 12,866-row,
+99.88341365% containment and price-constraint checks still pass. Evidence:
+`acceptance/integrated-full-wave1-audit/verification-economic-v1.json` and
+`cold-node-prices-v1.json`. This changes the approved correctness criterion,
+not the measured runtime: the 22.1222-second development profile remains
+unqualified and far above the target. Its 1,026 strict-IV misses remain visible.
+
 Frozen starting point: local main `a53c48c4a3c404fe63e24f07f1d574a2a015ed38`.
 Integration worktree: `C:/atx-wt/pool-3`, branch
 `feat/vol-spy-qualified-r7-20261023`. Input:
