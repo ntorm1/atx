@@ -71,6 +71,10 @@ enum class FitArchiveOpenMode : std::uint8_t {
   Read,   // one sized read into an owned 8-byte aligned buffer
 };
 
+// Open cost (ARCHIVE_FORMAT.md "Open cost model"): every level runs the framing
+// checks and the O(records) structural record pass; `Full` adds an O(file) CRC and
+// padding scan (a `Mapped` open faults in every page); `Paranoid` a second O(file)
+// CRC. Lookups after the open are binary searches.
 enum class FitArchiveVerify : std::uint8_t {
   Framing,  // header / footer / table checksums and the full structural pass;
             // skips section checksums and the padding scan (trusted cache)

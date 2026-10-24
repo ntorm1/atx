@@ -4,7 +4,8 @@ Status: **authoritative layout spec** for the surface-archive format as of lane 
 (2026-10-23). The on-disk POD structs live in
 `include/atx/vol/api/storage/surface_archive.hpp` (`ArchiveV2*`); the writer, the
 whole-board reader and the point read in `src/storage/surface_archive.cpp`; the
-positional-read seam in `src/storage/positional_file.{hpp,cpp}`; the zero-copy view in
+positional-read seam (`detail::PositionalFile`) in `src/storage/archive_util.{hpp,cpp}`;
+the zero-copy view in
 `include/atx/vol/api/backtest/priced_surface_view.hpp`. Every size and offset below is
 pinned by a `static_assert` in the header, so this table and the code cannot drift
 silently.
@@ -295,12 +296,19 @@ sensitive to every record byte).
 
 ## 9. Durable publish
 
-Unchanged: `write_surface_archive_v2_file` writes a unique same-directory temp, fsyncs
-it (`FlushFileBuffers` / `fsync`), and renames it over the destination with bounded
-retry (8 attempts, ~635 ms) while a reader holds the destination open without
-`FILE_SHARE_DELETE`; on final failure the temp is preserved. The point read and the
-whole-file read open with `FILE_SHARE_DELETE` and close before returning, so they never
-cause that retry. A long-lived `open_mapped` archive still can (documented above).
+`write_surface_archive_v2_file` writes a unique same-directory temp, fsyncs it
+(`FlushFileBuffers` / `fsync`), and replaces the destination. On Windows the replace
+first uses POSIX rename semantics (`SetFileInformationByHandle(FileRenameInfoEx,
+FILE_RENAME_FLAG_POSIX_SEMANTICS | FILE_RENAME_FLAG_REPLACE_IF_EXISTS)`, NTFS on
+Windows 10 1607+), which succeeds while readers hold the destination open with
+`FILE_SHARE_DELETE` — the point read and `open_copied` do, and keep reading the old,
+now-unlinked file through their handle. The classic rename (`MoveFileEx` semantics)
+is refused by such a reader: measured in lane SER, 4 of 40 publishes exhausted the
+retry budget under a tight two-thread point-read loop
+(`SurfaceArchivePointRead.ConcurrentRepublishServesOneWholeVersion`). It remains the
+fallback, with bounded retry (8 attempts, ~635 ms), for file systems without POSIX
+semantics and for readers that do not share delete (a long-lived `open_mapped`
+archive, an `ifstream`); on final failure the temp is preserved.
 External in-place truncation of a mapped file remains the standard mmap hazard
 (`EXCEPTION_IN_PAGE_ERROR` / `SIGBUS`); positional reads turn it into a short read
 (`IoError`).
@@ -316,6 +324,12 @@ removes the cache's identity-outside-the-lock window and its "unreadable identit
 the stale entry" rule. `open_partition` / `open_partition_file` (whole-board callers)
 use `open_copied`; `session_ts` uses positional reads of the header, the first
 directory entry and that record's header.
+
+Measured (6,000-symbol partition, 11.3 MB, `atx-vol-surface-archive-bench`
+`pointread_study`, vol-rel, unqualified; `sprints/2026-10-23-SER-sprint.md`): a cold
+`map_surface` reads 3 calls / 2,214 B mean (was 2,826 calls / 11.58 MB) in 24 µs p50,
+41 µs p99 (was 11.8 ms / 14.6 ms); whole-board `open_partition` + `map_all` 7.6 ms (was
+12.3 ms).
 
 The manifest is **ATXVDB02** (`major 2`): a 128-B header (24-B zero tail), 264-B
 `DbSymbolRecord`s whose surface policy and provenance are named fields (no marker, no

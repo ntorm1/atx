@@ -1137,10 +1137,11 @@ never re-bills for data already on disk. See the pull tool below.
 Target shape: thousands of symbols × ~250 sessions/yr → ~1M surfaces
 (≈ 4k symbols × 250 dates).
 
-- **Per-date partition file**: 4k surfaces × ~2–6 KB ≈ 10–25 MB — comfortably
-  inside `SurfaceArchiveV2` mmap + the LRU partition-view cache (16 resident
-  partitions by default; O(1) `map_surface` probe per query).
-- **Manifest** (`manifest.atxdb`): 4k × 256 B symbol records + 250 × 128 B
+- **Per-date partition file**: 4k surfaces × ~2–6 KB ≈ 10–25 MB. `map_surface` /
+  `load_surface` are point reads (ATXVSA21, `docs/atxvsa2-format.md` §4): header +
+  one slot run + the record, three positional reads whatever the partition size; no
+  partition cache and nothing resident between calls.
+- **Manifest** (`manifest.atxdb`, ATXVDB02): 4k × 264 B symbol records + 250 × 64 B
   partition records/yr ≈ ~1 MB, rewritten atomically — fine at this scale.
 - **Asserted limits**: partition key ≤ 32 chars, symbol ≤ 32 chars.
 - **Out of scope**: multi-year growth (manifest > ~100 MB or partitions
