@@ -279,6 +279,15 @@ set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/served_session.cpp
 )
 
+# Risk engine (sprint 2026-10-24, docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md):
+# first-class P&L explain + theoretical-contract projection over api/risk/*. Lanes
+# append their TUs here (lane A: market_state / risk_book / risk_kernel_* / risk_frame /
+# pnl_explain / risk_stream; lane B: strike_coord / theo_contract; lane D:
+# historical_var). risk_api_check.cpp compiles every frozen header and stays empty.
+set(ATX_VOL_RISK_SOURCES
+    src/risk/risk_api_check.cpp
+)
+
 set(ATX_VOL_BACKTEST_SOURCES
     src/backtest/deriv_book.cpp
     src/backtest/panel.cpp
@@ -323,6 +332,7 @@ target_sources(atx-vol PRIVATE
     ${ATX_VOL_STORAGE_SOURCES}
     ${ATX_VOL_ANALYTICS_SOURCES}
     ${ATX_VOL_BACKTEST_SOURCES}
+    ${ATX_VOL_RISK_SOURCES}
 )
 
 # ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------

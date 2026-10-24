@@ -194,6 +194,13 @@ Result<double> strike_at_delta(const PricedSurface &ps, double T, Side side, dou
     return resolve_strike_by_delta(ps, T, side, abs_delta);
   case DeltaConvention::Forward:
     return strike_by_forward_delta(ps, T, side, abs_delta);
+  case DeltaConvention::Spot:
+    // The analytics wing / RR / BF solves ship Forward and American only; the Spot
+    // (Black e^{-qT} N(d1)) convention lives in api/risk/strike_coord.hpp
+    // (convert_strike_coord), which honours all three. Refusing here keeps the
+    // AN-P2-6 rule: never a different convention's answer under the same name.
+    return Err(ErrorCode::NotImplemented,
+               "strike_at_delta: Spot delta is served by convert_strike_coord (api/risk)");
   }
   return Err(ErrorCode::NotImplemented, "strike_at_delta: unknown delta convention");
 }

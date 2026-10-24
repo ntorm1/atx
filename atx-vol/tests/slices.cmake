@@ -28,7 +28,7 @@
 # target_compile_definitions() call on atx-vol-tests has already run.
 
 set(ATX_VOL_SLICES core pricing simd fitting marketdata storage analytics backtest
-    dispersion oracle misc)
+    dispersion oracle risk misc)
 
 # Stems owned by a pre-existing focused exe: skipped here.
 set(ATX_VOL_SLICE_OWNED_ELSEWHERE
@@ -97,6 +97,12 @@ set(ATX_VOL_SLICE_dispersion_STEMS
     listed_dispersion_pipeline mag7_dispersion_backtest spy_dispersion_pnl
     surface_db_dispersion_backtest multiname_pipeline)
 set(ATX_VOL_SLICE_oracle_STEMS oracle_bench)
+# Risk engine (sprint 2026-10-24): every risk_*_test.cpp plus the SpiderRock store /
+# bench suites. Lane loop: build atx-vol-risk-slice, -Ctest -R "^risk/<Suite>\."
+set(ATX_VOL_SLICE_risk_STEMS
+    risk_market_state risk_book risk_kernel risk_pnl_explain risk_stream
+    risk_strike_coord risk_theo_contract risk_historical_var
+    priced_surface_shape_blend spiderrock_store risk_bench)
 
 # Fallback for stems added after this table was written: first matching prefix
 # wins, then `misc`.
@@ -105,6 +111,7 @@ set(ATX_VOL_SLICE_PREFIX_RULES
     "surface_db_=storage" "surface_archive_=storage" "track_=storage" "backtest_db_=storage"
     "listed_dispersion_=dispersion" "dispersion_=dispersion"
     "backtest_=backtest" "strategy_=backtest"
+    "risk_=risk" "spiderrock_=risk"
     "analytics_=analytics" "earnings_=analytics" "var_=analytics"
     "opra_=marketdata" "listed_=marketdata" "spy_=marketdata"
     "curve_=fitting" "essvi_=fitting" "cstar_=fitting" "c8_=fitting" "surface_=fitting"

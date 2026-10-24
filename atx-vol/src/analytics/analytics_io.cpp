@@ -71,6 +71,8 @@ void put_u32(std::string &s, std::uint32_t v) {
     return "American";
   case DeltaConvention::Forward:
     return "Forward";
+  case DeltaConvention::Spot:
+    return "Spot";
   }
   return "Unknown";
 }

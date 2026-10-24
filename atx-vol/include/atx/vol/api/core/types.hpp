@@ -149,6 +149,11 @@ enum class DeltaConvention : std::uint8_t {
   // high-carry or deep-ITM-early-exercise name this resolves a materially
   // different strike from `Forward`.
   American = 1,
+  // Black SPOT delta e^{-qT} N(d1) (put: e^{-qT}(N(d1) - 1)) under the state's
+  // continuous carry q — the shares a delta-one hedge needs. Closed form. Added
+  // by the risk-engine sprint (2026-10-24, api/risk/strike_coord.hpp); appended
+  // last so no persisted enumerator value moves.
+  Spot = 2,
 };
 
 // ── Pricing route (shared diagnostic tag) ─────────────────────────────────
