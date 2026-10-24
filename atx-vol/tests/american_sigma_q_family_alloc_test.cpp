@@ -29,6 +29,47 @@
 namespace atx::vol {
 namespace {
 
+TEST(AlSigmaFamilyAlloc, GreekValidityDirectDetachedChainAndShockAllocateNothing) {
+  constexpr double S = 772.99, T = 0.0682, K = S * 1.05, sigma = 0.12;
+  const auto geometry = prepare_al_geometry(T, 0.04496, 0.001589 + 0.37 * (0.001678 - 0.001589));
+  AlSigmaFamily family(geometry, Side::Put, S);
+  ASSERT_TRUE(family.prepare(0.10, 0.50, 12));
+  const auto detached = family_detach(family);
+  using Mask = AlSigmaFamilyGreeksMask;
+  const auto warm = family_greeks(family, S, K, sigma, Mask::all());
+  ASSERT_TRUE(warm.near_edge);
+  std::array<double, 1> strikes{K}, sigmas{sigma}, zero{0.0}, price{}, theta{}, edge{};
+  std::array<Side, 1> sides{Side::Put};
+  std::array<AlSigmaFamilyStatus, 1> status{};
+  std::array<Mask, 1> supported{};
+  std::array<AlSigmaFamilyGreekReasons, 1> reason{};
+  AlSigmaFamilyGreekColumns cols;
+  cols.price = price; cols.theta = theta; cols.edge_sd = edge;
+  cols.supported = supported; cols.reason = reason;
+  unsigned good = 0;
+  const auto allocations = testkit::count_allocations([&] {
+    const auto direct = family_greeks(family, S, K, sigma, Mask::all());
+    const auto copy = detached.greeks(S, K, sigma, Mask::all());
+    const auto refused = family_greeks(family, S, K, 0.9, Mask::all());
+    good += direct.reason == warm.reason && copy.reason == warm.reason &&
+            refused.supported.bits == 0 ? 1u : 0u;
+    good += family_chain_greeks(&family, nullptr, S, strikes, sigmas, sides,
+                                Mask::all(), cols, status).has_value() ? 1u : 0u;
+    good += family_shock_grid(family, S, K, sigma, zero, zero, Mask::all(), cols,
+                              status).has_value() ? 1u : 0u;
+    std::array<Mask, 2> bad_support{};
+    cols.supported = bad_support;
+    good += !family_chain_greeks(&family, nullptr, S, strikes, sigmas, sides,
+                                 Mask::all(), cols, status).has_value() ? 1u : 0u;
+    good += !family_shock_grid(family, S, K, sigma, zero, zero, Mask::all(), cols,
+                               status).has_value() ? 1u : 0u;
+  });
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_EQ(good, 5u);
+  EXPECT_EQ(reason[0], warm.reason);
+  EXPECT_TRUE(std::isnan(theta[0]));
+}
+
 TEST(AlSigmaQFamilyAlloc, PricePathAllocatesNothing) {
   const AlExpiryGeometry g = prepare_al_geometry(0.5, 0.05, 0.02);
   for (const Side side : {Side::Put, Side::Call}) {

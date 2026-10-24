@@ -204,6 +204,7 @@ using sigma_family_detail::DiffTables;
 
 // Which internal derivatives a call needs (derived from the mask and the side).
 struct Need {
+  bool edge = false;  // per-Greek admission; price+vega inversion needs no log
   bool s1 = false;    // P_S
   bool s2 = false;    // P_SS
   bool s3 = false;    // P_SSS
@@ -222,6 +223,7 @@ struct Need {
   const bool theta = m.has(Mask::kTheta);
   const bool charm = m.has(Mask::kCharm);
   Need n;
+  n.edge = m.bits != 0;
   n.s1 = m.has(Mask::kDelta) || theta || charm;
   n.s2 = m.has(Mask::kGamma) || theta || charm;
   n.s3 = charm;
@@ -237,6 +239,7 @@ struct Need {
 // The internal put's bundle at (S_int, K_int, σ).
 struct Internal {
   double price = 0.0; // the served (clamped) price — the family's price to the bit
+  double edge_sd = kNaN;
   double dS = 0.0;
   double dSS = 0.0;
   double dSSS = 0.0;
@@ -651,6 +654,9 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   // exists). Both cases serve the EXERCISE Greeks with the (unchanged) served price.
   const double yT = bnd.y[nb - 1];
   const double b_now = bnd.xmax * std::exp(-std::sqrt((yT > 0.0) ? yT : 0.0));
+  if (need.edge) {
+    out.edge_sd = std::log(S / b_now) / (sigma * sqrtT);
+  }
   const bool inside = S <= b_now;
   const bool at_intrinsic = intr > 0.0 && price <= intr + 1.0e-9 * K;
   if (clamped || at_intrinsic || inside) {
@@ -678,6 +684,44 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   out.dyield = eyield + half_sqrtT * ayield + out.dyield_xmax + out.dyield_bt;
 }
 
+// Complete per-field validity without changing the served price or doing another
+// numerical evaluation. The mask bits and field array have the public enum order.
+void qualify_fields(AlSigmaFamilyGreeks &g, Mask m) noexcept {
+  using Reason = AlSigmaFamilyGreekReason;
+  g.requested = m;
+  const std::array<double *, kAlSigmaFamilyGreekCount> fields = {
+      &g.delta, &g.gamma, &g.vega, &g.theta, &g.rho, &g.phi, &g.vanna, &g.volga, &g.charm};
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    const auto bit = static_cast<std::uint16_t>(1u << i);
+    if (!m.has(bit)) {
+      continue;
+    }
+    Reason why = Reason::Served;
+    if (g.status != AlSigmaFamilyStatus::Ok) {
+      why = Reason::Refused;
+    } else if ((bit & (Mask::kRho | Mask::kPhi)) != 0 &&
+               g.carry != AlSigmaFamilyCarryStatus::Ok) {
+      why = g.carry == AlSigmaFamilyCarryStatus::NoCarryBumps
+                ? Reason::NoCarryBumps : Reason::CarryBumpsMismatch;
+    } else if (g.exercised) {
+      why = Reason::Exercised;
+    } else if ((bit & (Mask::kGamma | Mask::kTheta | Mask::kCharm)) != 0 &&
+               (g.near_edge || std::isnan(g.edge_sd))) {
+      why = g.near_edge ? Reason::NearExerciseEdge : Reason::Refused;
+    }
+    if ((why == Reason::Served || why == Reason::Exercised) &&
+        !std::isfinite(*fields[i])) {
+      why = Reason::Refused;
+    }
+    g.reason[i] = why;
+    if (why == Reason::Served || why == Reason::Exercised) {
+      g.supported.bits |= bit;
+    } else {
+      *fields[i] = kNaN;
+    }
+  }
+}
+
 // Map the internal put's bundle to the option's Greeks (homogeneity for calls, the
 // PDE identity for θ / charm) and fill only what the mask asked for. `carry` is Ok
 // when rho / phi were computed with the carry boundary terms; any other value is the
@@ -691,6 +735,8 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   g.price = in.price;
   g.exercised = in.exercised;
   g.floored = in.floored;
+  g.edge_sd = in.edge_sd;
+  g.near_edge = !in.exercised && in.edge_sd < kAlFamilyGreekEdgeBand;
   g.boundary_term_included = m.has(Mask::kVega) || m.has(Mask::kVanna) || m.has(Mask::kVolga);
   double delta = in.dS;
   double gamma = in.dSS;
@@ -752,6 +798,7 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   if (m.has(Mask::kCharm)) {
     g.charm = charm;
   }
+  qualify_fields(g, m);
   return g;
 }
 
@@ -786,6 +833,7 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   if (m.has(Mask::kCharm)) {
     g.charm = kNaN;
   }
+  qualify_fields(g, m);
   return g;
 }
 
@@ -849,6 +897,15 @@ void store_row(const AlSigmaFamilyGreekColumns &out, std::size_t i,
   if (!out.charm.empty()) {
     out.charm[i] = g.charm;
   }
+  if (!out.supported.empty()) {
+    out.supported[i] = g.supported;
+  }
+  if (!out.reason.empty()) {
+    out.reason[i] = g.reason;
+  }
+  if (!out.edge_sd.empty()) {
+    out.edge_sd[i] = g.edge_sd;
+  }
   if (!out.flags.empty()) {
     std::uint8_t f = 0;
     if (g.exercised) {
@@ -864,14 +921,25 @@ void store_row(const AlSigmaFamilyGreekColumns &out, std::size_t i,
         g.carry == AlSigmaFamilyCarryStatus::CarryBumpsMismatch) {
       f |= 8u;
     }
+    if (g.near_edge) {
+      f |= 16u;
+    }
     out.flags[i] = f;
   }
 }
 
 // A refused row / cell: NaN in every stored column.
 void store_refused(const AlSigmaFamilyGreekColumns &out, std::size_t i,
-                   AlSigmaFamilyStatus st) noexcept {
+                   AlSigmaFamilyStatus st, Mask mask) noexcept {
   AlSigmaFamilyGreeks g = refused(st, Mask::all());
+  // Preserve the legacy all-stored-columns-NaN refusal, but report only the
+  // actual request in per-field metadata (unrequested reasons stay NotRequested).
+  g.requested = mask;
+  for (std::size_t j = 0; j < g.reason.size(); ++j) {
+    if (!mask.has(static_cast<std::uint16_t>(1u << j))) {
+      g.reason[j] = AlSigmaFamilyGreekReason::NotRequested;
+    }
+  }
   store_row(out, i, g);
 }
 
@@ -879,7 +947,10 @@ void store_refused(const AlSigmaFamilyGreekColumns &out, std::size_t i,
   const auto fits = [n](std::span<const double> s) { return s.empty() || s.size() == n; };
   return fits(out.price) && fits(out.delta) && fits(out.gamma) && fits(out.vega) &&
          fits(out.theta) && fits(out.rho) && fits(out.phi) && fits(out.vanna) &&
-         fits(out.volga) && fits(out.charm) && (out.flags.empty() || out.flags.size() == n);
+         fits(out.volga) && fits(out.charm) && fits(out.edge_sd) &&
+         (out.flags.empty() || out.flags.size() == n) &&
+         (out.supported.empty() || out.supported.size() == n) &&
+         (out.reason.empty() || out.reason.size() == n);
 }
 
 } // namespace
@@ -1036,14 +1107,14 @@ Status family_chain_greeks(const AlSigmaFamily *put, const AlSigmaFamily *call, 
                            const AlSigmaFamilyCarryBumps *call_carry) {
   const std::size_t n = K.size();
   if (sigma.size() != n || side.size() != n || status.size() != n || !columns_fit(out, n)) {
-    return Err(ErrorCode::InvalidArgument,
-               "family_chain_greeks: K / sigma / side / status / column lengths differ");
+    // Keep the refusal allocation-free (same small-string message as sigma/q).
+    return Err(ErrorCode::InvalidArgument, "span lengths");
   }
   for (std::size_t i = 0; i < n; ++i) {
     const AlSigmaFamily *fam = (side[i] == Side::Call) ? call : put;
     if (fam == nullptr) {
       status[i] = AlSigmaFamilyStatus::NotPrepared;
-      store_refused(out, i, status[i]);
+      store_refused(out, i, status[i], mask);
       continue;
     }
     const AlSigmaFamilyCarryBumps *carry = (side[i] == Side::Call) ? call_carry : put_carry;
@@ -1052,7 +1123,7 @@ Status family_chain_greeks(const AlSigmaFamily *put, const AlSigmaFamily *call, 
                                       : family_greeks(*fam, S, K[i], sigma[i], mask);
     status[i] = g.status;
     if (g.status != AlSigmaFamilyStatus::Ok) {
-      store_refused(out, i, g.status);
+      store_refused(out, i, g.status, mask);
       continue;
     }
     store_row(out, i, g);
@@ -1066,8 +1137,7 @@ Status family_shock_grid(const AlSigmaFamily &fam, double S, double K, double si
                          std::span<AlSigmaFamilyStatus> status) {
   const std::size_t n = spot_pct.size() * vol_bump.size();
   if (status.size() != n || !columns_fit(out, n)) {
-    return Err(ErrorCode::InvalidArgument,
-               "family_shock_grid: status / column lengths differ from n_spot * n_vol");
+    return Err(ErrorCode::InvalidArgument, "span lengths");
   }
   for (std::size_t i = 0; i < spot_pct.size(); ++i) {
     const double Si = S * (1.0 + spot_pct[i]);
@@ -1076,7 +1146,7 @@ Status family_shock_grid(const AlSigmaFamily &fam, double S, double K, double si
       const AlSigmaFamilyGreeks g = family_greeks(fam, Si, K, sigma + vol_bump[j], mask);
       status[idx] = g.status;
       if (g.status != AlSigmaFamilyStatus::Ok) {
-        store_refused(out, idx, g.status);
+        store_refused(out, idx, g.status, mask);
         continue;
       }
       store_row(out, idx, g);

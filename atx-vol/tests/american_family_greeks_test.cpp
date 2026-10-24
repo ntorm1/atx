@@ -72,12 +72,37 @@ using atx::vol::prepare_al_geometry;
 using atx::vol::Side;
 
 using Mask = AlSigmaFamilyGreeksMask;
+using Greek = atx::vol::AlSigmaFamilyGreek;
+using Reason = atx::vol::AlSigmaFamilyGreekReason;
+using Reasons = atx::vol::AlSigmaFamilyGreekReasons;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr std::uint16_t kNodes = 12;
 
 [[nodiscard]] bool same_bits(double a, double b) noexcept {
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+void check_validity(const AlSigmaFamilyGreeks &g, Mask requested) {
+  EXPECT_EQ(g.requested.bits, requested.bits);
+  const std::array<double, 9> values = {
+      g.delta, g.gamma, g.vega, g.theta, g.rho, g.phi, g.vanna, g.volga, g.charm};
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const auto bit = static_cast<std::uint16_t>(1u << i);
+    if (!requested.has(bit)) {
+      EXPECT_EQ(g.reason[i], Reason::NotRequested);
+      EXPECT_FALSE(g.supported.has(bit));
+      EXPECT_EQ(values[i], 0.0);
+    } else if (g.supported.has(bit)) {
+      EXPECT_TRUE(std::isfinite(values[i]));
+      EXPECT_EQ(g.reason[i], g.exercised ? Reason::Exercised : Reason::Served);
+    } else {
+      EXPECT_TRUE(std::isnan(values[i]));
+      EXPECT_NE(g.reason[i], Reason::NotRequested);
+      EXPECT_NE(g.reason[i], Reason::Served);
+      EXPECT_NE(g.reason[i], Reason::Exercised);
+    }
+  }
 }
 
 [[nodiscard]] std::string describe(double S, double K, double T, double sigma, double r, double q,
@@ -315,6 +340,164 @@ struct Worst {
 
 // ── Price identity ────────────────────────────────────────────────────────────
 
+TEST(AlSigmaFamilyGreeks, NearExerciseEdgeDoesNotPublishUnqualifiedTheta) {
+  // The same contract whose sigma/q bundle already types NearExerciseEdge.
+  constexpr double S = 772.99;
+  constexpr double T = 0.0682;
+  constexpr double r = 0.04496;
+  constexpr double q = 0.001589 + 0.37 * (0.001678 - 0.001589);
+  const double K = S * (1.02 + (1.12 - 1.02) * 3.0 / 10.0);
+  constexpr double sigma = 0.12;
+  const AlExpiryGeometry geometry = prepare_al_geometry(T, r, q);
+  AlSigmaFamily family(geometry, Side::Put, S);
+  ASSERT_TRUE(family.prepare(0.10, 0.50, kNodes));
+  const AlSigmaFamilyGreeks greek = family_greeks(family, S, K, sigma, Mask::all());
+  ASSERT_EQ(greek.status, AlSigmaFamilyStatus::Ok);
+  ASSERT_FALSE(greek.exercised);
+  EXPECT_TRUE(same_bits(greek.price, family.price(S, K, sigma).price));
+  const atx::vol::AlOpts refined{.n_collocation = 32, .n_quadrature = 64,
+                                .max_newton_iter = 16, .tol = 1e-13};
+  const double hT = 0.002 * T;
+  const auto plus = andersen_lake(S, K, T + hT, sigma, r, q, Side::Put, refined);
+  const auto minus = andersen_lake(S, K, T - hT, sigma, r, q, Side::Put, refined);
+  ASSERT_TRUE(plus && minus);
+  const double calendar_theta = -(*plus - *minus) / (2 * hT);
+  EXPECT_LT(calendar_theta, 0.0);
+  EXPECT_TRUE(std::isnan(greek.theta))
+      << "unqualified theta=" << greek.theta << " refined calendar=" << calendar_theta;
+}
+
+TEST(AlSigmaFamilyGreeks, EdgeValidityIsPreservedByMasksSidesDetachedAndColumns) {
+  constexpr double S = 772.99, T = 0.0682, r = 0.04496;
+  constexpr double q = 0.001589 + 0.37 * (0.001678 - 0.001589);
+  constexpr double K = S * 1.05, sigma = 0.12;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const bool call = side == Side::Call;
+    const auto geometry = prepare_al_geometry(T, call ? q : r, call ? r : q);
+    AlSigmaFamily family(geometry, side, S);
+    ASSERT_TRUE(family.prepare(0.10, 0.50, kNodes));
+    const double spot = call ? K : S, strike = call ? S : K;
+    const auto all = family_greeks(family, spot, strike, sigma, Mask::all());
+    ASSERT_EQ(all.status, AlSigmaFamilyStatus::Ok);
+    ASSERT_FALSE(all.exercised);
+    ASSERT_TRUE(all.near_edge);
+    EXPECT_GT(all.edge_sd, 0.0);
+    EXPECT_LT(all.edge_sd, atx::vol::kAlFamilyGreekEdgeBand);
+    check_validity(all, Mask::all());
+    for (const auto field : {Greek::Gamma, Greek::Theta, Greek::Charm}) {
+      EXPECT_EQ(all.reason_of(field), Reason::NearExerciseEdge);
+      const Mask one{static_cast<std::uint16_t>(1u << static_cast<unsigned>(field))};
+      const auto masked = family_greeks(family, spot, strike, sigma, one);
+      check_validity(masked, one);
+      EXPECT_EQ(masked.reason_of(field), Reason::NearExerciseEdge);
+      EXPECT_TRUE(same_bits(masked.price, all.price));
+      EXPECT_EQ(masked.edge_sd, all.edge_sd);
+    }
+    EXPECT_EQ(all.reason_of(Greek::Rho), Reason::NoCarryBumps);
+    EXPECT_EQ(all.reason_of(Greek::Delta), Reason::Served);
+    EXPECT_EQ(all.reason_of(Greek::Vega), Reason::Served);
+    EXPECT_EQ(all.reason_of(Greek::Vanna), Reason::Served);
+    EXPECT_EQ(all.reason_of(Greek::Volga), Reason::Served);
+    const AlSigmaFamilyDetached detached = family_detach(family);
+    ASSERT_TRUE(detached.prepared());
+    const auto copy = detached.greeks(spot, strike, sigma, Mask::all());
+    check_validity(copy, Mask::all());
+    EXPECT_EQ(copy.reason, all.reason);
+    EXPECT_EQ(copy.supported.bits, all.supported.bits);
+    EXPECT_EQ(copy.edge_sd, all.edge_sd);
+    EXPECT_TRUE(same_bits(copy.price, all.price));
+
+    // Probe both sides of the shared 0.25-standard-deviation admission band.
+    for (const double distance : {0.249, 0.251}) {
+      const double internal_spot = S * std::exp((distance - all.edge_sd) * sigma * std::sqrt(T));
+      const auto edge = family_greeks(family, call ? K : internal_spot,
+                                     call ? internal_spot : K, sigma, Mask::hedge());
+      ASSERT_FALSE(edge.exercised);
+      EXPECT_NEAR(edge.edge_sd, distance, 1e-12);
+      EXPECT_EQ(edge.near_edge, distance < atx::vol::kAlFamilyGreekEdgeBand);
+      EXPECT_EQ(edge.reason_of(Greek::Theta), edge.near_edge ? Reason::NearExerciseEdge : Reason::Served);
+      check_validity(edge, Mask::hedge());
+    }
+
+    std::array<double, 1> strikes{strike}, sigmas{sigma}, zero{0.0}, price{}, theta{}, edge{};
+    std::array<Side, 1> sides{side};
+    std::array<AlSigmaFamilyStatus, 1> status{};
+    std::array<Mask, 1> supported{};
+    std::array<Reasons, 1> reason{};
+    std::array<std::uint8_t, 1> flags{};
+    AlSigmaFamilyGreekColumns cols;
+    cols.price = price; cols.theta = theta; cols.edge_sd = edge;
+    cols.supported = supported; cols.reason = reason; cols.flags = flags;
+    ASSERT_TRUE(family_chain_greeks(&family, &family, spot, strikes, sigmas, sides,
+                                    Mask::all(), cols, status));
+    EXPECT_EQ(status[0], AlSigmaFamilyStatus::Ok);
+    EXPECT_EQ(reason[0], all.reason);
+    EXPECT_EQ(supported[0].bits, all.supported.bits);
+    EXPECT_TRUE(std::isnan(theta[0]));
+    EXPECT_EQ(edge[0], all.edge_sd);
+    EXPECT_NE(flags[0] & 16u, 0u);
+    ASSERT_TRUE(family_shock_grid(family, spot, strike, sigma, zero, zero,
+                                 Mask::all(), cols, status));
+    EXPECT_EQ(reason[0], all.reason);
+    EXPECT_EQ(supported[0].bits, all.supported.bits);
+    EXPECT_TRUE(std::isnan(theta[0]));
+
+    // Every optional validity column is shape-checked before any output write.
+    std::array<Mask, 2> long_support{};
+    std::array<Reasons, 2> long_reason{};
+    std::array<double, 2> long_edge{};
+    for (unsigned column = 0; column < 3; ++column) {
+      auto bad = cols;
+      if (column == 0) bad.supported = long_support;
+      if (column == 1) bad.reason = long_reason;
+      if (column == 2) bad.edge_sd = long_edge;
+      price[0] = -123.0;
+      status[0] = AlSigmaFamilyStatus::NotPrepared;
+      EXPECT_FALSE(family_chain_greeks(&family, &family, spot, strikes, sigmas, sides,
+                                      Mask::all(), bad, status));
+      EXPECT_FALSE(family_shock_grid(family, spot, strike, sigma, zero, zero,
+                                    Mask::all(), bad, status));
+      EXPECT_EQ(price[0], -123.0);
+      EXPECT_EQ(status[0], AlSigmaFamilyStatus::NotPrepared);
+    }
+    // A refused price preserves requested-vs-unrequested reasons in batch output.
+    ASSERT_TRUE(family_chain_greeks(nullptr, nullptr, spot, strikes, sigmas, sides,
+                                    Mask{Mask::kTheta}, cols, status));
+    EXPECT_EQ(supported[0].bits, 0);
+    EXPECT_EQ(reason[0][static_cast<unsigned>(Greek::Theta)], Reason::Refused);
+    EXPECT_EQ(reason[0][static_cast<unsigned>(Greek::Delta)], Reason::NotRequested);
+  }
+}
+
+TEST(AlSigmaFamilyGreeks, ExercisedAndCarryValidityAreExplicit) {
+  const auto geometry = prepare_al_geometry(0.5, 0.05, 0.02);
+  for (const Side side : {Side::Put, Side::Call}) {
+    AlSigmaFamily family(geometry, side, 100.0);
+    ASSERT_TRUE(family.prepare(0.10, 0.50, kNodes));
+    AlSigmaFamilyCarryBumps carry;
+    ASSERT_TRUE(carry.prepare(family, Mask{Mask::kRho | Mask::kPhi}));
+    const double strike = side == Side::Put ? 400.0 : 25.0;
+    const auto exercise = family_greeks(family, carry, 100.0, strike, 0.12, Mask::all());
+    ASSERT_TRUE(exercise.exercised);
+    EXPECT_FALSE(exercise.near_edge);
+    EXPECT_EQ(exercise.supported.bits, Mask::all().bits);
+    check_validity(exercise, Mask::all());
+    for (const auto why : exercise.reason) EXPECT_EQ(why, Reason::Exercised);
+    EXPECT_EQ(exercise.gamma, 0.0);
+    EXPECT_EQ(exercise.theta, 0.0);
+    EXPECT_EQ(exercise.charm, 0.0);
+    AlSigmaFamilyCarryBumps missing;
+    const auto mismatch = family_greeks(family, missing, 100.0, 100.0, 0.25, Mask::all());
+    check_validity(mismatch, Mask::all());
+    EXPECT_EQ(mismatch.reason_of(Greek::Rho), Reason::CarryBumpsMismatch);
+    EXPECT_EQ(mismatch.reason_of(Greek::Phi), Reason::CarryBumpsMismatch);
+    const auto refused = family_greeks(family, 100.0, 100.0, 0.90, Mask::hedge());
+    check_validity(refused, Mask::hedge());
+    EXPECT_EQ(refused.supported.bits, 0);
+    EXPECT_TRUE(std::isnan(refused.edge_sd));
+  }
+}
+
 TEST(AlSigmaFamilyGreeks, PriceFieldIsTheFamilyPriceToTheBit) {
   // The fused kernel accumulates the premium quadrature expression for expression
   // with the kernel, so the price it serves beside the Greeks — and the detached
@@ -340,6 +523,9 @@ TEST(AlSigmaFamilyGreeks, PriceFieldIsTheFamilyPriceToTheBit) {
           const AlSigmaFamilyGreeks ga = family_greeks(f, c.S, K, sigma, Mask::all());
           const AlSigmaFamilyGreeks gp = family_greeks(f, c.S, K, sigma, Mask::price_only());
           const AlSigmaFamilyGreeks gh = family_greeks(f, c.S, K, sigma, Mask::hedge());
+          check_validity(ga, Mask::all());
+          check_validity(gp, Mask::price_only());
+          check_validity(gh, Mask::hedge());
           const AlSigmaFamilyPriceVega pv = family_price_and_vega(f, c.S, K, sigma);
           const AlSigmaFamilyPrice dp = d.price(c.S, K, sigma);
           const AlSigmaFamilyGreeks dg = d.greeks(c.S, K, sigma, Mask::all());
@@ -420,17 +606,25 @@ void check_formula_on(const std::vector<Case> &cases, const FormulaBounds &b) {
         const double gvo = rel_gap(a.volga, fd.volga, floor_p);
         const double gc = rel_gap(a.charm, charm_fd, 1.0e-2 * std::max(a.price, 1.0));
         wd.add(gd, at);
-        wg.add(gg, at);
+        if (a.supported.has(Mask::kGamma)) {
+          wg.add(gg, at);
+          EXPECT_LE(gg, b.gamma) << b.name << " " << at << " gamma " << a.gamma << " fd " << fd.gamma;
+        } else {
+          EXPECT_EQ(a.reason_of(Greek::Gamma), Reason::NearExerciseEdge);
+        }
         wv.add(gv, at);
         wvn.add(gvn, at);
         wvo.add(gvo, at);
-        wc.add(gc, at);
+        if (a.supported.has(Mask::kCharm) && std::isfinite(charm_fd)) {
+          wc.add(gc, at);
+          EXPECT_LE(gc, b.charm) << b.name << " " << at << " charm " << a.charm << " fd " << charm_fd;
+        } else if (!a.supported.has(Mask::kCharm)) {
+          EXPECT_EQ(a.reason_of(Greek::Charm), Reason::NearExerciseEdge);
+        }
         EXPECT_LE(gd, b.delta) << b.name << " " << at << " delta " << a.delta << " fd " << fd.delta;
-        EXPECT_LE(gg, b.gamma) << b.name << " " << at << " gamma " << a.gamma << " fd " << fd.gamma;
         EXPECT_LE(gv, b.vega) << b.name << " " << at << " vega " << a.vega << " fd " << fd.vega;
         EXPECT_LE(gvn, b.vanna) << b.name << " " << at << " vanna " << a.vanna << " fd " << fd.vanna;
         EXPECT_LE(gvo, b.volga) << b.name << " " << at << " volga " << a.volga << " fd " << fd.volga;
-        EXPECT_LE(gc, b.charm) << b.name << " " << at << " charm " << a.charm << " fd " << charm_fd;
       }
     }
   }
@@ -472,6 +666,11 @@ TEST(AlSigmaFamilyGreeks, ThetaIsThePdeIdentityOfTheServedPriceDeltaGamma) {
       for (const double sigma : c.sigmas) {
         const AlSigmaFamilyGreeks a = family_greeks(f, c.S, K, sigma, Mask::all());
         ASSERT_EQ(a.status, AlSigmaFamilyStatus::Ok);
+        if (!a.supported.has(Mask::kTheta)) {
+          EXPECT_EQ(a.reason_of(Greek::Theta), Reason::NearExerciseEdge);
+          EXPECT_TRUE(std::isnan(a.theta));
+          continue;
+        }
         const double want = a.exercised ? 0.0
                                         : c.r * a.price - (c.r - c.q) * c.S * a.delta -
                                               0.5 * sigma * sigma * c.S * c.S * a.gamma;
@@ -532,9 +731,17 @@ TEST(AlSigmaFamilyGreeks, GreeksWithinMeasuredBoundOfTheReferenceBundleOnSpy23) 
         const std::string at = describe(c.S, K, c.T, sigma, c.r, c.q, c.side);
         const double fp = 1.0e-3 * std::max(a.price, 1.0);
         wd.add(rel_gap(a.delta, b->delta, 1.0e-3), at);
-        wg.add(rel_gap(a.gamma, b->gamma, 1.0e-6 * c.S), at);
+        if (a.supported.has(Mask::kGamma)) {
+          wg.add(rel_gap(a.gamma, b->gamma, 1.0e-6 * c.S), at);
+        } else {
+          EXPECT_EQ(a.reason_of(Greek::Gamma), Reason::NearExerciseEdge);
+        }
         wv.add(rel_gap(a.vega, b->vega, fp), at);
-        wt.add(rel_gap(a.theta, b->theta, fp), at);
+        if (a.supported.has(Mask::kTheta)) {
+          wt.add(rel_gap(a.theta, b->theta, fp), at);
+        } else {
+          EXPECT_EQ(a.reason_of(Greek::Theta), Reason::NearExerciseEdge);
+        }
         wvn.add(rel_gap(a.vanna, b->vanna, 1.0e-3), at);
         wvo.add(rel_gap(a.volga, b->volga, fp), at);
         wr.add(rel_gap(a.rho, b->rho, fp), at);

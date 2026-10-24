@@ -565,10 +565,9 @@ private:
 //                       per expiry), so an FD-in-T theta does not exist here. NOT usable
 //                       next to the exercise edge: within ~0.03 σ√T of it this θ was
 //                       measured 25 – 138 % off the converged calendar difference, once
-//                       with the wrong sign (A0 r6 slow suite; review-A0 m2). This bundle
-//                       has no per-Greek reason, so nothing marks those rows — the (σ, q)
-//                       bundle (A0 block below) types the band NearExerciseEdge; review-L3g
-//                       m5's in-band part is OPEN for this bundle's owner;
+//                       with the wrong sign (A0 r6 slow suite; review-A0 m2). Gamma,
+//                       theta and charm now refuse with NearExerciseEdge inside the
+//                       same kAlFamilyGreekEdgeBand as the (sigma, q) bundle below;
 //   charm             — ∂θ/∂S from the same identity with the analytic speed;
 //   rho, phi (∂P/∂r, ∂P/∂q) — ONLY with an AlSigmaFamilyCarryBumps (below): a σ-family
 //                       has no r / q axis, and its frozen-boundary derivative (y held)
@@ -643,6 +642,24 @@ enum class AlSigmaFamilyCarryStatus : std::uint8_t {
                           // or was built from a different family
 };
 
+// Index order agrees with AlSigmaFamilyGreeksMask. Whole-result status describes
+// PRICE admission only; callers must inspect supported/reason for each Greek.
+enum class AlSigmaFamilyGreek : std::uint8_t {
+  Delta, Gamma, Vega, Theta, Rho, Phi, Vanna, Volga, Charm
+};
+enum class AlSigmaFamilyGreekReason : std::uint8_t {
+  NotRequested = 0,
+  Served = 1,
+  Exercised = 2,
+  Refused = 3,
+  NoCarryBumps = 4,
+  CarryBumpsMismatch = 5,
+  NearExerciseEdge = 6,
+};
+inline constexpr std::size_t kAlSigmaFamilyGreekCount = 9;
+using AlSigmaFamilyGreekReasons =
+    std::array<AlSigmaFamilyGreekReason, kAlSigmaFamilyGreekCount>;
+
 struct AlSigmaFamilyGreeks {
   double price = std::numeric_limits<double>::quiet_NaN(); // NaN unless status == Ok
   double delta = 0.0;
@@ -661,7 +678,19 @@ struct AlSigmaFamilyGreeks {
   // True when vega / vanna / volga were computed: they carry the σ-boundary term
   // dy/dσ. A served rho / phi (carry == Ok) carries its (r, q) boundary term.
   bool boundary_term_included = false;
-  // On a refusal every requested Greek is NaN together with the price.
+  AlSigmaFamilyGreeksMask requested{};
+  AlSigmaFamilyGreeksMask supported{};
+  AlSigmaFamilyGreekReasons reason{};
+  // Internal-put log distance from the current exercise boundary / (sigma*sqrt(T)).
+  // NaN when not evaluated (price-only or refused); +infinity is a remote boundary.
+  double edge_sd = std::numeric_limits<double>::quiet_NaN();
+  bool near_edge = false;
+  [[nodiscard]] AlSigmaFamilyGreekReason reason_of(AlSigmaFamilyGreek field) const noexcept {
+    const auto i = static_cast<std::size_t>(field);
+    return i < reason.size() ? reason[i] : AlSigmaFamilyGreekReason::Refused;
+  }
+  // A requested unsupported Greek is NaN with a reason. Unrequested fields are
+  // zero. Exercised exact derivatives remain supported even inside the edge band.
 };
 
 // Price + the requested Greeks of the (S, K) contract of the family's side at sigma.
@@ -760,7 +789,9 @@ struct AlSigmaFamilyPriceVega {
 // an empty span is computed and dropped; an unrequested Greek with a span gets 0.0).
 // `flags` (optional) receives bit 0 = exercised, bit 1 = floored, bit 2 =
 // boundary_term_included, bit 3 = a requested rho / phi was REFUSED (NaN; carry
-// status NoCarryBumps or CarryBumpsMismatch) per row.
+// status NoCarryBumps or CarryBumpsMismatch), bit 4 = near_edge per row.
+// Optional supported/reason columns preserve per-field validity independently of
+// the price status. The common input mask is each row's requested mask.
 struct AlSigmaFamilyGreekColumns {
   std::span<double> price{};
   std::span<double> delta{};
@@ -773,6 +804,9 @@ struct AlSigmaFamilyGreekColumns {
   std::span<double> volga{};
   std::span<double> charm{};
   std::span<std::uint8_t> flags{};
+  std::span<AlSigmaFamilyGreeksMask> supported{};
+  std::span<AlSigmaFamilyGreekReasons> reason{};
+  std::span<double> edge_sd{};
 };
 
 // One expiry's chain at spot S: row i is (K[i], sigma[i], side[i]) priced through

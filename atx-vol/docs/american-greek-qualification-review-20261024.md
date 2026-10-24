@@ -190,3 +190,52 @@ median/p95/p99, total attempts, per-field accurate coverage and reference-
 unresolved counts. The price comparator's timing-order reversal is a reason to
 require this stronger experiment before publishing a close ranking. Do not
 start a Greek performance promotion until its independent accuracy gate exists.
+
+## Sigma-only near-edge refusal implementation
+
+The source review's sigma-only gap has a reproducible public-API failure. The
+frozen near-edge put returns price status `Ok` and theta `+0.12809223883588497`,
+while a refined Andersen-Lake calendar central difference returns
+`-0.3373304784152199`. The runtime RED receipt is
+`acceptance/sigma-greek-edge-red.xml` under the r7 evidence directory. This is a
+correlated-method numerical counterexample, sufficient to reject the old theta
+claim; it is not an independent certification of the finite difference.
+
+`AlSigmaFamilyGreeks` now exposes `requested`, `supported`, nine per-field
+reasons, `edge_sd` and `near_edge`. Whole-result `status` describes price
+admission. In the continuation region below the existing
+`kAlFamilyGreekEdgeBand = 0.25` internal-put standard-deviation distance,
+requested gamma, theta and charm are NaN with `NearExerciseEdge`; the price
+and other finite admitted fields retain their original arithmetic. Exercise
+derivatives remain exact and supported. Carry derivatives retain their separate
+missing/mismatched-bump refusal. Every supported field must be finite.
+
+Direct and detached queries use the same validity map. Chain and shock outputs
+provide optional supported/reason/distance columns and a near-edge flag; every
+optional column is shape-checked before writes. Their documented legacy
+price-refusal behavior still writes NaN into all stored numerical columns,
+while unrequested field reasons remain `NotRequested`. The dedicated
+price-plus-vega inversion helper does not compute the added logarithmic edge
+distance. No unvalidated scalar fallback is introduced.
+
+Caller inspection found no sigma-only Greek archive, Python binding or fitting
+record serialization to migrate. `SliceServeRecord` calls the already-typed
+sigma/q overload. The public direct/chain/shock/detached APIs are exposed to the
+bug, and their only non-test in-tree consumer is `al_preset_ladder_bench`. That
+benchmark now reports requested/served/refused counts for every derivative so
+typed refusals cannot silently reduce an error denominator. This change closes
+the inaccurate-success hole; it does not qualify the remaining Greeks, define
+new derivative error budgets, or establish a Greek latency frontier.
+
+Validation: all 19 `AlSigmaFamilyGreeks` tests pass, including 4,830 bit-identical
+price comparisons, both sides of the shared edge band, mask consistency,
+exercise/carry typing, detached/chain/shock propagation, malformed output
+columns, and unchanged outside-band formula checks. A separate allocation
+counter test observes zero allocations for direct/detached/chain/shock queries
+and malformed-column refusals. The latter exposed the existing long span-error
+strings; both now use the sigma/q API's short `span lengths` message. Owning
+source, tests and benchmark consumer pass PCH-off compilation. Evidence files
+are `acceptance/sigma-greek-edge-{green-final,alloc-final}.xml` and
+`sigma-greek-edge-hygiene{,-final}.log`. The umbrella suite is 7/10: its existing
+README tier-count and fixture-path failures remain, with no new failing suite
+or offending path in this change. This is not a whole-library release gate.
