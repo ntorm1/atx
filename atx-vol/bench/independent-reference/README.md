@@ -113,3 +113,10 @@ The captured fixture is a synthetic zero-rate put's single obstacle stage,
 containing only six input arrays. Its original failure and historical reference
 decisions remain unchanged. Passing this primitive does not authorize replacing
 the default solver or rerunning a full Greek pilot.
+
+The separate [twelve-request harness](zero-rate-lcp-twelve-harness-v1.md) is now
+implemented for source review. It requires explicit `--mode one_correction`,
+the exact historical v2 baseline and clean source. Its new schema retains all
+twelve requests, all stage work and all 714 other corpus contracts as uncomputed.
+It cannot update historical decisions or substitute for a complete144 experiment.
+The fixed twelve requests have not executed at this source checkpoint.
