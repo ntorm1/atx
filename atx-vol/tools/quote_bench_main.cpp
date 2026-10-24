@@ -868,6 +868,7 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_native_attempts", t.reimply_native_attempts},
           {"reimply_native_roots", t.reimply_native_roots},
           {"reimply_native_fallbacks", t.reimply_native_fallbacks},
+          {"reimply_native_fast_confirms", t.reimply_native_fast_confirms},
           {"reimply_native_max_bound_iv", t.reimply_native_max_bound_iv},
           {"reimply_batch_calls", t.reimply_batch_calls},
           {"reimply_batch_lanes", t.reimply_batch_lanes},
