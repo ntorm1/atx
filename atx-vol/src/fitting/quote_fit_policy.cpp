@@ -6,6 +6,8 @@
 #include <limits>
 #include <utility>
 
+#include "fitting/quote_slice_price_budget.hpp"
+
 namespace atx::vol {
 namespace {
 
@@ -119,6 +121,9 @@ struct RawContract {
   // configuration still drives its B/C refits under graded admission.
   if (!validate_quote_slice_channel(cfg.channel)) {
     return Err(ErrorCode::InvalidArgument, "quote fit policy: invalid channel configuration");
+  }
+  if (!detail::valid_reimply_price_budget(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "quote fit policy: invalid repaired-IV price budget");
   }
   if (cfg.method != QuoteSliceFitMethod::PointCurve &&
       cfg.method != QuoteSliceFitMethod::ChannelSpline) {

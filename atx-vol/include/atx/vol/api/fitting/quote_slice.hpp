@@ -633,7 +633,10 @@ struct QuoteSliceConfig {
   // continuous carry. A Fast Search candidate must reprice on the cold target map
   // within min(cap, fraction * raw quote spread), with no spread floor. Duplicate
   // contracts use the tightest budget; zero spread and unquoted queries retain the
-  // historical fallback. Prices, market constraints and default IV controls do not change.
+  // historical fallback. These fields bound acceleration acceptance; the unchanged
+  // Search fallback is not a new general output-error guarantee. Whole-fit accuracy
+  // still requires independent repricing. Prices, market constraints and default IV
+  // controls do not change.
   double reimply_price_cap = 0.0;
   double reimply_spread_fraction = 0.0;
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate; // opt-in (SPY1s P1)

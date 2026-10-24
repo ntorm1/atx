@@ -254,6 +254,26 @@ TEST(QuoteFitPolicy, RejectsUnsafeOrUnderidentifiedCustomProfiles) {
   EXPECT_FALSE(QuoteFitPolicyCatalog::create(profiles).has_value());
 }
 
+TEST(QuoteFitPolicy, RejectsInconsistentReimplyBudgetsBeforeResolvingProfiles) {
+  auto valid = default_quote_fit_profiles();
+  valid.front().config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  valid.front().config.reimply_price_cap = 0.001;
+  valid.front().config.reimply_spread_fraction = 0.01;
+  ASSERT_TRUE(QuoteFitPolicyCatalog::create(valid));
+  for (const auto mutate : {
+      +[](QuoteSliceConfig &c) { c.reimply_price_cap = 0.0; },
+      +[](QuoteSliceConfig &c) { c.reimply_spread_fraction = 0.0; },
+      +[](QuoteSliceConfig &c) { c.reimply_price_cap = -0.001; },
+      +[](QuoteSliceConfig &c) { c.reimply_price_cap = std::numeric_limits<double>::quiet_NaN(); },
+      +[](QuoteSliceConfig &c) { c.reimply_spread_fraction = std::numeric_limits<double>::infinity(); },
+      +[](QuoteSliceConfig &c) { c.floor_policy = QuoteSliceFloorPolicy::Legacy; },
+      +[](QuoteSliceConfig &c) { c.dividend_model = QuoteSliceDividendModel::DatedCash; }}) {
+    auto invalid = valid;
+    mutate(invalid.front().config);
+    EXPECT_FALSE(QuoteFitPolicyCatalog::create(invalid));
+  }
+}
+
 TEST(QuoteFitPolicy, RejectsInvalidSnapshotClocksAndDuplicateExpiries) {
   const auto input = quotes(8, 0.1);
   std::array snapshots{QuoteFitExpirySnapshot{market(), input},

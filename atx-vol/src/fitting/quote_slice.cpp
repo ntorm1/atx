@@ -25,6 +25,7 @@
 #include "fitting/quote_slice_call_floor.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/quote_slice_nodes.hpp"
+#include "fitting/quote_slice_price_budget.hpp"
 #include "fitting/quote_slice_vol_space.hpp"
 #include "fitting/rung_memo.hpp"
 #include "fitting/slice_channel.hpp"
@@ -98,11 +99,7 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
   if (!discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid lattice scheme");
   }
-  if (!nonnegative(cfg.reimply_price_cap) || !nonnegative(cfg.reimply_spread_fraction) ||
-      ((cfg.reimply_price_cap > 0.0) != (cfg.reimply_spread_fraction > 0.0)) ||
-      (cfg.reimply_price_cap > 0.0 &&
-       (cfg.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
-        cfg.dividend_model == QuoteSliceDividendModel::DatedCash))) {
+  if (!detail::valid_reimply_price_budget(cfg)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid repaired-IV price budget");
   }
   if (!nonnegative(cfg.quality.min_bid) || !nonnegative(cfg.quality.max_spread_to_mid) ||
