@@ -84,13 +84,16 @@ struct FamilyKernelPolicy {
   //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, n_sigma_min, n_sigma)
   // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the
   // ceiling; n_sigma_min == n_sigma (and pad 0.25) restores the pre-A2 fixed count.
-  // Calibrated (RiskKernel.DISABLED_AdaptiveNodeSpacingSweep): the family-vs-cold price
-  // gap at the binding count n = 4 is <= 1.7e-7 relative while the box spacing
-  // log(hi / lo) / (n - 1) is <= 0.075 at pad 0.05; at pad 0.25 no 4- or 5-node family
-  // meets the 1e-6 gate. The box is rebuilt from each state's own sigmas, so the pad buys
-  // no containment, only width.
-  std::uint16_t n_sigma_min{4};     // in [4, n_sigma]
-  double sigma_node_spacing{0.075}; // target log-sigma spacing h of the rule (> 0)
+  // Calibrated against the 1e-6 family-vs-cold price gate on BOTH bench stores
+  // (atx-vol-risk-bench --kernel both, cold.max_rel_price_family; lane A2 report) and the
+  // fixture books (RiskKernel.DISABLED_AdaptiveNodeSpacingSweep): the binding regime is a
+  // narrow LONG-DATED box (T 0.5 - 2.3 y, log width ~ 0.2), where a 4-node family misses
+  // the gate (licensed 2.9e-6); with n >= 5 and h = 0.06 the worst gap is 9.3e-8
+  // (licensed) / 2.5e-8 (synthetic) at 5.2 / 7.7 nodes per family (12 before), and the
+  // volga gap is back at the 12-node level. The box is rebuilt from each state's own
+  // sigmas, so the pad buys no containment, only width.
+  std::uint16_t n_sigma_min{5};     // in [4, n_sigma]
+  double sigma_node_spacing{0.06};  // target log-sigma spacing h of the rule (> 0)
   // FAMILY ECONOMICS. A family costs n * family_node_cost_us to build and serves its
   // lanes at a few us; the cold route costs cold_lane_cost_us per lane. A group with
   // n * family_node_cost_us >= n_eligible * cold_lane_cost_us (both scaled by the

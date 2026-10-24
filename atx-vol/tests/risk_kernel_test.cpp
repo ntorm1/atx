@@ -127,6 +127,18 @@ template <class T>
   return (4.0 * d_h2 - d_h) / 3.0;
 }
 
+// The same for the sigma derivative (vega): the cold bundle's vega is a sigma stencil
+// whose truncation reaches ~1e-4 relative on long-dated lanes (T ~ 2 y; lane A2).
+[[nodiscard]] double richardson_vega(double S, double K, double T, double sigma, double r,
+                                     double q, Side side) {
+  const std::optional<AlOpts> opts{al_fast_opts()};
+  const auto P = [&](double s) { return andersen_lake(S, K, T, s, r, q, side, opts).value(); };
+  const double h = 0.01 * sigma;
+  const double d_h = (P(sigma + h) - P(sigma - h)) / (2.0 * h);
+  const double d_h2 = (P(sigma + 0.5 * h) - P(sigma - 0.5 * h)) / h;
+  return (4.0 * d_h2 - d_h) / 3.0;
+}
+
 [[nodiscard]] double rel_gap(double a, double b) noexcept {
   const double scale = std::max(std::fabs(b), 1e-300);
   return std::fabs(a - b) / scale;
@@ -148,7 +160,8 @@ template <class T>
 // Family-vs-cold gaps over the family-served lanes of one (family, cold) frame pair:
 // price <= 1e-6 and vega <= 1e-4 relative (G4); a delta over 1e-4 is adjudicated
 // against a Richardson reference of the cold price (the cold delta's own stencil error,
-// lane A deviation 1).
+// lane A deviation 1), and so is a vega over 1e-4 (the cold vega's sigma stencil on
+// long-dated lanes, lane A2).
 struct GateStats {
   double max_price{0.0};
   double max_delta{0.0};
@@ -156,6 +169,9 @@ struct GateStats {
   double max_fam_vs_ref{0.0};
   double max_cold_vs_ref{0.0};
   std::size_t adjudicated{0};
+  double max_vega_fam_vs_ref{0.0};
+  double max_vega_cold_vs_ref{0.0};
+  std::size_t vega_adjudicated{0};
   std::size_t compared{0};
 };
 
@@ -173,12 +189,24 @@ void expect_family_gate(const PreparedRiskBook &prep, const RiskFrame &fam, cons
     const double gd = rel_gap(fam.delta[r], cold.delta[r]);
     const double gv = rel_gap(fam.vega[r], cold.vega[r]);
     EXPECT_LE(gp, 1e-6) << "row " << r;
-    EXPECT_LE(gv, 1e-4) << "row " << r;
+    const std::size_t slot = static_cast<std::size_t>(
+        std::lower_bound(prep.uids().begin(), prep.uids().end(), prep.uid()[r]) -
+        prep.uids().begin());
+    if (gv > 1e-4) {
+      // Over the bound: adjudicate against the reference sigma derivative of the cold price.
+      const double ref = richardson_vega(fam.uid_spot[slot], prep.strike()[r], fam.T[r],
+                                         fam.sigma[r], fam.rate[r], fam.q_eff[r],
+                                         prep.side()[r]);
+      const double fam_err = std::fabs(fam.vega[r] - ref);
+      const double cold_err = std::fabs(cold.vega[r] - ref);
+      EXPECT_LE(fam_err, 1e-4 * std::fabs(ref)) << "row " << r;
+      EXPECT_LT(fam_err, cold_err) << "row " << r << ": the vega gap must be the cold stencil's";
+      s.max_vega_fam_vs_ref = std::max(s.max_vega_fam_vs_ref, fam_err / std::fabs(ref));
+      s.max_vega_cold_vs_ref = std::max(s.max_vega_cold_vs_ref, cold_err / std::fabs(ref));
+      ++s.vega_adjudicated;
+    }
     if (gd > 1e-4) {
       // Over the bound: adjudicate against the reference derivative of the cold price.
-      const std::size_t slot = static_cast<std::size_t>(
-          std::lower_bound(prep.uids().begin(), prep.uids().end(), prep.uid()[r]) -
-          prep.uids().begin());
       const double ref = richardson_delta(fam.uid_spot[slot], prep.strike()[r], fam.T[r],
                                           fam.sigma[r], fam.rate[r], fam.q_eff[r],
                                           prep.side()[r]);
@@ -203,7 +231,10 @@ void print_gate(const char *what, const GateStats &s) {
             << " max|dvega| rel=" << s.max_vega
             << "; delta lanes over 1e-4 adjudicated by a Richardson reference=" << s.adjudicated
             << " (max family-vs-ref rel=" << s.max_fam_vs_ref
-            << ", max cold-vs-ref rel=" << s.max_cold_vs_ref << ")\n";
+            << ", max cold-vs-ref rel=" << s.max_cold_vs_ref << ")"
+            << "; vega lanes over 1e-4 adjudicated=" << s.vega_adjudicated
+            << " (max family-vs-ref rel=" << s.max_vega_fam_vs_ref
+            << ", max cold-vs-ref rel=" << s.max_vega_cold_vs_ref << ")\n";
 }
 
 } // namespace
@@ -885,26 +916,54 @@ namespace {
   return total;
 }
 
+// The long-dated narrow book: per underlier and side THREE strikes in the money (puts at
+// 1.05 / 1.07 / 1.09 of spot, calls at 0.91 / 0.93 / 0.95) at T ~ 1.1 y and ~ 2.3 y,
+// beyond the fixture surfaces' last pillar (TenorExtrapolated; both kernels see the same
+// sigma). The licensed store's long-dated put groups (T 0.5 - 2.3 y, three lanes, log box
+// width ~ 0.2) are where a 4-node family missed the price gate (lane A2 report).
+[[nodiscard]] std::vector<OptionLeg> long_narrow_legs() {
+  std::vector<OptionLeg> legs;
+  std::uint64_t id = 1;
+  for (const rt::UnderlierSpec &u : rt::kUnderliers) {
+    for (const std::int64_t units : {std::int64_t{18000}, std::int64_t{37700}}) {
+      for (const Side side : {Side::Put, Side::Call}) {
+        for (const double rel : {0.05, 0.07, 0.09}) {
+          const double m = side == Side::Put ? 1.0 + rel : 1.0 - rel;
+          legs.push_back(OptionLeg{id++, u.uid, std::round(u.spot * m * 2.0) / 2.0,
+                                   rt::instant_ns(units), side, 1.0, 100.0});
+        }
+      }
+    }
+  }
+  return legs;
+}
+
 } // namespace
 
 // Lane A2 lever 2. The adaptive node count at the shipped spacing keeps the
 // family-vs-cold gate (price 1e-6, vega 1e-4, delta 1e-4 or adjudicated) on the narrow
 // licensed-shaped boxes, which the rule solves at its SMALLEST count (n_sigma_min) but for
-// the few whose sigmas spread wider than three node spacings, and on the standard fixture
-// book's wider boxes, over four states each. Every family takes exactly the documented
-// rule's count. Economics off: every group keeps its family, so every lane is a family
-// number under test.
+// the few whose sigmas spread wider, on the standard fixture book's wider boxes and on the
+// long-dated narrow boxes (the regime that binds the calibration), over four states each.
+// Every family takes exactly the documented rule's count. Economics off: every group keeps
+// its family, so every lane is a family number under test.
 TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
   const FamilyKernelPolicy p = families_always();
-  for (const bool narrow : {true, false}) {
+  for (const int kind : {0, 1, 2}) {
+    const bool narrow = kind == 0;
     const RiskBook book =
-        RiskBook::create(narrow ? narrow_legs() : rt::make_option_legs(), {}).value();
+        RiskBook::create(kind == 0   ? narrow_legs()
+                         : kind == 1 ? rt::make_option_legs()
+                                     : long_narrow_legs(),
+                         {})
+            .value();
     const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
     GateStats s;
     std::uint64_t families = 0;
     std::uint64_t nodes = 0;
     std::uint64_t expected = 0;
     std::size_t at_floor = 0;
+    std::size_t edge_cold = 0;
     double max_spread = 0.0;
     for (const bool shifted : {false, true}) {
       for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
@@ -916,6 +975,11 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
         families += fam.counters.families_built;
         nodes += fam.counters.family_nodes;
         expected += rule_nodes(prep, fam, p, at_floor);
+        for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+          const bool edge = fam.route[r] == RiskRoute::ColdAnalytic &&
+                            has_flag(fam.flags[r], RiskFlag::NearExerciseEdge);
+          edge_cold += edge ? 1u : 0u;
+        }
         for (const RiskGroup &g : prep.groups()) {
           const auto [lo, hi] =
               std::minmax_element(fam.sigma.begin() + g.begin, fam.sigma.begin() + g.end);
@@ -924,13 +988,22 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
         expect_family_gate(prep, fam, cold, s);
       }
     }
-    print_gate(narrow ? "adaptive nodes, narrow boxes" : "adaptive nodes, fixture book", s);
+    print_gate(kind == 0   ? "adaptive nodes, narrow boxes"
+               : kind == 1 ? "adaptive nodes, fixture book"
+                           : "adaptive nodes, long-dated narrow boxes",
+               s);
     std::cout << "[RiskKernel]   families=" << families << " nodes=" << nodes
               << " (per family " << static_cast<double>(nodes) / static_cast<double>(families)
               << ", at n_sigma_min " << at_floor << "), max sigma spread per group "
               << max_spread << "\n";
     ASSERT_GT(families, 0u);
-    EXPECT_EQ(s.compared, 4u * prep.n_unique()) << "every lane must be family-served";
+    // Every lane is family-served but the long-dated book's exercise-edge lanes (its
+    // deepest in-the-money put at T ~ 2.3 y: priced cold and flagged, as it must be).
+    EXPECT_EQ(s.compared + edge_cold, 4u * prep.n_unique());
+    if (kind != 2) {
+      EXPECT_EQ(edge_cold, 0u);
+    }
+    EXPECT_LE(edge_cold, 4u);
     EXPECT_EQ(nodes, expected) << "every family takes the documented rule's count";
     if (narrow) {
       EXPECT_LE(max_spread, 0.05) << "the premise: licensed-shaped narrow boxes";
@@ -945,17 +1018,20 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
 // On-demand calibration receipt (DISABLED_: a sweep, not a gate) for
 // FamilyKernelPolicy::sigma_node_spacing / n_sigma_min / sigma_box_pad. Economics off, so
 // every lane is a family number. At a FIXED node count n (n_sigma_min = n_sigma = n) and a
-// pad, over the narrow licensed-shaped book and the fixture book at four states each, every
-// group's worst family-vs-cold relative price gap is binned by the group's effective node
-// spacing h_eff = log(hi / lo) / (n - 1) (its box as family_group builds it). The adaptive
-// rule n = ceil(log(hi / lo) / h) + 1 gives every group h_eff <= h, so the largest bin edge
-// whose worst gap stays under the gate AT n = n_sigma_min is the calibrated spacing (more
-// nodes at the same h_eff are more accurate, so the smallest count binds).
+// pad, per book (narrow licensed-shaped, fixture, long-dated narrow) at four states each,
+// every group's worst family-vs-cold relative price gap is binned by the group's effective
+// node spacing h_eff = log(hi / lo) / (n - 1) (its box as family_group builds it). The rule
+// n = ceil(log(hi / lo) / h) + 1 gives every group h_eff <= h, and more nodes at the same
+// h_eff are more accurate, so the smallest count binds; the gap also grows with T, which
+// is why the long-dated book (and the bench's licensed store) set n_sigma_min, not the
+// short-dated fixtures.
 TEST(RiskKernel, DISABLED_AdaptiveNodeSpacingSweep) {
   const RiskBook narrow_book = RiskBook::create(narrow_legs(), {}).value();
   const RiskBook fixture_book = RiskBook::create(rt::make_option_legs(), {}).value();
-  const std::array<PreparedRiskBook, 2> books{PreparedRiskBook::create(narrow_book).value(),
-                                              PreparedRiskBook::create(fixture_book).value()};
+  const RiskBook long_book = RiskBook::create(long_narrow_legs(), {}).value();
+  const std::array<PreparedRiskBook, 3> books{PreparedRiskBook::create(narrow_book).value(),
+                                              PreparedRiskBook::create(fixture_book).value(),
+                                              PreparedRiskBook::create(long_book).value()};
   std::vector<std::unique_ptr<rt::OwnedState>> states;
   for (const bool shifted : {false, true}) {
     for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
@@ -963,17 +1039,19 @@ TEST(RiskKernel, DISABLED_AdaptiveNodeSpacingSweep) {
     }
   }
   constexpr std::array<double, 9> kEdges{0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.3, 1e9};
+  constexpr std::array<const char *, 3> kBookNames{"narrow", "fixture", "long-dated"};
   for (const double pad : {0.25, 0.15, 0.10, 0.05}) {
     for (const std::uint16_t n : {4, 5, 6, 7, 8}) {
       FamilyKernelPolicy p = families_always();
       p.sigma_box_pad = pad;
       p.n_sigma = n;
       p.n_sigma_min = n;
-      std::array<double, kEdges.size()> worst{};
-      std::array<std::size_t, kEdges.size()> groups{};
-      double w_min = 1e9;
-      double w_max = 0.0;
-      for (const PreparedRiskBook &prep : books) {
+      for (std::size_t bi = 0; bi < books.size(); ++bi) {
+        const PreparedRiskBook &prep = books[bi];
+        std::array<double, kEdges.size()> worst{};
+        std::array<std::size_t, kEdges.size()> groups{};
+        double w_min = 1e9;
+        double w_max = 0.0;
         for (const auto &owned : states) {
           const RiskFrame fam = evaluate_or_die(RiskKernel::family(p), prep, owned->state, {});
           const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, {});
@@ -1004,15 +1082,15 @@ TEST(RiskKernel, DISABLED_AdaptiveNodeSpacingSweep) {
             ++groups[b];
           }
         }
-      }
-      std::cout << "[RiskKernel] sweep pad=" << pad << " n=" << n << " w=[" << w_min << ", "
-                << w_max << "] worst rel price by h_eff <=";
-      for (std::size_t b = 0; b < kEdges.size(); ++b) {
-        if (groups[b] != 0u) {
-          std::cout << " " << kEdges[b] << ":" << worst[b] << "(" << groups[b] << ")";
+        std::cout << "[RiskKernel] sweep pad=" << pad << " n=" << n << " " << kBookNames[bi]
+                  << " w=[" << w_min << ", " << w_max << "] worst rel price by h_eff <=";
+        for (std::size_t b = 0; b < kEdges.size(); ++b) {
+          if (groups[b] != 0u) {
+            std::cout << " " << kEdges[b] << ":" << worst[b] << "(" << groups[b] << ")";
+          }
         }
+        std::cout << "\n";
       }
-      std::cout << "\n";
     }
   }
 }
