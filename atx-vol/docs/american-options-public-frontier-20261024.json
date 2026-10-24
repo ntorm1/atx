@@ -1,0 +1,67 @@
+{
+  "schema": "atx-american-options-frontier-research-v1",
+  "research_date": "2026-10-24",
+  "status": "primary-source-review-and-comparator-plan",
+  "external_implementations_executed": false,
+  "comparators": [
+    {
+      "repository": "https://github.com/lballabio/QuantLib",
+      "commit": "e96579fd471b2e9f6bc974c96674d1ccfff248fa",
+      "commit_date_utc": "2026-10-23T16:26:33Z",
+      "source_files": [
+        {
+          "path": "ql/pricingengines/vanilla/qdfpamericanengine.cpp",
+          "sha256": "7a13ddfd9311b264f0a86e2b89922097c0ecc1065c9313ff77766a058cd37e33"
+        },
+        {
+          "path": "test-suite/americanoption.cpp",
+          "sha256": "ee4bd6eb8afda97abc7667125e57dc97c8b3366ff4dc1abfc04189617fb554a9"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/jherekhealy/AQFED.jl",
+      "commit": "602633022b07dfd79fcddd0e5a12c19801d62ce9",
+      "commit_date_utc": "2025-06-18T13:34:56Z",
+      "source_files": []
+    },
+    {
+      "repository": "https://github.com/simu-ai/american_put",
+      "commit": "e7d138093e69fa8cdd6ce7dc7c3371d2899f87f4",
+      "commit_date_utc": "2025-12-18T16:23:42Z",
+      "source_files": [
+        {
+          "path": "fast_put.hpp",
+          "sha256": "45dd37a7e3a9e25cf167ebbda55bd30548c453d397e27a8dd3a398084780908f"
+        }
+      ]
+    }
+  ],
+  "current_spy_evidence": {
+    "source_commit": "0a5b2bc1acfe0d0cc45caa0e9aa0a5925fb386ff",
+    "input_sha256": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "binary_sha256": "b7b78bb058944f716d9fe5f47e7d3d797ba01649555696cc53508190ff996b74",
+    "policy_sha256": "007fc30921f0f87ea37dd3c59589bd5a00a8a6ea6cd8749560a35a2eb14b931a",
+    "predictions_sha256": "8581165c8410f73d4284ab5222650c8d9728f0eb998ad5f7adf3cbcd0b3706aa",
+    "accuracy_contract": "raw-spread-price-v1",
+    "eligible_slices": 33,
+    "eligible_rows": 12866,
+    "served_rows": 12866,
+    "contained_rows": 12851,
+    "identified_rows": 12430,
+    "price_only_rows": 436,
+    "baseline_success_demotions": 0,
+    "cold_price_budget_failures": 0,
+    "strict_iv_diagnostic_failures": 1271,
+    "development_cold_seconds": 13.0317839,
+    "subsecond_qualified": false,
+    "greek_accuracy_established": false
+  },
+  "limitations": [
+    "No competitor executable benchmark was run.",
+    "CQF 2021 primary presentation URL was not directly retrievable during review.",
+    "Public timing claims are not normalized to current hardware or the full SPY contract.",
+    "Proposed Greek shock tolerances require a separate acceptance decision.",
+    "The current mark-surface checks do not establish a shared stochastic model for every contract."
+  ]
+}
