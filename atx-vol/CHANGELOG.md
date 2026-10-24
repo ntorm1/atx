@@ -5,6 +5,22 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — persisted history: surface timelines and risk-run archives (`api/persist/`, lane P2)
+
+Two PersistFile (ATXVPF) kinds behind the frozen `surface_timeline.hpp` / `risk_run_archive.hpp`.
+`SurfaceTimeline` (`.atxstl`, one file per UTC month) holds VERBATIM ATXVSA2 surface records behind
+a `(uid, ts)` index: `range()` is allocation-free, `view()` verifies the record's own payload CRC and
+builds the view over the same bytes as the partition, so history views are bit-exact by
+construction; `SurfaceTimelineStore::build_from_surface_db` merges SurfaceDb partitions into period
+generations and `collect()` feeds `project_series` (bit-equal to owned surfaces). `RiskRunWriter`
+records RiskFrame / ExplainResult / HistoricalVarResult steps into immutable `seg-*.atxrr`
+segments behind a manifest; `RiskRunArchive` reopens them zero-copy; `compact_risk_run` merges
+bit-exactly, optionally into a zstd + byte-shuffle cold tier. Schema fingerprints refuse any layout
+drift (RiskRun pinned `0xc881a1e8c5e87255`; an `ExplainTotals` / `FrameCounters` change is a compile
+error in `src/persist/risk_run_format.hpp` first). Tool `atx-vol-history-store` (timeline build |
+inspect | bench, riskrun inspect | bench). Docs: `docs/persist-history.md`,
+`docs/storage/PERSIST_HISTORY_FORMAT.md`.
+
 ### NEW — risk engine: streaming P&L explain, strike/maturity projection, SpiderRock bench (`api/risk/`)
 
 A new public module `include/atx/vol/api/risk/` (Tier-B) and `api/marketdata/spiderrock_store.hpp`.
