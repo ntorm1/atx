@@ -2877,6 +2877,13 @@ std::optional<double> american_implied_vol_price_seed(
       !std::isfinite(K) || !(K > 0.0) || !std::isfinite(T) || !(T > 0.0) ||
       !std::isfinite(r) || !std::isfinite(q) ||
       (side != Side::Call && side != Side::Put)) return std::nullopt;
+  // A nearby above-floor sigma must not relabel a target that Search clamps to
+  // kIvMin. These are the same deterministic range and zero-volatility screens.
+  const double ceiling = american_price_ceiling(S, K, T, r, q, side);
+  const double zero_vol = zero_vol_american_value(S, K, T, r, q, side);
+  const double band_tol = 1.0e-9 * ceiling + 1.0e-12;
+  if (!std::isfinite(ceiling) || !std::isfinite(zero_vol) ||
+      price > ceiling + band_tol || price <= zero_vol + band_tol) return std::nullopt;
   try {
     // The source of sigma supplies no proof. The cold target solve supplies both
     // the price and exercise classification, independent of family/seed state.
@@ -2885,6 +2892,11 @@ std::optional<double> american_implied_vol_price_seed(
     if (!cold || !cold->priced() || !std::isfinite(cold->price) ||
         cold->cls == AlExerciseClass::ExercisePlateau ||
         std::abs(cold->price - price) > max_price_error) return std::nullopt;
+    // Near the money, P(kIvMin) can exceed the zero-volatility value materially.
+    // A residual budget at the seed cannot prove that the target has an IV above
+    // the reporting floor. Establish that range on the cold target map itself.
+    const auto floor = andersen_lake(S, K, T, kIvMin, r, q, side, opts.al_opts);
+    if (!floor || !std::isfinite(*floor) || !(price > *floor)) return std::nullopt;
     if (in_band(price, S, K, T, r, q, side, opts.al_opts)) {
       // A monetary budget does not make a flat IV identifiable. Retain the
       // existing positive cold-chord floor; only the residual budget changes.

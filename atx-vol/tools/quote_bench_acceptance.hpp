@@ -2,6 +2,7 @@
 
 // Explicitly requested offline audit only. This invokes the final public API,
 // never mutates the fit, and never supplies a target or a vendor label to it.
+#include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include <nlohmann/json.hpp>
@@ -76,10 +77,11 @@ inline Json cold_node(const QuoteSliceFit &fit, double strike, Side side, double
                  {"effective_rate", fit.diagnostics.effective_rate},
                  {"calendar_yield", finite(calendar_q)}, {"effective_yield", finite(q)},
                  {"sigma_lower", finite(sigma - radius)}, {"sigma_center", finite(sigma)},
-                 {"sigma_upper", finite(sigma + radius)}, {"radius", radius}});
+                 {"sigma_upper", finite(sigma + radius)}, {"radius", radius},
+                 {"floor_sigma", kIvMin}});
   for (const auto &[name, volatility] :
       {std::pair{"lower", sigma - radius}, std::pair{"center", sigma},
-       std::pair{"upper", sigma + radius}}) {
+       std::pair{"upper", sigma + radius}, std::pair{"at_floor", kIvMin}}) {
     const auto price = andersen_lake(market.spot, strike, market.variance_years, volatility,
         fit.diagnostics.effective_rate, q, side, fit.al_opts);
     result[std::string("price_") + name] = price ? finite(*price) : Json(nullptr);

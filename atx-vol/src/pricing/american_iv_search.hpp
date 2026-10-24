@@ -32,6 +32,8 @@ struct IvSearchResult {
 
 // Checks an externally prepared sigma with the same cold price/exercise/slope
 // acceptance as price_candidate, without any inverse iteration or fallback.
+// Target range/zero-volatility screens and cold P(kIvMin) preserve floor semantics;
+// a nearby seed above the floor cannot turn a sub-floor target into an identified IV.
 // A seed is only a proposal; neither a family root nor its residual is trusted.
 [[nodiscard]] std::optional<double> american_implied_vol_price_seed(
     double price, double S, double K, double T, double r, double q, Side side,

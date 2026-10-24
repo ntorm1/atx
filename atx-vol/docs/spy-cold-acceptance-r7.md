@@ -423,3 +423,29 @@ The integrated validation receipts report 11 native CLI cases, 19 archive cases,
 skipped). Source review covers policy/provenance, copied trial budget state,
 catalog validation and explicit archive refusal/rollback for the new unpersisted
 fields. These checks support this candidate; they are not a latency qualification.
+
+## Seed candidate review: target-floor classification (2026-10-24)
+
+The subsequent source `8b410e31` development profile took 4.8842 seconds and
+served the same prices, but it is **not a valid promoted baseline**. Its economic
+price residuals passed the historical twelve gates while eight formerly
+floor-volatility rows acquired point IVs. A cold residual within the allowed
+price budget and a positive local chord do not establish that the target itself
+lies above the IV reporting floor.
+
+The private seed checker now applies the deterministic ceiling and zero-volatility
+exercise-value band used by Search, then requires the target to be strictly above
+the cold reference price at `kIvMin = 0.005`. Regressions include actual SPY row
+27410223, a zero-rate European target implying 0.00499 with an otherwise acceptable
+0.00501 seed, and an out-of-range target. All failed before the fix and pass after
+it. The audit exporter now records `floor_sigma` and `price_at_floor` in the exact
+reported contract context; a closed-form European fixture verifies those fields.
+The independent audit is being extended with a separate floor classification gate.
+
+Evidence: `economic-v2-profile/floor-promotion-regressions.json`,
+`economic-seed-floor-red.xml`, `economic-seed-floor-green.xml`,
+`economic-seed-floor-quote-green.xml`, `native-floor-export-red.xml`, and
+`native-floor-export-green.xml`. The corrected source passes nine pricing,
+22 quote and one native CLI tests, plus owning PCH-off compilation. A complete
+audit and a new timed run of the corrected source remain required; the previous
+4.8842-second measurement cannot be reused for it.

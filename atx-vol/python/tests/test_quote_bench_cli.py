@@ -131,9 +131,11 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
         assert cold["radius"] == 1e-7
         assert cold["sigma_lower"] == query["volatility"] - 1e-7
         assert cold["sigma_upper"] == query["volatility"] + 1e-7
+        assert cold["floor_sigma"] == 0.005
         # With zero rate/carry this American fixture equals closed-form Black-Scholes.
-        for name in ("lower", "center", "upper"):
-            sigma_t = cold["sigma_" + name] * math.sqrt(0.5)
+        for name, sigma_key in (("lower", "sigma_lower"), ("center", "sigma_center"),
+                                ("upper", "sigma_upper"), ("at_floor", "floor_sigma")):
+            sigma_t = cold[sigma_key] * math.sqrt(0.5)
             d1 = math.log(100.0 / query["strike"]) / sigma_t + 0.5 * sigma_t
             d2 = d1 - sigma_t
             expected = 50.0 * math.erfc(-d1 / math.sqrt(2.0)) - \

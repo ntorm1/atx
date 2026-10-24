@@ -1803,6 +1803,33 @@ TEST(AmericanIvNonMonotone, ExternalPriceSeedUsesColdChecksWithoutAnInverse) {
       10, 100, 100, 1, .04, .01, Side::Put, opts, 0, .3));
 }
 
+TEST(AmericanIvNonMonotone, ExternalPriceSeedPreservesTargetFloorAndRangeRefusals) {
+  IvOpts opts;
+  // Actual SPY row27410223: cold price at this sigma matches the target, but
+  // the target lies inside Search's deterministic zero-volatility floor band.
+  constexpr double spy_price = 619.82516631623139;
+  constexpr double spy_years = 2.1672985553741455;
+  constexpr double spy_rate = .05153101310133934;
+  constexpr double spy_yield = .0060577877934129745;
+  const auto floor = american_implied_vol(spy_price, 773, 160, spy_years,
+                                         spy_rate, spy_yield, Side::Call, opts);
+  ASSERT_EQ(floor.status, IvStatus::Ok);
+  EXPECT_DOUBLE_EQ(floor.iv, atx::vol::kIvMin);
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(spy_price, 773, 160,
+      spy_years, spy_rate, spy_yield, Side::Call, opts, .001, .079008318901093444));
+  // A zero-volatility bound alone is insufficient near the money: the target
+  // can exceed that bound but still imply sigma below the reported IV floor.
+  const double below_floor = cold_al(100, 100, 1, .00499, 0, 0, Side::Call);
+  const auto clamped = american_implied_vol(below_floor, 100, 100, 1, 0, 0, Side::Call, opts);
+  ASSERT_EQ(clamped.status, IvStatus::Ok);
+  EXPECT_DOUBLE_EQ(clamped.iv, atx::vol::kIvMin);
+  ASSERT_LT(std::abs(cold_al(100, 100, 1, .00501, 0, 0, Side::Call) - below_floor), .001);
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+      below_floor, 100, 100, 1, 0, 0, Side::Call, opts, .001, .00501));
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+      101, 100, 100, 1, 0, 0, Side::Call, opts, 101, .3));
+}
+
 // Outside the region the flag changes nothing: a target far above the band on the
 // ledgered contract, an ATM contract, the kIvMin clamp of a European-regime call (no
 // exercise region), and the BAW route (the refusal is for the cold Andersen-Lake map).
