@@ -94,3 +94,22 @@ recorded individual Python-file hashes. The source includes the strict boolean
 and string input guards. Each group retains all prices, policy iterations,
 complementarity residuals and time/space/domain refinements. Roughly 152 seconds
 per group is offline reference-generation cost, not a production latency claim.
+
+## Isolated residual-correction primitive
+
+`lcp_correction.solve_obstacle_control` defaults to the original obstacle solver.
+Its explicit `mode="one_correction"` experiment performs one binary64 residual
+correction after each selected-policy solve, then checks the original unscaled
+complementarity equations at the unchanged tolerance. It is not wired into any
+PDE or Greek runner. The [prospective plan](zero-rate-lcp-correction-plan-v1.md)
+was frozen before implementation; the [primitive report](zero-rate-lcp-correction-primitive-v1.md)
+records tests, work limits, captured-stage vectors and the remaining review gate.
+
+```powershell
+python -m unittest -v test_lcp_correction test_pde_reference.ObstacleTests
+```
+
+The captured fixture is a synthetic zero-rate put's single obstacle stage,
+containing only six input arrays. Its original failure and historical reference
+decisions remain unchanged. Passing this primitive does not authorize replacing
+the default solver or rerunning a full Greek pilot.
