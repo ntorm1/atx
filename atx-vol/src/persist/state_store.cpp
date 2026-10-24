@@ -264,9 +264,10 @@ publish_slot(const SpiderRockStoreSpec &spec, Slot &slot, const fs::path &day,
   for (std::uint32_t &u : b.uid) u = remap[u];
   StateStoreBucketReport r;
   r.bucket_et = slot.bucket;
-  r.load_s = slot.load_s;
   r.source_fingerprint = slot.fp;
-  const auto t_encode = Clock::now();
+  // load_s: everything derived from the Parquet (decode, state build, extras rows);
+  // encode_s: encode_market_state alone; publish_s: data file + fsync + manifest.
+  const auto t_state = Clock::now();
   BucketStateReport rep;
   auto storage = market_state_from_bucket(b, spec.time, &rep);
   if (!storage) return persist_error(status_of(storage.error()));
@@ -276,6 +277,8 @@ publish_slot(const SpiderRockStoreSpec &spec, Slot &slot, const fs::path &day,
     if (!x) return tl::unexpected(x.error());
     extras = std::move(*x);
   }
+  r.load_s = slot.load_s + seconds_since(t_state);
+  const auto t_encode = Clock::now();
   MarketStateWriteInput in;
   in.storage = &*storage;
   in.tickers_by_uid = table.tickers();
