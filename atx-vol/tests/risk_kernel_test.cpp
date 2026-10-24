@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 #include "atx/vol/api/risk/pnl_explain.hpp"
 #include "atx/vol/api/risk/risk_kernel.hpp"
 #include "support/risk_synthetic_market.hpp"
@@ -639,125 +640,176 @@ TEST(RiskKernel, DegenerateSigmaBoxStillServesFamily) {
   }
 }
 
-// On-demand timing receipt (DISABLED_: wall clocks do not gate on a shared host) for
-// the family-economics cost constants (FamilyKernelPolicy::family_node_cost_us /
-// cold_lane_cost_us): one thread, al_fast_opts (the preset a marks-only state
-// resolves), a short- and a mid-dated expiry, both sides. Prints the per-node slope of
-// AlSigmaFamily::prepare over n_sigma (the fixed part separated), the cold-analytic lane
-// (american_greeks_al, vega + charm, no rho), the same lane on a prepared geometry,
-// one family_greeks lane and one geometry prepare.
-TEST(RiskKernel, DISABLED_FamilyEconomicsCostSetup) {
+namespace {
+
+// One sample of the cost-setup receipt at one (T, side): medians (us) over repetitions.
+struct CostSample {
+  double geometry_us{0.0};
+  std::array<double, 4> prepare_us{}; // AlSigmaFamily::prepare at n = 4 / 8 / 12 / 16
+  double cold_us{0.0};                // american_greeks_al lane (vega + charm, no rho)
+  double cold_geo_us{0.0};            // the same lane on a prepared geometry
+  double family_us{0.0};              // one family_greeks lane on a 12-node family
+  [[nodiscard]] double node_slope() const noexcept {
+    return (prepare_us[3] - prepare_us[0]) / 12.0;
+  }
+};
+
+[[nodiscard]] double median_of(std::vector<double> v) {
+  std::sort(v.begin(), v.end());
+  return v[v.size() / 2u];
+}
+
+// The receipt's loops at one (T, side) on the calling thread, al_fast_opts (the preset a
+// marks-only state resolves). Below the family's tau floor (`with_family` false) only the
+// cold quantities exist.
+[[nodiscard]] CostSample cost_sample(double T, Side side, bool with_family) {
   using Clock = std::chrono::steady_clock;
   const std::optional<AlOpts> opts{al_fast_opts()};
   constexpr double kS = 100.0;
   constexpr double kR = 0.043;
   constexpr double kQ = 0.015;
   constexpr int kReps = 7;
-  const auto median_us = [](std::vector<double> v) {
-    std::sort(v.begin(), v.end());
-    return v[v.size() / 2u];
+  constexpr int kLanes = 40;
+  const auto us_since = [](Clock::time_point t0, int n) {
+    return std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
+           static_cast<double>(n);
   };
-  for (const double T : {0.02, 0.15}) {
-    for (const Side side : {Side::Put, Side::Call}) {
-      const AlExpiryGeometry geo = prepare_al_geometry(T, kR, kQ, opts);
-      std::vector<double> geo_us;
-      AlExpiryGeometry scratch = prepare_al_geometry(T, kR, kQ, opts);
+  const double k_lo = with_family ? 90.0 : 95.0;
+  const double k_step = with_family ? 0.5 : 0.25;
+  const AlExpiryGeometry geo = prepare_al_geometry(T, kR, kQ, opts);
+  CostSample out;
+  std::vector<double> geo_us;
+  std::vector<double> cold_us;
+  std::vector<double> cold_geo_us;
+  std::vector<double> fam_us;
+  double sink = 0.0;
+  if (with_family) {
+    AlExpiryGeometry scratch = prepare_al_geometry(T, kR, kQ, opts);
+    for (int rep = 0; rep < kReps; ++rep) {
+      const auto t0 = Clock::now();
+      for (int i = 0; i < 20; ++i) {
+        scratch.prepare(T + 1e-9 * i, kR, kQ, opts);
+      }
+      geo_us.push_back(us_since(t0, 20));
+    }
+    out.geometry_us = median_of(geo_us);
+    const std::array<std::uint16_t, 4> nodes{4, 8, 12, 16};
+    for (std::size_t k = 0; k < nodes.size(); ++k) {
+      AlSigmaFamily fam(geo, side, kS);
+      std::vector<double> v;
       for (int rep = 0; rep < kReps; ++rep) {
         const auto t0 = Clock::now();
-        for (int i = 0; i < 20; ++i) {
-          scratch.prepare(T + 1e-9 * i, kR, kQ, opts);
+        for (int i = 0; i < 10; ++i) {
+          EXPECT_TRUE(fam.prepare(0.20 + 1e-6 * i, 0.40, nodes[k]).has_value());
         }
-        geo_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
-                         20.0);
+        v.push_back(us_since(t0, 10));
       }
-      std::array<double, 4> prep_us{};
-      const std::array<std::uint16_t, 4> nodes{4, 8, 12, 16};
-      for (std::size_t k = 0; k < nodes.size(); ++k) {
-        AlSigmaFamily fam(geo, side, kS);
-        std::vector<double> v;
-        for (int rep = 0; rep < kReps; ++rep) {
-          const auto t0 = Clock::now();
-          for (int i = 0; i < 10; ++i) {
-            ASSERT_TRUE(fam.prepare(0.20 + 1e-6 * i, 0.40, nodes[k]).has_value());
-          }
-          v.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / 10.0);
-        }
-        prep_us[k] = median_us(v);
-      }
-      const double slope = (prep_us[3] - prep_us[0]) / 12.0;
-      AlSigmaFamily fam(geo, side, kS);
-      ASSERT_TRUE(fam.prepare(0.20, 0.40, 12).has_value());
-      const AlSigmaFamilyGreeksMask mask{static_cast<std::uint16_t>(
-          AlSigmaFamilyGreeksMask::hedge().bits | AlSigmaFamilyGreeksMask::kVanna |
-          AlSigmaFamilyGreeksMask::kVolga | AlSigmaFamilyGreeksMask::kCharm)};
-      std::vector<double> cold_us;
-      std::vector<double> cold_geo_us;
-      std::vector<double> fam_us;
-      double sink = 0.0;
-      for (int rep = 0; rep < kReps; ++rep) {
-        auto t0 = Clock::now();
-        for (int i = 0; i < 40; ++i) {
-          const double K = 90.0 + 0.5 * i;
-          sink += american_greeks_al(kS, K, T, 0.3, kR, kQ, side, opts, true, false, true)
-                      .value()
-                      .price;
-        }
-        cold_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
-                          40.0);
-        t0 = Clock::now();
-        for (int i = 0; i < 40; ++i) {
-          const double K = 90.0 + 0.5 * i;
-          sink += american_greeks_al(geo, kS, K, 0.3, side, true, false, true).value().price;
-        }
-        cold_geo_us.push_back(
-            std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / 40.0);
-        t0 = Clock::now();
-        for (int i = 0; i < 40; ++i) {
-          const double K = 90.0 + 0.5 * i;
-          sink += family_greeks(fam, kS, K, 0.3, mask).price;
-        }
-        fam_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
-                         40.0);
-      }
-      std::cout << "[RiskKernel] cost setup T=" << T << " side=" << (side == Side::Put ? "put" : "call")
-                << ": geometry prepare=" << median_us(geo_us) << " us; family prepare n=4/8/12/16="
-                << prep_us[0] << "/" << prep_us[1] << "/" << prep_us[2] << "/" << prep_us[3]
-                << " us (slope " << slope << " us/node, fixed " << prep_us[0] - 4.0 * slope
-                << " us); cold lane=" << median_us(cold_us) << " us, on geometry="
-                << median_us(cold_geo_us) << " us; family lane=" << median_us(fam_us)
-                << " us (sink " << sink << ")\n";
+      out.prepare_us[k] = median_of(v);
     }
   }
-  // Below the family's tau floor only the cold route exists: its lane cost there.
-  for (const double T : {0.0007, 0.005}) {
-    for (const Side side : {Side::Put, Side::Call}) {
-      const AlExpiryGeometry geo = prepare_al_geometry(T, kR, kQ, opts);
-      std::vector<double> cold_us;
-      std::vector<double> cold_geo_us;
-      double sink = 0.0;
-      for (int rep = 0; rep < kReps; ++rep) {
-        auto t0 = Clock::now();
-        for (int i = 0; i < 40; ++i) {
-          const double K = 95.0 + 0.25 * i;
-          sink += american_greeks_al(kS, K, T, 0.3, kR, kQ, side, opts, true, false, true)
-                      .value()
-                      .price;
-        }
-        cold_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
-                          40.0);
-        t0 = Clock::now();
-        for (int i = 0; i < 40; ++i) {
-          const double K = 95.0 + 0.25 * i;
-          sink += american_greeks_al(geo, kS, K, 0.3, side, true, false, true).value().price;
-        }
-        cold_geo_us.push_back(
-            std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / 40.0);
-      }
-      std::cout << "[RiskKernel] cost setup short T=" << T
-                << " side=" << (side == Side::Put ? "put" : "call")
-                << ": cold lane=" << median_us(cold_us) << " us, on geometry="
-                << median_us(cold_geo_us) << " us (sink " << sink << ")\n";
+  AlSigmaFamily fam(geo, side, kS);
+  const bool fam_ok = with_family && fam.prepare(0.20, 0.40, 12).has_value();
+  const AlSigmaFamilyGreeksMask mask{static_cast<std::uint16_t>(
+      AlSigmaFamilyGreeksMask::hedge().bits | AlSigmaFamilyGreeksMask::kVanna |
+      AlSigmaFamilyGreeksMask::kVolga | AlSigmaFamilyGreeksMask::kCharm)};
+  for (int rep = 0; rep < kReps; ++rep) {
+    auto t0 = Clock::now();
+    for (int i = 0; i < kLanes; ++i) {
+      const double K = k_lo + k_step * i;
+      sink += american_greeks_al(kS, K, T, 0.3, kR, kQ, side, opts, true, false, true)
+                  .value()
+                  .price;
     }
+    cold_us.push_back(us_since(t0, kLanes));
+    t0 = Clock::now();
+    for (int i = 0; i < kLanes; ++i) {
+      const double K = k_lo + k_step * i;
+      sink += american_greeks_al(geo, kS, K, 0.3, side, true, false, true).value().price;
+    }
+    cold_geo_us.push_back(us_since(t0, kLanes));
+    if (fam_ok) {
+      t0 = Clock::now();
+      for (int i = 0; i < kLanes; ++i) {
+        sink += family_greeks(fam, kS, k_lo + k_step * i, 0.3, mask).price;
+      }
+      fam_us.push_back(us_since(t0, kLanes));
+    }
+  }
+  out.cold_us = median_of(cold_us);
+  out.cold_geo_us = median_of(cold_geo_us);
+  out.family_us = fam_ok ? median_of(fam_us) : 0.0;
+  EXPECT_TRUE(std::isfinite(sink));
+  return out;
+}
+
+// The sample at `workers` concurrent executor workers, each running the same loops (the
+// in-situ load of a fanned-out kernel: shared caches, turbo, P- and E-cores); the median
+// over workers of each quantity.
+[[nodiscard]] CostSample cost_in_situ(double T, Side side, bool with_family, unsigned workers) {
+  std::vector<CostSample> per(workers);
+  pricing_executor().run_blocks(workers, workers, [&](std::size_t w) {
+    per[w] = cost_sample(T, side, with_family);
+  });
+  const auto med = [&per](auto field) {
+    std::vector<double> v;
+    for (const CostSample &s : per) {
+      v.push_back(field(s));
+    }
+    return median_of(v);
+  };
+  CostSample m;
+  m.geometry_us = med([](const CostSample &s) { return s.geometry_us; });
+  for (std::size_t k = 0; k < m.prepare_us.size(); ++k) {
+    m.prepare_us[k] = med([k](const CostSample &s) { return s.prepare_us[k]; });
+  }
+  m.cold_us = med([](const CostSample &s) { return s.cold_us; });
+  m.cold_geo_us = med([](const CostSample &s) { return s.cold_geo_us; });
+  m.family_us = med([](const CostSample &s) { return s.family_us; });
+  return m;
+}
+
+} // namespace
+
+// On-demand timing receipt (DISABLED_: wall clocks do not gate on a shared host) for
+// the family-economics cost constants (FamilyKernelPolicy::family_node_cost_us /
+// cold_lane_cost_us), on ONE thread and IN SITU at 8 concurrent workers (the bench's
+// fan-out degree): a short- and a mid-dated expiry, both sides. Prints the per-node slope
+// of AlSigmaFamily::prepare over n_sigma (the fixed part separated), the cold-analytic
+// lane, the same lane on a prepared geometry, one family_greeks lane and one geometry
+// prepare; then the cold lane below the family's tau floor; then the mean slope / cold lane
+// per degree, the constants the defaults are taken from.
+TEST(RiskKernel, DISABLED_FamilyEconomicsCostSetup) {
+  for (const unsigned workers : {1u, 8u}) {
+    double slope_sum = 0.0;
+    double cold_sum = 0.0;
+    int n = 0;
+    for (const double T : {0.02, 0.15}) {
+      for (const Side side : {Side::Put, Side::Call}) {
+        const CostSample s = cost_in_situ(T, side, true, workers);
+        std::cout << "[RiskKernel] cost setup workers=" << workers << " T=" << T
+                  << " side=" << (side == Side::Put ? "put" : "call")
+                  << ": geometry prepare=" << s.geometry_us << " us; family prepare n=4/8/12/16="
+                  << s.prepare_us[0] << "/" << s.prepare_us[1] << "/" << s.prepare_us[2] << "/"
+                  << s.prepare_us[3] << " us (slope " << s.node_slope() << " us/node, fixed "
+                  << s.prepare_us[0] - 4.0 * s.node_slope() << " us); cold lane=" << s.cold_us
+                  << " us, on geometry=" << s.cold_geo_us << " us; family lane=" << s.family_us
+                  << " us\n";
+        slope_sum += s.node_slope();
+        cold_sum += s.cold_us;
+        ++n;
+      }
+    }
+    for (const double T : {0.0007, 0.005}) {
+      for (const Side side : {Side::Put, Side::Call}) {
+        const CostSample s = cost_in_situ(T, side, false, workers);
+        std::cout << "[RiskKernel] cost setup workers=" << workers << " short T=" << T
+                  << " side=" << (side == Side::Put ? "put" : "call") << ": cold lane="
+                  << s.cold_us << " us, on geometry=" << s.cold_geo_us << " us\n";
+      }
+    }
+    std::cout << "[RiskKernel] cost setup workers=" << workers
+              << ": mean node slope=" << slope_sum / n << " us, mean cold lane=" << cold_sum / n
+              << " us, ratio cold/node=" << cold_sum / slope_sum << "\n";
   }
 }
 

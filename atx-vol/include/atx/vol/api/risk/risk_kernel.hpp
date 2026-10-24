@@ -103,8 +103,11 @@ struct FamilyKernelPolicy {
   // for any thread count. Active only with cold_fallback and analytic_cold (the
   // economical route is the analytic one; with no cold route every group is tried).
   bool family_economics{true};
-  double family_node_cost_us{33.0}; // measured: one node of AlSigmaFamily::prepare
-  double cold_lane_cost_us{140.0};  // measured: one american_greeks_al lane (vega, charm)
+  // Measured IN SITU (RiskKernel.DISABLED_FamilyEconomicsCostSetup at 8 concurrent
+  // workers, two samples on a loaded i7-1260P: 82 / 297 and 65 / 243 us; one thread gives
+  // 33-36 / 140-149). Only their ratio (3.7 in situ, 4.2 on one thread) enters the rule.
+  double family_node_cost_us{73.0}; // one sigma node of AlSigmaFamily::prepare
+  double cold_lane_cost_us{270.0};  // one american_greeks_al lane (vega, charm)
   // BLOCK SCHEDULE. The (uid, expiry) blocks the kernel fans out are very uneven (a
   // short-tenor cold block, a one-lane family, a forty-lane family): false hands each
   // worker one contiguous static chunk (pricing_executor run_blocks), true lets workers
