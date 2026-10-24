@@ -293,6 +293,8 @@ set(ATX_VOL_RISK_SOURCES
     src/risk/risk_kernel.cpp
     src/risk/risk_kernel_cold.cpp
     src/risk/risk_kernel_family.cpp
+    src/risk/pnl_explain.cpp
+    src/risk/risk_stream.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES

@@ -349,6 +349,21 @@ add_test(NAME atx-vol-iv-batch-alloc COMMAND atx-vol-iv-batch-alloc-tests)
 set_tests_properties(atx-vol-iv-batch-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# Risk engine (sprint 2026-10-24): the family kernel's per-state allocation bound
+# (RiskKernel.SecondStateAllocationBounded). support/alloc_counter.cpp replaces global
+# operator new for THIS binary only, so the case lives only here (the rest of the
+# RiskKernel suite is in atx-vol-tests and atx-vol-risk-slice). The "risk/" prefix keeps
+# it inside the lane's anchored -R "^risk/RiskKernel\."; atx-vol-risk-slice depends on
+# it (below the slices include) so building the slice builds it.
+add_executable(atx-vol-risk-alloc-tests risk_kernel_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-risk-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-risk-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(atx-vol-risk-alloc-tests
+    TEST_PREFIX "risk/"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
 # Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
 # arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
@@ -410,6 +425,8 @@ add_executable(atx-vol-tests
     risk_book_test.cpp
     risk_kernel_test.cpp
     risk_market_state_test.cpp
+    risk_pnl_explain_test.cpp
+    risk_stream_test.cpp
     risk_surface_validation_test.cpp
     surface_v2_qualification_test.cpp
     calib_test.cpp
@@ -1193,3 +1210,5 @@ set_tests_properties(AlphaRegistry PROPERTIES
 # Module test slices for lanes (atx-vol-<module>-slice): partitioned from
 # atx-vol-tests' SOURCES, so keep this include LAST. See slices.cmake.
 include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)
+# The risk lane's focused allocation exe rides the risk slice build (see above).
+add_dependencies(atx-vol-risk-slice atx-vol-risk-alloc-tests)
