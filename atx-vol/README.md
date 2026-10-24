@@ -998,7 +998,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 60 | Public and supported to include; **not** frozen. Re-derived 2026-10-24 (risk-engine sprint): 119 headers under `api/` = 58 Tier-A + 60 Tier-B + `vol.hpp`; the sprint added the `api/risk/` module (8 headers) and `api/marketdata/spiderrock_store.hpp`, and 12 Tier-B headers had accumulated since the previous count of 38 |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 65 | Public and supported to include; **not** frozen. Wave-3 lane P (2026-10-24) added the `api/persist/` module (5 headers): 124 headers under `api/` = 58 Tier-A + 65 Tier-B + `vol.hpp`. Re-derived 2026-10-24 (risk-engine sprint): 119 headers under `api/` = 58 Tier-A + 60 Tier-B + `vol.hpp`; the sprint added the `api/risk/` module (8 headers) and `api/marketdata/spiderrock_store.hpp`, and 12 Tier-B headers had accumulated since the previous count of 38 |
 | `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
@@ -1095,6 +1095,10 @@ The risk-engine sprint (2026-10-24) added the `api/risk/` module (8 headers: `ri
 umbrella; re-deriving at that commit found 119 api/ headers, so Tier-B is **60**: the sprint's
 10 plus 12 Tier-B headers that had landed between 2026-10-17 and 2026-10-24 without a log line
 here (the table test was red on `main` at 109 headers). No Tier-A change.
+
+Wave-3 lane P (2026-10-24, binary persistence) added the `api/persist/` module (5 headers:
+`persist_format`, `persist_file`, `state_archive`, `surface_timeline`, `risk_run_archive`),
+outside the umbrella: Tier-B 60 → **65**, api/ headers 119 → **124**, no Tier-A change.
 
 That drift is now caught by a test rather than by a reader, for the counts
 that can be.
