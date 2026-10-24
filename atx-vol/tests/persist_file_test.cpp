@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <span>
 #include <string>
@@ -902,19 +903,24 @@ TEST(PersistDirectory, LockSerializesConcurrentPublishers) {
   constexpr int kWriters = 6;
   constexpr int kEach = 3;
   std::vector<std::thread> pool;
-  std::atomic<int> failures{0};
+  std::mutex mu;
+  std::vector<std::string> failures;
   for (int w = 0; w < kWriters; ++w) {
     pool.emplace_back([&, w] {
       for (int k = 0; k < kEach; ++k) {
         const std::string key = "k" + std::to_string(w) + "_" + std::to_string(k);
         auto e = PersistDirectory::publish(
             dir.string(), key, state_like_image(static_cast<std::uint64_t>(w * 10 + k), w));
-        if (!e) failures.fetch_add(1);
+        if (!e) {
+          const std::lock_guard<std::mutex> hold(mu);
+          failures.push_back(key + ": " + std::string(to_string(e.error().status)) + " detail " +
+                             std::to_string(e.error().detail));
+        }
       }
     });
   }
   for (std::thread &t : pool) t.join();
-  EXPECT_EQ(failures.load(), 0);
+  for (const std::string &f : failures) ADD_FAILURE() << "publish failed: " << f;
   auto d = PersistDirectory::open(dir.string());
   ASSERT_TRUE(d.has_value());
   ASSERT_EQ(d->entries().size(), static_cast<std::size_t>(kWriters * kEach))
