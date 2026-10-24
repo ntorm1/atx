@@ -63,6 +63,7 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 | `--kernel family\|cold\|both` | family | the stream's kernel; `both` adds a cold stream for comparison |
 | `--threads N` | 8 | kernel and explain fan-out degree (0 = executor auto) |
 | `--needs rho\|none` | none | evaluate the rho axis (carry-bump families) |
+| `--time voltime\|calendar365` | calendar365 | the clock every state (and so the kernel) measures T on (see "Clock") |
 | `--trapezoid` | off | `ExplainOptions::trapezoid_second_order` |
 | `--determinism` | off | a threads = 1 shadow stream; totals must be bit-equal |
 | `--out <file>` | stdout | JSON report |
@@ -75,13 +76,21 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 Exit codes: **0** success, **1** runtime error (missing store, engine error, write
 failure), **2** usage error. Progress goes to stderr.
 
+The carry mode has no flag: `--store` builds states with `ImpliedFromCalls`, `--synthetic`
+with `Published` (its vendor columns are priced on exactly the D4 carry, design D20); see
+"Carry modes". Both are echoed in the report (`inputs.time`, `inputs.carry_mode`).
+
 ## Loader conventions (`load_spiderrock_bucket`, `market_state_from_bucket`)
 
 Columns read: `undSecKey_tk, okey_cp, okey_yr, okey_mn, okey_dy, okey_xx, uPrc, rate,
 sdiv, ddiv, years, srVol, srPrc, de, ga, th, ve, bidPrc, askPrc`, plus the optional
-filter columns `exType` and `okey_tk` when present; every other column is tolerated
-and ignored. Strings may be `utf8` (the partitioned 2026-10-14 drop) or `large_utf8`
-(the polars-written oracle store); numerics must be Float64, okey_yr/mn/dy Int64 (Int32
+filter columns `exType`, `prcFramework` and `okey_tk` and the optional numerics `ddivPv`,
+`synSpot` and `yearsC` when present; every other column is tolerated and ignored. An
+optional numeric becomes `SpiderRockBucket::ddiv_pv` / `syn_spot` / `vendor_years_c`: one
+value per row (NaN for a NULL / -99 cell and for the rows of a file without the column),
+EMPTY when no file of the partition has it. Strings may be `utf8` (the partitioned
+2026-10-14 drop) or `large_utf8` (the polars-written oracle store); numerics must be
+Float64, okey_yr/mn/dy Int64 (Int32
 accepted). Only `<root>/date=<d>/bucket_et=<HHMM>` is opened; row groups whose ticker
 statistics exclude every admitted ticker are skipped. The schema must be flat (every
 field one parquet leaf column): the projection and the statistics address leaves by
@@ -94,7 +103,7 @@ rather than misread or pruned silently.
   state's `TimeSpec` clock (Calendar365 default).
 - **Row accounting** (every row counted once):
   `rows_read == size + rows_dropped_null + rows_dropped_bad_input + rows_not_selected +
-  dropped_non_american + dropped_nonstandard_root`.
+  dropped_non_american + dropped_nonstandard_root + dropped_forward_framework`.
   - `rows_dropped_null`: NULL ticker, okey_cp, okey_yr/mn/dy, okey_xx, uPrc, rate, years
     or srVol, or a vendor sentinel there (-99).
   - `rows_dropped_bad_input`: non-finite / non-positive strike, uPrc or srVol,
@@ -108,6 +117,16 @@ rather than misread or pruned silently.
     American-on-spot and would fail vendor parity on them by construction. Explaining
     European index books is deferred (a Black-76 forward kernel is a separate
     decision). Absent column (synthetic / older oracle store) ⇒ every row is American.
+  - `dropped_forward_framework` (`spot_framework_only`, default on): rows that passed
+    the exType filter but whose `prcFramework` is not `Spot` (case-insensitive; NULL
+    included). A Forward-framework row carries a per-EXPIRY forward in `uPrc` (OEX:
+    3,878 / 3,929 / 3,960 at 2 d / 5 mo / 8 mo), so the per-uid median spot is
+    meaningless to the American-on-spot kernel (the 12 largest |Δprice| of the first
+    licensed parity run were all OEX). Applied after exType (European Forward-framework
+    index rows stay in `dropped_non_american`) and before the root filter and the top-N
+    count. Bucket 1000 of 2026-10-14: **4,736** rows (OEX 4,064, XAU 672; the brief
+    expected OEX's 4,064 and did not count XAU, the other American Forward-framework
+    underlier). Absent column ⇒ nothing dropped.
   - `dropped_nonstandard_root` (`standard_roots_only`, default on): rows whose option
     root `okey_tk` differs from the underlier ticker — adjusted / non-standard
     deliverables. Keyed by underlier their (expiry, side, strike) collides with the
@@ -124,25 +143,103 @@ rather than misread or pruned silently.
   The bench fixes the universe at the first bucket and reads later buckets with that
   explicit ticker list.
 
-### State per bucket and the D4 dividend approximation
+### Clock (`--time`)
+
+`T` is the state's `TimeSpec` clock; the vendor's `years` is kept only as `vendor_T`.
+`SpiderRockStoreReal.LoadsBucket1000` measures |T − `years`| over the 365,600 top-100
+marks of bucket 1000 (days, 1 d = 1/365.25 y; median / p99 by calendar tenor):
+
+| clock vs | all | ≤ 1 d (3,672) | 1–7 d (30,318) | 7–30 d (65,058) | > 30 d (266,552) |
+|---|---|---|---|---|---|
+| VolTime − `years` | 0.919 / 2.368 | 0.008 / 0.008 | 0.004 / 0.017 | 0.011 / 0.014 | 0.933 / 2.368 |
+| Calendar365 − `years` | 1.245 / 3.531 | 0.695 / 0.695 | 1.250 / 1.250 | 1.559 / 1.688 | 1.242 / 3.531 |
+| VolTime − `yearsC` | 0.919 / 2.368 | 0.937 / 0.937 | 0.004 / 0.017 | 0.011 / 0.014 | 0.933 / 2.368 |
+| Calendar365 − `yearsC` | 1.245 / 3.531 | 0.250 / 0.250 | 1.250 / 1.250 | 1.559 / 1.688 | 1.242 / 3.531 |
+
+(`yearsC` equals `years` on this drop except on the same-day expiry, where it is 0.)
+The per-expiry lines the test prints locate the VolTime gap exactly: ≤ 0.02 d on every
+expiry up to 2026-11-20, then **+0.46–0.48 d at each NYSE early-close session** the
+interval crosses (2026-11-27, 2026-12-24, 2027-11-26, 2028-07-03, 2028-11-24: +0.48 d at
+2026-11-27, +0.95 d at 2026-12-31, +1.42 d at 2027-12-17, +1.87 d at 2028-09-15, +2.37 d
+at 2028-12-15). A 13:00 close removes 3 trading hours (3 × 0.7 / 1638 y = 0.468 d);
+`VolTimeCalendar` holds full closures only. The overall VolTime median (0.919 d) misses
+the 0.5 d adoption bar, so **calendar365 is the default under both stores** and `--time
+voltime` is opt-in. Reproducing `years` needs either an early-close table in
+`VolTimeCalendar` (core clock change; the per-expiry lines suggest it would bring every
+tenor to ≤ 0.02 d) or a per-expiry T override carried by the state (lane A header: e.g. a
+vendor T per `ExpiryCarry` row that the kernel and the explain's dt use instead of
+`time_to_expiry_years`) — an orchestrator decision. The synthetic store's `years` IS the
+Calendar365 T, so calendar365 is also the only clock its vendor Greeks reproduce.
+
+### State per bucket and the carry modes
 
 Per uid: `spot` = median uPrc over its rows (rows are captured at slightly different
-timestamps inside a slice), `flat_rate` / `flat_q` = medians of rate / sdiv. SpiderRock
-publishes one (rate, sdiv, ddiv) tuple per **expiry**, with `ddiv` the PV of the cash
-dividends paid before that expiry. The state therefore carries one
-`ExpiryCarry{expiry_ns, pv_divs, rate, q}` per (uid, expiry), from the medians over that
-expiry's rows, and the engine prices on
+timestamps inside a slice), `flat_rate` / `flat_q` = medians of rate / sdiv. The state
+carries one `ExpiryCarry{expiry_ns, pv_divs, rate, q}` per (uid, expiry); its basis is
+`SpiderRockBucket::carry_mode` (copied from `SpiderRockStoreSpec::carry_mode`, default
+`ImpliedFromCalls`; a hand-built bucket defaults to `Published`).
+
+#### `Published` (design D4)
+
+SpiderRock publishes one (rate, sdiv, ddiv) tuple per **expiry**: `ddiv` is the cash
+dividend amount paid before that expiry and `ddivPv` its PRESENT value. The row is the
+medians over that expiry's rows — `pv_divs` = median `ddivPv` when the column exists (an
+expiry whose ddivPv cells are all NULL falls back to the ddiv median), else median `ddiv`
+(`BucketStateReport::pv_divs_from_ddiv_pv` says which) — and the engine prices on
 
     F = (S − pv_divs) · e^{(r − q)·T},   q_eff = r − ln(F / S) / T
 
-(`spiderrock_q_eff`). `cash_divs` stays empty. This reproduces the vendor's forward basis
-per expiry with no double counting; the remaining gap to SpiderRock's discrete-dividend
-lattice is visible in the vendor-parity columns. The median's loss is reported:
-`BucketStateReport::max_ddiv_spread` (max over (uid, expiry) of max − min ddiv) — **0** on
-bucket 1000 of 2026-10-14 (ddiv is constant within an expiry there), so the
-approximation loses nothing on that drop. Also reported: `n_uids_with_divs`
-(59 of the top-100 at bucket 1000), `n_expiry_rows`, `n_duplicate_marks` (0 with
-standard roots only), `n_rows_bad_sigma`.
+(`spiderrock_q_eff`). `cash_divs` stays empty. The median's loss is reported:
+`BucketStateReport::max_ddiv_spread` (max over (uid, expiry) of max − min of the pv_divs
+source column) — **0** on bucket 1000 of 2026-10-14 (constant within an expiry there).
+Also reported: `n_uids_with_divs` (59 of the top-100 at bucket 1000 under Published, 26
+under ImpliedFromCalls, whose implied rows carry pv_divs = 0), `n_expiry_rows`,
+`n_duplicate_marks` (0 with standard roots only), `n_rows_bad_sigma`.
+
+#### `ImpliedFromCalls` (the loader's default; the bench under `--store`)
+
+Why: SpiderRock's `sdiv` is a signed RESIDUAL (DIA: −0.20 at 2 d → +0.011 at 2 y), its
+discrete dividends are escrowed only up to some horizon with a continuous yield beyond
+it, `ddiv` is published regardless, and which regime an expiry is in is not a column. On
+DIA 2028-12-15 (T 2.17, ddiv 31.0, ddivPv 29.4, sdiv +1.07 %) the vendor's own calls
+imply ONE forward, 562.2 flat across the 440 … 600 strikes (±0.01 %), = S·e^{(r−sdiv)T}
+with NO escrow, while the published basis gives 530.4 (ddiv) / 532.1 (ddivPv) and
+misprices the 480 call by 20 (ours 74.7, vendor 94.9, market 92–97).
+
+Algorithm, per (uid, expiry):
+
+1. Candidates: the expiry's CALLS with strike ≥ the uid spot, a two-sided quote
+   (bid > 0, ask ≥ bid), a finite `srPrc` > 0 and `srVol` in (0.01, 3].
+2. Each candidate is inverted for F in the European Black price
+   `srPrc = e^{−rT}[F·N(d1) − K·N(d2)]` at σ = `srVol`, r = the expiry's median `rate`,
+   T = the expiry's median vendor `years` (the clock `srPrc` was computed on). F is
+   bracketed in [0.2, 5] × spot and solved to 1e-10 relative in ≤ 100 evaluations by a
+   Newton iteration safeguarded by the bracket (a step leaving it bisects), warm-started
+   at the Published forward and then at the previous call's F (`forward_from_call`).
+   A target outside the bracket's price range never converges and is dropped.
+3. F = the MEDIAN of the solved F; IQR = Q3 − Q1 with linear interpolation between
+   order statistics at (n−1)/4 and 3(n−1)/4.
+4. Accepted when n ≥ `kImpliedCarryMinCalls` (3) and IQR ≤ `kImpliedCarryMaxIqrRel`
+   (1e-3) × F. The row is then `pv_divs = 0`, `rate` = median rate,
+   `q = rate − ln(F / spot) / T_state` with T_state on the STATE's clock, so the engine's
+   `spot·e^{(rate − q)·T_state}` = F exactly (whatever `--time` is).
+5. Otherwise (too few calls, the IQR guard, T_state ≤ 0 or refused) the expiry keeps its
+   Published row.
+
+Reported in `BucketStateReport`: `n_expiries_implied`, `n_expiries_published` (their sum
+is `n_expiry_rows`), `max_implied_vs_published_forward_rel` (max over implied rows of
+|F_implied / F_published − 1|, F_published = the Published row's
+(spot − pv_divs)·e^{(rate − q)·T_state}) and `implied_carry_seconds`. The
+`market_state_from_bucket(bucket, time, report, forwards)` overload returns every row's
+basis (`SpiderRockExpiryForward`: mode, implied F even when rejected, published F, n_calls,
+IQR), which `--dump-legs` writes per leg.
+
+Bucket 1000 of 2026-10-14, top-100: **1,758 expiries implied, 155 Published** (10 with
+< 3 calls, 145 on the IQR guard — e.g. TLT / IWM / SPY long-dated, whose calls do not
+imply one forward); DIA 2028-12-15 **F = 562.34** (IQR 3.9e-4, 55 calls; Published
+532.14); largest gaps MULL 2028-01-21 +33.1 % (a 2× leveraged ETF; 14 calls, IQR 2.5e-4),
+DIA 2029-01-19 +5.9 %, DIA 2028-12-15 +5.7 %, DIA 2028-06-16 +4.8 %; inversions
+**12.5–16.8 ms** per bucket (~75k calls, host at ~95 % CPU from other lanes).
 
 Marks: one `ContractMarks` block per uid, sorted by (expiry, side, strike), unique keys
 (first row wins), sigma = srVol, vendor_price = srPrc, vendor_delta = de.
@@ -152,11 +249,11 @@ lanes; `SpiderRockStoreReal.LoadsBucket1000`, env `ATX_VOL_SPIDERROCK_STORE`):
 
 | load | wall | rows kept | dropped |
 |---|---|---|---|
-| uncapped | 1.50–2.73 s | 1,936,090 of 2,082,476 | null 908, bad 0, non-American 114,149, non-standard root 31,329; 32,115 kept rows with a NULL / sentinel vendor cell; 5,955 underliers |
-| top-100 | 1.37–2.26 s (+ state build 30–50 ms) | 367,664 (= marks) | non-selected 1,569,334; 1,912 ExpiryCarry rows; 59 uids with pv_divs > 0 |
+| uncapped | 1.9–2.9 s | 1,932,026 of 2,082,476 | null 236, bad 0, non-American 114,149, forward framework 4,736, non-standard root 31,329; 32,115 kept rows with a NULL / sentinel vendor cell; 5,954 underliers |
+| top-100 | 1.9–3.3 s (+ state build 40–100 ms incl. the implied carry) | 365,600 (= marks) | non-selected 1,566,662; 1,913 ExpiryCarry rows (1,758 implied); 26 uids with pv_divs > 0 |
 
 (Ranges over runs on the shared host.) The full benchmark book selects on this bucket
-with no shortfall: 100 underliers, 10,000 option legs (204,339 eligible contracts),
+with no shortfall: 100 underliers, 10,000 option legs (202,936 eligible contracts),
 100 share legs, ≥ 8 expiries and both sides per underlier
 (`RiskBenchBookReal.SelectsFullBookOnBucket1000`).
 
@@ -224,16 +321,22 @@ our price vs srPrc, delta vs de, vega vs ve / 0.01; MAE, max |Δ| and the mean S
 relative error |m − o| / max(|m|, |o|, floor) with floors 0.01 (price), 1e-3 (delta,
 vega). In synthetic mode this is an identity check up to the family kernel's accuracy.
 
-## Report schema (JSON, `schema_version: 1`)
+## Report schema (JSON, `schema_version: 2`)
 
 Non-finite numbers are written as `null` and read back as NaN; doubles use the shortest
 round-trip decimal form, so `report_from_json(report_to_json(r))` re-serializes byte for
-byte (`RiskBenchReport.JsonSchemaV1RoundTrip`). Times are seconds; P&L is
+byte (`RiskBenchReport.JsonSchemaV2RoundTrip`). Times are seconds; P&L is
 position-scaled currency (qty × multiplier).
+
+**v2** (lane C follow-up 2) adds `inputs.time`, `inputs.carry_mode` and the
+`bucket_loads[]` fields `dropped_forward_framework`, `pv_divs_from_ddiv_pv`,
+`n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel`,
+`implied_carry_seconds`. The reader requires every v2 field and refuses any other
+`schema_version` (a v1 report is a ParseError, never read with guessed defaults).
 
 | path | type | meaning |
 |---|---|---|
-| `schema_version` | int | 1 |
+| `schema_version` | int | 2 |
 | `tool` | string | `atx-vol-risk-bench` |
 | `inputs.store` | string | store root read (the synthetic dir in synthetic mode) |
 | `inputs.date`, `.from`, `.to` | string | trading date, bucket window |
@@ -244,12 +347,14 @@ position-scaled currency (qty × multiplier).
 | `inputs.seed` | uint64 | `--seed` |
 | `inputs.requested_underliers`, `_options`, `_shares` | uint | requested book shape |
 | `inputs.host_threads` | uint | `std::thread::hardware_concurrency()` |
+| `inputs.time` | string | `calendar365` / `voltime` (`--time`) |
+| `inputs.carry_mode` | string | `implied_from_calls` (`--store`) / `published` (`--synthetic`) |
 | `synthetic_store.generated` | bool | the store was written by this run |
 | `synthetic_store.seconds`, `.rows` | number, uint | generation wall clock, rows written |
 | `book.n_option_legs`, `.n_unique_options`, `.n_share_legs`, `.n_underliers` | uint | from `RiskBook` |
 | `book.shortfall` | uint | requested option legs not found (thin underliers) |
 | `buckets` | [string] | buckets in the window, ascending |
-| `bucket_loads[]` | object | per bucket: `bucket`, `rows_read`, `rows_kept`, `rows_dropped_null`, `rows_dropped_bad_input`, `rows_not_selected`, `dropped_non_american`, `dropped_nonstandard_root`, `rows_null_vendor`, `n_uids`, `n_marks`, `n_uids_with_divs`, `max_ddiv_spread` (loader / state accounting above) |
+| `bucket_loads[]` | object | per bucket: `bucket`, `rows_read`, `rows_kept`, `rows_dropped_null`, `rows_dropped_bad_input`, `rows_not_selected`, `dropped_non_american`, `dropped_nonstandard_root`, `rows_null_vendor`, `n_uids`, `n_marks`, `n_uids_with_divs`, `max_ddiv_spread`, `dropped_forward_framework`, `pv_divs_from_ddiv_pv` (bool), `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel` (= `max_implied_vs_published_forward_rel`), `implied_carry_seconds` (loader / state accounting above) |
 | `start.state_seconds`, `.evaluate_seconds` | number | first bucket's state build, `RiskStream::start` evaluate |
 | `steps[].bucket_from`, `.bucket_to` | string | the step |
 | `steps[].ts_from`, `.ts_to` | int64 | epoch ns of the two states |
@@ -319,9 +424,12 @@ are one bucket apart.)
 | `qty`, `multiplier` | signed contracts; the effective deliverable (≤ 0 / non-finite ⇒ 100) |
 | `T`, `sigma`, `forward`, `rate`, `q_eff` | the base frame's resolved inputs (what the kernel priced at) |
 | `spot` | the base state's `UnderlierState::spot` (median uPrc of the bucket) |
-| `carry_source` | `term_carry` (the uid's `ExpiryCarry` row with the exact expiry), `flat` (no row: flat_rate / flat_q, no cash dividends), `flat_curve_or_divs` (no row; a yield curve or cash dividends apply, rate / pv_divs not reproduced), `surface`, `absent` |
+| `carry_source` | `term_carry` (the uid's `ExpiryCarry` row with the exact expiry), `flat` (no row: flat_rate / flat_q, no cash dividends), `flat_curve_or_divs` (no row; a yield curve or cash dividends apply: carry_rate = flat_rate when no yield curve applies (empty under a curve); pv_divs empty), `surface`, `absent` |
 | `carry_rate`, `carry_q`, `pv_divs` | that row's rate / q / pv_divs (flat: flat_rate, flat_q, 0) |
-| `q_eff_d4` | `spiderrock_q_eff(spot, pv_divs, carry_rate, carry_q, T)`: the D4 carry the row implies; compare with `q_eff` |
+| `q_eff_d4` | `spiderrock_q_eff(spot, pv_divs, carry_rate, carry_q, T)`: the carry the row implies; compare with `q_eff` |
+| `carry_mode` | the basis of the contract's (uid, expiry) row: `implied_from_calls` / `published` (empty when the state wrote no row) |
+| `implied_forward` | the median call-implied F of that expiry (set even when the guards rejected it; empty when no call solved or under `Published`) |
+| `published_forward` | the Published row's (spot − pv_divs)·e^{(rate − q)·T} on the state's clock |
 | `route`, `flags`, `status` | the base frame row: `to_string(RiskRoute)`, the `to_string(RiskFlag)` names of its set bits joined by `\|`, `to_string(RiskLaneStatus)` |
 | `leg_status` | the explain's status for the leg (Ok or the exclusion reason) |
 | `price`, `delta`, `gamma`, `vega`, `theta`, `vanna`, `volga`, `charm` | ours, base frame, per share (`risk_frame.hpp` conventions: vega per unit vol, theta per calendar year) |
@@ -329,13 +437,15 @@ are one bucket apart.)
 | `vendor_vega`, `vendor_theta` | `sr_ve / 0.01` (per unit vol, what parity compares), `sr_th × 252` (per year) |
 | `price_abs_err`, `price_sym_rel` | \|price − vendor_price\| and that over max(\|price\|, \|vendor_price\|, 0.01) |
 | `sr_prc`, `sr_de`, `sr_ga`, `sr_ve`, `sr_th` | the base bucket's raw srPrc, de, ga, ve, th (SpiderRock units) |
-| `sr_years`, `sr_uprc`, `sr_rate`, `sr_sdiv`, `sr_ddiv`, `sr_bid`, `sr_ask` | the same row's years, uPrc, rate, sdiv, ddiv, bidPrc, askPrc (raw) |
+| `sr_years`, `sr_uprc`, `sr_synspot`, `sr_rate`, `sr_sdiv`, `sr_ddiv`, `sr_bid`, `sr_ask` | the same row's years, uPrc, synSpot (empty when the store has none), rate, sdiv, ddiv, bidPrc, askPrc (raw) |
 | `pnl_total`, `pnl_delta`, `pnl_gamma`, `pnl_vega`, `pnl_volga`, `pnl_vanna`, `pnl_theta`, `pnl_rho`, `pnl_charm`, `pnl_unexplained` | the step's per-leg explain (position-scaled) |
 
-Reading it: a carry gap shows as `q_eff` ≠ `q_eff_d4`, or as `sr_uprc` / `sr_years`
-far from `spot` / `T` on the rows with the large `price_abs_err`; a kernel defect shows
-as a large error with matching inputs. The writer is engine-free and pinned by
-`RiskBenchReport.LegDumpCsvFormat`.
+Reading it: a carry gap shows as `q_eff` ≠ `q_eff_d4`, as `implied_forward` far from
+`published_forward`, or as `sr_uprc` / `sr_years` far from `spot` / `T` on the rows with
+the large `price_abs_err`; a kernel defect shows as a large error with matching inputs.
+The writer is engine-free and pinned by `RiskBenchReport.LegDumpCsvFormat`; the driver
+half (frame → column mapping, carry precedence, book mapping, an unwritable path) by
+`RiskBenchE2E.SyntheticRunProducesReport`.
 
 ## Tests and integration
 
@@ -350,5 +460,13 @@ as a large error with matching inputs. The writer is engine-free and pinned by
   pid suffix, so parallel ctest processes and pool trees never share one.
 - `RiskBenchE2E.SyntheticRunProducesReport` (`tests/risk_bench_e2e_test.cpp`) and
   `tools/risk_bench.cpp` join `atx-vol-tests` only under `-DATX_VOL_RISK_E2E=ON`
-  (default OFF) because they link the risk engine; the integration stage flips it and
-  links the `atx-vol-risk-bench` target (`ATX_BUILD_TOOLS`).
+  (default OFF) because they link the risk engine (present on the integration branch:
+  `configure -Preset vol-rel -DATX_VOL_RISK_E2E=ON`, then build `atx-vol-risk-slice`).
+  With `--dump-legs` on every step it checks the CSV: 1 + 2 × 400 LF lines under the
+  header, every row `term_carry` with |q_eff − q_eff_d4| ≤ 1e-12, `carry_mode`
+  `published`, `published_forward` = `forward` (1e-12), each row's contract = its book
+  leg's, prepared order, and that a directory as `--dump-legs` is an `IoError`.
+- Loader / state conventions are versioned by `kSpiderRockConventionsVersion`
+  (`spiderrock_store.hpp`; 2 = this document's conventions): persistence fingerprints of
+  cached market states depend on it, so any change to a value derived from the vendor
+  columns (clock, carry mode, framework filter, pv_divs source) bumps it.
