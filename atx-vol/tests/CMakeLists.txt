@@ -39,6 +39,8 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
         ${CASH_GAUSSIAN_DIR}/stock_cubic.cpp ${CASH_GAUSSIAN_DIR}/stock_cubic_test.cpp
         ${CASH_GAUSSIAN_DIR}/cubic_expectation.cpp
         ${CASH_GAUSSIAN_DIR}/cubic_expectation_test.cpp
+        ${CASH_GAUSSIAN_DIR}/single_cash_call.cpp
+        ${CASH_GAUSSIAN_DIR}/single_cash_call_test.cpp
         ${CASH_GAUSSIAN_DIR}/cubic_dyadic_zero.cpp
         ${CASH_GAUSSIAN_DIR}/cubic_dyadic_zero_test.cpp)
     target_link_libraries(atx-vol-cash-gaussian-research-tests PRIVATE
