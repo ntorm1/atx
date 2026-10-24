@@ -22,13 +22,22 @@ struct IvSearchResult {
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts) noexcept;
 
-// Opt-in repaired-node seed: Fast arithmetic on the target AL scheme, accepted
-// only after cold target repricing within max_price_error. Exercise/flat candidates
-// are never identified. A refusal requests the caller's unchanged typed fallback.
-// Zero/invalid budgets and unsupported Search controls return nullopt.
+// Diagnostics of the private proposal, separate from the public Search result.
+struct IvPriceCandidateStats {
+  bool stopped_early{false};
+  bool accepted_early{false};
+  bool retried_full_search{false};
+};
+
+// Opt-in repaired-node seed: an evaluated Fast residual may propose sigma before
+// strict IV convergence. Acceptance still requires cold target repricing within
+// max_price_error plus the target floor/exercise/slope checks. A refused early
+// proposal retries the original complete Fast search before typed fallback.
+// Zero/invalid budgets and unsupported Search controls return nullopt. Stats are
+// reset on entry, including refusal. No public/default Search behavior changes.
 [[nodiscard]] std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
-    const IvOpts &opts, double max_price_error) noexcept;
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats = nullptr) noexcept;
 
 // Checks an externally prepared sigma with the same cold price/exercise/slope
 // acceptance as price_candidate, without any inverse iteration or fallback.

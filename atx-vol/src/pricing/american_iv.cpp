@@ -328,6 +328,15 @@ private:
   AloRegionPricer *pricer_{nullptr};
 };
 
+// A private proposal may stop on an evaluated Fast residual. This is not an IV
+// acceptance criterion: its caller must independently check the cold target map,
+// exercise/floor classification and monetary budget before publishing anything.
+// Null on every public/default Search route; no sigma-tolerance control changes.
+struct PriceProposal {
+  double residual_budget{0.0};
+  bool stopped{false};
+};
+
 // NOT noexcept, deliberately: this body allocates. A cold Andersen-Lake
 // inversion constructs an AloPricer, whose ~46 KB `State` is a PIMPL behind
 // make_unique, and every `Err(code, "…")` below builds a std::string message
@@ -340,7 +349,8 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
                                          double q, Side side, AmericanMethod method, double tol,
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
                                          const Correction *correction, double warm_start,
-                                         double price_tol = 0.0, PolishTrace *trace = nullptr) {
+                                         double price_tol = 0.0, PolishTrace *trace = nullptr,
+                                         PriceProposal *proposal = nullptr) {
   const alprobe::Scope probe_zone(alprobe::Zone::AmericanIv);
   counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
@@ -432,6 +442,13 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     }
     return Ok(*p - price);
   };
+  const auto proposed = [&](double sigma, double value) noexcept {
+    if (proposal == nullptr || !(proposal->residual_budget > 0.0) ||
+        !(sigma > kSigmaLo) || !std::isfinite(value) ||
+        !(std::abs(value) <= proposal->residual_budget)) return false;
+    proposal->stopped = true;
+    return true;
+  };
 
   // ── Zero-vol admissibility, adjudicated by the MAP that will be inverted ──
   //
@@ -521,6 +538,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
 
   if (seed > 0.0) {
     ATX_TRY(double f_seed, residual(seed));
+    if (proposed(seed, f_seed)) return Ok(seed);
     if (f_seed == 0.0) {
       return Ok(seed); // seed is the root
     }
@@ -539,6 +557,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
           s_lo = kSigmaLo;
         }
         ATX_TRY(double f_step, residual(s_lo));
+        if (proposed(s_lo, f_step)) return Ok(s_lo);
         f_lo = f_step;
         if (f_lo < 0.0) {
           xl = s_lo;
@@ -587,6 +606,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       for (unsigned e = 0; e < 16 && s_hi < kSigmaHiCap; ++e) {
         s_hi = std::fmin(s_hi * 1.15, kSigmaHiCap);
         ATX_TRY(double f_step, residual(s_hi));
+        if (proposed(s_hi, f_step)) return Ok(s_hi);
         f_hi = f_step;
         if (f_hi >= 0.0) {
           xh = s_hi;
@@ -637,10 +657,12 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     }
     double b = kSigmaHi;
     ATX_TRY(double fb, residual(b));
+    if (proposed(b, fb)) return Ok(b);
     for (unsigned e = 0; fb < 0.0 && b < kSigmaHiCap && e < kMaxExpand; ++e) {
       a = b; // f(a) < 0 preserved (the old b was still on the negative side)
       b = std::fmin(b * 2.0, kSigmaHiCap);
       ATX_TRY(double fb_next, residual(b));
+      if (proposed(b, fb_next)) return Ok(b);
       fb = fb_next;
     }
     if (fb < 0.0) {
@@ -650,6 +672,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     xh = b;
     rts = 0.5 * (xl + xh);
     ATX_TRY(double f_mid, residual(rts));
+    if (proposed(rts, f_mid)) return Ok(rts);
     f = f_mid;
     x_sec = b;
     f_sec = fb;
@@ -705,6 +728,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
     // Fused residual + vega: one shared correction traversal per Newton step on
     // the cached path (perf F1). The residual is bit-identical to residual(rts).
     ATX_TRY(auto fv, residual_and_vega(rts));
+    if (proposed(rts, fv.first)) return Ok(rts);
     // The two most recent evaluations are a chord of the map being solved;
     // the analytic vega on the cold/BAW route is a chord of a different one. Fall
     // back to the vega only where the chord carries no usable slope.
@@ -2934,7 +2958,8 @@ std::optional<double> american_implied_vol_price_seed(
 
 std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
-    const IvOpts &opts, double max_price_error) noexcept {
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats) noexcept {
+  if (stats != nullptr) *stats = {};
   if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
       opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
       opts.warm_start != 0.0 || opts.price_tol != 0.0) return std::nullopt;
@@ -2942,6 +2967,23 @@ std::optional<double> american_implied_vol_price_candidate(
     IvOpts seed = opts;
     seed.al_opts = al_fast_profile(opts.al_opts);
     seed.refuse_non_monotone = false;
+    // An evaluated warm Fast residual only proposes sigma. Reserve most of the
+    // budget for cold-map differences; the exact target helper decides acceptance.
+    // If that check refuses, repeat the original complete Fast search unchanged.
+    PriceProposal proposal{0.25 * max_price_error, false};
+    const auto early = american_implied_vol_impl(price, S, K, T, r, q, side,
+        seed.method, seed.tol, seed.max_iter, seed.al_opts, seed.correction,
+        seed.warm_start, seed.price_tol, nullptr, &proposal);
+    if (stats != nullptr) stats->stopped_early = proposal.stopped;
+    if (early && *early > kIvMin && std::isfinite(*early)) {
+      if (const auto answer = american_implied_vol_price_seed(price, S, K, T, r, q, side,
+                                                             opts, max_price_error, *early)) {
+        if (stats != nullptr) stats->accepted_early = proposal.stopped;
+        return answer;
+      }
+    }
+    if (!proposal.stopped) return std::nullopt;
+    if (stats != nullptr) stats->retried_full_search = true;
     const IvResult candidate = search_typed(price, S, K, T, r, q, side, seed);
     if (candidate.status != IvStatus::Ok || !(candidate.iv > kIvMin) ||
         !std::isfinite(candidate.iv)) return std::nullopt;
