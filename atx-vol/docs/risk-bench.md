@@ -64,6 +64,7 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 | `--threads N` | 8 | kernel and explain fan-out degree (0 = executor auto) |
 | `--needs rho\|none` | none | evaluate the rho axis (carry-bump families) |
 | `--time vendor\|voltime\|calendar365` | vendor (`--store`), calendar365 (`--synthetic`) | the clock every expiry is priced and rolled on (see "Clock"): `vendor` = the per-expiry median of the vendor's `years` as `ExpiryCarry::T_override` (the state TimeSpec is Calendar365 underneath), `voltime` / `calendar365` = that TimeSpec, no override |
+| `--sticky-carry on\|off` | on (`--store`), off (`--synthetic`) | build each bucket's state sticky on the previous bucket's carry modes (design D23b; "Sticky carry mode" below) |
 | `--trapezoid` | off | `ExplainOptions::trapezoid_second_order` |
 | `--determinism` | off | a threads = 1 shadow stream; totals must be bit-equal |
 | `--out <file>` | stdout | JSON report |
@@ -78,7 +79,8 @@ failure), **2** usage error. Progress goes to stderr.
 
 The carry mode has no flag: `--store` builds states with `ImpliedFromCalls`, `--synthetic`
 with `Published` (its vendor columns are priced on exactly the D4 carry, design D20); see
-"Carry modes". Both are echoed in the report (`inputs.time`, `inputs.carry_mode`).
+"Carry modes". Both are echoed in the report (`inputs.time`, `inputs.carry_mode`), as is
+`--sticky-carry` (`inputs.sticky_carry`).
 
 ## Loader conventions (`load_spiderrock_bucket`, `market_state_from_bucket`)
 
@@ -252,6 +254,32 @@ is `n_expiry_rows`), `max_implied_vs_published_forward_rel` (max over implied ro
 basis (`SpiderRockExpiryForward`: mode, implied F even when rejected, published F, n_calls,
 IQR), which `--dump-legs` writes per leg.
 
+#### Sticky carry mode (design D23b, lane E; `--sticky-carry`, on under `--store`)
+
+Why: on its own each bucket decides implied vs Published on a hard 1e-3 IQR guard, and
+274 of the 1,913 expiries of the 2026-10-14 top-100 chattered across it between 10:00
+and 15:00: an expiry whose calls sit near the guard flips its forward basis (and with it
+its q, and a carry re-mark of up to the forward gap) from one bucket to the next.
+
+`market_state_from_bucket(bucket, time, report, forwards, previous)` takes the previous
+bucket's `forwards` table (ascending (uid, expiry), as the 4-argument overload returns it,
+built through the same `UnderlierTable`; an unordered table or one aliasing `forwards` is
+InvalidArgument; null = the 4-argument overload bit for bit). Per (uid, expiry) with a
+`previous` entry the guard in step 4 becomes:
+
+| previous mode | implied when |
+|---|---|
+| implied | n ≥ 3 and IQR ≤ `kImpliedCarryStickyHoldFactor` (3) × 1e-3 × F (holds through guard noise) |
+| Published | n ≥ 3 and IQR ≤ `kImpliedCarryStickyEnterFactor` (0.5) × 1e-3 × F (a 2× margin) |
+
+A row without a `previous` entry (the first bucket, a new expiry) takes the one-bucket
+guard; nothing is implied without the inversion. `BucketStateReport` counts
+`n_expiries_sticky_implied` (implied rows the one-bucket guard would have published),
+`n_expiries_sticky_published` (Published rows it would have implied) and `n_mode_flips`
+(rows whose mode differs from their `previous` entry); `SpiderRockExpiryForward` marks the
+row (`sticky`, `mode_flipped`). The bench threads each bucket's table into the next load
+and counts the flips (`mode_flips`) with the flag on or off.
+
 Bucket 1000 of 2026-10-14, top-100: **1,758 expiries implied, 155 Published** (10 with
 < 3 calls, 145 on the IQR guard — e.g. TLT / IWM / SPY long-dated, whose calls do not
 imply one forward); DIA 2028-12-15 **F = 562.34** (IQR 3.9e-4, 55 calls; Published
@@ -350,8 +378,10 @@ position-scaled currency (qty × multiplier).
 `bucket_loads[]` fields `dropped_forward_framework`, `pv_divs_from_ddiv_pv`,
 `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel`,
 `implied_carry_seconds`. **v3** (lane E) lets `inputs.time` be `vendor` and adds the
-`bucket_loads[]` field `n_expiries_vendor_T` and the explain axis `carry` (in `axes` and
-`axis_share`, whose denominator now includes it). The reader requires every v3 field and
+`bucket_loads[]` fields `n_expiries_vendor_T`, `n_expiries_sticky_implied`,
+`n_expiries_sticky_published` and `n_mode_flips`, `inputs.sticky_carry`, the top-level
+`n_expiries_mode_flipped`, and the explain axis `carry` (in `axes` and `axis_share`, whose
+denominator now includes it). The reader requires every v3 field and
 refuses any other `schema_version` (a v1 / v2 report is a ParseError, never read with
 guessed defaults).
 
@@ -370,12 +400,14 @@ guessed defaults).
 | `inputs.host_threads` | uint | `std::thread::hardware_concurrency()` |
 | `inputs.time` | string | `vendor` / `voltime` / `calendar365` (`--time`; the run's clock, default included) |
 | `inputs.carry_mode` | string | `implied_from_calls` (`--store`) / `published` (`--synthetic`) |
+| `inputs.sticky_carry` | bool | `--sticky-carry` (default included) |
 | `synthetic_store.generated` | bool | the store was written by this run |
 | `synthetic_store.seconds`, `.rows` | number, uint | generation wall clock, rows written |
 | `book.n_option_legs`, `.n_unique_options`, `.n_share_legs`, `.n_underliers` | uint | from `RiskBook` |
 | `book.shortfall` | uint | requested option legs not found (thin underliers) |
 | `buckets` | [string] | buckets in the window, ascending |
-| `bucket_loads[]` | object | per bucket: `bucket`, `rows_read`, `rows_kept`, `rows_dropped_null`, `rows_dropped_bad_input`, `rows_not_selected`, `dropped_non_american`, `dropped_nonstandard_root`, `rows_null_vendor`, `n_uids`, `n_marks`, `n_uids_with_divs`, `max_ddiv_spread`, `dropped_forward_framework`, `pv_divs_from_ddiv_pv` (bool), `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel` (= `max_implied_vs_published_forward_rel`), `implied_carry_seconds`, `n_expiries_vendor_T` (rows with a T_override) (loader / state accounting above) |
+| `bucket_loads[]` | object | per bucket: `bucket`, `rows_read`, `rows_kept`, `rows_dropped_null`, `rows_dropped_bad_input`, `rows_not_selected`, `dropped_non_american`, `dropped_nonstandard_root`, `rows_null_vendor`, `n_uids`, `n_marks`, `n_uids_with_divs`, `max_ddiv_spread`, `dropped_forward_framework`, `pv_divs_from_ddiv_pv` (bool), `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel` (= `max_implied_vs_published_forward_rel`), `implied_carry_seconds`, `n_expiries_vendor_T` (rows with a T_override), `n_expiries_sticky_implied`, `n_expiries_sticky_published`, `n_mode_flips` (rows on the other mode than the previous bucket's row of the same (uid, expiry), counted with `--sticky-carry` on or off; 0 for the first bucket) (loader / state accounting above) |
+| `n_expiries_mode_flipped` | uint | distinct (uid, expiry) with at least one mode flip over the run |
 | `start.state_seconds`, `.evaluate_seconds` | number | first bucket's state build, `RiskStream::start` evaluate |
 | `steps[].bucket_from`, `.bucket_to` | string | the step |
 | `steps[].ts_from`, `.ts_to` | int64 | epoch ns of the two states |

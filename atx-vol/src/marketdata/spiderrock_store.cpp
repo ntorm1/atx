@@ -1197,6 +1197,8 @@ struct StateBuild {
   bool vendor_clock; // SpiderRockClock::VendorYears AND the years column exists
   BucketStateReport &rep;
   std::vector<SpiderRockExpiryForward> *forwards;
+  // Design D23b: the previous bucket's table (validated ascending); null = no sticky mode.
+  const std::vector<SpiderRockExpiryForward> *previous{nullptr};
   std::vector<double> scratch{};
   std::vector<double> fs{};
 };
@@ -1223,6 +1225,31 @@ struct StateBuild {
   sb.rep.max_ddiv_spread =
       std::max(sb.rep.max_ddiv_spread, finite_spread(use_pv ? b.ddiv_pv : b.ddiv, run));
   return c;
+}
+
+// The `previous` entry of (uid, expiry_ns) (design D23b); null without one.
+[[nodiscard]] const SpiderRockExpiryForward *
+previous_entry(const std::vector<SpiderRockExpiryForward> *previous, std::uint32_t uid,
+               std::int64_t expiry_ns) noexcept {
+  if (previous == nullptr) {
+    return nullptr;
+  }
+  const auto key = std::pair{uid, expiry_ns};
+  const auto it = std::lower_bound(
+      previous->begin(), previous->end(), key,
+      [](const SpiderRockExpiryForward &e, const std::pair<std::uint32_t, std::int64_t> &k) {
+        return std::pair{e.uid, e.expiry_ns} < k;
+      });
+  return it != previous->end() && it->uid == uid && it->expiry_ns == expiry_ns ? &*it : nullptr;
+}
+
+// Design D23b: the guard of an expiry whose previous-bucket row was on `before` — hold an
+// implied row up to 3x the IQR guard, enter implied only with a 2x margin.
+[[nodiscard]] bool sticky_accepts(const ImpliedForward &imp, SpiderRockCarryMode before) noexcept {
+  const double factor = before == SpiderRockCarryMode::ImpliedFromCalls
+                            ? kImpliedCarryStickyHoldFactor
+                            : kImpliedCarryStickyEnterFactor;
+  return imp.n_calls >= kImpliedCarryMinCalls && imp.iqr_rel <= factor * kImpliedCarryMaxIqrRel;
 }
 
 // The (uid, expiry) carry rows of one uid; `rows` is the uid's run in key order.
@@ -1253,6 +1280,7 @@ struct StateBuild {
     if (T > 0.0 && c.pv_divs < u.spot) {
       diag.published_forward = (u.spot - c.pv_divs) * std::exp((c.rate - c.q) * T);
     }
+    const SpiderRockExpiryForward *before = previous_entry(sb.previous, u.uid, c.expiry_ns);
     if (sb.implied) {
       const Clock::time_point t0 = Clock::now();
       const ImpliedForward imp = implied_forward(b, run, u.spot, c, diag.T_vendor, sb.fs);
@@ -1260,7 +1288,15 @@ struct StateBuild {
       diag.implied_forward = imp.forward;
       diag.n_calls = imp.n_calls;
       diag.iqr_rel = imp.iqr_rel;
-      if (imp.accepted && T > 0.0) {
+      // Design D23b: an expiry the previous bucket saw takes the sticky guard instead.
+      const bool guard = imp.accepted && T > 0.0;
+      const bool take =
+          (before == nullptr ? imp.accepted : sticky_accepts(imp, before->mode)) && T > 0.0;
+      if (take != guard) {
+        diag.sticky = true;
+        ++(take ? sb.rep.n_expiries_sticky_implied : sb.rep.n_expiries_sticky_published);
+      }
+      if (take) {
         c.pv_divs = 0.0;
         c.q = c.rate - std::log(imp.forward / u.spot) / T; // spot e^{(rate - q) T} == F
         diag.mode = SpiderRockCarryMode::ImpliedFromCalls;
@@ -1274,6 +1310,10 @@ struct StateBuild {
     const bool implied_row = diag.mode == SpiderRockCarryMode::ImpliedFromCalls;
     sb.rep.n_expiries_implied += implied_row ? 1u : 0u;
     sb.rep.n_expiries_published += implied_row ? 0u : 1u;
+    if (before != nullptr && before->mode != diag.mode) {
+      diag.mode_flipped = true;
+      ++sb.rep.n_mode_flips;
+    }
     if (sb.forwards != nullptr) {
       sb.forwards->push_back(diag);
     }
@@ -1357,7 +1397,30 @@ Result<MarketStateStorage>
 market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
                          BucketStateReport *report,
                          std::vector<SpiderRockExpiryForward> *forwards) {
+  return market_state_from_bucket(bucket, time, report, forwards, nullptr);
+}
+
+Result<MarketStateStorage>
+market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
+                         BucketStateReport *report,
+                         std::vector<SpiderRockExpiryForward> *forwards,
+                         const std::vector<SpiderRockExpiryForward> *previous) {
   ATX_TRY_VOID(check_bucket_shape(bucket));
+  if (previous != nullptr) {
+    if (previous == forwards) {
+      return Err(ErrorCode::InvalidArgument,
+                 "market_state_from_bucket: `previous` must not alias `forwards`");
+    }
+    for (std::size_t i = 1; i < previous->size(); ++i) {
+      const SpiderRockExpiryForward &a = (*previous)[i - 1];
+      const SpiderRockExpiryForward &b = (*previous)[i];
+      if (!(std::pair{a.uid, a.expiry_ns} < std::pair{b.uid, b.expiry_ns})) {
+        return Err(ErrorCode::InvalidArgument,
+                   "market_state_from_bucket: `previous` is not strictly ascending in "
+                   "(uid, expiry)");
+      }
+    }
+  }
   const std::vector<std::size_t> order =
       key_order(bucket.uid, bucket.expiry_ns, bucket.side, bucket.strike);
   MarketStateStorage s;
@@ -1381,7 +1444,8 @@ market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
                 .implied = implied,
                 .vendor_clock = vendor_clock,
                 .rep = rep,
-                .forwards = forwards};
+                .forwards = forwards,
+                .previous = previous};
   const std::span<const std::size_t> all{order};
   for (std::size_t lo = 0; lo < all.size();) {
     std::size_t hi = lo + 1;

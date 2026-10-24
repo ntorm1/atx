@@ -281,6 +281,9 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
   if (flag == "--kernel" || flag == "--needs" || flag == "--time") {
     return parse_choice(c, flag, a);
   }
+  if (flag == "--sticky-carry") {
+    return set_switch(c, flag, "on", "off", a.sticky_carry);
+  }
   return Err(usage_error("unknown flag: " + std::string{flag}));
 }
 
@@ -339,6 +342,9 @@ std::string risk_bench_usage() {
          "                       the clock every expiry is priced on: vendor = the\n"
          "                       vendor's per-expiry years (default under --store),\n"
          "                       calendar365 (default under --synthetic) or voltime\n"
+         "  --sticky-carry on|off  carry mode sticky across buckets: an implied expiry\n"
+         "                       holds to 3x the IQR guard, a published one enters at\n"
+         "                       half of it (default on under --store, off --synthetic)\n"
          "  --trapezoid          trapezoid second-order explain terms\n"
          "  --determinism        shadow threads=1 stream; totals must be bit-equal\n"
          "  --out <file>         JSON report (stdout when absent)\n"
@@ -417,6 +423,10 @@ const char *carry_mode_name(SpiderRockCarryMode mode) noexcept {
 SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept {
   return args.synthetic_dir.empty() ? SpiderRockCarryMode::ImpliedFromCalls
                                     : SpiderRockCarryMode::Published;
+}
+
+bool bench_sticky_carry(const RiskBenchArgs &args) noexcept {
+  return args.sticky_carry.value_or(args.synthetic_dir.empty());
 }
 
 const char *to_string(PlaZone zone) noexcept {
@@ -590,6 +600,26 @@ double nearest_rank(std::span<const double> values, double q) {
 }
 
 // ═══ Data selection ══════════════════════════════════════════════════════════
+
+std::size_t mode_flips(std::span<const SpiderRockExpiryForward> prev,
+                       std::span<const SpiderRockExpiryForward> cur,
+                       std::vector<std::pair<std::uint32_t, std::int64_t>> &flipped) {
+  std::size_t n = 0;
+  std::size_t i = 0; // merge walk: both tables ascend in (uid, expiry)
+  for (const SpiderRockExpiryForward &c : cur) {
+    const auto key = std::pair{c.uid, c.expiry_ns};
+    while (i < prev.size() && std::pair{prev[i].uid, prev[i].expiry_ns} < key) {
+      ++i;
+    }
+    const bool same_key =
+        i < prev.size() && prev[i].uid == c.uid && prev[i].expiry_ns == c.expiry_ns;
+    if (same_key && prev[i].mode != c.mode) {
+      ++n;
+      flipped.push_back(key);
+    }
+  }
+  return n;
+}
 
 std::vector<std::string> select_buckets(std::span<const std::string> all, std::string_view from,
                                         std::string_view to) {
@@ -870,6 +900,7 @@ RiskBenchReport report_skeleton(const RiskBenchArgs &args) {
   r.host_threads = std::thread::hardware_concurrency();
   r.time = bench_time_name(bench_time(args));
   r.carry_mode = carry_mode_name(bench_carry_mode(args));
+  r.sticky_carry = bench_sticky_carry(args);
   return r;
 }
 
@@ -1672,7 +1703,10 @@ void explain_from(const Fields &e, StepReport &t) {
               {"n_expiries_published", jnumber(b.n_expiries_published)},
               {"max_forward_gap_rel", num(b.max_forward_gap_rel)},
               {"implied_carry_seconds", num(b.implied_carry_seconds)},
-              {"n_expiries_vendor_T", jnumber(b.n_expiries_vendor_T)}});
+              {"n_expiries_vendor_T", jnumber(b.n_expiries_vendor_T)},
+              {"n_expiries_sticky_implied", jnumber(b.n_expiries_sticky_implied)},
+              {"n_expiries_sticky_published", jnumber(b.n_expiries_sticky_published)},
+              {"n_mode_flips", jnumber(b.n_mode_flips)}});
 }
 
 [[nodiscard]] BucketLoad bucket_load_from(const Fields &o) {
@@ -1697,6 +1731,9 @@ void explain_from(const Fields &e, StepReport &t) {
   b.max_forward_gap_rel = o.num("max_forward_gap_rel");
   b.implied_carry_seconds = o.num("implied_carry_seconds");
   b.n_expiries_vendor_T = o.integer<std::size_t>("n_expiries_vendor_T");
+  b.n_expiries_sticky_implied = o.integer<std::size_t>("n_expiries_sticky_implied");
+  b.n_expiries_sticky_published = o.integer<std::size_t>("n_expiries_sticky_published");
+  b.n_mode_flips = o.integer<std::size_t>("n_mode_flips");
   return b;
 }
 
@@ -1718,7 +1755,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"host_threads", jnumber(r.host_threads)},
               {"time", jstr(r.time)},
               {"carry_mode", jstr(r.carry_mode)},
-              {"family_policy", jstr(r.family_policy)}});
+              {"family_policy", jstr(r.family_policy)},
+              {"sticky_carry", jbool(r.sticky_carry)}});
 }
 
 void inputs_from(const Fields &o, RiskBenchReport &r) {
@@ -1740,6 +1778,7 @@ void inputs_from(const Fields &o, RiskBenchReport &r) {
   r.time = o.text("time");
   r.carry_mode = o.text("carry_mode");
   r.family_policy = o.text("family_policy");
+  r.sticky_carry = o.boolean("sticky_carry");
 }
 
 void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
@@ -1774,6 +1813,7 @@ void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
     r.steps.push_back(step_from(j.element(steps[i], i)));
   }
   r.summary = summary_from(j.object("summary"));
+  r.n_expiries_mode_flipped = j.integer<std::size_t>("n_expiries_mode_flipped");
   return r;
 }
 
@@ -1805,6 +1845,7 @@ std::string report_to_json(const RiskBenchReport &r) {
                                     {"shortfall", jnumber(r.book_shortfall)}})},
                       {"buckets", buckets},
                       {"bucket_loads", loads},
+                      {"n_expiries_mode_flipped", jnumber(r.n_expiries_mode_flipped)},
                       {"start", obj({{"state_seconds", num(r.start_state_seconds)},
                                      {"evaluate_seconds", num(r.start_evaluate_seconds)}})},
                       {"steps", steps},

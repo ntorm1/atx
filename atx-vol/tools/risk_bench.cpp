@@ -62,16 +62,18 @@ struct Snapshot {
   double state_seconds{0.0};
 };
 
-[[nodiscard]] Result<std::unique_ptr<Snapshot>> load_snapshot(const SpiderRockStoreSpec &spec,
-                                                               const std::string &bucket_et,
-                                                               UnderlierTable &table) {
+// `previous` (design D23b): the previous bucket's forwards table when the carry mode is
+// sticky, else null.
+[[nodiscard]] Result<std::unique_ptr<Snapshot>>
+load_snapshot(const SpiderRockStoreSpec &spec, const std::string &bucket_et, UnderlierTable &table,
+              const std::vector<SpiderRockExpiryForward> *previous) {
   auto snap = std::make_unique<Snapshot>();
   const Clock::time_point t0 = Clock::now();
   ATX_TRY(snap->bucket, load_spiderrock_bucket(spec, bucket_et, table));
   snap->load_seconds = seconds_since(t0);
   const Clock::time_point t1 = Clock::now();
   ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report,
-                                                  &snap->forwards));
+                                                  &snap->forwards, previous));
   ATX_TRY(MarketState state, make_market_state(snap->storage));
   snap->state.emplace(std::move(state));
   snap->state_seconds = seconds_since(t1);
@@ -95,6 +97,8 @@ struct Snapshot {
   b.max_forward_gap_rel = s.report.max_implied_vs_published_forward_rel;
   b.implied_carry_seconds = s.report.implied_carry_seconds;
   b.n_expiries_vendor_T = s.report.n_expiries_vendor_T;
+  b.n_expiries_sticky_implied = s.report.n_expiries_sticky_implied;
+  b.n_expiries_sticky_published = s.report.n_expiries_sticky_published;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;
@@ -677,7 +681,8 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.carry_mode = bench_carry_mode(args);
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
-  ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));
+  ATX_TRY(std::unique_ptr<Snapshot> prev,
+          load_snapshot(spec, rep.buckets.front(), table, nullptr));
   rep.bucket_loads.push_back(bucket_load(*prev));
   // The universe is fixed at the first bucket: later buckets read exactly these
   // tickers (stable uids through the shared table).
@@ -701,14 +706,25 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
       << " unique) + " << rep.n_share_legs << " shares on " << rep.n_underliers
       << " underliers; first frame " << rep.start_evaluate_seconds * 1e3 << " ms\n";
 
+  // Design D23b: each state is built sticky on the previous bucket's carry modes (or not),
+  // and the flips between consecutive buckets are counted either way.
+  const bool sticky = bench_sticky_carry(args);
+  std::vector<std::pair<std::uint32_t, std::int64_t>> flipped;
   for (std::size_t k = 1; k < rep.buckets.size(); ++k) {
-    ATX_TRY(std::unique_ptr<Snapshot> cur, load_snapshot(spec, rep.buckets[k], table));
+    ATX_TRY(std::unique_ptr<Snapshot> cur,
+            load_snapshot(spec, rep.buckets[k], table, sticky ? &prev->forwards : nullptr));
     rep.bucket_loads.push_back(bucket_load(*cur));
+    rep.bucket_loads.back().n_mode_flips = mode_flips(prev->forwards, cur->forwards, flipped);
     ATX_TRY(StepReport step, run_step(streams, *prev, *cur, dump.get()));
     log_step(log, step);
     rep.steps.push_back(std::move(step));
     prev = std::move(cur); // the old state is released only after every stream stepped
   }
+  std::sort(flipped.begin(), flipped.end());
+  rep.n_expiries_mode_flipped = static_cast<std::size_t>(
+      std::unique(flipped.begin(), flipped.end()) - flipped.begin());
+  log << "[risk-bench] carry modes: sticky " << (sticky ? "on" : "off") << ", "
+      << flipped.size() << " flip(s) over " << rep.n_expiries_mode_flipped << " (uid, expiry)\n";
   if (dump != nullptr) {
     log << "[risk-bench] --dump-legs: " << dump->rows << " option-leg rows over "
         << dump->steps_written << " step(s) -> " << dump->path << "\n";

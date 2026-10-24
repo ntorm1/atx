@@ -217,7 +217,12 @@ TEST(RiskBenchE2E, SyntheticRunProducesReport) {
   EXPECT_TRUE(std::isfinite(rep->summary.explained_ratio));
   EXPECT_EQ(rep->time, "calendar365");
   EXPECT_EQ(rep->carry_mode, "published");
+  // Lane E (D23b): --synthetic defaults --sticky-carry off; its Published states never flip.
+  EXPECT_FALSE(rep->sticky_carry);
+  EXPECT_EQ(rep->n_expiries_mode_flipped, 0u);
   for (const rb::BucketLoad &b : rep->bucket_loads) {
+    EXPECT_EQ(b.n_mode_flips, 0u) << b.bucket;
+    EXPECT_EQ(b.n_expiries_sticky_implied + b.n_expiries_sticky_published, 0u) << b.bucket;
     EXPECT_EQ(b.n_expiries_implied, 0u) << b.bucket;
     EXPECT_GT(b.n_expiries_published, 0u) << b.bucket;
     EXPECT_FALSE(b.pv_divs_from_ddiv_pv) << b.bucket;

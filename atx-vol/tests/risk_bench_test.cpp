@@ -208,6 +208,52 @@ TEST(RiskBenchArgs, TimeVendor) {
   EXPECT_EQ(rb::report_skeleton(vol.value()).time, "voltime");
 }
 
+// --sticky-carry on|off (lane E, design D23b): on by default under --store, off under
+// --synthetic (whose Published states have nothing to hold); the report echoes it.
+TEST(RiskBenchArgs, StickyCarry) {
+  const auto store = parse({"--store", "s"});
+  ASSERT_TRUE(store.has_value()) << store.error().to_string();
+  EXPECT_FALSE(store->sticky_carry.has_value());
+  EXPECT_TRUE(rb::bench_sticky_carry(*store));
+  EXPECT_FALSE(rb::bench_sticky_carry(parse({"--synthetic", "s"}).value()));
+  EXPECT_FALSE(rb::bench_sticky_carry(parse({"--store", "s", "--sticky-carry", "off"}).value()));
+  EXPECT_TRUE(
+      rb::bench_sticky_carry(parse({"--synthetic", "s", "--sticky-carry", "on"}).value()));
+  EXPECT_EQ(parse({"--store", "s", "--sticky-carry", "yes"}).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_EQ(parse({"--store", "s", "--sticky-carry"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(rb::risk_bench_usage().find("--sticky-carry on|off"), std::string::npos);
+  EXPECT_TRUE(rb::report_skeleton(*store).sticky_carry);
+  EXPECT_FALSE(rb::report_skeleton(parse({"--synthetic", "s"}).value()).sticky_carry);
+}
+
+// Mode flips between two bucket tables: rows of `cur` whose (uid, expiry) `prev` holds on the
+// other mode; rows only one table has never flip. The flipped keys are appended in order.
+TEST(RiskBenchArgs, ModeFlipsCountChangedRows) {
+  using atx::vol::SpiderRockCarryMode;
+  using atx::vol::SpiderRockExpiryForward;
+  auto row = [](std::uint32_t uid, std::int64_t expiry, SpiderRockCarryMode mode) {
+    SpiderRockExpiryForward f;
+    f.uid = uid;
+    f.expiry_ns = expiry;
+    f.mode = mode;
+    return f;
+  };
+  constexpr auto kI = SpiderRockCarryMode::ImpliedFromCalls;
+  constexpr auto kP = SpiderRockCarryMode::Published;
+  const std::vector<SpiderRockExpiryForward> prev{row(1, 10, kI), row(1, 20, kP), row(2, 10, kI),
+                                                  row(3, 30, kP)};
+  const std::vector<SpiderRockExpiryForward> cur{row(1, 10, kP), row(1, 15, kI), row(1, 20, kP),
+                                                 row(2, 10, kI), row(3, 30, kI), row(4, 5, kP)};
+  std::vector<std::pair<std::uint32_t, std::int64_t>> flipped{{9, 9}};
+  EXPECT_EQ(rb::mode_flips(prev, cur, flipped), 2u);
+  const std::vector<std::pair<std::uint32_t, std::int64_t>> want{{9, 9}, {1, 10}, {3, 30}};
+  EXPECT_EQ(flipped, want);
+  EXPECT_EQ(rb::mode_flips({}, cur, flipped), 0u);
+  EXPECT_EQ(rb::mode_flips(prev, prev, flipped), 0u);
+  EXPECT_EQ(flipped.size(), 3u);
+}
+
 // The carry mode follows the store: Published under --synthetic (its vendor columns are
 // priced on the D4 carry), ImpliedFromCalls under --store.
 TEST(RiskBenchArgs, CarryModeFollowsStore) {
@@ -574,10 +620,15 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   bl.max_forward_gap_rel = 0.330673;
   bl.implied_carry_seconds = 0.0126;
   bl.n_expiries_vendor_T = 1911;
+  bl.n_expiries_sticky_implied = 41;
+  bl.n_expiries_sticky_published = 7;
+  bl.n_mode_flips = 3;
   bl.rows_null_vendor = 12;
   bl.n_uids = 100;
   bl.max_ddiv_spread = 0.125;
   r.bucket_loads = {bl, bl};
+  r.sticky_carry = true; // lane E (schema v3); --synthetic's default is off
+  r.n_expiries_mode_flipped = 5;
   r.start_state_seconds = 0.033;
   r.start_evaluate_seconds = 0.15;
   for (int k = 0; k < 2; ++k) {
@@ -663,6 +714,12 @@ TEST(RiskBenchReport, JsonSchemaV3RoundTrip) {
   EXPECT_EQ(back->bucket_loads[0].max_forward_gap_rel, 0.330673);
   EXPECT_EQ(back->bucket_loads[0].implied_carry_seconds, 0.0126);
   EXPECT_EQ(back->bucket_loads[0].n_expiries_vendor_T, 1911u);
+  EXPECT_EQ(back->bucket_loads[1].n_expiries_sticky_implied, 41u);
+  EXPECT_EQ(back->bucket_loads[1].n_expiries_sticky_published, 7u);
+  EXPECT_EQ(back->bucket_loads[1].n_mode_flips, 3u);
+  EXPECT_TRUE(back->sticky_carry);
+  EXPECT_NE(text.find("\"sticky_carry\": true"), std::string::npos);
+  EXPECT_EQ(back->n_expiries_mode_flipped, 5u);
   EXPECT_EQ(back->steps[1].axes.carry, 12.75);
   EXPECT_NE(text.find("\"carry\": 12.75"), std::string::npos);
   EXPECT_EQ(back->carry_mode, "published"); // --synthetic

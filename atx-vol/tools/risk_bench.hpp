@@ -31,6 +31,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp"
@@ -42,8 +43,8 @@ namespace atx::vol::riskbench {
 
 // v2 (follow-up 2): inputs.time / inputs.carry_mode and the BucketLoad framework-filter and
 // implied-carry fields. v3 (lane E): inputs.time may be "vendor"; BucketLoad's
-// n_expiries_vendor_T and sticky-carry counts; the explain axes' "carry". The reader requires
-// every v3 field and refuses v1 / v2.
+// n_expiries_vendor_T and sticky-carry counts, inputs.sticky_carry, n_expiries_mode_flipped;
+// the explain axes' "carry". The reader requires every v3 field and refuses v1 / v2.
 inline constexpr int kReportSchemaVersion = 3;
 inline constexpr std::size_t kRouteCount = 7; // RiskRoute::None .. RiskRoute::Refused
 inline constexpr std::size_t kFlagCount = 13; // RiskFlag bits 0 .. 12
@@ -105,6 +106,10 @@ struct RiskBenchArgs {
   // --time as given (unset = the store's default, bench_time()); `time` above is then the
   // TimeSpec convention it implies (Calendar365 under Vendor).
   std::optional<BenchTime> time_choice;
+  // --sticky-carry on|off (design D23b): each bucket's state is built with the previous
+  // bucket's SpiderRockExpiryForward table, so an expiry's implied / published carry mode is
+  // sticky (spiderrock_store.hpp). Unset = bench_sticky_carry()'s default.
+  std::optional<bool> sticky_carry;
 
   // The store the run reads: the synthetic dir when set, else --store.
   [[nodiscard]] const std::string &store_root() const noexcept {
@@ -131,6 +136,10 @@ struct RiskBenchArgs {
 // vendor columns are priced on exactly the D4 carry, design D20), ImpliedFromCalls under
 // --store (SpiderRock's escrow horizon is not a column; spiderrock_store.hpp).
 [[nodiscard]] SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept;
+// Whether a run builds each state sticky on the previous one (design D23b): --sticky-carry
+// when given, else on under --store and off under --synthetic (its Published states have no
+// implied row to hold).
+[[nodiscard]] bool bench_sticky_carry(const RiskBenchArgs &args) noexcept;
 
 // ═══ Report ══════════════════════════════════════════════════════════════════
 
@@ -287,6 +296,13 @@ struct BucketLoad {
   double implied_carry_seconds{0.0};
   // ── Lane E additions (appended; schema v3) ──
   std::size_t n_expiries_vendor_T{0}; // BucketStateReport::n_expiries_vendor_T
+  // BucketStateReport's sticky-mode accounting (design D23b; 0 with --sticky-carry off).
+  std::size_t n_expiries_sticky_implied{0};
+  std::size_t n_expiries_sticky_published{0};
+  // ExpiryCarry rows whose carry mode differs from the previous bucket's row of the same
+  // (uid, expiry) (mode_flips; counted with --sticky-carry on or off; 0 for the first
+  // bucket). With it on, == BucketStateReport::n_mode_flips.
+  std::size_t n_mode_flips{0};
 };
 
 struct RiskBenchReport {
@@ -328,6 +344,9 @@ struct RiskBenchReport {
   double start_evaluate_seconds{0.0}; // RiskStream::start (first frame)
   std::vector<StepReport> steps;
   RunSummary summary{};
+  // ── Lane E additions (appended; schema v3) ──
+  bool sticky_carry{false};               // bench_sticky_carry(args) (inputs.sticky_carry)
+  std::size_t n_expiries_mode_flipped{0}; // distinct (uid, expiry) with >= 1 mode flip
 };
 
 // Echo `args` into a fresh report (inputs only).
@@ -362,6 +381,14 @@ void summarize(RiskBenchReport &report);
 [[nodiscard]] double nearest_rank(std::span<const double> values, double q);
 
 // ═══ Data selection ══════════════════════════════════════════════════════════
+
+// Rows of `cur` whose (uid, expiry) `prev` holds on the other carry mode (design D23b's
+// "mode flip"); both tables ascending in (uid, expiry) as market_state_from_bucket returns
+// them. Rows only one table has never flip. Appends each flipped (uid, expiry) to `flipped`.
+[[nodiscard]] std::size_t
+mode_flips(std::span<const SpiderRockExpiryForward> prev,
+           std::span<const SpiderRockExpiryForward> cur,
+           std::vector<std::pair<std::uint32_t, std::int64_t>> &flipped);
 
 // Buckets of `all` (ascending HHMM) inside [from, to].
 [[nodiscard]] std::vector<std::string> select_buckets(std::span<const std::string> all,

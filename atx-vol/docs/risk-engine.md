@@ -66,6 +66,10 @@ the box, near the exercise edge, per-Greek refusals) go to the cold route with
   T_base − T_shifted whenever either state overrides the expiry); NaN keeps the
   `TimeSpec`. The SpiderRock loader fills it from the vendor's `years`
   (`SpiderRockClock::VendorYears`).
+- Sticky carry mode (design D23b, lane E): the SpiderRock loader can build a bucket's state
+  on the previous bucket's implied / published table (`market_state_from_bucket` with
+  `previous`): an implied expiry holds to 3× the IQR guard, a published one turns implied
+  only at half of it; the bench does this under `--store` (`--sticky-carry`).
 - Totals are Neumaier-compensated in leg order; results are bit-identical across thread
   counts (a gate, not a goal).
 - Shares are delta-one legs: `pnl_delta = qty · ΔS`; no financing / dividend lines yet.

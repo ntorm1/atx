@@ -102,6 +102,12 @@ enum class SpiderRockCarryMode : std::uint8_t { Published = 0, ImpliedFromCalls 
 // ImpliedFromCalls acceptance guards (see SpiderRockCarryMode).
 inline constexpr std::size_t kImpliedCarryMinCalls = 3;
 inline constexpr double kImpliedCarryMaxIqrRel = 1e-3;
+// Sticky-mode guards (design D23b, lane E; the market_state_from_bucket overload taking
+// `previous`), on kImpliedCarryMaxIqrRel: an expiry implied in the previous bucket stays
+// implied while its IQR <= kImpliedCarryStickyHoldFactor x the guard; one published there
+// turns implied only at IQR <= kImpliedCarryStickyEnterFactor x the guard (a 2x margin).
+inline constexpr double kImpliedCarryStickyHoldFactor = 3.0;
+inline constexpr double kImpliedCarryStickyEnterFactor = 0.5;
 
 // Which clock market_state_from_bucket puts each expiry on (lane E, design D22).
 //
@@ -295,6 +301,13 @@ struct BucketStateReport {
   // ── Lane E additions (appended) ──
   // ExpiryCarry rows written with a finite T_override (SpiderRockClock::VendorYears).
   std::size_t n_expiries_vendor_T{0};
+  // Design D23b (the overload taking `previous`; all 0 without one): rows the sticky rule
+  // wrote implied that the one-bucket guard would have published (held through guard
+  // noise), rows it kept published that the guard would have implied (no 2x margin), and
+  // rows whose mode differs from their `previous` entry's (rows without one never flip).
+  std::size_t n_expiries_sticky_implied{0};
+  std::size_t n_expiries_sticky_published{0};
+  std::size_t n_mode_flips{0};
 };
 [[nodiscard]] Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                                   const TimeSpec &time,
@@ -318,6 +331,10 @@ struct SpiderRockExpiryForward {
   // The median of the vendor's `years` over the expiry's rows (NaN without the column),
   // whatever the clock; the row's T_override under SpiderRockClock::VendorYears.
   double T_vendor{std::numeric_limits<double>::quiet_NaN()};
+  // Design D23b (the overload taking `previous`; false without one): the row's `previous`
+  // entry is on the other mode / the sticky rule, not the one-bucket guard, chose `mode`.
+  bool mode_flipped{false};
+  bool sticky{false};
 };
 
 // market_state_from_bucket that also returns every ExpiryCarry row's basis in `forwards`
@@ -326,6 +343,25 @@ struct SpiderRockExpiryForward {
 market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
                          BucketStateReport *report,
                          std::vector<SpiderRockExpiryForward> *forwards);
+
+// Design D23b (lane E): the overload above with each expiry's implied / published mode
+// STICKY across consecutive buckets of a day. `previous` is the previous bucket's
+// `forwards` table: strictly ascending in (uid, expiry) as the overload above returns it,
+// built through the same UnderlierTable (so uids agree), never `forwards` itself
+// (InvalidArgument otherwise); null = the overload above, bit for bit. A row whose
+// (uid, expiry) has a `previous` entry takes, instead of the one-bucket guard:
+//   previous ImpliedFromCalls  implied while >= kImpliedCarryMinCalls calls solve and their
+//                              IQR <= kImpliedCarryStickyHoldFactor x kImpliedCarryMaxIqrRel
+//   previous Published         implied only at >= kImpliedCarryMinCalls calls and IQR <=
+//                              kImpliedCarryStickyEnterFactor x kImpliedCarryMaxIqrRel
+// A row without an entry takes the one-bucket guard. Nothing is implied without the
+// inversion (SpiderRockCarryMode::ImpliedFromCalls and its columns). Why: 274 of 1,913
+// expiries chattered at the 1e-3 guard between 10:00 and 15:00 on 2026-10-14 (design D23).
+[[nodiscard]] Result<MarketStateStorage>
+market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
+                         BucketStateReport *report,
+                         std::vector<SpiderRockExpiryForward> *forwards,
+                         const std::vector<SpiderRockExpiryForward> *previous);
 
 // ── Synthetic SpiderRock-shaped store ───────────────────────────────────────────
 //

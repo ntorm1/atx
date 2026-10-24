@@ -1658,6 +1658,197 @@ TEST(BucketState, ImpliedCarryRejectsInconsistentCalls) {
   EXPECT_GT(forwards[0].iqr_rel, atx::vol::kImpliedCarryMaxIqrRel);
 }
 
+// ── BucketState: sticky carry mode (lane E, design D23b) ───────────────────
+
+// implied_bucket(101.5, n_calls) with call i re-priced at its own forward 101.5 (1 + e_i),
+// e_i = (i - (n_calls - 1) / 2) iqr_rel / 2: with five calls the quartile order statistics
+// (1 and 3) sit at e = -+iqr_rel / 2 and the median at e = 0, so the calls' IQR / median is
+// `iqr_rel` (to the inversion's 1e-10 tolerance) and the median forward stays 101.5.
+[[nodiscard]] SpiderRockBucket noisy_bucket(double iqr_rel, std::size_t n_calls = 5) {
+  constexpr double kF = 101.5;
+  ImpliedFixture fx = implied_bucket(kF, n_calls);
+  SpiderRockBucket &b = fx.bucket;
+  const double mid = static_cast<double>(n_calls - 1) / 2.0;
+  for (std::size_t i = 0; i < n_calls; ++i) {
+    const std::size_t r = 2 + i; // rows: ITM call, put, the calls, the no-bid call
+    const double e = (static_cast<double>(i) - mid) * 0.5 * iqr_rel;
+    const double price =
+        black_call(kF * (1.0 + e), b.strike[r], fx.vendor_T, b.sigma[r], b.rate[r]);
+    b.vendor_price[r] = price;
+    b.bid[r] = 0.95 * price;
+    b.ask[r] = price * 1.05 + 0.01;
+  }
+  return std::move(fx.bucket);
+}
+
+struct StickyLoad {
+  BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards;
+  atx::vol::ExpiryCarry row; // the bucket's one ExpiryCarry row
+};
+
+// The 5-argument market_state_from_bucket (design D23b) on the Calendar365 TimeSpec.
+[[nodiscard]] StickyLoad sticky_load(const SpiderRockBucket &b,
+                                     const std::vector<SpiderRockExpiryForward> *previous) {
+  StickyLoad out;
+  const auto st =
+      atx::vol::market_state_from_bucket(b, TimeSpec{}, &out.report, &out.forwards, previous);
+  EXPECT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_EQ(out.forwards.size(), 1u);
+  if (st.has_value() && st->term_carries.size() == 1 && st->term_carries[0].size() == 1) {
+    out.row = st->term_carries[0][0];
+  }
+  return out;
+}
+
+// An expiry implied in the previous bucket stays implied while >= 3 calls solve and their
+// IQR is <= 3x the guard (the one-bucket guard would publish it), and lets go beyond 3x or
+// below 3 calls. A `previous` entry of another (uid, expiry) is no previous; a bucket without
+// the inversion (Published carry mode) cannot hold anything.
+TEST(BucketState, StickyModeHoldsImpliedThroughGuardNoise) {
+  using atx::vol::kImpliedCarryMaxIqrRel;
+  constexpr auto kImplied = SpiderRockCarryMode::ImpliedFromCalls;
+  constexpr auto kPublished = SpiderRockCarryMode::Published;
+  const StickyLoad clean = sticky_load(noisy_bucket(0.0), nullptr);
+  ASSERT_EQ(clean.forwards.size(), 1u);
+  ASSERT_EQ(clean.forwards[0].mode, kImplied);
+  EXPECT_FALSE(clean.forwards[0].sticky);
+  EXPECT_FALSE(clean.forwards[0].mode_flipped);
+
+  // 2x the guard: the one-bucket guard publishes the expiry ...
+  const SpiderRockBucket noisy = noisy_bucket(2.0 * kImpliedCarryMaxIqrRel);
+  const StickyLoad alone = sticky_load(noisy, nullptr);
+  ASSERT_EQ(alone.forwards.size(), 1u);
+  EXPECT_EQ(alone.forwards[0].mode, kPublished);
+  EXPECT_NEAR(alone.forwards[0].iqr_rel, 2.0 * kImpliedCarryMaxIqrRel, 1e-8);
+  EXPECT_EQ(alone.report.n_expiries_sticky_implied, 0u);
+  EXPECT_EQ(alone.report.n_expiries_sticky_published, 0u);
+  EXPECT_EQ(alone.report.n_mode_flips, 0u);
+
+  // ... the sticky rule holds it implied after an implied bucket, on the median forward.
+  const StickyLoad held = sticky_load(noisy, &clean.forwards);
+  ASSERT_EQ(held.forwards.size(), 1u);
+  EXPECT_EQ(held.forwards[0].mode, kImplied);
+  EXPECT_TRUE(held.forwards[0].sticky);
+  EXPECT_FALSE(held.forwards[0].mode_flipped);
+  EXPECT_EQ(held.report.n_expiries_sticky_implied, 1u);
+  EXPECT_EQ(held.report.n_expiries_sticky_published, 0u);
+  EXPECT_EQ(held.report.n_mode_flips, 0u);
+  EXPECT_EQ(held.report.n_expiries_implied, 1u);
+  EXPECT_EQ(held.report.n_expiries_published, 0u);
+  EXPECT_EQ(held.row.pv_divs, 0.0);
+  EXPECT_NEAR(held.row.q, clean.row.q, 1e-9) << "median forward 101.5 in both buckets";
+
+  // Beyond 3x the guard it lets go (a flip the guard agrees with, so not sticky) ...
+  const StickyLoad wide =
+      sticky_load(noisy_bucket(4.0 * kImpliedCarryMaxIqrRel), &held.forwards);
+  ASSERT_EQ(wide.forwards.size(), 1u);
+  EXPECT_EQ(wide.forwards[0].mode, kPublished);
+  EXPECT_TRUE(wide.forwards[0].mode_flipped);
+  EXPECT_FALSE(wide.forwards[0].sticky);
+  EXPECT_EQ(wide.report.n_mode_flips, 1u);
+  EXPECT_EQ(wide.report.n_expiries_sticky_implied + wide.report.n_expiries_sticky_published,
+            0u);
+  EXPECT_EQ(wide.row.pv_divs, 1.0); // the Published (D4) row
+
+  // ... and so it does when fewer than kImpliedCarryMinCalls calls solve.
+  const StickyLoad few = sticky_load(noisy_bucket(0.0, 2), &clean.forwards);
+  ASSERT_EQ(few.forwards.size(), 1u);
+  EXPECT_EQ(few.forwards[0].mode, kPublished);
+  EXPECT_EQ(few.forwards[0].n_calls, 2u);
+  EXPECT_EQ(few.report.n_mode_flips, 1u);
+
+  // A `previous` entry of another (uid, expiry) is no previous: the one-bucket guard rules.
+  std::vector<SpiderRockExpiryForward> other = clean.forwards;
+  other[0].expiry_ns += 1;
+  const StickyLoad unmatched = sticky_load(noisy, &other);
+  ASSERT_EQ(unmatched.forwards.size(), 1u);
+  EXPECT_EQ(unmatched.forwards[0].mode, kPublished);
+  EXPECT_FALSE(unmatched.forwards[0].mode_flipped);
+  EXPECT_EQ(unmatched.report.n_mode_flips, 0u);
+  EXPECT_EQ(unmatched.report.n_expiries_sticky_implied, 0u);
+
+  // Without the inversion every row is Published: the previous implied row flips.
+  SpiderRockBucket no_inversion = noisy_bucket(0.0);
+  no_inversion.carry_mode = kPublished;
+  const StickyLoad pub = sticky_load(no_inversion, &clean.forwards);
+  ASSERT_EQ(pub.forwards.size(), 1u);
+  EXPECT_EQ(pub.forwards[0].mode, kPublished);
+  EXPECT_FALSE(pub.forwards[0].sticky);
+  EXPECT_EQ(pub.report.n_mode_flips, 1u);
+  EXPECT_EQ(pub.report.n_expiries_sticky_published, 0u);
+}
+
+// An expiry published in the previous bucket turns implied only when its IQR clears the guard
+// with a 2x margin (<= guard / 2): at 0.8x the guard it stays Published (sticky), at 0.3x it
+// flips. Implied after implied is neither a flip nor sticky. A null `previous` is the
+// 4-argument overload bit for bit; an unordered or aliasing `previous` is refused.
+TEST(BucketState, StickyModeSwitchesOnlyWithMargin) {
+  using atx::vol::kImpliedCarryMaxIqrRel;
+  constexpr auto kImplied = SpiderRockCarryMode::ImpliedFromCalls;
+  constexpr auto kPublished = SpiderRockCarryMode::Published;
+  const StickyLoad published = sticky_load(noisy_bucket(2.0 * kImpliedCarryMaxIqrRel), nullptr);
+  ASSERT_EQ(published.forwards.size(), 1u);
+  ASSERT_EQ(published.forwards[0].mode, kPublished);
+
+  const SpiderRockBucket inside = noisy_bucket(0.8 * kImpliedCarryMaxIqrRel);
+  const StickyLoad guard_only = sticky_load(inside, nullptr);
+  ASSERT_EQ(guard_only.forwards.size(), 1u);
+  EXPECT_EQ(guard_only.forwards[0].mode, kImplied) << "the one-bucket guard implies it";
+  const StickyLoad kept = sticky_load(inside, &published.forwards);
+  ASSERT_EQ(kept.forwards.size(), 1u);
+  EXPECT_EQ(kept.forwards[0].mode, kPublished);
+  EXPECT_TRUE(kept.forwards[0].sticky);
+  EXPECT_FALSE(kept.forwards[0].mode_flipped);
+  EXPECT_EQ(kept.report.n_expiries_sticky_published, 1u);
+  EXPECT_EQ(kept.report.n_expiries_sticky_implied, 0u);
+  EXPECT_EQ(kept.report.n_mode_flips, 0u);
+  EXPECT_EQ(kept.report.n_expiries_implied, 0u);
+  EXPECT_EQ(kept.row.pv_divs, 1.0); // the Published (D4) row
+  EXPECT_EQ(kept.report.max_implied_vs_published_forward_rel, 0.0);
+
+  const SpiderRockBucket tight = noisy_bucket(0.3 * kImpliedCarryMaxIqrRel);
+  const StickyLoad entered = sticky_load(tight, &kept.forwards);
+  ASSERT_EQ(entered.forwards.size(), 1u);
+  EXPECT_EQ(entered.forwards[0].mode, kImplied);
+  EXPECT_FALSE(entered.forwards[0].sticky);
+  EXPECT_TRUE(entered.forwards[0].mode_flipped);
+  EXPECT_EQ(entered.report.n_mode_flips, 1u);
+  EXPECT_EQ(entered.report.n_expiries_sticky_implied + entered.report.n_expiries_sticky_published,
+            0u);
+  EXPECT_EQ(entered.row.pv_divs, 0.0);
+
+  const StickyLoad stays = sticky_load(tight, &entered.forwards);
+  ASSERT_EQ(stays.forwards.size(), 1u);
+  EXPECT_EQ(stays.forwards[0].mode, kImplied);
+  EXPECT_FALSE(stays.forwards[0].sticky);
+  EXPECT_FALSE(stays.forwards[0].mode_flipped);
+  EXPECT_EQ(stays.report.n_mode_flips, 0u);
+
+  // A null `previous` is the 4-argument overload, bit for bit.
+  BucketStateReport r4;
+  std::vector<SpiderRockExpiryForward> f4;
+  const auto st4 = atx::vol::market_state_from_bucket(inside, TimeSpec{}, &r4, &f4);
+  ASSERT_TRUE(st4.has_value()) << st4.error().to_string();
+  const atx::vol::ExpiryCarry &c4 = st4->term_carries[0][0];
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(c4.q), std::bit_cast<std::uint64_t>(guard_only.row.q));
+  EXPECT_EQ(c4.pv_divs, guard_only.row.pv_divs);
+  EXPECT_EQ(c4.rate, guard_only.row.rate);
+  EXPECT_EQ(r4.n_expiries_implied, guard_only.report.n_expiries_implied);
+
+  // `previous` must be strictly ascending in (uid, expiry) and must not alias `forwards`.
+  const std::vector<SpiderRockExpiryForward> repeated{entered.forwards[0], entered.forwards[0]};
+  BucketStateReport r;
+  std::vector<SpiderRockExpiryForward> fw;
+  const auto unordered = atx::vol::market_state_from_bucket(inside, TimeSpec{}, &r, &fw, &repeated);
+  ASSERT_FALSE(unordered.has_value());
+  EXPECT_EQ(unordered.error().code(), ErrorCode::InvalidArgument);
+  std::vector<SpiderRockExpiryForward> same = entered.forwards;
+  const auto aliased = atx::vol::market_state_from_bucket(inside, TimeSpec{}, &r, &same, &same);
+  ASSERT_FALSE(aliased.has_value());
+  EXPECT_EQ(aliased.error().code(), ErrorCode::InvalidArgument);
+}
+
 // ── BucketState: the vendor clock (lane E, design D22) ─────────────────────
 
 using atx::vol::SpiderRockClock;
