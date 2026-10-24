@@ -969,6 +969,7 @@ Result<SpiderRockBucket> load_spiderrock_bucket(const SpiderRockStoreSpec &spec,
   out.bucket_et = std::string{bucket_et};
   out.ts_ns = ts_ns;
   out.carry_mode = spec.carry_mode;
+  out.clock = spec.clock;
   Decoder d{admitted, out};
   for (const OpenedFile &f : files) {
     ATX_TRY_VOID(decode_file(f, d));
@@ -1143,13 +1144,13 @@ struct ImpliedForward {
 };
 
 // The forward the expiry's OTM calls imply (SpiderRockCarryMode in the header): `run` is
-// the (uid, expiry) rows, `c` its Published row (rate, and the Newton start).
+// the (uid, expiry) rows, `c` its Published row (rate, and the Newton start), `T` the
+// expiry's median vendor `years` (the clock srPrc was computed on).
 [[nodiscard]] ImpliedForward implied_forward(const SpiderRockBucket &b,
                                              std::span<const std::size_t> run, double spot,
-                                             const ExpiryCarry &c, std::vector<double> &fs,
-                                             std::vector<double> &scratch) {
+                                             const ExpiryCarry &c, double T,
+                                             std::vector<double> &fs) {
   ImpliedForward out;
-  const double T = median_of(b.vendor_T, run, scratch); // the clock srPrc was computed on
   if (!(std::isfinite(T) && T > 0.0 && std::isfinite(c.rate))) {
     return out;
   }
@@ -1193,6 +1194,7 @@ struct StateBuild {
   const SpiderRockBucket &b;
   const TimeSpec &time;
   bool implied; // ImpliedFromCalls AND the vendor price / years / quote columns exist
+  bool vendor_clock; // SpiderRockClock::VendorYears AND the years column exists
   BucketStateReport &rep;
   std::vector<SpiderRockExpiryForward> *forwards;
   std::vector<double> scratch{};
@@ -1236,16 +1238,24 @@ struct StateBuild {
     }
     const std::span<const std::size_t> run = rows.subspan(lo, hi - lo);
     ExpiryCarry c = published_carry(sb, run, u);
-    const double T = state_T(sb, c.expiry_ns);
     SpiderRockExpiryForward diag;
     diag.uid = u.uid;
     diag.expiry_ns = c.expiry_ns;
+    diag.T_vendor = b.vendor_T.empty() ? kNaN : median_of(b.vendor_T, run, sb.scratch);
+    // Design D22: under the vendor clock the expiry's T IS the vendor's (median) years, for
+    // the kernel, the explain and the implied q alike; one clock, so spot e^{(rate - q) T}
+    // reproduces the implied F on exactly the T the kernel prices at.
+    if (sb.vendor_clock && std::isfinite(diag.T_vendor) && diag.T_vendor > 0.0) {
+      c.T_override = diag.T_vendor;
+      ++sb.rep.n_expiries_vendor_T;
+    }
+    const double T = std::isfinite(c.T_override) ? c.T_override : state_T(sb, c.expiry_ns);
     if (T > 0.0 && c.pv_divs < u.spot) {
       diag.published_forward = (u.spot - c.pv_divs) * std::exp((c.rate - c.q) * T);
     }
     if (sb.implied) {
       const Clock::time_point t0 = Clock::now();
-      const ImpliedForward imp = implied_forward(b, run, u.spot, c, sb.fs, sb.scratch);
+      const ImpliedForward imp = implied_forward(b, run, u.spot, c, diag.T_vendor, sb.fs);
       sb.rep.implied_carry_seconds += std::chrono::duration<double>(Clock::now() - t0).count();
       diag.implied_forward = imp.forward;
       diag.n_calls = imp.n_calls;
@@ -1364,7 +1374,14 @@ market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
   const bool implied = bucket.carry_mode == SpiderRockCarryMode::ImpliedFromCalls &&
                        bucket.vendor_price.size() == n && bucket.vendor_T.size() == n &&
                        bucket.bid.size() == n && bucket.ask.size() == n;
-  StateBuild sb{.b = bucket, .time = time, .implied = implied, .rep = rep, .forwards = forwards};
+  const bool vendor_clock =
+      bucket.clock == SpiderRockClock::VendorYears && bucket.vendor_T.size() == n;
+  StateBuild sb{.b = bucket,
+                .time = time,
+                .implied = implied,
+                .vendor_clock = vendor_clock,
+                .rep = rep,
+                .forwards = forwards};
   const std::span<const std::size_t> all{order};
   for (std::size_t lo = 0; lo < all.size();) {
     std::size_t hi = lo + 1;

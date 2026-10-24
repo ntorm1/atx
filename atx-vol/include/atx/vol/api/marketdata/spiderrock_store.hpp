@@ -87,7 +87,9 @@ private:
 //                     kImpliedCarryMinCalls solved and their inter-quartile spread (linear
 //                     interpolation at (n-1)/4 and 3(n-1)/4) is <= kImpliedCarryMaxIqrRel x F.
 //                     The row is then pv_divs = 0, rate = median rate, q = rate - ln(F / spot)
-//                     / T_state with T_state on the STATE's clock, so the engine's
+//                     / T_state with T_state the expiry's clock in the state (its
+//                     T_override under SpiderRockClock::VendorYears — the very years the
+//                     inversion ran on — else the state's TimeSpec), so the engine's
 //                     spot e^{(rate - q) T_state} == F exactly. An expiry that fails the guards
 //                     (or whose T_state is not positive / refused) keeps its Published row.
 //
@@ -100,6 +102,21 @@ enum class SpiderRockCarryMode : std::uint8_t { Published = 0, ImpliedFromCalls 
 // ImpliedFromCalls acceptance guards (see SpiderRockCarryMode).
 inline constexpr std::size_t kImpliedCarryMinCalls = 3;
 inline constexpr double kImpliedCarryMaxIqrRel = 1e-3;
+
+// Which clock market_state_from_bucket puts each expiry on (lane E, design D22).
+//
+//   State        the state's TimeSpec for every expiry: ExpiryCarry::T_override stays NaN.
+//   VendorYears  ExpiryCarry::T_override = the median of the vendor's `years` over the
+//                expiry's rows (when that is finite > 0; else the TimeSpec clock), so the
+//                kernel prices and the explain rolls every contract on the clock the vendor
+//                marked it on. The implied carry then inverts AND expresses q on that ONE
+//                clock: spot e^{(rate - q) T_override} == F.
+//
+// Why: SpiderRock's `years` is a business-hour clock that VolTime reproduces to <= 0.02 d
+// only until the first NYSE early close (then +0.47 d per early close: VolTimeCalendar has
+// full closures only); repricing the licensed book on `years` takes the vendor price gap
+// from 4.27 % to 0.40 % (s2-parity-after-c2.md "Clock attribution").
+enum class SpiderRockClock : std::uint8_t { State = 0, VendorYears = 1 };
 
 struct SpiderRockStoreSpec {
   std::string store_root;              // the directory holding date=<d>/
@@ -133,6 +150,9 @@ struct SpiderRockStoreSpec {
   bool spot_framework_only{true};
   // Copied into SpiderRockBucket::carry_mode by load_spiderrock_bucket.
   SpiderRockCarryMode carry_mode{SpiderRockCarryMode::ImpliedFromCalls};
+  // ── Lane E additions (appended) ──
+  // Copied into SpiderRockBucket::clock by load_spiderrock_bucket (SpiderRockClock).
+  SpiderRockClock clock{SpiderRockClock::VendorYears};
 };
 
 // One bucket decoded to SoA (rows sorted by (uid, expiry_ns, side, strike)).
@@ -200,6 +220,10 @@ struct SpiderRockBucket {
   // The carry mode market_state_from_bucket applies (its signature takes no spec): the
   // loader copies SpiderRockStoreSpec::carry_mode; a hand-built bucket keeps Published (D4).
   SpiderRockCarryMode carry_mode{SpiderRockCarryMode::Published};
+  // ── Lane E additions (appended) ──
+  // The clock market_state_from_bucket applies (as carry_mode): the loader copies
+  // SpiderRockStoreSpec::clock; a hand-built bucket keeps State (no T_override).
+  SpiderRockClock clock{SpiderRockClock::State};
 };
 
 // Vendor-unit scales (see "Vendor Greek UNITS" above): ve = vega * kSpiderRockVegaScale,
@@ -212,8 +236,9 @@ inline constexpr double kSpiderRockThetaScale = 1.0 / 252.0;
 // columns (clock, carry mode, framework filter, pv_divs source); persistence fingerprints
 // depend on it. 1 = the wave-1 loader (Calendar365, published D4 carry from ddiv); 2 =
 // follow-up 2 (Spot-framework filter, pv_divs from ddivPv, carry implied from vendor calls,
-// the bench's --time clock).
-inline constexpr std::uint32_t kSpiderRockConventionsVersion = 2;
+// the bench's --time clock); 3 = lane E (SpiderRockClock::VendorYears by default: per-expiry
+// T_override from `years`, the implied q on that clock; the sticky carry mode).
+inline constexpr std::uint32_t kSpiderRockConventionsVersion = 3;
 
 // The bucket's instant: `date` + HH:MM US/Eastern -> UTC epoch ns, derived as
 // expiry_instant_ns(date, Pm) - (16:00 - HH:MM) (exact: DST resolves at day
@@ -267,6 +292,9 @@ struct BucketStateReport {
   // row's (spot - pv_divs) e^{(rate - q) T_state}; 0 when no row is implied.
   double max_implied_vs_published_forward_rel{0.0};
   double implied_carry_seconds{0.0}; // wall clock of the call inversions (steady_clock)
+  // ── Lane E additions (appended) ──
+  // ExpiryCarry rows written with a finite T_override (SpiderRockClock::VendorYears).
+  std::size_t n_expiries_vendor_T{0};
 };
 [[nodiscard]] Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                                   const TimeSpec &time,
@@ -280,11 +308,16 @@ struct SpiderRockExpiryForward {
   // Median call-implied forward; NaN when no call solved. Set even when the guards
   // rejected it (then `mode` is Published).
   double implied_forward{std::numeric_limits<double>::quiet_NaN()};
-  // The Published row's (spot - pv_divs) e^{(rate - q) T_state}; NaN when T_state is not
-  // positive / refused or pv_divs >= spot.
+  // The Published row's (spot - pv_divs) e^{(rate - q) T_state} (T_state as in
+  // SpiderRockCarryMode: the T_override when set); NaN when T_state is not positive /
+  // refused or pv_divs >= spot.
   double published_forward{std::numeric_limits<double>::quiet_NaN()};
   std::size_t n_calls{0};                                 // calls whose F solved
   double iqr_rel{std::numeric_limits<double>::quiet_NaN()}; // their IQR / median; NaN if none
+  // ── Lane E additions (appended) ──
+  // The median of the vendor's `years` over the expiry's rows (NaN without the column),
+  // whatever the clock; the row's T_override under SpiderRockClock::VendorYears.
+  double T_vendor{std::numeric_limits<double>::quiet_NaN()};
 };
 
 // market_state_from_bucket that also returns every ExpiryCarry row's basis in `forwards`

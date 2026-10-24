@@ -41,8 +41,10 @@
 namespace atx::vol::riskbench {
 
 // v2 (follow-up 2): inputs.time / inputs.carry_mode and the BucketLoad framework-filter and
-// implied-carry fields; the reader requires every v2 field and refuses v1.
-inline constexpr int kReportSchemaVersion = 2;
+// implied-carry fields. v3 (lane E): inputs.time may be "vendor"; BucketLoad's
+// n_expiries_vendor_T and sticky-carry counts; the explain axes' "carry". The reader requires
+// every v3 field and refuses v1 / v2.
+inline constexpr int kReportSchemaVersion = 3;
 inline constexpr std::size_t kRouteCount = 7; // RiskRoute::None .. RiskRoute::Refused
 inline constexpr std::size_t kFlagCount = 13; // RiskFlag bits 0 .. 12
 inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -50,6 +52,16 @@ inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // ═══ CLI ═════════════════════════════════════════════════════════════════════
 
 enum class BenchKernel : std::uint8_t { Family = 0, Cold = 1, Both = 2 };
+
+// --time vendor|voltime|calendar365 (lane E): the clock every expiry is priced and rolled on.
+//   Vendor       per-expiry T_override = the median of the vendor's `years`
+//                (SpiderRockClock::VendorYears); the state's TimeSpec is Calendar365 (the
+//                instants' step dt and any expiry without vendor years)
+//   VolTime      the VolTime TimeSpec, no override
+//   Calendar365  the Calendar365 TimeSpec, no override
+// Default: Vendor under --store, Calendar365 under --synthetic (the synthetic vendor columns
+// are priced on the calendar clock: an override there would only re-derive the same T).
+enum class BenchTime : std::uint8_t { Vendor = 0, VolTime = 1, Calendar365 = 2 };
 
 struct RiskBenchArgs {
   std::string store;            // --store <root> (the dir holding date=<d>/)
@@ -89,6 +101,11 @@ struct RiskBenchArgs {
   std::optional<double> cold_lane_cost_us;     // --cold-lane-cost-us X
   std::optional<bool> family_dynamic_schedule; // --family-schedule static|dynamic
 
+  // ── Lane E additions (appended) ──
+  // --time as given (unset = the store's default, bench_time()); `time` above is then the
+  // TimeSpec convention it implies (Calendar365 under Vendor).
+  std::optional<BenchTime> time_choice;
+
   // The store the run reads: the synthetic dir when set, else --store.
   [[nodiscard]] const std::string &store_root() const noexcept {
     return synthetic_dir.empty() ? store : synthetic_dir;
@@ -103,6 +120,11 @@ struct RiskBenchArgs {
 [[nodiscard]] const char *to_string(BenchKernel kernel) noexcept;
 // "calendar365" | "voltime" (the --time spelling).
 [[nodiscard]] const char *time_name(TimeConvention time) noexcept;
+// The clock a run uses: --time when given, else Vendor under --store and Calendar365 under
+// --synthetic (BenchTime).
+[[nodiscard]] BenchTime bench_time(const RiskBenchArgs &args) noexcept;
+// "vendor" | "voltime" | "calendar365" (the --time spelling; RiskBenchReport::time).
+[[nodiscard]] const char *bench_time_name(BenchTime time) noexcept;
 // "published" | "implied_from_calls".
 [[nodiscard]] const char *carry_mode_name(SpiderRockCarryMode mode) noexcept;
 // The carry mode a run builds its states with (no flag): Published under --synthetic (its
@@ -262,6 +284,8 @@ struct BucketLoad {
   std::size_t n_expiries_published{0};
   double max_forward_gap_rel{0.0};
   double implied_carry_seconds{0.0};
+  // ── Lane E additions (appended; schema v3) ──
+  std::size_t n_expiries_vendor_T{0}; // BucketStateReport::n_expiries_vendor_T
 };
 
 struct RiskBenchReport {
@@ -283,7 +307,7 @@ struct RiskBenchReport {
   std::size_t requested_options{0};
   std::size_t requested_shares{0};
   unsigned host_threads{0};
-  std::string time;       // time_name(args.time)
+  std::string time;       // bench_time_name(bench_time(args))
   std::string carry_mode; // carry_mode_name(bench_carry_mode(args))
   std::string family_policy; // lane A2: the effective FamilyKernelPolicy (engine side)
   // Synthetic store preparation.
@@ -492,6 +516,10 @@ struct LegDumpRow {
   double pnl_rho{kNaN};
   double pnl_charm{kNaN};
   double pnl_unexplained{kNaN};
+  // ── Lane E additions (appended; written after pnl_unexplained) ──
+  // The median vendor `years` of the contract's expiry in the base bucket
+  // (SpiderRockExpiryForward::T_vendor): the T under --time vendor, a diagnostic otherwise.
+  double T_vendor{kNaN};
 };
 
 // Copies row `r` of `bucket` into the sr_* columns of `row`.

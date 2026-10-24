@@ -156,10 +156,11 @@ TEST(RiskBenchArgs, DumpLegsFlags) {
   EXPECT_NE(rb::risk_bench_usage().find("--dump-steps"), std::string::npos);
 }
 
-// --time: Calendar365 is the default under BOTH stores. VolTime reproduces the vendor's
-// `years` only up to the first NYSE early close (SpiderRockStoreReal.LoadsBucket1000
-// prints the table; docs/risk-bench.md "Clock"), and the synthetic store's vendor columns
-// are priced on the calendar clock.
+// --time: the state TimeSpec is Calendar365 by default under BOTH stores (under --store the
+// default clock is `vendor`, whose TimeSpec is Calendar365: RiskBenchArgs.TimeVendor). VolTime
+// reproduces the vendor's `years` only up to the first NYSE early close
+// (SpiderRockStoreReal.LoadsBucket1000 prints the table; docs/risk-bench.md "Clock"), and the
+// synthetic store's vendor columns are priced on the calendar clock.
 TEST(RiskBenchArgs, TimeFlag) {
   using atx::vol::TimeConvention;
   EXPECT_EQ(parse({"--store", "s"}).value().time, TimeConvention::Calendar365);
@@ -173,7 +174,38 @@ TEST(RiskBenchArgs, TimeFlag) {
   EXPECT_EQ(parse({"--store", "s", "--time"}).error().code(), ErrorCode::InvalidArgument);
   EXPECT_STREQ(rb::time_name(TimeConvention::VolTime), "voltime");
   EXPECT_STREQ(rb::time_name(TimeConvention::Calendar365), "calendar365");
-  EXPECT_NE(rb::risk_bench_usage().find("--time voltime|calendar365"), std::string::npos);
+  EXPECT_NE(rb::risk_bench_usage().find("--time vendor|voltime|calendar365"), std::string::npos);
+}
+
+// Lane E (design D22): --time vendor prices every expiry on the vendor's own `years`
+// (SpiderRockClock::VendorYears; the TimeSpec under it is Calendar365). It is the default
+// under --store; --synthetic defaults to calendar365 (its vendor columns are priced on that
+// clock). The report's inputs.time names the clock the run used.
+TEST(RiskBenchArgs, TimeVendor) {
+  using atx::vol::TimeConvention;
+  const auto store = parse({"--store", "s"});
+  ASSERT_TRUE(store.has_value()) << store.error().to_string();
+  EXPECT_FALSE(store->time_choice.has_value());
+  EXPECT_EQ(rb::bench_time(*store), rb::BenchTime::Vendor);
+  EXPECT_EQ(store->time, TimeConvention::Calendar365);
+  EXPECT_EQ(rb::bench_time(parse({"--synthetic", "s"}).value()), rb::BenchTime::Calendar365);
+  const auto vendor_syn = parse({"--synthetic", "s", "--time", "vendor"});
+  ASSERT_TRUE(vendor_syn.has_value()) << vendor_syn.error().to_string();
+  EXPECT_EQ(rb::bench_time(*vendor_syn), rb::BenchTime::Vendor);
+  EXPECT_EQ(vendor_syn->time, TimeConvention::Calendar365);
+  const auto vol = parse({"--store", "s", "--time", "voltime"});
+  EXPECT_EQ(rb::bench_time(vol.value()), rb::BenchTime::VolTime);
+  EXPECT_EQ(vol.value().time, TimeConvention::VolTime);
+  EXPECT_EQ(rb::bench_time(parse({"--store", "s", "--time", "calendar365"}).value()),
+            rb::BenchTime::Calendar365);
+  EXPECT_EQ(parse({"--store", "s", "--time", "vendors"}).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_STREQ(rb::bench_time_name(rb::BenchTime::Vendor), "vendor");
+  EXPECT_STREQ(rb::bench_time_name(rb::BenchTime::VolTime), "voltime");
+  EXPECT_STREQ(rb::bench_time_name(rb::BenchTime::Calendar365), "calendar365");
+  EXPECT_EQ(rb::report_skeleton(*store).time, "vendor");
+  EXPECT_EQ(rb::report_skeleton(parse({"--synthetic", "s"}).value()).time, "calendar365");
+  EXPECT_EQ(rb::report_skeleton(vol.value()).time, "voltime");
 }
 
 // The carry mode follows the store: Published under --synthetic (its vendor columns are
@@ -541,6 +573,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   bl.n_expiries_published = 155;
   bl.max_forward_gap_rel = 0.330673;
   bl.implied_carry_seconds = 0.0126;
+  bl.n_expiries_vendor_T = 1911;
   bl.rows_null_vendor = 12;
   bl.n_uids = 100;
   bl.max_ddiv_spread = 0.125;
@@ -596,13 +629,13 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   return r;
 }
 
-TEST(RiskBenchReport, JsonSchemaV2RoundTrip) {
+TEST(RiskBenchReport, JsonSchemaV3RoundTrip) {
   const rb::RiskBenchReport r = fabricated_report();
   // NaN-valued fields (never-set parity / cold maxima) must survive as null.
   ASSERT_TRUE(std::isnan(r.steps[0].parity_price.mae));
   const std::string text = rb::report_to_json(r);
-  EXPECT_EQ(rb::kReportSchemaVersion, 2);
-  EXPECT_NE(text.find("\"schema_version\": 2"), std::string::npos);
+  EXPECT_EQ(rb::kReportSchemaVersion, 3);
+  EXPECT_NE(text.find("\"schema_version\": 3"), std::string::npos);
   EXPECT_NE(text.find("\"time\": \"voltime\""), std::string::npos);
   EXPECT_NE(text.find("\"mae\": null"), std::string::npos);
 
@@ -628,6 +661,7 @@ TEST(RiskBenchReport, JsonSchemaV2RoundTrip) {
   EXPECT_EQ(back->bucket_loads[0].n_expiries_published, 155u);
   EXPECT_EQ(back->bucket_loads[0].max_forward_gap_rel, 0.330673);
   EXPECT_EQ(back->bucket_loads[0].implied_carry_seconds, 0.0126);
+  EXPECT_EQ(back->bucket_loads[0].n_expiries_vendor_T, 1911u);
   EXPECT_EQ(back->carry_mode, "published"); // --synthetic
   EXPECT_TRUE(back->summary.determinism_bit_equal);
   EXPECT_EQ(back->summary.cold_speedup_p50, 100.0);
@@ -637,11 +671,13 @@ TEST(RiskBenchReport, JsonSchemaV2RoundTrip) {
   EXPECT_DOUBLE_EQ(r.summary.cold_lane_fraction, (2.0 * 76.0) / (2.0 * 9876.0));
   EXPECT_NEAR(r.summary.run_seconds_excl_io, 0.033 + 0.15 + 2 * (0.03 + 0.125), 1e-12);
 
-  // A wrong schema version (a v1 report: it lacks the v2 fields) or a missing field is a
-  // ParseError, never a guess.
-  std::string v1 = text;
-  v1.replace(v1.find("\"schema_version\": 2"), 19, "\"schema_version\": 1");
-  EXPECT_EQ(rb::report_from_json(v1).error().code(), ErrorCode::ParseError);
+  // A wrong schema version (a v1 / v2 report: it lacks the later fields) or a missing field
+  // is a ParseError, never a guess.
+  for (const char *old : {"\"schema_version\": 1", "\"schema_version\": 2"}) {
+    std::string v = text;
+    v.replace(v.find("\"schema_version\": 3"), 19, old);
+    EXPECT_EQ(rb::report_from_json(v).error().code(), ErrorCode::ParseError) << old;
+  }
   std::string missing = text;
   missing.replace(missing.find("\"tool\""), 6, "\"tooX\"");
   EXPECT_EQ(rb::report_from_json(missing).error().code(), ErrorCode::ParseError);
@@ -772,6 +808,7 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   row.pnl_total = 12.5;
   row.pnl_delta = 10.0;
   row.pnl_unexplained = 0.25;
+  row.T_vendor = 0.1025;
 
   std::string out;
   rb::append_leg_dump_csv(out, row);
@@ -807,7 +844,7 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("implied_forward"), "455.5");
   EXPECT_EQ(cell("published_forward"), "454.25");
   EXPECT_EQ(cell("sr_synspot"), "455.25");
-  EXPECT_EQ(names.size(), 67u);
+  EXPECT_EQ(names.size(), 68u);
   EXPECT_EQ(cell("route"), "Family");
   EXPECT_EQ(cell("flags"), "VendorParityAvailable|ColdFallback");
   EXPECT_EQ(cell("status"), "Ok");
@@ -839,6 +876,8 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("pnl_delta"), "10");
   EXPECT_EQ(cell("pnl_gamma"), "");
   EXPECT_EQ(cell("pnl_unexplained"), "0.25");
+  EXPECT_EQ(cell("T_vendor"), "0.1025");
+  EXPECT_EQ(names.back(), "T_vendor"); // appended: earlier columns keep their positions
 
   // No vendor mark => no price error; flat carry labelled as such; a store without
   // synSpot and a uid without a carry row leave those cells empty.

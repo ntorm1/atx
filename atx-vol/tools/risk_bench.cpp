@@ -94,6 +94,7 @@ struct Snapshot {
   b.n_expiries_published = s.report.n_expiries_published;
   b.max_forward_gap_rel = s.report.max_implied_vs_published_forward_rel;
   b.implied_carry_seconds = s.report.implied_carry_seconds;
+  b.n_expiries_vendor_T = s.report.n_expiries_vendor_T;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;
@@ -506,6 +507,7 @@ void fill_dump_model(LegDumpRow &row, const RiskFrame &f, std::uint32_t r, const
     row.carry_mode = carry_mode_name(fw->mode);
     row.implied_forward = fw->implied_forward;
     row.published_forward = fw->published_forward;
+    row.T_vendor = fw->T_vendor;
   }
   row.route = to_string(f.route[r]);
   row.flags = flag_names(f.flags[r]);
@@ -662,7 +664,10 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.store_root = args.store_root();
   spec.date = args.date;
   spec.max_underliers = args.underliers;
-  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it
+  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it ...
+  // ... unless the vendor clock overrides each expiry's T with the vendor's years (D22).
+  spec.clock = bench_time(args) == BenchTime::Vendor ? SpiderRockClock::VendorYears
+                                                     : SpiderRockClock::State;
   spec.carry_mode = bench_carry_mode(args);
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));

@@ -164,9 +164,13 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
 [[nodiscard]] Status parse_choice(ArgCursor &c, std::string_view flag, RiskBenchArgs &a) {
   const std::optional<std::string_view> v = c.value();
   if (flag == "--time") {
-    if (!v.has_value() || (*v != "voltime" && *v != "calendar365")) {
-      return Err(usage_error("--time must be voltime|calendar365"));
+    if (!v.has_value() || (*v != "vendor" && *v != "voltime" && *v != "calendar365")) {
+      return Err(usage_error("--time must be vendor|voltime|calendar365"));
     }
+    a.time_choice = *v == "vendor"    ? BenchTime::Vendor
+                    : *v == "voltime" ? BenchTime::VolTime
+                                      : BenchTime::Calendar365;
+    // The TimeSpec under the vendor clock is Calendar365 (BenchTime in risk_bench.hpp).
     a.time = *v == "voltime" ? TimeConvention::VolTime : TimeConvention::Calendar365;
     return Ok();
   }
@@ -331,8 +335,10 @@ std::string risk_bench_usage() {
          "  --kernel K           family | cold | both (family)\n"
          "  --threads N          kernel / explain fan-out degree, 0 = auto (8)\n"
          "  --needs rho|none     evaluate the rho axis (none)\n"
-         "  --time voltime|calendar365\n"
-         "                       the clock T is measured on (calendar365)\n"
+         "  --time vendor|voltime|calendar365\n"
+         "                       the clock every expiry is priced on: vendor = the\n"
+         "                       vendor's per-expiry years (default under --store),\n"
+         "                       calendar365 (default under --synthetic) or voltime\n"
          "  --trapezoid          trapezoid second-order explain terms\n"
          "  --determinism        shadow threads=1 stream; totals must be bit-equal\n"
          "  --out <file>         JSON report (stdout when absent)\n"
@@ -371,6 +377,29 @@ const char *time_name(TimeConvention time) noexcept {
     return "calendar365";
   case TimeConvention::VolTime:
     return "voltime";
+  }
+  return "calendar365";
+}
+
+BenchTime bench_time(const RiskBenchArgs &args) noexcept {
+  if (args.time_choice.has_value()) {
+    return *args.time_choice;
+  }
+  // A caller that set the TimeSpec to VolTime directly (the pre-v3 spelling) meant that clock.
+  if (args.time == TimeConvention::VolTime) {
+    return BenchTime::VolTime;
+  }
+  return args.synthetic_dir.empty() ? BenchTime::Vendor : BenchTime::Calendar365;
+}
+
+const char *bench_time_name(BenchTime time) noexcept {
+  switch (time) {
+  case BenchTime::Vendor:
+    return "vendor";
+  case BenchTime::VolTime:
+    return "voltime";
+  case BenchTime::Calendar365:
+    return "calendar365";
   }
   return "calendar365";
 }
@@ -839,7 +868,7 @@ RiskBenchReport report_skeleton(const RiskBenchArgs &args) {
   r.requested_options = args.options;
   r.requested_shares = args.shares;
   r.host_threads = std::thread::hardware_concurrency();
-  r.time = time_name(args.time);
+  r.time = bench_time_name(bench_time(args));
   r.carry_mode = carry_mode_name(bench_carry_mode(args));
   return r;
 }
@@ -1641,7 +1670,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"n_expiries_implied", jnumber(b.n_expiries_implied)},
               {"n_expiries_published", jnumber(b.n_expiries_published)},
               {"max_forward_gap_rel", num(b.max_forward_gap_rel)},
-              {"implied_carry_seconds", num(b.implied_carry_seconds)}});
+              {"implied_carry_seconds", num(b.implied_carry_seconds)},
+              {"n_expiries_vendor_T", jnumber(b.n_expiries_vendor_T)}});
 }
 
 [[nodiscard]] BucketLoad bucket_load_from(const Fields &o) {
@@ -1665,6 +1695,7 @@ void explain_from(const Fields &e, StepReport &t) {
   b.n_expiries_published = o.integer<std::size_t>("n_expiries_published");
   b.max_forward_gap_rel = o.num("max_forward_gap_rel");
   b.implied_carry_seconds = o.num("implied_carry_seconds");
+  b.n_expiries_vendor_T = o.integer<std::size_t>("n_expiries_vendor_T");
   return b;
 }
 
@@ -1927,7 +1958,7 @@ static_assert(static_cast<std::size_t>(CarrySource::Absent) + 1 == kCarrySourceN
               "kCarrySourceNames must cover every CarrySource");
 
 // The columns in write order: append_leg_dump_csv writes exactly these, one cell each.
-constexpr std::array<std::string_view, 67> kLegDumpColumns{
+constexpr std::array<std::string_view, 68> kLegDumpColumns{
     "step",            "leg_index",         "leg_id",       "prepared_row",
     "ticker",          "uid",               "uid_slot",     "strike",
     "expiry",          "side",              "qty",          "multiplier",
@@ -1944,7 +1975,7 @@ constexpr std::array<std::string_view, 67> kLegDumpColumns{
     "sr_rate",         "sr_sdiv",           "sr_ddiv",      "sr_bid",
     "sr_ask",          "pnl_total",         "pnl_delta",    "pnl_gamma",
     "pnl_vega",        "pnl_volga",         "pnl_vanna",    "pnl_theta",
-    "pnl_rho",         "pnl_charm",         "pnl_unexplained"};
+    "pnl_rho",         "pnl_charm",         "pnl_unexplained", "T_vendor"};
 
 // One CSV line under construction: every cell call writes the separator first.
 class CsvLine {
@@ -2100,6 +2131,7 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
                          row.pnl_unexplained}) {
     line.number(v);
   }
+  line.number(row.T_vendor); // lane E: appended, so the earlier columns keep their positions
   line.end();
 }
 
