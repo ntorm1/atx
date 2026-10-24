@@ -76,6 +76,26 @@ struct FamilyKernelPolicy {
   bool analytic_cold{true};         // cold route: analytic (true) or FD (false)
   std::optional<AlOpts> al_opts{};  // see "Pricer options precedence"
   unsigned n_threads{0};            // 0 => executor's auto degree
+
+  // ── Appended by lane A2 (2026-10-24, additive): family economics on sparse books ──
+  //
+  // ADAPTIVE NODE COUNT. A group's family gets
+  //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, n_sigma_min, n_sigma)
+  // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the
+  // ceiling; n_sigma_min == n_sigma restores the fixed count (the pre-A2 behaviour).
+  std::uint16_t n_sigma_min{4};     // in [4, n_sigma]
+  double sigma_node_spacing{0.25};  // target log-sigma spacing h of the rule (> 0)
+  // FAMILY ECONOMICS. A family costs n * family_node_cost_us to build and serves its
+  // lanes at a few us; the cold route costs cold_lane_cost_us per lane. A group with
+  // n * family_node_cost_us >= n_eligible * cold_lane_cost_us (both scaled by the
+  // solve counts of the rho axis when RiskNeeds::rho) is priced cold-analytic
+  // directly and flagged FamilyUneconomic. The decision reads only the group's static
+  // shape (eligible lanes, box) and these constants, never a clock, so it is the same
+  // for any thread count. Active only with cold_fallback and analytic_cold (the
+  // economical route is the analytic one; with no cold route every group is tried).
+  bool family_economics{true};
+  double family_node_cost_us{33.0}; // measured: one node of AlSigmaFamily::prepare
+  double cold_lane_cost_us{140.0};  // measured: one american_greeks_al lane (vega, charm)
 };
 
 struct ColdKernelPolicy {

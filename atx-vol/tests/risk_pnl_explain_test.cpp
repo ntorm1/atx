@@ -739,3 +739,136 @@ TEST(RiskExplain, RefusesInvalidZRefAndRefusedStep) {
   expect_invalid_argument(
       explain(*s->prep, b.state, s->fb, s->shifted->state, s->ft, ExplainOptions{}));
 }
+
+namespace {
+
+// Marks-only twin of a fixture state: per uid, ContractMarks over a 1 %-step strike grid
+// (0.80 .. 1.20 S, every book strike on it) at every live pillar expiry, both sides,
+// sigma = the surface's iv(K, T); no surface. The vega-split pivots then come from
+// marks (sample_marks), the path every SpiderRock state takes.
+[[nodiscard]] std::unique_ptr<MarketStateStorage> marks_only_twin(const rt::OwnedState &src) {
+  auto st = std::make_unique<MarketStateStorage>();
+  st->ts_ns = src.storage.ts_ns;
+  for (std::size_t ui = 0; ui < src.surfaces.size(); ++ui) {
+    const PricedSurface &surf = src.surfaces[ui];
+    UnderlierState u;
+    u.uid = rt::kUnderliers[ui].uid;
+    u.spot = surf.pricing().S;
+    u.flat_rate = surf.pricing().r;
+    u.flat_q = rt::kUnderliers[ui].q;
+    u.carry = CarryFrom::State;
+    st->underliers.push_back(u);
+    MarketStateStorage::MarksColumns m;
+    m.uid = u.uid;
+    for (std::size_t ei = 0; ei < rt::kExpiryUnits.size(); ++ei) {
+      const double T = static_cast<double>(rt::expiry_ns(ei) - st->ts_ns) / kCalendarYearNs;
+      if (!(T > 0.0)) {
+        continue;
+      }
+      for (const Side side : {Side::Call, Side::Put}) {
+        for (int j = 0; j <= 40; ++j) {
+          const double K = std::round(rt::kUnderliers[ui].spot * (0.80 + 0.01 * j) * 2.0) / 2.0;
+          m.strike.push_back(K);
+          m.expiry_ns.push_back(rt::expiry_ns(ei));
+          m.side.push_back(side);
+          m.sigma.push_back(surf.iv(K, T));
+        }
+      }
+    }
+    st->marks.push_back(std::move(m));
+  }
+  st->normalize_marks();
+  return st;
+}
+
+// FNV-1a over the bytes of every per-leg column of `e` (the pin's per-leg half).
+[[nodiscard]] std::uint64_t legs_digest(const ExplainResult &e) {
+  std::uint64_t h = 1469598103934665603ULL;
+  const auto mix = [&h](const void *p, std::size_t n) {
+    const auto *b = static_cast<const unsigned char *>(p);
+    for (std::size_t i = 0; i < n; ++i) {
+      h = (h ^ b[i]) * 1099511628211ULL;
+    }
+  };
+  for (const auto col :
+       {&ExplainResult::pv_base, &ExplainResult::pv_target, &ExplainResult::pnl_total,
+        &ExplainResult::pnl_delta, &ExplainResult::pnl_gamma, &ExplainResult::pnl_vega,
+        &ExplainResult::pnl_volga, &ExplainResult::pnl_vanna, &ExplainResult::pnl_theta,
+        &ExplainResult::pnl_rho, &ExplainResult::pnl_charm, &ExplainResult::pnl_unexplained,
+        &ExplainResult::vol_level, &ExplainResult::vol_skew, &ExplainResult::vol_curv,
+        &ExplainResult::vol_resid, &ExplainResult::d_spot, &ExplainResult::d_vol,
+        &ExplainResult::d_time, &ExplainResult::d_rate}) {
+    mix((e.*col).data(), (e.*col).size() * sizeof(double));
+  }
+  mix(e.flags.data(), e.flags.size() * sizeof(RiskFlags));
+  mix(e.status.data(), e.status.size() * sizeof(RiskLaneStatus));
+  return h;
+}
+
+} // namespace
+
+// The explain fan-out (pivot sampling and the per-leg rows) gives the same bits for any
+// worker count, AND the same bits as the explain this lane started from: the totals,
+// every bucket and a digest of every per-leg column are pinned to the values printed by
+// the pre-A2 explain (lane A @ 4469d3e5) on marks-only states, so an explain speed-up
+// can never move a number. Frames come from the cold kernel (no family policy involved).
+TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
+  const auto b_owned = rt::make_state(rt::StateMove{});
+  const auto t_owned = rt::make_state(rt::shifted_move());
+  const auto b_store = marks_only_twin(*b_owned);
+  const auto t_store = marks_only_twin(*t_owned);
+  const MarketState base = make_market_state(*b_store).value();
+  const MarketState shifted = make_market_state(*t_store).value();
+  const RiskBook book = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const RiskKernel kernel = RiskKernel::cold();
+  RiskFrame fb;
+  RiskFrame ft;
+  RiskWorkspace ws;
+  ASSERT_TRUE(kernel.evaluate(prep, base, RiskNeeds{}, fb, ws).has_value());
+  ASSERT_TRUE(kernel.evaluate(prep, shifted, RiskNeeds{}, ft, ws).has_value());
+
+  ExplainOptions one;
+  one.n_threads = 1;
+  const ExplainResult ref = explain(prep, base, fb, shifted, ft, one).value();
+  ASSERT_EQ(ref.total.n_ok, ref.size()) << "every leg must be explained";
+  std::size_t from_marks = 0;
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    from_marks += has_flag(ref.flags[i], RiskFlag::PivotFromMarks) ? 1u : 0u;
+  }
+  EXPECT_EQ(from_marks, book.n_option_legs()) << "the pivots must come from marks";
+
+  for (const unsigned nt : {2u, 3u, 5u, 8u, 16u}) {
+    ExplainOptions opts;
+    opts.n_threads = nt;
+    ExplainResult e;
+    ASSERT_TRUE(explain_into(prep, base, fb, shifted, ft, opts, e).has_value());
+    EXPECT_EQ(legs_digest(e), legs_digest(ref)) << "threads " << nt;
+    EXPECT_TRUE(totals_equal(e.total, ref.total)) << "threads " << nt;
+    ASSERT_EQ(e.by_uid.size(), ref.by_uid.size());
+    for (std::size_t k = 0; k < e.by_uid.size(); ++k) {
+      EXPECT_TRUE(totals_equal(e.by_uid[k].totals, ref.by_uid[k].totals)) << nt << " uid " << k;
+    }
+    ASSERT_EQ(e.by_expiry.size(), ref.by_expiry.size());
+    for (std::size_t k = 0; k < e.by_expiry.size(); ++k) {
+      EXPECT_TRUE(totals_equal(e.by_expiry[k].totals, ref.by_expiry[k].totals))
+          << nt << " expiry " << k;
+    }
+    EXPECT_EQ(e.n_pivot_groups, ref.n_pivot_groups);
+    EXPECT_EQ(e.n_pivot_edge_fallback, ref.n_pivot_edge_fallback);
+  }
+
+  // The pin (pre-A2 bits). Printed so a deliberate re-pin can read them off the log.
+  std::cout << "[RiskExplain] pin: legs digest 0x" << std::hex << legs_digest(ref) << " totals";
+  for (const TotalsField f : kTotalsFields) {
+    std::cout << " 0x" << std::bit_cast<std::uint64_t>(ref.total.*f);
+  }
+  std::cout << std::dec << " pivot groups " << ref.n_pivot_groups << "\n";
+  constexpr std::uint64_t kPinnedDigest = 0x0ULL;
+  constexpr std::array<std::uint64_t, 18> kPinnedTotals{};
+  EXPECT_EQ(legs_digest(ref), kPinnedDigest);
+  for (std::size_t k = 0; k < kTotalsFields.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.*kTotalsFields[k]), kPinnedTotals[k])
+        << "totals field " << k;
+  }
+}

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -106,7 +107,8 @@ template <class T>
          x.families_built == y.families_built && x.carry_sets_built == y.carry_sets_built &&
          x.family_rows == y.family_rows && x.cold_rows == y.cold_rows &&
          x.exercised_rows == y.exercised_rows && x.refused_rows == y.refused_rows &&
-         x.status_count == y.status_count;
+         x.status_count == y.status_count && x.family_nodes == y.family_nodes &&
+         x.uneconomic_rows == y.uneconomic_rows && x.short_tenor_rows == y.short_tenor_rows;
 }
 
 // Reference spot derivative of the cold Andersen-Lake price: a Richardson-extrapolated
@@ -126,6 +128,79 @@ template <class T>
 [[nodiscard]] double rel_gap(double a, double b) noexcept {
   const double scale = std::max(std::fabs(b), 1e-300);
   return std::fabs(a - b) / scale;
+}
+
+// Every group keeps its family (economics off): the policy of the tests whose subject
+// IS a family (its accuracy, its carry set, its degenerate box), whatever the group size.
+// `fixed_nodes` restores the pre-A2 fixed count (n_sigma_min = n_sigma = 12).
+[[nodiscard]] FamilyKernelPolicy families_always(bool fixed_nodes = false) {
+  FamilyKernelPolicy p;
+  p.family_economics = false;
+  if (fixed_nodes) {
+    p.n_sigma_min = p.n_sigma;
+  }
+  return p;
+}
+
+// Family-vs-cold gaps over the family-served lanes of one (family, cold) frame pair:
+// price <= 1e-6 and vega <= 1e-4 relative (G4); a delta over 1e-4 is adjudicated
+// against a Richardson reference of the cold price (the cold delta's own stencil error,
+// lane A deviation 1).
+struct GateStats {
+  double max_price{0.0};
+  double max_delta{0.0};
+  double max_vega{0.0};
+  double max_fam_vs_ref{0.0};
+  double max_cold_vs_ref{0.0};
+  std::size_t adjudicated{0};
+  std::size_t compared{0};
+};
+
+void expect_family_gate(const PreparedRiskBook &prep, const RiskFrame &fam, const RiskFrame &cold,
+                        GateStats &s) {
+  for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+    ASSERT_EQ(cold.status[r], RiskLaneStatus::Ok);
+    ASSERT_EQ(fam.status[r], RiskLaneStatus::Ok);
+    // Inputs are the same resolution on both kernels.
+    EXPECT_TRUE(same_bits(fam.sigma[r], cold.sigma[r]));
+    if (fam.route[r] != RiskRoute::Family) {
+      continue; // cold-routed or exercised lanes are not the family's numbers
+    }
+    const double gp = std::fabs(fam.price[r] - cold.price[r]) / cold.price[r];
+    const double gd = rel_gap(fam.delta[r], cold.delta[r]);
+    const double gv = rel_gap(fam.vega[r], cold.vega[r]);
+    EXPECT_LE(gp, 1e-6) << "row " << r;
+    EXPECT_LE(gv, 1e-4) << "row " << r;
+    if (gd > 1e-4) {
+      // Over the bound: adjudicate against the reference derivative of the cold price.
+      const std::size_t slot = static_cast<std::size_t>(
+          std::lower_bound(prep.uids().begin(), prep.uids().end(), prep.uid()[r]) -
+          prep.uids().begin());
+      const double ref = richardson_delta(fam.uid_spot[slot], prep.strike()[r], fam.T[r],
+                                          fam.sigma[r], fam.rate[r], fam.q_eff[r],
+                                          prep.side()[r]);
+      const double fam_err = std::fabs(fam.delta[r] - ref);
+      const double cold_err = std::fabs(cold.delta[r] - ref);
+      EXPECT_LE(fam_err, 1e-4 * std::fabs(ref)) << "row " << r;
+      EXPECT_LT(fam_err, cold_err) << "row " << r << ": the gap must be the cold stencil's";
+      s.max_fam_vs_ref = std::max(s.max_fam_vs_ref, fam_err / std::fabs(ref));
+      s.max_cold_vs_ref = std::max(s.max_cold_vs_ref, cold_err / std::fabs(ref));
+      ++s.adjudicated;
+    }
+    s.max_price = std::max(s.max_price, gp);
+    s.max_delta = std::max(s.max_delta, gd);
+    s.max_vega = std::max(s.max_vega, gv);
+    ++s.compared;
+  }
+}
+
+void print_gate(const char *what, const GateStats &s) {
+  std::cout << "[RiskKernel] " << what << ": lanes=" << s.compared
+            << " max|dprice|/price=" << s.max_price << " max|ddelta| rel=" << s.max_delta
+            << " max|dvega| rel=" << s.max_vega
+            << "; delta lanes over 1e-4 adjudicated by a Richardson reference=" << s.adjudicated
+            << " (max family-vs-ref rel=" << s.max_fam_vs_ref
+            << ", max cold-vs-ref rel=" << s.max_cold_vs_ref << ")\n";
 }
 
 } // namespace
@@ -160,65 +235,40 @@ TEST(RiskKernel, ColdMatchesPricedSurfaceGreeksBitExact) {
   EXPECT_EQ(compared, 60u);
 }
 
+// Re-pinned by lane A2: the gate runs on BOTH node policies with economics off (every
+// group keeps its family, which is the subject here): the pre-A2 fixed 12 nodes and the
+// adaptive rule, whose narrow boxes take the rule's smallest count.
 TEST(RiskKernel, FamilyMatchesColdInsideBox) {
   const RiskBook book = RiskBook::create(rt::make_option_legs(), {}).value();
   const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
-  double max_price = 0.0;
-  double max_delta = 0.0;
-  double max_vega = 0.0;
-  double max_fam_vs_ref = 0.0;
-  double max_cold_vs_ref = 0.0;
-  std::size_t adjudicated = 0;
-  std::size_t compared = 0;
-  for (const bool shifted : {false, true}) {
-    for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
-      const auto owned = rt::make_state(shifted ? rt::shifted_move() : rt::StateMove{}, carry);
-      const RiskFrame fam = evaluate_or_die(RiskKernel::family(), prep, owned->state, RiskNeeds{});
-      const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, RiskNeeds{});
-      EXPECT_GT(fam.counters.families_built, 0u);
-      for (std::size_t r = 0; r < prep.n_unique(); ++r) {
-        ASSERT_EQ(cold.status[r], RiskLaneStatus::Ok);
-        ASSERT_EQ(fam.status[r], RiskLaneStatus::Ok);
-        // Inputs are the same resolution on both kernels.
-        EXPECT_TRUE(same_bits(fam.sigma[r], cold.sigma[r]));
-        if (fam.route[r] != RiskRoute::Family) {
-          continue; // cold-routed or exercised lanes are not the family's numbers
-        }
-        const double gp = std::fabs(fam.price[r] - cold.price[r]) / cold.price[r];
-        const double gd = rel_gap(fam.delta[r], cold.delta[r]);
-        const double gv = rel_gap(fam.vega[r], cold.vega[r]);
-        EXPECT_LE(gp, 1e-6) << "row " << r;
-        EXPECT_LE(gv, 1e-4) << "row " << r;
-        if (gd > 1e-4) {
-          // Over the bound: adjudicate against the reference derivative of the cold price.
-          const std::size_t slot = static_cast<std::size_t>(
-              std::lower_bound(prep.uids().begin(), prep.uids().end(), prep.uid()[r]) -
-              prep.uids().begin());
-          const double ref = richardson_delta(fam.uid_spot[slot], prep.strike()[r], fam.T[r],
-                                              fam.sigma[r], fam.rate[r], fam.q_eff[r],
-                                              prep.side()[r]);
-          const double fam_err = std::fabs(fam.delta[r] - ref);
-          const double cold_err = std::fabs(cold.delta[r] - ref);
-          EXPECT_LE(fam_err, 1e-4 * std::fabs(ref)) << "row " << r;
-          EXPECT_LT(fam_err, cold_err) << "row " << r << ": the gap must be the cold stencil's";
-          max_fam_vs_ref = std::max(max_fam_vs_ref, fam_err / std::fabs(ref));
-          max_cold_vs_ref = std::max(max_cold_vs_ref, cold_err / std::fabs(ref));
-          ++adjudicated;
-        }
-        max_price = std::max(max_price, gp);
-        max_delta = std::max(max_delta, gd);
-        max_vega = std::max(max_vega, gv);
-        ++compared;
+  for (const bool fixed : {true, false}) {
+    GateStats s;
+    std::uint64_t families = 0;
+    std::uint64_t nodes = 0;
+    for (const bool shifted : {false, true}) {
+      for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
+        const auto owned = rt::make_state(shifted ? rt::shifted_move() : rt::StateMove{}, carry);
+        const RiskFrame fam = evaluate_or_die(RiskKernel::family(families_always(fixed)), prep,
+                                              owned->state, RiskNeeds{});
+        const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, RiskNeeds{});
+        EXPECT_GT(fam.counters.families_built, 0u);
+        families += fam.counters.families_built;
+        nodes += fam.counters.family_nodes;
+        expect_family_gate(prep, fam, cold, s);
       }
     }
+    print_gate(fixed ? "family (12 nodes) vs cold inside box" : "family (adaptive) vs cold inside box",
+               s);
+    std::cout << "[RiskKernel]   nodes per family: " << static_cast<double>(nodes) /
+                                                            static_cast<double>(families)
+              << "\n";
+    EXPECT_GE(s.compared, 4u * 50u) << "the family must serve most lanes of the book";
+    if (fixed) {
+      EXPECT_EQ(nodes, 12u * families);
+    } else {
+      EXPECT_LT(nodes, 12u * families) << "the adaptive rule must save nodes on this book";
+    }
   }
-  std::cout << "[RiskKernel] family vs cold inside box: lanes=" << compared
-            << " max|dprice|/price=" << max_price << " max|ddelta| rel=" << max_delta
-            << " max|dvega| rel=" << max_vega
-            << "; delta lanes over 1e-4 adjudicated by a Richardson reference=" << adjudicated
-            << " (max family-vs-ref rel=" << max_fam_vs_ref
-            << ", max cold-vs-ref rel=" << max_cold_vs_ref << ")\n";
-  EXPECT_GE(compared, 4u * 50u) << "the family must serve most lanes of the book";
 }
 
 TEST(RiskKernel, NearEdgeRoutesCold) {
@@ -256,14 +306,17 @@ TEST(RiskKernel, NearEdgeRoutesCold) {
   EXPECT_GT(exercised + edge_cold, 0u) << "the sweep must cross the exercise boundary";
 }
 
+// Re-pinned by lane A2: economics off. The subject is the family's carry set; under
+// rho the economics (x3 family cost) would price these 2-3-lane groups cold instead.
 TEST(RiskKernel, RhoOnlyWithNeeds) {
   const auto owned = rt::make_state(rt::shifted_move());
   const RiskBook book = RiskBook::create(rt::make_option_legs(), {}).value();
   const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const RiskKernel kernel = RiskKernel::family(families_always());
 
   RiskNeeds no_rho;
   no_rho.rho = false;
-  const RiskFrame off = evaluate_or_die(RiskKernel::family(), prep, owned->state, no_rho);
+  const RiskFrame off = evaluate_or_die(kernel, prep, owned->state, no_rho);
   EXPECT_EQ(off.counters.carry_sets_built, 0u);
   for (std::size_t r = 0; r < off.size(); ++r) {
     ASSERT_EQ(off.status[r], RiskLaneStatus::Ok);
@@ -272,7 +325,7 @@ TEST(RiskKernel, RhoOnlyWithNeeds) {
 
   RiskNeeds with_rho;
   with_rho.rho = true;
-  const RiskFrame on = evaluate_or_die(RiskKernel::family(), prep, owned->state, with_rho);
+  const RiskFrame on = evaluate_or_die(kernel, prep, owned->state, with_rho);
   EXPECT_GT(on.counters.carry_sets_built, 0u);
   std::size_t nonzero = 0;
   for (std::size_t r = 0; r < on.size(); ++r) {
@@ -290,20 +343,25 @@ TEST(RiskKernel, ThreadCountBitIdentical) {
   const auto owned = rt::make_state(rt::shifted_move());
   const RiskBook book = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
   const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
-  RiskNeeds needs;
-  needs.rho = true;
-  for (const bool family : {true, false}) {
-    FamilyKernelPolicy fp;
-    ColdKernelPolicy cp;
-    fp.n_threads = 1;
-    cp.n_threads = 1;
-    const RiskFrame one = evaluate_or_die(family ? RiskKernel::family(fp) : RiskKernel::cold(cp),
-                                          prep, owned->state, needs);
-    fp.n_threads = 8;
-    cp.n_threads = 8;
-    const RiskFrame eight = evaluate_or_die(
-        family ? RiskKernel::family(fp) : RiskKernel::cold(cp), prep, owned->state, needs);
-    EXPECT_TRUE(frames_byte_equal(one, eight)) << (family ? "family" : "cold");
+  // Lane A2: the shipped family policy (economics + adaptive nodes) AND the
+  // every-group-keeps-its-family one, with and without rho, beside the cold kernel.
+  for (const bool rho : {true, false}) {
+    RiskNeeds needs;
+    needs.rho = rho;
+    for (const int kind : {0, 1, 2}) {
+      FamilyKernelPolicy fp = kind == 1 ? families_always() : FamilyKernelPolicy{};
+      ColdKernelPolicy cp;
+      const auto make = [&] {
+        return kind == 2 ? RiskKernel::cold(cp) : RiskKernel::family(fp);
+      };
+      fp.n_threads = 1;
+      cp.n_threads = 1;
+      const RiskFrame one = evaluate_or_die(make(), prep, owned->state, needs);
+      fp.n_threads = 8;
+      cp.n_threads = 8;
+      const RiskFrame eight = evaluate_or_die(make(), prep, owned->state, needs);
+      EXPECT_TRUE(frames_byte_equal(one, eight)) << "kernel " << kind << " rho " << rho;
+    }
   }
 }
 
@@ -507,7 +565,9 @@ TEST(RiskKernel, DegenerateSigmaBoxStillServesFamily) {
   };
   const RiskBook book = RiskBook::create(legs, {}).value();
   const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
-  FamilyKernelPolicy no_pad;
+  // Re-pinned by lane A2: economics off (a one-lane group is priced cold by default,
+  // and the degenerate box is only reachable on a family).
+  FamilyKernelPolicy no_pad = families_always();
   no_pad.sigma_box_pad = 0.0;
   const RiskFrame fam =
       evaluate_or_die(RiskKernel::family(no_pad), prep, owned->state, RiskNeeds{});
@@ -518,5 +578,312 @@ TEST(RiskKernel, DegenerateSigmaBoxStillServesFamily) {
     EXPECT_EQ(fam.route[r], RiskRoute::Family) << r;
     EXPECT_LE(std::fabs(fam.price[r] - cold.price[r]) / cold.price[r], 1e-6) << r;
     EXPECT_LE(rel_gap(fam.vega[r], cold.vega[r]), 1e-4) << r;
+  }
+}
+
+// On-demand timing receipt (DISABLED_: wall clocks do not gate on a shared host) for
+// the family-economics cost constants (FamilyKernelPolicy::family_node_cost_us /
+// cold_lane_cost_us): one thread, al_fast_opts (the preset a marks-only state
+// resolves), a short- and a mid-dated expiry, both sides. Prints the per-node slope of
+// AlSigmaFamily::prepare over n_sigma (the fixed part separated), the cold-analytic lane
+// (american_greeks_al, vega + charm, no rho), the same lane on a prepared geometry,
+// one family_greeks lane and one geometry prepare.
+TEST(RiskKernel, DISABLED_FamilyEconomicsCostSetup) {
+  using Clock = std::chrono::steady_clock;
+  const std::optional<AlOpts> opts{al_fast_opts()};
+  constexpr double kS = 100.0;
+  constexpr double kR = 0.043;
+  constexpr double kQ = 0.015;
+  constexpr int kReps = 7;
+  const auto median_us = [](std::vector<double> v) {
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2u];
+  };
+  for (const double T : {0.02, 0.15}) {
+    for (const Side side : {Side::Put, Side::Call}) {
+      const AlExpiryGeometry geo = prepare_al_geometry(T, kR, kQ, opts);
+      std::vector<double> geo_us;
+      AlExpiryGeometry scratch = prepare_al_geometry(T, kR, kQ, opts);
+      for (int rep = 0; rep < kReps; ++rep) {
+        const auto t0 = Clock::now();
+        for (int i = 0; i < 20; ++i) {
+          scratch.prepare(T + 1e-9 * i, kR, kQ, opts);
+        }
+        geo_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
+                         20.0);
+      }
+      std::array<double, 4> prep_us{};
+      const std::array<std::uint16_t, 4> nodes{4, 8, 12, 16};
+      for (std::size_t k = 0; k < nodes.size(); ++k) {
+        AlSigmaFamily fam(geo, side, kS);
+        std::vector<double> v;
+        for (int rep = 0; rep < kReps; ++rep) {
+          const auto t0 = Clock::now();
+          for (int i = 0; i < 10; ++i) {
+            ASSERT_TRUE(fam.prepare(0.20 + 1e-6 * i, 0.40, nodes[k]).has_value());
+          }
+          v.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / 10.0);
+        }
+        prep_us[k] = median_us(v);
+      }
+      const double slope = (prep_us[3] - prep_us[0]) / 12.0;
+      AlSigmaFamily fam(geo, side, kS);
+      ASSERT_TRUE(fam.prepare(0.20, 0.40, 12).has_value());
+      const AlSigmaFamilyGreeksMask mask{static_cast<std::uint16_t>(
+          AlSigmaFamilyGreeksMask::hedge().bits | AlSigmaFamilyGreeksMask::kVanna |
+          AlSigmaFamilyGreeksMask::kVolga | AlSigmaFamilyGreeksMask::kCharm)};
+      std::vector<double> cold_us;
+      std::vector<double> cold_geo_us;
+      std::vector<double> fam_us;
+      double sink = 0.0;
+      for (int rep = 0; rep < kReps; ++rep) {
+        auto t0 = Clock::now();
+        for (int i = 0; i < 40; ++i) {
+          const double K = 90.0 + 0.5 * i;
+          sink += american_greeks_al(kS, K, T, 0.3, kR, kQ, side, opts, true, false, true)
+                      .value()
+                      .price;
+        }
+        cold_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
+                          40.0);
+        t0 = Clock::now();
+        for (int i = 0; i < 40; ++i) {
+          const double K = 90.0 + 0.5 * i;
+          sink += american_greeks_al(geo, kS, K, 0.3, side, true, false, true).value().price;
+        }
+        cold_geo_us.push_back(
+            std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / 40.0);
+        t0 = Clock::now();
+        for (int i = 0; i < 40; ++i) {
+          const double K = 90.0 + 0.5 * i;
+          sink += family_greeks(fam, kS, K, 0.3, mask).price;
+        }
+        fam_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
+                         40.0);
+      }
+      std::cout << "[RiskKernel] cost setup T=" << T << " side=" << (side == Side::Put ? "put" : "call")
+                << ": geometry prepare=" << median_us(geo_us) << " us; family prepare n=4/8/12/16="
+                << prep_us[0] << "/" << prep_us[1] << "/" << prep_us[2] << "/" << prep_us[3]
+                << " us (slope " << slope << " us/node, fixed " << prep_us[0] - 4.0 * slope
+                << " us); cold lane=" << median_us(cold_us) << " us, on geometry="
+                << median_us(cold_geo_us) << " us; family lane=" << median_us(fam_us)
+                << " us (sink " << sink << ")\n";
+    }
+  }
+  // Below the family's tau floor only the cold route exists: its lane cost there.
+  for (const double T : {0.0007, 0.005}) {
+    for (const Side side : {Side::Put, Side::Call}) {
+      const AlExpiryGeometry geo = prepare_al_geometry(T, kR, kQ, opts);
+      std::vector<double> cold_us;
+      std::vector<double> cold_geo_us;
+      double sink = 0.0;
+      for (int rep = 0; rep < kReps; ++rep) {
+        auto t0 = Clock::now();
+        for (int i = 0; i < 40; ++i) {
+          const double K = 95.0 + 0.25 * i;
+          sink += american_greeks_al(kS, K, T, 0.3, kR, kQ, side, opts, true, false, true)
+                      .value()
+                      .price;
+        }
+        cold_us.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t0).count() /
+                          40.0);
+        t0 = Clock::now();
+        for (int i = 0; i < 40; ++i) {
+          const double K = 95.0 + 0.25 * i;
+          sink += american_greeks_al(geo, kS, K, 0.3, side, true, false, true).value().price;
+        }
+        cold_geo_us.push_back(
+            std::chrono::duration<double, std::micro>(Clock::now() - t0).count() / 40.0);
+      }
+      std::cout << "[RiskKernel] cost setup short T=" << T
+                << " side=" << (side == Side::Put ? "put" : "call")
+                << ": cold lane=" << median_us(cold_us) << " us, on geometry="
+                << median_us(cold_geo_us) << " us (sink " << sink << ")\n";
+    }
+  }
+}
+
+namespace {
+
+// Groups of 1, 2, 3 and 12 near-the-money lanes: uid 1 at the 0.30 y expiry (12 calls
+// K = 95..117, one put K = 98), uid 2 at the 0.15 y expiry (puts K = 240, 245; calls
+// K = 250, 255, 260). No lane sits near the exercise edge.
+[[nodiscard]] std::vector<OptionLeg> economics_legs() {
+  std::vector<OptionLeg> legs;
+  std::uint64_t id = 1;
+  for (double K = 95.0; K <= 117.0; K += 2.0) {
+    legs.push_back(OptionLeg{id++, 1u, K, rt::expiry_ns(2), Side::Call, 1.0, 100.0});
+  }
+  legs.push_back(OptionLeg{id++, 1u, 98.0, rt::expiry_ns(2), Side::Put, -2.0, 100.0});
+  for (const double K : {240.0, 245.0}) {
+    legs.push_back(OptionLeg{id++, 2u, K, rt::expiry_ns(1), Side::Put, 3.0, 100.0});
+  }
+  for (const double K : {250.0, 255.0, 260.0}) {
+    legs.push_back(OptionLeg{id++, 2u, K, rt::expiry_ns(1), Side::Call, -1.0, 100.0});
+  }
+  return legs;
+}
+
+[[nodiscard]] std::size_t group_size_of(const PreparedRiskBook &prep, std::size_t row) {
+  for (const RiskGroup &g : prep.groups()) {
+    if (row >= g.begin && row < g.end) {
+      return g.end - g.begin;
+    }
+  }
+  return 0;
+}
+
+[[nodiscard]] bool row_bits_equal(const RiskFrame &a, const RiskFrame &b, std::size_t r) {
+  return same_bits(a.price[r], b.price[r]) && same_bits(a.delta[r], b.delta[r]) &&
+         same_bits(a.gamma[r], b.gamma[r]) && same_bits(a.vega[r], b.vega[r]) &&
+         same_bits(a.theta[r], b.theta[r]) && same_bits(a.rho[r], b.rho[r]) &&
+         same_bits(a.vanna[r], b.vanna[r]) && same_bits(a.volga[r], b.volga[r]) &&
+         same_bits(a.charm[r], b.charm[r]);
+}
+
+} // namespace
+
+// Lane A2 lever 1. At a FIXED 12 nodes and the cost constants 33 us / node, 140 us / cold
+// lane (set explicitly: the test pins the rule, not the shipped defaults), a family costs
+// 396 us: the 1- and 2-lane groups are priced cold-analytic directly (FamilyUneconomic,
+// never ColdFallback, no family built, numbers bit-equal to the cold kernel's), the
+// 3- and 12-lane groups keep their family. Under rho the family also builds its carry set
+// (x3) and a cold lane its two rate-bumped solves (x7/5): the 3-lane group goes cold too.
+// Economics off, no cold route, or the FD cold route: every group is tried as before.
+TEST(RiskKernel, FamilyEconomicsRoutesSmallGroupsCold) {
+  const auto owned = rt::make_state(rt::shifted_move());
+  const RiskBook book = RiskBook::create(economics_legs(), {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  ASSERT_EQ(prep.n_groups(), 4u);
+  FamilyKernelPolicy p;
+  p.n_sigma = 12;
+  p.n_sigma_min = 12;
+  p.family_economics = true;
+  p.family_node_cost_us = 33.0;
+  p.cold_lane_cost_us = 140.0;
+
+  for (const bool rho : {false, true}) {
+    RiskNeeds needs;
+    needs.rho = rho;
+    const std::size_t min_paying = rho ? 4u : 3u; // the 3-lane group pays only without rho
+    const RiskFrame f = evaluate_or_die(RiskKernel::family(p), prep, owned->state, needs);
+    const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, needs);
+    std::size_t uneconomic = 0;
+    for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+      ASSERT_EQ(f.status[r], RiskLaneStatus::Ok) << r;
+      if (group_size_of(prep, r) < min_paying) {
+        EXPECT_EQ(f.route[r], RiskRoute::ColdAnalytic) << r;
+        EXPECT_TRUE(has_flag(f.flags[r], RiskFlag::FamilyUneconomic)) << r;
+        EXPECT_FALSE(has_flag(f.flags[r], RiskFlag::ColdFallback)) << r;
+        EXPECT_TRUE(row_bits_equal(f, cold, r)) << "row " << r << " must be the cold kernel's";
+        ++uneconomic;
+      } else {
+        EXPECT_EQ(f.route[r], RiskRoute::Family) << r;
+        EXPECT_FALSE(has_flag(f.flags[r], RiskFlag::FamilyUneconomic)) << r;
+      }
+    }
+    EXPECT_EQ(uneconomic, rho ? 6u : 3u);
+    EXPECT_EQ(f.counters.uneconomic_rows, uneconomic);
+    EXPECT_EQ(f.counters.cold_rows, uneconomic);
+    EXPECT_EQ(f.counters.families_built, rho ? 1u : 2u);
+    EXPECT_EQ(f.counters.family_nodes, 12u * f.counters.families_built);
+    EXPECT_EQ(f.counters.carry_sets_built, rho ? 1u : 0u);
+
+    // Thread count never moves the decision.
+    FamilyKernelPolicy p8 = p;
+    p8.n_threads = 8;
+    FamilyKernelPolicy p1 = p;
+    p1.n_threads = 1;
+    EXPECT_TRUE(frames_byte_equal(
+        evaluate_or_die(RiskKernel::family(p1), prep, owned->state, needs),
+        evaluate_or_die(RiskKernel::family(p8), prep, owned->state, needs)));
+  }
+
+  // The pre-A2 behaviour is reachable: every group keeps its family.
+  FamilyKernelPolicy off = p;
+  off.family_economics = false;
+  FamilyKernelPolicy no_cold = p;
+  no_cold.cold_fallback = false;
+  FamilyKernelPolicy fd = p;
+  fd.analytic_cold = false;
+  for (const FamilyKernelPolicy &q : {off, no_cold, fd}) {
+    const RiskFrame f = evaluate_or_die(RiskKernel::family(q), prep, owned->state, RiskNeeds{});
+    EXPECT_EQ(f.counters.families_built, 4u);
+    EXPECT_EQ(f.counters.uneconomic_rows, 0u);
+    EXPECT_EQ(f.counters.family_rows, prep.n_unique());
+    for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+      EXPECT_FALSE(has_flag(f.flags[r], RiskFlag::FamilyUneconomic)) << r;
+    }
+  }
+}
+
+namespace {
+
+// The licensed-shaped book: per (uid, expiry, side) THREE strikes at 0.98 / 1.00 / 1.02
+// of spot, so every box is narrow (sigma spread <= 0.05), like the SpiderRock book's
+// 3.4 lanes per group.
+[[nodiscard]] std::vector<OptionLeg> narrow_legs() {
+  std::vector<OptionLeg> legs;
+  std::uint64_t id = 1;
+  for (const rt::UnderlierSpec &u : rt::kUnderliers) {
+    for (std::size_t ei = 0; ei < rt::kExpiryUnits.size(); ++ei) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        for (const double rel : {0.98, 1.0, 1.02}) {
+          legs.push_back(OptionLeg{id++, u.uid, std::round(u.spot * rel * 2.0) / 2.0,
+                                   rt::expiry_ns(ei), side, 1.0, 100.0});
+        }
+      }
+    }
+  }
+  return legs;
+}
+
+} // namespace
+
+// Lane A2 lever 2. The adaptive node count at the shipped spacing keeps the
+// family-vs-cold gate (price 1e-6, vega 1e-4, delta 1e-4 or adjudicated) on the narrow
+// licensed-shaped boxes, which the rule solves at its SMALLEST count (n_sigma_min), and on
+// the standard fixture book's wider boxes, over four states each. Economics off: every
+// group keeps its family, so every lane is a family number under test.
+TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
+  const FamilyKernelPolicy p = families_always();
+  for (const bool narrow : {true, false}) {
+    const RiskBook book =
+        RiskBook::create(narrow ? narrow_legs() : rt::make_option_legs(), {}).value();
+    const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+    GateStats s;
+    std::uint64_t families = 0;
+    std::uint64_t nodes = 0;
+    double max_spread = 0.0;
+    for (const bool shifted : {false, true}) {
+      for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
+        const auto owned = rt::make_state(shifted ? rt::shifted_move() : rt::StateMove{}, carry);
+        const RiskFrame fam =
+            evaluate_or_die(RiskKernel::family(p), prep, owned->state, RiskNeeds{});
+        const RiskFrame cold =
+            evaluate_or_die(RiskKernel::cold(), prep, owned->state, RiskNeeds{});
+        families += fam.counters.families_built;
+        nodes += fam.counters.family_nodes;
+        for (const RiskGroup &g : prep.groups()) {
+          const auto [lo, hi] =
+              std::minmax_element(fam.sigma.begin() + g.begin, fam.sigma.begin() + g.end);
+          max_spread = std::max(max_spread, *hi - *lo);
+        }
+        expect_family_gate(prep, fam, cold, s);
+      }
+    }
+    print_gate(narrow ? "adaptive nodes, narrow boxes" : "adaptive nodes, fixture book", s);
+    std::cout << "[RiskKernel]   families=" << families << " nodes=" << nodes
+              << " (per family " << static_cast<double>(nodes) / static_cast<double>(families)
+              << "), max sigma spread per group " << max_spread << "\n";
+    ASSERT_GT(families, 0u);
+    EXPECT_EQ(s.compared, 4u * prep.n_unique()) << "every lane must be family-served";
+    if (narrow) {
+      EXPECT_LE(max_spread, 0.05) << "the premise: licensed-shaped narrow boxes";
+      EXPECT_EQ(nodes, static_cast<std::uint64_t>(p.n_sigma_min) * families)
+          << "narrow boxes take the rule's smallest node count";
+    } else {
+      EXPECT_LT(nodes, static_cast<std::uint64_t>(p.n_sigma) * families);
+    }
   }
 }

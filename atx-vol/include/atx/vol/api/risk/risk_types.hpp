@@ -45,6 +45,13 @@ enum class RiskFlag : std::uint32_t {
   VendorParityAvailable = 1u << 8, // vendor price / delta present for this contract
   ColdFallback = 1u << 9,          // family kernel handed this lane to the cold route
   CarryFromSurface = 1u << 10,     // forward / q_eff read from the surface, not the state
+  // Appended by lane A2 (2026-10-24, additive): why a family-kernel lane went cold
+  // WITHOUT the family having refused it, so a report separates these from
+  // ColdFallback's "the family refused this lane".
+  FamilyUneconomic = 1u << 11, // the group's family could not amortize (FamilyKernelPolicy
+                               // economics): priced cold-analytic, no family built
+  ShortTenor = 1u << 12,       // T < kAlSigmaFamilyMinTau: no family exists for the block
+                               // (set together with ColdFallback, the pre-A2 flag)
 };
 using RiskFlags = std::uint32_t;
 
