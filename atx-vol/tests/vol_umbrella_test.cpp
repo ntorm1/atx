@@ -521,7 +521,7 @@ ReadmeCount readme_tier_count(std::string_view label) {
 // up as one added plus one removed instead of a silent pass.
 constexpr std::string_view kApiModules[] = {
     "analytics", "backtest", "core", "fitting",
-    "marketdata", "pricing", "risk", "simd", "storage",
+    "marketdata", "persist", "pricing", "risk", "simd", "storage",
 };
 
 TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {

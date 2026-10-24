@@ -56,6 +56,7 @@ Focused targets (the stem lists in `tests/slices.cmake` are authoritative; confi
 | `atx-vol-backtest-slice` | backtest*, strategy*, portfolio/priced_surface, margin, deriv_book, panels, tearsheet, research_validation, bev_label_factory_gate, … | `^backtest/` |
 | `atx-vol-dispersion-slice` | dispersion*, listed_dispersion*, mag7/spy dispersion, multiname_pipeline | `^dispersion/` |
 | `atx-vol-oracle-slice` | oracle_bench | `^oracle/` |
+| `atx-vol-persist-slice` | persist_file, persist_state_archive, persist_state_store, persist_surface_timeline, persist_risk_run (prefix `persist_`) | `^persist/<Suite>\.` |
 
 Which slice owns suite `Foo`? `-Ctest -Preset vol-rel -N -L atx_vol_slice -R "/Foo\."` (needs the slice built once; PRE_TEST discovery) or find `TEST*(Foo,` in `tests/` and look its file stem up in `tests/slices.cmake`. A new `*_test.cpp` added to `atx-vol-tests` lands in a slice automatically (stem table, then prefix rule, then `atx-vol-misc-slice`). Slice cases carry only the `atx_vol_slice` label, so `-L atx_vol_fast`/`atx_vol_slow` still run each case once, through `atx-vol-tests`.
 

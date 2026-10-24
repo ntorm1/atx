@@ -735,6 +735,17 @@ add_executable(atx-vol-tests
     # ... and the ENGINE-FREE core of atx-vol-risk-bench (RiskBenchArgs.* /
     # RiskBenchBook.* / RiskBenchStats.* / RiskBenchReport.*; risk slice).
     risk_bench_test.cpp
+    # Wave-3 lane P (binary persistence; persist slice): P1 the PersistFile container +
+    # directory (PersistFile.* / PersistDirectory.*), the MarketState archive
+    # (PersistStateArchive.*) and the SpiderRock-derived state store
+    # (PersistStateStore.* / PersistStateStoreReal.*, the latter env-gated on
+    # ATX_VOL_SPIDERROCK_STORE); P2 the surface timeline (PersistSurfaceTimeline.*) and
+    # the risk-run archive (PersistRiskRun.*).
+    persist_file_test.cpp
+    persist_risk_run_test.cpp
+    persist_state_archive_test.cpp
+    persist_state_store_test.cpp
+    persist_surface_timeline_test.cpp
     # vrp_model_test.cpp (vrp-ml lane vrp-model) is NOT listed here: it needs
     # the atx-engine learn layer, so it builds into its own
     # atx-vol-vrp-model-tests exe further down, which exists only when the
