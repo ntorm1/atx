@@ -1,0 +1,61 @@
+{
+  "schema": "atx-quantlib-american-frontier-evidence-v2",
+  "source_commit": "e78dcc2b982794f83711762aff9de665a99268ca",
+  "implementation_commit": "8b6d258ac41cd6a1fd71026d1807965cc51d5f5e",
+  "independent_general_american_method_accuracy_established": false,
+  "whole_fit_latency_measured": false,
+  "files": [
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-lto-common-v2/receipt.json",
+      "sha256": "148d9a9fcc418dd29183bdf78e2953e2d57740584508bc30ce924a78e0613cfd"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-lto-common-v2/native.json",
+      "sha256": "ab274f3c0dc7867d84688586ac8d5b3347213e2ec3e27c6bb938bd9d1599027a"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-lto-common-v2/summary.json",
+      "sha256": "727546f7c3c2176d50ec0a0460a242458e6386d8db4964aeace85ef37b778e27"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-lto-diagnostic-v2/receipt.json",
+      "sha256": "cf02feaef047c9967f08621578a0f450483f53b30148da124897ff7d16769649"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-lto-diagnostic-v2/native.json",
+      "sha256": "2147f69a06c960d719dc3ddfa722480a6e902297943554f6caa9f56ed9aaab26"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-lto-diagnostic-v2/summary.json",
+      "sha256": "6711574888ddac2bb046020058c73325bba2d5c1ca8b9367f2d7e68160a08acc"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-frontier-tests-final.log",
+      "sha256": "8a7709092bd4a279d5183205af8114cfb24784de83708742187b631edf09bac7"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-frontier-hygiene.log",
+      "sha256": "429c06752a8821d57c87342c754b37c78c81804ab34d39182abbf1b0cc4ccaef"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-harness-adversarial-red-green.json",
+      "sha256": "dd361d1bfbaaf46793ae8f34c686a6b59b5acd774814959dcc125e115ba15fdd"
+    },
+    {
+      "path": "C:/atx-wt/pool-33/atx-vol/bench/public-american/corpus-common-v1.json",
+      "sha256": "874e1e95e3f36dd5ad0ee698a53e655f467e59a39d7f9972937e5f0a59cd5556"
+    },
+    {
+      "path": "C:/atx-wt/pool-33/atx-vol/bench/public-american/corpus-v1.json",
+      "sha256": "fa531834f90b9dac27c6972006b3b048a492d37d48b788a8f0e76f784e49486e"
+    },
+    {
+      "path": "C:/atx-wt/pool-33/atx-vol/bench/quantlib/upstream.json",
+      "sha256": "03a2d3e9451833764ed42f73c16e940bd3304cc9f49989fd2173cc4b57c75c45"
+    },
+    {
+      "path": "C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/acceptance/quantlib-binaries/4ce4694377435c46a09c67eb245a60e539f70b58a9b6d6d88fd2a3f6cc9b7bd7.exe",
+      "sha256": "4ce4694377435c46a09c67eb245a60e539f70b58a9b6d6d88fd2a3f6cc9b7bd7"
+    }
+  ]
+}
