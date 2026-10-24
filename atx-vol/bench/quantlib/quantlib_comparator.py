@@ -15,6 +15,25 @@ import sys
 QUANTLIB_COMMIT = "e96579fd471b2e9f6bc974c96674d1ccfff248fa"
 HERE = Path(__file__).resolve().parent
 
+QL_OPTIONS = {
+    "ql_fast": dict(l=7, m=2, n=7, p=27, equation="Auto"),
+    "ql_accurate": dict(l=25, m=5, n=13, tanh_sinh_tolerance=1e-8, equation="Auto"),
+}
+ATX_OPTIONS = {
+    "atx_default": dict(n_collocation=12, n_quadrature=24, n_quad_price=48,
+                        max_newton_iter=6, tol=1e-10, profile="Reference", explicit=False),
+    "atx_accurate_fast": dict(n_collocation=12, n_quadrature=24, n_quad_price=48,
+                              max_newton_iter=6, tol=1e-10, profile="Fast", explicit=True),
+    "atx_screen": dict(n_collocation=7, n_quadrature=16, n_quad_price=48,
+                       max_newton_iter=5, tol=1e-8, profile="Screen", explicit=True),
+    "atx_bulk_fast": dict(n_collocation=7, n_quadrature=8, n_quad_price=32,
+                          max_newton_iter=2, tol=1e-8, profile="Fast", explicit=True),
+}
+REFERENCE_OPTIONS = dict(
+    quantlib_high_precision=dict(m=10, n=30, tanh_sinh_tolerance=1e-10, equation="Auto"),
+    atx_refined=dict(n_collocation=32, n_quadrature=64, n_quad_price=64,
+                     max_newton_iter=32, tol=1e-14, profile="Reference", explicit=True))
+
 
 def source_tree_digest(root):
     root = Path(root)
@@ -59,6 +78,27 @@ def finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def exact_json(actual, expected):
+    """Compare pinned semantic metadata without accepting booleans as numbers."""
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and actual.keys() == expected.keys() and all(
+            exact_json(actual[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) == len(expected) and all(
+            exact_json(a, e) for a, e in zip(actual, expected))
+    if isinstance(expected, bool) or expected is None:
+        return actual is expected
+    if isinstance(expected, (int, float)):
+        return finite(actual) and actual == expected
+    return type(actual) is type(expected) and actual == expected
+
+
+def check_price_status(price, status):
+    if not isinstance(status, str) or not status or (not finite(price) and price is not None) or \
+            ((status == "finite") != finite(price)):
+        raise ValueError("Malformed/inconsistent price status")
+
+
 def price_digest(values):
     value = 14695981039346656037
     for price in values:
@@ -75,7 +115,9 @@ def european_put(c):
 
 
 def check_self_test(report):
-    if report.get("quantlib_commit") != QUANTLIB_COMMIT:
+    version = report.get("schema")
+    if report.get("quantlib_commit") != QUANTLIB_COMMIT or version not in {
+            "atx-quantlib-api-self-test-v1", "atx-quantlib-api-self-test-v2"}:
         raise ValueError("Missing/wrong official source self-test")
     expected = {(24, 3, 9, .05, 0): (.1069528125898476, 1e-6),
                 (24, 3, 9, .05, 1): (.1069524359360852, 1e-6),
@@ -84,10 +126,15 @@ def check_self_test(report):
     rows = report.get("official_checks", [])
     found = set()
     for row in rows:
+        if any(type(row[k]) is not int for k in ["l", "m", "n", "equation"]):
+            raise ValueError("Invalid official fixture integer")
         key = (row["l"], row["m"], row["n"], row["input"]["r"], row["equation"])
         if key not in expected or key in found:
             raise ValueError("Changed/duplicate official premium fixture")
         value, tolerance = expected[key]
+        contract = dict(S=100, K=100, T=1, sigma=.25, r=key[3], q=.05)
+        if not exact_json(row["input"], contract):
+            raise ValueError("Changed official input tuple")
         if row["expected"] != value or row["tolerance"] != tolerance or not finite(row["premium"]) or \
                 abs(row["premium"] - value) > tolerance:
             raise ValueError("Official premium regression failed")
@@ -95,47 +142,73 @@ def check_self_test(report):
     if found != set(expected):
         raise ValueError("Official premium coverage incomplete")
     clock = report.get("clock_checks", [])
-    if len(clock) != 4 or any(not check_clock(r["input"], r["effective"]) for r in clock):
+    expected_clock = [dict(S=100, K=100, T=t, sigma=.2, r=.03, q=.01) for t in [1/365, .25, 1, 3]]
+    if len(clock) != 4 or any(not exact_json(r["input"], c) or not check_clock(c, r["effective"])
+                             for r, c in zip(clock, expected_clock)):
         raise ValueError("Exact clock self-test failed")
     factory = report.get("factory_checks", [])
-    if len(factory) != 3 or {r["scheme"] for r in factory} != {0, 1, 2} or any(
+    if len(factory) != 3 or any(type(r["scheme"]) is not int for r in factory) or \
+            {r["scheme"] for r in factory} != {0, 1, 2} or any(
             r["same_prices"] is not True or not finite(r["fresh"]) or r["fresh"] != r["factory"] for r in factory):
         raise ValueError("Official factory parity failed")
     european = report.get("european_checks", [])
-    if len(european) != 9 or any(not finite(r["price"]) or
-            abs(r["price"] - european_put(r["input"])) > 1e-10 for r in european):
+    expected_european = [(scheme, dict(S=s, K=100, T=1, sigma=.2, r=0, q=0))
+                        for scheme in range(3) for s in [70, 100, 140]]
+    if len(european) != 9 or any(not exact_json(r["input"], c) or not finite(r["price"]) or
+            not finite(r["closed_form"]) or abs(r["closed_form"] - european_put(c)) > 1e-10 or
+            abs(r["price"] - european_put(c)) > 1e-10 or
+            (version.endswith("v2") and (type(r.get("scheme")) is not int or r["scheme"] != scheme))
+            for r, (scheme, c) in zip(european, expected_european)):
         raise ValueError("Independent European self-test failed")
 
 
 def summarize(native, corpus):
-    if native.get("schema") != "american-put-quantlib-comparator-v1" or native.get("quantlib_commit") != QUANTLIB_COMMIT:
+    version = native.get("schema")
+    if version not in {"american-put-quantlib-comparator-v1", "american-put-quantlib-comparator-v2"} or \
+            native.get("quantlib_commit") != QUANTLIB_COMMIT:
         raise ValueError("Unsupported native QuantLib report")
     cases = [dict(group=g["id"], S=s, **{k: g[k] for k in ["K", "T", "sigma", "r", "q"]})
              for g in corpus["groups"] for s in g["spots"]]
     count = len(cases)
     refs = native.get("references", [])
-    if native.get("cases") != cases or native.get("case_count") != count or len(refs) != count or \
-            native.get("group_count") != len(corpus["groups"]):
+    if not exact_json(native.get("cases"), cases) or type(native.get("case_count")) is not int or \
+            native["case_count"] != count or len(refs) != count or type(native.get("group_count")) is not int or \
+            native["group_count"] != len(corpus["groups"]):
         raise ValueError("Frozen case/model denominator mismatch")
     check_self_test(native.get("self_test", {}))
+    if version.endswith("v2") and native["self_test"]["schema"] != "atx-quantlib-api-self-test-v2":
+        raise ValueError("Missing versioned self-test identities")
+    if version.endswith("v2") and not exact_json(native.get("reference_options"), REFERENCE_OPTIONS):
+        raise ValueError("Changed/missing reference options")
+    for case, ref in zip(cases, refs):
+        check_price_status(ref.get("quantlib_high_precision"), ref.get("quantlib_status"))
+        check_price_status(ref.get("atx_refined"), ref.get("atx_status"))
+        closed = european_put(case) if case["r"] <= 0 and case["q"] >= 0 else None
+        if (closed is None and ref.get("closed_form") is not None) or (closed is not None and
+                (not finite(ref.get("closed_form")) or abs(ref["closed_form"] - closed) > 1e-10)):
+            raise ValueError("Changed/missing independent European reference")
     effective = native.get("effective_models", [])
     if len(effective) != len(corpus["groups"]):
         raise ValueError("Missing effective clock evidence")
     for original, model in zip(corpus["groups"], effective):
         expected = dict(S=original["spots"][0], **{k: original[k] for k in ["K", "T", "sigma", "r", "q"]})
-        if model.get("group") != original["id"] or model.get("input") != expected or \
+        if model.get("group") != original["id"] or not exact_json(model.get("input"), expected) or \
                 not check_clock(expected, model.get("effective", {})):
             raise ValueError("Effective model does not match frozen input")
     engines = native.get("engines", [])
-    if sorted(e.get("name", "") for e in engines) != ["atx_bulk_fast", "atx_default", "ql_accurate", "ql_fast"]:
+    options = dict(QL_OPTIONS, **ATX_OPTIONS) if version.endswith("v2") else dict(QL_OPTIONS,
+        atx_default="Reference 12/24/48/6,tol1e-10", atx_bulk_fast="Fast 7/8/32/2,tol1e-8")
+    if sorted(e.get("name", "") for e in engines) != sorted(options):
         raise ValueError("Missing/duplicate engine")
-    result = dict(schema="quantlib-american-comparison-summary-v1", case_count=count,
+    result = dict(schema="quantlib-american-comparison-summary-" + version[-2:], case_count=count,
         general_american_independent_method_reference=False,
         reference="Official QuantLib highPrecision, independently implemented ALO; cross-check refined ATX ALO",
         reference_resolution="Unresolved when implementations disagree by more than5% of the synthetic budget",
         engines=[], build=native.get("build"), affinity=native.get("affinity"))
     for engine in engines:
         name = engine["name"]
+        if not exact_json(engine.get("options"), options[name]):
+            raise ValueError("Changed/missing engine options")
         prices, reused = engine.get("cold_prices", []), engine.get("reused_prices", [])
         if len(prices) != count or len(reused) != count or prices != reused or price_digest(prices) != price_digest(reused):
             raise ValueError("Cold/reused output mismatch")
@@ -162,6 +235,10 @@ def summarize(native, corpus):
         for key in ["cold_status", "reused_status"]:
             if len(engine.get(key, [])) != count:
                 raise ValueError("Missing status denominator")
+            for price, status in zip(prices, engine[key]):
+                check_price_status(price, status)
+        if engine["cold_status"] != engine["reused_status"]:
+            raise ValueError("Cold/reused classification mismatch")
         for budget in [.001, .0001]:
             score = dict(resolved_pass=0, resolved_fail=0, reference_unresolved=0, numerical_failure=0,
                          max_abs_residual=None, failures=[])

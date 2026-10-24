@@ -12,6 +12,16 @@ import quantlib_comparator as comparator
 
 
 class ClockContractTests(unittest.TestCase):
+    def test_receipt_cannot_disguise_failed_prices_or_boolean_model_values(self):
+        comparator.check_price_status(0., "finite")
+        comparator.check_price_status(None, "unsupported contract")
+        for price, status in [(1., "failed"), (None, "finite"), (False, "finite"),
+                              (float("nan"), "nonfinite"), (None, ""), (None, True)]:
+            with self.assertRaises(ValueError):
+                comparator.check_price_status(price, status)
+        self.assertFalse(comparator.exact_json({"r": False}, {"r": 0.}))
+        self.assertFalse(comparator.exact_json({"explicit": 0}, {"explicit": False}))
+
     def test_date_conversion_must_preserve_requested_time_discount_and_variance(self):
         raw = dict(S=100., K=100., T=.25, sigma=.2, r=.03, q=.01)
         actual = dict(T=.25, r=.03, q=.01, variance=.01,
@@ -60,7 +70,8 @@ class NativeQuantLibTests(unittest.TestCase):
             for group in native["effective_models"]:
                 self.assertTrue(comparator.check_clock(group["input"], group["effective"]))
             self.assertEqual({e["name"] for e in native["engines"]},
-                             {"ql_fast", "ql_accurate", "atx_default", "atx_bulk_fast"})
+                             {"ql_fast", "ql_accurate", "atx_default", "atx_bulk_fast",
+                              "atx_accurate_fast", "atx_screen"})
             summary = comparator.summarize(native, corpus)
             self.assertFalse(summary["general_american_independent_method_reference"])
             self.assertTrue(all(e["attempted"] == 14 for e in summary["engines"]))
@@ -69,6 +80,25 @@ class NativeQuantLibTests(unittest.TestCase):
                 changed.pop(key)
                 with self.assertRaises(ValueError):
                     comparator.summarize(changed, corpus)
+            for field, value in [("options", {}), ("cold_status", ["failed"] * 14),
+                                 ("reused_status", [True] * 14)]:
+                changed = copy.deepcopy(native)
+                changed["engines"][0][field] = value
+                with self.assertRaises(ValueError, msg=field):
+                    comparator.summarize(changed, corpus)
+            changed = copy.deepcopy(native)
+            changed["references"][0]["quantlib_status"] = "failed"
+            with self.assertRaises(ValueError):
+                comparator.summarize(changed, corpus)
+            changed = copy.deepcopy(native)
+            changed["engines"][0]["cold_prices"][0] = True
+            changed["engines"][0]["reused_prices"][0] = True
+            with self.assertRaises(ValueError):
+                comparator.summarize(changed, corpus)
+            changed = copy.deepcopy(native)
+            changed["reference_options"]["atx_refined"]["tol"] = .1
+            with self.assertRaises(ValueError):
+                comparator.summarize(changed, corpus)
             changed = copy.deepcopy(native)
             changed["engines"][0].pop("cold_digests")
             with self.assertRaises(ValueError):
@@ -89,6 +119,20 @@ class NativeQuantLibTests(unittest.TestCase):
                 "--output", str(output)], capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(output.read_text())
+            comparator.check_self_test(report)
+            for group in ["official_checks", "clock_checks", "european_checks"]:
+                changed = copy.deepcopy(report)
+                changed[group][0]["input"]["K"] = 101.
+                with self.assertRaises(ValueError, msg=group):
+                    comparator.check_self_test(changed)
+                changed = copy.deepcopy(report)
+                changed[group][0] = copy.deepcopy(changed[group][1])
+                with self.assertRaises(ValueError, msg=group + " duplicate"):
+                    comparator.check_self_test(changed)
+            changed = copy.deepcopy(report)
+            changed["schema"] = "unknown"
+            with self.assertRaises(ValueError):
+                comparator.check_self_test(changed)
             self.assertEqual(report["quantlib_commit"], comparator.QUANTLIB_COMMIT)
             self.assertGreaterEqual(len(report["official_checks"]), 4)
             self.assertEqual(len(report["clock_checks"]), 4)

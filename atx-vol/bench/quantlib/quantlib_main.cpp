@@ -133,7 +133,7 @@ struct Market {
 }
 
 [[nodiscard]] Json self_test() {
-  Json report{{"schema", "atx-quantlib-api-self-test-v1"}, {"quantlib_commit", kCommit},
+  Json report{{"schema", "atx-quantlib-api-self-test-v2"}, {"quantlib_commit", kCommit},
               {"official_checks", Json::array()}, {"clock_checks", Json::array()},
               {"factory_checks", Json::array()}, {"european_checks", Json::array()}};
   // Selected published regressions from pinned test-suite/americanoption.cpp,
@@ -166,6 +166,7 @@ struct Market {
       const Contract european{spot, 100, 1, .2, 0, 0};
       Market m(european, fresh_scheme(scheme));
       report["european_checks"].push_back({{"input", contract_json(european)},
+          {"scheme", static_cast<unsigned>(scheme)},
           {"price", m.option.NPV()}, {"closed_form", european_put(european)}});
     }
   }
@@ -307,6 +308,16 @@ struct AtxMarket {
   return *value;
 }
 
+[[nodiscard]] Json atx_options_json(const std::optional<atx::vol::AlOpts> &options) {
+  auto resolved = options.value_or(atx::vol::al_fast_profile(std::nullopt));
+  if (!options) resolved.profile = atx::vol::AlProfile::Reference;
+  const auto profile = resolved.profile == atx::vol::AlProfile::Reference ? "Reference" :
+      resolved.profile == atx::vol::AlProfile::Fast ? "Fast" : "Screen";
+  return {{"n_collocation", resolved.n_collocation}, {"n_quadrature", resolved.n_quadrature},
+      {"n_quad_price", resolved.n_quad_price}, {"max_newton_iter", resolved.max_newton_iter},
+      {"tol", resolved.tol}, {"profile", profile}, {"explicit", options.has_value()}};
+}
+
 [[nodiscard]] Json benchmark(const std::filesystem::path &input, int reps,
     const std::optional<unsigned> &affinity, bool require_pcore) {
   const auto groups = read_groups(input);
@@ -331,13 +342,16 @@ struct AtxMarket {
     engines.push_back(measure(fast ? "ql_fast" : "ql_accurate", groups, cases.size(), reps, cold, factory,
         "engine-market-scheme; boundary recomputed per spot", options));
   }
-  for (const bool fast : {false, true}) {
-    const std::optional<atx::vol::AlOpts> opts = fast
-        ? std::optional(atx::vol::al_fast_profile(atx::vol::al_bulk_opts())) : std::nullopt;
+  struct AtxProfile { std::string_view name; std::optional<atx::vol::AlOpts> options; };
+  for (const auto &profile : {AtxProfile{"atx_default", std::nullopt},
+      AtxProfile{"atx_accurate_fast", atx::vol::al_fast_profile(std::nullopt)},
+      AtxProfile{"atx_screen", atx::vol::al_screen_opts()},
+      AtxProfile{"atx_bulk_fast", atx::vol::al_fast_profile(atx::vol::al_bulk_opts())}}) {
+    const auto &opts = profile.options;
     const auto cold = [&](const Contract &c) { return atx_price(c, opts); };
     const auto factory = [&](const Contract &c) { return AtxMarket(c, opts); };
-    engines.push_back(measure(fast ? "atx_bulk_fast" : "atx_default", groups, cases.size(), reps,
-        cold, factory, "solved boundary across spots", fast ? "Fast 7/8/32/2,tol1e-8" : "Reference 12/24/48/6,tol1e-10"));
+    engines.push_back(measure(profile.name, groups, cases.size(), reps,
+        cold, factory, "solved boundary across spots", atx_options_json(opts)));
   }
   const auto after = atx::vol::bench::sample_cpus();
   Json effective = Json::array(), references = Json::array();
@@ -361,9 +375,11 @@ struct AtxMarket {
   }
   Json build = atx::vol::bench::build_info_json();
   build["cmake_interprocedural_optimization"] = ATX_QUANTLIB_COMPARATOR_IPO != 0;
-  return {{"schema", "american-put-quantlib-comparator-v1"}, {"quantlib_commit", kCommit},
+  return {{"schema", "american-put-quantlib-comparator-v2"}, {"quantlib_commit", kCommit},
     {"case_count", cases.size()}, {"group_count", groups.size()}, {"cases", cases}, {"engines", engines},
     {"effective_models", effective}, {"references", references}, {"self_test", self_test()},
+    {"reference_options", {{"atx_refined", atx_options_json(ref_opts)},
+      {"quantlib_high_precision", {{"m", 10}, {"n", 30}, {"tanh_sinh_tolerance", 1e-10}, {"equation", "Auto"}}}}},
     {"general_american_independent_method_reference", false}, {"build", build},
     {"process_identity", atx::vol::bench::process_identity_json()},
     {"affinity", atx::vol::bench::affinity_json(affinity, require_pcore, before, after)}};

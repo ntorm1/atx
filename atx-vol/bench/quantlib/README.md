@@ -67,6 +67,8 @@ report carries the same self-test evidence, outside its measured clock.
 | `ql_accurate` | Official Legendre/tanh-sinh `(25,5,13,1e-8)`, Auto |
 | Reference only | Official highPrecision tanh-sinh `(m,n,eps)=(10,30,1e-10)`, Auto |
 | `atx_default` | Cold nullopt Reference, resolved 12/24/48/6, tolerance 1e-10 |
+| `atx_accurate_fast` | Same accurate 12/24/48/6 scheme on explicit Fast arithmetic |
+| `atx_screen` | Explicit Screen 7/16/48/5, tolerance 1e-8 |
 | `atx_bulk_fast` | Explicit Fast 7/8/32/2, tolerance 1e-8 |
 | Cross-check only | ATX Reference 32/64/64/32, tolerance 1e-14 |
 
@@ -94,6 +96,16 @@ and result counts must equal the frozen denominator. Exception/nonfinite paths
 remain measured attempts, so diagnostic-corpus timing is not a successful-price
 throughput statistic. Engine order is fixed; this is model-state cold, not a
 CPU-cache flush or fresh-process latency per individual contract.
+
+Native schema `american-put-quantlib-comparator-v2` adds the accurate Fast and
+Screen profiles and structured exact ATX/reference options. Self-test v2 labels
+each European fixture's scheme. The Python verifier still reads frozen v1
+reports with their original four-profile denominator; it does not silently add
+or remove profiles from historical receipts. It pins complete official input
+tuples, clock/European fixture identities, engine/reference options, finite/null
+price-status consistency and cold/reused classifications. Booleans cannot stand
+in for numeric prices or model metadata. The first immutable v1 receipts are
+documented in [the comparison report](../../docs/quantlib-american-comparison-20261024.md).
 
 ## Scoring limits
 
