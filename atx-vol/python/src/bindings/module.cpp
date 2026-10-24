@@ -1,8 +1,12 @@
 #include <exception>
+#include <string>
+#include <vector>
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include "atx/vol/api/core/version.hpp"
+#include "common.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;
@@ -64,4 +68,20 @@ PYBIND11_MODULE(_core, m) {
   // The quote-slice fit, typed query and one-spot rebase (lane C0). Its call signatures
   // take Side, which `bind_pricing` registers.
   bind_quote_slice(m);
+
+  // Reflection for the enum-completeness tests (common.hpp): {value: C++ name}.
+  m.def(
+      "_enum_names",
+      [](const std::string &name) {
+        const auto &registry = atxvol::python::enum_name_registry();
+        const auto it = registry.find(name);
+        if (it == registry.end()) throw py::key_error(name);
+        return it->second();
+      },
+      py::arg("name"));
+  m.def("_enum_name_registry", [] {
+    std::vector<std::string> names;
+    for (const auto &entry : atxvol::python::enum_name_registry()) names.push_back(entry.first);
+    return names;
+  });
 }
