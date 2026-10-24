@@ -1253,6 +1253,14 @@ void expect_native_calendar_repair_uses_retained_family(QuoteSliceDeamConfirmKer
   }
   EXPECT_LT(repair.result().al_price_calls, reference.result().al_price_calls);
   EXPECT_GT(repair.result().reimply_native_roots, 0u);
+  EXPECT_EQ(repair.result().reimply_uncached, c.quotes.size());
+  EXPECT_EQ(repair.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Native)], c.quotes.size());
+  EXPECT_EQ(repair.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Search)], 0u);
+  std::uint32_t accept_count = 0;
+  for (const auto count : repair.result().reimply_accept_by_kind) accept_count += count;
+  EXPECT_EQ(accept_count, repair.result().reimply_native_attempts);
   EXPECT_EQ(repair.result().reimply_batch_lanes, batch ? c.quotes.size() : 0u);
   EXPECT_EQ(repair.result().reimply_batch_hits, batch ? c.quotes.size() : 0u);
   if (batch && simd::use_avx2()) EXPECT_GT(repair.result().reimply_batch_avx2_calls, 0u);
@@ -1437,8 +1445,32 @@ TEST(QuoteSliceChannel, NativeReimplicationRejectsChangedModelsAndPreservesPrice
     fit->carry_curve = carry;
   }
   // Exercise/floor prices never enter the family window, and keep their interval.
-  const auto typed = detail::reimplied_vol(*fit, 150.0, Side::Put, 50.0,
-                                          QuoteSliceFloorPolicy::PriceOnly);
+  timing::ChainRecorder fallback;
+  const auto typed = [&] {
+    const timing::ChainScope scope(&fallback);
+    return detail::reimplied_vol(*fit, 150.0, Side::Put, 50.0,
+                                QuoteSliceFloorPolicy::PriceOnly);
+  }();
+  EXPECT_EQ(fallback.result().reimply_outside_window, 1u);
+  EXPECT_EQ(fallback.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Native)], 0u);
+  EXPECT_EQ(fallback.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Search)], 1u);
+  std::uint64_t stage_al = 0, stage_iv = 0;
+  for (const auto count : fallback.result().reimply_stage_al) stage_al += count;
+  for (const auto count : fallback.result().reimply_stage_iv) stage_iv += count;
+  EXPECT_EQ(stage_al, fallback.result().al_price_calls);
+  EXPECT_EQ(stage_iv, fallback.result().iv_newton_iters);
+  EXPECT_GT(stage_al, 0u);
+  EXPECT_EQ(fallback.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)],
+      fallback.result().reimply_search_nonmonotone);
+  RecordProperty("typed_search_al", fallback.result().reimply_stage_al[
+      static_cast<unsigned>(timing::ReimplyStage::Search)]);
+  RecordProperty("plain_search_al", fallback.result().reimply_stage_al[
+      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)]);
+  RecordProperty("plateau_al", fallback.result().reimply_stage_al[
+      static_cast<unsigned>(timing::ReimplyStage::Plateau)]);
   fit->reimply_context.reset();
   const auto plain = detail::reimplied_vol(*fit, 150.0, Side::Put, 50.0,
                                           QuoteSliceFloorPolicy::PriceOnly);

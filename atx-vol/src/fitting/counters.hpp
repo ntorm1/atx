@@ -1145,6 +1145,13 @@ inline constexpr const char *kBucketNames[kBucketCount] = {
 static_assert(every_name_present(kBucketNames),
               "fit_timing::kBucketNames is short: append the new Bucket's name in enum order");
 
+// Non-overlapping repaired-IV work, excluding batch preparation (reported separately).
+enum class ReimplyStage : unsigned { Native = 0, Search, Legacy, Nonmonotone, Plateau, Count_ };
+inline constexpr unsigned kReimplyStageCount = static_cast<unsigned>(ReimplyStage::Count_);
+inline constexpr const char *kReimplyStageNames[kReimplyStageCount] = {
+    "native", "search", "legacy", "nonmonotone", "plateau"};
+static_assert(every_name_present(kReimplyStageNames));
+
 // One chain's counters (the interface later lanes read by name).
 struct FitTimingCounters {
   std::uint32_t al_price_calls{0};       // AL boundary solves on the fitting thread (every AL
@@ -1165,6 +1172,21 @@ struct FitTimingCounters {
   std::uint32_t reimply_native_fallbacks{0};
   std::uint32_t reimply_native_fast_confirms{0};
   double reimply_native_max_bound_iv{0.0};
+  std::uint32_t reimply_cache_hits{0};
+  std::uint32_t reimply_uncached{0};
+  std::uint32_t reimply_no_context{0};
+  std::uint32_t reimply_outside_q{0};
+  std::uint32_t reimply_outside_window{0};
+  std::uint32_t reimply_search_nonmonotone{0};
+  std::uint32_t reimply_plateau_searches{0};
+  std::uint32_t reimply_envelope_covered{0};
+  // RootAcceptanceKind / RootAcceptanceReason, exactly as deam_accept_by_* below.
+  std::array<std::uint32_t, 5> reimply_accept_by_kind{};
+  std::array<std::uint32_t, 9> reimply_accept_by_reason{};
+  std::array<std::uint32_t, kReimplyStageCount> reimply_stage_calls{};
+  std::array<std::uint64_t, kReimplyStageCount> reimply_stage_al{};
+  std::array<std::uint64_t, kReimplyStageCount> reimply_stage_iv{};
+  std::array<std::uint64_t, kReimplyStageCount> reimply_stage_ns{};
   // Repaired publication's prepared work and actual consumption. Sub-clocks cover
   // preparation only; native acceptance can still do scalar fallback/confirm work.
   std::uint32_t reimply_batch_calls{0};

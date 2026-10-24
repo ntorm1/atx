@@ -3498,11 +3498,48 @@ void clear_identification(QuoteSliceRow &row) noexcept {
 
 namespace {
 
+// These scopes never nest: plateau work is charged at each classification call,
+// outside the inverse calls. Batch preparation has its own counters above. Reading
+// this thread's ledger also counts early exits, without adding work when unarmed.
+class ReimplyWorkScope {
+public:
+  explicit ReimplyWorkScope(counters::fit_timing::ReimplyStage stage) noexcept
+      : counts_(counters::fit_timing::current_counts()), index_(static_cast<unsigned>(stage)) {
+    if (counts_ == nullptr) return;
+    ++counts_->reimply_stage_calls[index_];
+    al_ = counters::ledger::this_thread(counters::ledger::Solve::AlBoundarySolves);
+    iv_ = counters::ledger::this_thread(counters::ledger::Solve::IvNewtonIters);
+    start_ = Clock::now();
+  }
+  ~ReimplyWorkScope() {
+    if (counts_ == nullptr) return;
+    const auto ns = (Clock::now() - start_) / std::chrono::nanoseconds{1};
+    counts_->reimply_stage_ns[index_] += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    counts_->reimply_stage_al[index_] +=
+        counters::ledger::this_thread(counters::ledger::Solve::AlBoundarySolves) - al_;
+    counts_->reimply_stage_iv[index_] +=
+        counters::ledger::this_thread(counters::ledger::Solve::IvNewtonIters) - iv_;
+  }
+  ReimplyWorkScope(const ReimplyWorkScope &) = delete;
+  ReimplyWorkScope &operator=(const ReimplyWorkScope &) = delete;
+  ReimplyWorkScope(ReimplyWorkScope &&) = delete;
+  ReimplyWorkScope &operator=(ReimplyWorkScope &&) = delete;
+
+private:
+  using Clock = std::chrono::steady_clock;
+  counters::fit_timing::FitTimingCounters *counts_;
+  unsigned index_;
+  std::uint64_t al_ = 0;
+  std::uint64_t iv_ = 0;
+  Clock::time_point start_{};
+};
+
 // True when certified `price` lies in the Andersen-Lake kernel's non-monotone band and
 // the spot sits in the kernel's exercise region at `sigma` (al_non_monotone_region):
 // the exercise plateau, where every such volatility prices the exercise value.
 bool on_plateau(const QuoteSliceFit &fit, double strike, Side side, double price, double q,
                 double sigma) noexcept {
+  const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Plateau);
   return al_non_monotone_region(price, fit.market.spot, strike, fit.market.variance_years,
                                 fit.diagnostics.effective_rate, q, side, sigma, fit.al_opts);
 }
@@ -3512,6 +3549,9 @@ bool on_plateau(const QuoteSliceFit &fit, double strike, Side side, double price
 // does. Bounded bisection (24 halvings cover [kIvMin, kIvMax] to 1e-6).
 double plateau_edge(const QuoteSliceFit &fit, double strike, Side side, double price, double q,
                     double from) noexcept {
+  if (auto *const counts = counters::fit_timing::current_counts()) {
+    ++counts->reimply_plateau_searches;
+  }
   if (on_plateau(fit, strike, side, price, q, kIvMax)) return kIvMax;
   double lo = from;
   double hi = kIvMax;
@@ -3541,14 +3581,23 @@ VolIdentification identified(double volatility) noexcept {
 std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double strike, Side side,
     double price, double q, const IvOpts &opts, const IvPremiumPrepared *prepared) {
   const auto &context = fit.reimply_context;
+  auto *const counts = counters::fit_timing::current_counts();
   if (!context || fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
-      context->model != reimply_model_key(fit)) return std::nullopt;
-  const AlSigmaQFamily *const family = context->families->of_q(side);
-  if (family == nullptr || q < family->q_lo() || q > family->q_hi() ||
-      !iv_premium_native_window(price, fit.market.spot, strike, fit.market.variance_years,
-                                fit.diagnostics.effective_rate, q, side, fit.al_opts)) {
+      context->model != reimply_model_key(fit)) {
+    if (counts != nullptr) ++counts->reimply_no_context;
     return std::nullopt;
   }
+  const AlSigmaQFamily *const family = context->families->of_q(side);
+  if (family == nullptr || q < family->q_lo() || q > family->q_hi()) {
+    if (counts != nullptr) ++counts->reimply_outside_q;
+    return std::nullopt;
+  }
+  if (!iv_premium_native_window(price, fit.market.spot, strike, fit.market.variance_years,
+                                fit.diagnostics.effective_rate, q, side, fit.al_opts)) {
+    if (counts != nullptr) ++counts->reimply_outside_window;
+    return std::nullopt;
+  }
+  const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Native);
   IvOpts native = opts;
   native.seed_profile = AlProfile::Screen; // enables the native gate; no seed solve on a hit
   IvReferenceBudget no_reference; // zero calls/evaluations: fall back without extra solves
@@ -3572,8 +3621,14 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
       (stats.acceptance.kind == RootAcceptanceKind::Confirmed ||
        stats.acceptance.kind == RootAcceptanceKind::Skipped) &&
       stats.acceptance.bound_iv >= 0.0 && stats.acceptance.bound_iv <= opts.tol;
-  if (auto *const counts = counters::fit_timing::current_counts()) {
+  if (counts != nullptr) {
+    static_assert(decltype(counts->reimply_accept_by_kind){}.size() == kRootAcceptanceKindCount);
+    static_assert(decltype(counts->reimply_accept_by_reason){}.size() == kRootAcceptanceReasonCount);
     ++counts->reimply_native_attempts;
+    ++counts->reimply_accept_by_kind[static_cast<unsigned>(stats.acceptance.kind)];
+    ++counts->reimply_accept_by_reason[static_cast<unsigned>(stats.acceptance.reason)];
+    const auto *const env = context->families->q_envelope(side);
+    if (env != nullptr && env->covered()) ++counts->reimply_envelope_covered;
     if (stats.confirm_profile == AlProfile::Fast) {
       counts->reimply_native_fast_confirms += stats.confirm_solves;
     }
@@ -3619,9 +3674,15 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
           entry->price_only == price_only &&
           std::bit_cast<std::uint64_t>(entry->price) == std::bit_cast<std::uint64_t>(price) &&
           std::bit_cast<std::uint64_t>(entry->q) == std::bit_cast<std::uint64_t>(q_effective) &&
-          context.model == reimply_model_key(fit)) return entry->id;
+          context.model == reimply_model_key(fit)) {
+        if (auto *const counts = counters::fit_timing::current_counts()) {
+          ++counts->reimply_cache_hits;
+        }
+        return entry->id;
+      }
     }
   }
+  if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_uncached;
   QuoteSliceConfig query;
   query.discrete_div_steps = fit.discrete_div_steps;
   const QuoteSliceQuote contract{strike, side, price, price, {}};
@@ -3629,7 +3690,10 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   const bool typed = policy == QuoteSliceFloorPolicy::PriceOnly;
   if (!typed || fit.dividend_model == QuoteSliceDividendModel::DatedCash) {
     // The historical rule (and the lattice, which has no non-monotone refusal).
-    const auto iv = contract_iv(fit, contract, price, query, q_effective);
+    const auto iv = [&] {
+      const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Legacy);
+      return contract_iv(fit, contract, price, query, q_effective);
+    }();
     if (!iv || !positive(*iv)) return unidentified;
     if (typed && at_vol_floor(*iv)) return floor_vol(fit, strike, side, price);
     return identified(*iv);
@@ -3647,17 +3711,24 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts, prepared)) {
     return identified(*root);
   }
-  const IvResult answer = american_implied_vol(price, fit.market.spot, strike,
-                                               fit.market.variance_years,
-                                               fit.diagnostics.effective_rate, q_effective, side,
-                                               opts);
+  const IvResult answer = [&] {
+    const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Search);
+    return american_implied_vol(price, fit.market.spot, strike, fit.market.variance_years,
+                                fit.diagnostics.effective_rate, q_effective, side, opts);
+  }();
   if (answer.status == IvStatus::Ok && positive(answer.iv)) {
     return at_vol_floor(answer.iv) ? floor_vol(fit, strike, side, price)
                                    : identified(answer.iv);
   }
   if (answer.status != IvStatus::NonMonotoneRegion) return unidentified;
+  if (auto *const counts = counters::fit_timing::current_counts()) {
+    ++counts->reimply_search_nonmonotone;
+  }
   // Refused inside the non-monotone band: the plain root says why.
-  const auto root = contract_iv(fit, contract, price, query, q_effective);
+  const auto root = [&] {
+    const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Nonmonotone);
+    return contract_iv(fit, contract, price, query, q_effective);
+  }();
   if (!root || !positive(*root)) return unidentified;
   if (at_vol_floor(*root)) return floor_vol(fit, strike, side, price);
   VolIdentification id;
