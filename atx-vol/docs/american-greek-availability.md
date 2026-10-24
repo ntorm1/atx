@@ -71,3 +71,18 @@ also pass the PCH-off build. Evidence is `repair-iv/greek-producer-*` and
 `repair-iv/greek-record-*`. A separate shared-consumer regression remains RED
 until the next component: this producer change does not yet enforce metadata in
 the old finite-only caller gates.
+The first producer component now stamps cold FD, scalar/prepared AL, and both
+direct AVX2 kernels as `ComputedEstimate` for their actual computed groups. The
+AL-to-FD fallback narrows metadata to the caller's solve needs without changing
+the legacy numeric slots. All pricing, stencil and PDE arithmetic is unchanged;
+the known near-edge and deep-exercise numerical counterexamples remain open for
+the subsequent admission component. This is not completed consumer propagation.
+
+A new runtime test failed on the previously empty metadata, then passed across
+both sides, full/base masks, prepared geometry, the European fallback and direct
+AVX2 kernels. Together with six schema tests and three existing batch tests,
+10 tests pass. PCH-off checks pass for both producer sources and the owning test.
+Evidence: `acceptance/cold-greek-admission-red.xml`,
+`acceptance/cold-greek-metadata-green.xml`, and
+`acceptance/cold-greek-metadata-hygiene.log`. The separate numerical-admission
+regressions in the RED receipt are intentionally not claimed fixed here.

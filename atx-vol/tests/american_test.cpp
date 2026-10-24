@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -19,6 +21,8 @@
 #include "atx/vol/api/pricing/american_iv.hpp" // american_implied_vol (AlFastProfile IV bound)
 #include "pricing/american_boundary.hpp" // amer:: boundary seam (REVL1-F2 seed check)
 #include "pricing/american_detail.hpp"
+#include "simd/american_greeks_avx2.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
@@ -2772,6 +2776,62 @@ int median_of(std::vector<int> v) {
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
 }
+TEST(AmericanGreekMetadata, ColdScalarPreparedAndSimdStampActualRequests) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  constexpr auto base = GreekFieldMask::Price | GreekFieldMask::Delta |
+                        GreekFieldMask::Gamma | GreekFieldMask::Theta;
+  const auto check = [](const AmericanGreeks &g, GreekFieldMask requested) {
+    EXPECT_EQ(g.requested, requested);
+    EXPECT_EQ(g.supported, requested);
+    const std::array<double, 9> values{g.delta, g.gamma, g.vega, g.theta, g.rho,
+                                      g.vanna, g.volga, g.charm, g.price};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      const auto bit = static_cast<GreekFieldMask>(1u << i);
+      const bool wanted = atx::vol::has_field(requested, bit);
+      EXPECT_EQ(g.reasons[i], wanted ? AmericanGreekReason::ComputedEstimate
+                                     : AmericanGreekReason::NotRequested);
+      if (wanted) EXPECT_TRUE(std::isfinite(values[i]));
+    }
+  };
+  for (const Side side : {Side::Put, Side::Call}) {
+    constexpr double S = 100., K = 100., T = 1., sigma = .3, r = .04, q = .02;
+    const auto fd = american_greeks_fd(S, K, T, sigma, r, q, side);
+    ASSERT_TRUE(fd);
+    check(*fd, GreekFieldMask::All);
+    atx::vol::AlExpiryGeometry geometry;
+    geometry.prepare(T, r, q);
+    for (const bool extras : {false, true}) {
+      const auto requested = extras ? GreekFieldMask::All : base;
+      const auto scalar = american_greeks_al(S, K, T, sigma, r, q, side,
+                                             std::nullopt, extras, extras, extras);
+      ASSERT_TRUE(scalar);
+      check(*scalar, requested);
+      const auto prepared = american_greeks_al(geometry, S, K, sigma, side,
+                                               extras, extras, extras);
+      ASSERT_TRUE(prepared);
+      check(*prepared, requested);
+      if (atx::vol::simd::have_avx2()) {
+        AmericanGreeks lane;
+        bool handled = false;
+        const auto kernel = side == Side::Put
+                                ? atx::vol::simd::detail::american_put_greeks_batch_avx2
+                                : atx::vol::simd::detail::american_call_greeks_batch_avx2;
+        kernel(&S, &K, &T, &sigma, &r, &q, 1, std::nullopt, &lane, &handled,
+               {.vega=extras, .rho=extras, .charm=extras});
+        ASSERT_TRUE(handled);
+        check(lane, requested);
+      }
+    }
+  }
+  // AL's European fallback computes the full FD bundle internally. Its public
+  // request still supplies only the requested cost groups.
+  const auto fallback = american_greeks_al(100., 100., 1., .3, .04, 0., Side::Call,
+                                           std::nullopt, false, false, false);
+  ASSERT_TRUE(fallback);
+  check(*fallback, base);
+}
+
 } // namespace
 TEST(BoundaryHoist, SeedSpike_SweepCount) {
   using atx::vol::detail::al_boundary_jn_sweeps_to_converge;

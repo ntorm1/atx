@@ -5066,6 +5066,8 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   out.vanna = (p_SpVp - p_SpVm - p_SmVp + p_SmVm) / (4.0 * hS * hv);
   // charm = d2P/dS dt = -d2P/dS dT.
   out.charm = -(p_SpTp - p_SpTm - p_SmTp + p_SmTm) / (2.0 * hS * dT_den);
+  detail::mark_american_greek_fields(out, GreekFieldMask::All,
+                                      AmericanGreekReason::ComputedEstimate);
   return Ok(out);
 }
 
@@ -5138,6 +5140,13 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks_al: S, K, T, sigma must be > 0");
   }
+  const auto requested = detail::american_greek_request(need_vega, need_rho, need_charm);
+  const auto fd_fallback = [&]() {
+    auto result = american_greeks_fd(S, K, T, sigma, r, q, side,
+        AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
+    if (result) detail::narrow_american_greek_request(*result, requested);
+    return result;
+  };
   // Native analytic route for genuine early exercise on BOTH sides. Under the
   // McDonald-Schroder map C(S,K,r,q) = P(K,S,q,r) a call reduces to an internal put
   // with (rate=q, yield=r); a put is the internal put itself, (rate=r, yield=q). So
@@ -5148,8 +5157,7 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
   const bool is_call = (side == Side::Call);
   const double al_rate = is_call ? q : r; // internal-put short rate
   if (al_rate <= 0.0 || T <= 1.0e-12 || sigma <= 1.0e-8) {
-    return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
-                              /*warm_start=*/false);
+    return fd_fallback();
   }
 
   // Boundaries: the base (spot-independent, so delta/gamma are EXACT finite
@@ -5177,8 +5185,7 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
   // Only the r± stencils bump the put short rate, so this regime guard only matters when
   // rho is requested (K4 first-order tier: a hedge {delta} bundle skips r± entirely).
   if (need_rho && !is_call && r - hr <= 0.0) {
-    return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
-                              /*warm_start=*/false);
+    return fd_fallback();
   }
 
   // Internal-put boundary solves. For a PUT the boundary is spot-independent (strike
@@ -5215,8 +5222,7 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
                 (solve(brm, wrm, sigma, -hr) == AlSolveStatus::Ok);
   }
   if (!bundle_ok) {
-    return american_greeks_fd(S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts,
-                              /*warm_start=*/false);
+    return fd_fallback();
   }
 
   // Price at spot stencil S2 on a given solved boundary (its own sigma/r). The PUT
@@ -5286,6 +5292,7 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
                   0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
     }
   }
+  detail::mark_american_greek_fields(out, requested, AmericanGreekReason::ComputedEstimate);
   return Ok(out);
 }
 

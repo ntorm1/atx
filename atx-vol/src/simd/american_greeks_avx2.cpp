@@ -23,6 +23,7 @@
 #include "american_greeks_avx2.hpp"
 
 #include "american_boundary_avx2_kernel.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 #include "atx/vol/api/pricing/american.hpp" // AmericanGreeks, classify_regime, ExerciseRegime
 #include "fitting/counters.hpp" // BoundarySolves + always-on SIMD-invariant solve ledger
@@ -275,6 +276,9 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             if (!ok) {
                 continue;
             }
+            atx::vol::detail::mark_american_greek_fields(g,
+                atx::vol::detail::american_greek_request(need_vega, need_rho, need_charm),
+                AmericanGreekReason::ComputedEstimate);
             out_greeks[base + l] = g;
             handled[base + l] = true;
             ATX_VOL_COUNT_N(BoundarySolves, bundle_solves);
@@ -497,6 +501,9 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             if (!ok) {
                 continue;
             }
+            atx::vol::detail::mark_american_greek_fields(g,
+                atx::vol::detail::american_greek_request(need_vega, need_rho, need_charm),
+                AmericanGreekReason::ComputedEstimate);
             out_greeks[base + l] = g;
             handled[base + l] = true;
             ATX_VOL_COUNT_N(BoundarySolves, bundle_solves);
