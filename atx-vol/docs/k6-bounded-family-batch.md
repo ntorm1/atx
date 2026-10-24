@@ -50,3 +50,12 @@ Family construction is excluded. Set `ATX_K6_COST=1`; run only that test from
 `build-vol-rel-avx2/bin/atx-vol-pricing-slice.exe` on a quiet pinned core. Round zero
 warms the code; later rounds are the measured repeated-pricing workload. This is not
 a cold-fit benchmark. The printed results cannot establish whole-fit improvement.
+
+The first pinned ThinLTO probe used clean commit `29da16c5`, logical CPU 6, with
+SMT sibling 7 measured idle throughout. Its raw post-warmup paired speedups were
+1.51–1.94x for puts and 1.39–1.46x for calls. Absolute batch-time sample CVs were
+15.38% and 9.12%, respectively, so the 5% stability gate rejects a qualified
+aggregate. These are isolated observations, not a promoted performance number.
+`isolated-receipt.json` records executable SHA, source identity, affinity and CPU
+activity; `isolated-cost.txt` retains every round. Full-fit timing must separately
+account for scalar retries and unchanged downstream confirmation work.
