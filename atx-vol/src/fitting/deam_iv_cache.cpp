@@ -1128,6 +1128,8 @@ void DeAmIvView::prepare_native_batch(bool include_bands) {
     timing->deam_batch_calls += ft::detail::saturate(work.calls);
     timing->deam_batch_lanes += ft::detail::saturate(work.lanes);
     timing->deam_batch_avx2_calls += ft::detail::saturate(work.avx2_calls);
+    timing->deam_batch_family_prices += work.family_batch_prices;
+    timing->deam_batch_family_retry_prices += work.family_retry_prices;
     timing->deam_batch_confirms += ft::detail::saturate(work.decisive);
     timing->deam_sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Lane)] += work.lane_ns;
     timing->deam_sub_ns[static_cast<std::size_t>(IvPremiumSubClock::FamilyAccept)] +=

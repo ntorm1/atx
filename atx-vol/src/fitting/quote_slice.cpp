@@ -1283,6 +1283,8 @@ std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
     counts->reimply_batch_calls += ft::detail::saturate(work.calls);
     counts->reimply_batch_lanes += ft::detail::saturate(work.lanes);
     counts->reimply_batch_avx2_calls += ft::detail::saturate(work.avx2_calls);
+    counts->reimply_batch_family_prices += work.family_batch_prices;
+    counts->reimply_batch_family_retry_prices += work.family_retry_prices;
     counts->reimply_batch_lane_ns += work.lane_ns;
     counts->reimply_batch_family_ns += work.family_ns;
     counts->reimply_batch_confirm_ns += work.confirm_ns;

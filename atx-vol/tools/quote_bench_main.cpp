@@ -860,6 +860,14 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
   for (unsigned r = 0; r < ft::kDeamReasonCount; ++r) {
     deam_al_by_reason[ft::kDeamReasonNames[r]] = t.deam_al_by_reason[r];
   }
+  Json reimply_stages = Json::object();
+  for (unsigned s = 0; s < ft::kReimplyStageCount; ++s) {
+    reimply_stages[ft::kReimplyStageNames[s]] = {
+        {"calls", t.reimply_stage_calls[s]},
+        {"boundary_solves", t.reimply_stage_al[s]},
+        {"iv_iterations", t.reimply_stage_iv[s]},
+        {"elapsed_ns", t.reimply_stage_ns[s]}};
+  }
   return {{"wall_us", t.wall_us}, {"deam_us", t.deam_us}, {"solve_us", t.solve_us},
           {"project_us", t.project_us}, {"price_us", t.price_us},
           {"certify_us", t.certify_us}, {"calendar_us", t.calendar_us},
@@ -870,11 +878,26 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_native_fallbacks", t.reimply_native_fallbacks},
           {"reimply_native_fast_confirms", t.reimply_native_fast_confirms},
           {"reimply_native_max_bound_iv", t.reimply_native_max_bound_iv},
+          {"reimply_cache_hits", t.reimply_cache_hits},
+          {"reimply_uncached", t.reimply_uncached},
+          {"reimply_no_context", t.reimply_no_context},
+          {"reimply_outside_q", t.reimply_outside_q},
+          {"reimply_outside_window", t.reimply_outside_window},
+          {"reimply_search_nonmonotone", t.reimply_search_nonmonotone},
+          {"reimply_plateau_searches", t.reimply_plateau_searches},
+          {"reimply_envelope_covered", t.reimply_envelope_covered},
+          {"reimply_accept_by_kind", t.reimply_accept_by_kind},
+          {"reimply_accept_by_reason", t.reimply_accept_by_reason},
+          {"reimply_stages", std::move(reimply_stages)},
           {"reimply_batch_calls", t.reimply_batch_calls},
           {"reimply_batch_lanes", t.reimply_batch_lanes},
           {"reimply_batch_avx2_calls", t.reimply_batch_avx2_calls},
           {"reimply_batch_hits", t.reimply_batch_hits},
           {"reimply_batch_confirm_hits", t.reimply_batch_confirm_hits},
+          {"reimply_batch_family_prices", t.reimply_batch_family_prices},
+          {"reimply_batch_family_retry_prices", t.reimply_batch_family_retry_prices},
+          {"deam_batch_family_prices", t.deam_batch_family_prices},
+          {"deam_batch_family_retry_prices", t.deam_batch_family_retry_prices},
           {"reimply_batch_lane_ns", t.reimply_batch_lane_ns},
           {"reimply_batch_family_ns", t.reimply_batch_family_ns},
           {"reimply_batch_confirm_ns", t.reimply_batch_confirm_ns},

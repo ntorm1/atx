@@ -1194,6 +1194,10 @@ struct FitTimingCounters {
   std::uint32_t reimply_batch_avx2_calls{0};
   std::uint32_t reimply_batch_hits{0};
   std::uint32_t reimply_batch_confirm_hits{0};
+  std::uint32_t reimply_batch_family_prices{0}; // subset of prepared family prices
+  std::uint32_t reimply_batch_family_retry_prices{0}; // subset spent by scalar retry
+  std::uint32_t deam_batch_family_prices{0}; // initial native prepared family batch
+  std::uint32_t deam_batch_family_retry_prices{0}; // initial scalar enclosure retries
   std::uint64_t reimply_batch_lane_ns{0};
   std::uint64_t reimply_batch_family_ns{0};
   std::uint64_t reimply_batch_confirm_ns{0};
