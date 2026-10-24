@@ -29,6 +29,9 @@
 // that the ON build is still representative (it is a diagnostic build, not the
 // baseline build).
 //
+// (The runtime-armed per-chain fit timing plane, `fit_timing`, is at the end of
+// this file; it is not behind this gate.)
+//
 // ## Usage
 //
 //   #include "fitting/counters.hpp"
@@ -1022,6 +1025,13 @@ inline void bump(Solve s, std::uint64_t n = 1) noexcept {
   cell.store(cell.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
 }
 
+// The CALLING thread's own tally of `s` (no lock, no merge): a relaxed load of the
+// thread's block. For per-thread deltas around work that stays on this thread
+// (fit_timing below); a fit that fans work out to other threads is not seen.
+[[nodiscard]] inline std::uint64_t this_thread(Solve s) noexcept {
+  return detail::t_reg.block.v[static_cast<unsigned>(s)].load(std::memory_order_relaxed);
+}
+
 // Merge retired + every live block into a plain-value Counts. Takes the registry
 // lock; call at a step/board boundary, never inside the priced fan-out.
 [[nodiscard]] inline Counts snapshot() noexcept {
@@ -1094,5 +1104,462 @@ private:
 };
 
 } // namespace ledger
+
+// ── Per-chain fit timing (L1 fit profile, 2026-10-18) — opt-in, slot-local ────
+//
+// Attributes one expiry chain's quote-slice fit wall and work to its stages:
+//   deam     — American IV inversions of the quotes (point admission mid IVs, channel
+//              bid/ask/mid IVs) and the channel floor/cap prices;
+//   solve    — the curve solve (point fit_slice_curve, channel native/family solve);
+//   project  — the channel projection (project_in_channel);
+//   price    — the certification grid reprice (two American prices per strike);
+//   certify  — the AmericanPriceSlice certificate, its repairs and row re-implication;
+//   calendar — calendar pair checks and calendar repairs;
+//   other    — everything else charged to the chain (preparation, containment, ...).
+// Buckets are EXCLUSIVE, not inclusive: a scope opened inside another charges its own
+// time and the outer bucket resumes on exit, so the seven buckets partition the
+// chain's wall. One cross-cut sits beside them: repair_rung_us, the INCLUSIVE wall of
+// the surface fitter's repair rungs (RepairRungScope), which overlaps the buckets.
+//
+// Zero cost when off. This is the solve ledger's StepTrace/StepScope discipline, not
+// the compile-time gate (the tool must stay the shipping build): nothing is armed
+// by default, and a producer scope or count() is one thread_local pointer load and
+// a branch — no clock read, no atomic, no allocation, no change to any value the
+// fit computes. A surface fitter arms its per-expiry recorders only when its CALLER
+// armed a SurfaceTrace on the calling thread (quote-bench --timing-detail).
+//
+// Threading: one ChainRecorder per expiry, a per-expiry slot owned by the surface
+// fitter and written only by the thread fitting that expiry while a ChainScope for
+// it is open on that thread (t_chain names the slot). There is no shared mutable
+// accumulator, so a fan-out over expiries stays race-free. AL work is read from the
+// calling thread's own solve-ledger block, so work a fit hands to OTHER threads is
+// not counted (attribution runs use fit_workers = 1).
+namespace fit_timing {
+
+enum class Bucket : unsigned { Other = 0, Deam, Solve, Project, Price, Certify, Calendar, Count_ };
+
+inline constexpr unsigned kBucketCount = static_cast<unsigned>(Bucket::Count_);
+inline constexpr const char *kBucketNames[kBucketCount] = {
+    "other", "deam", "solve", "project", "price", "certify", "calendar"};
+
+static_assert(every_name_present(kBucketNames),
+              "fit_timing::kBucketNames is short: append the new Bucket's name in enum order");
+
+// One chain's counters (the interface later lanes read by name).
+struct FitTimingCounters {
+  std::uint32_t al_price_calls{0};       // AL boundary solves on the fitting thread (every AL
+                                         // price, including those inside American IV inversions)
+  std::uint32_t al_greeks_calls{0};      // AL full-Greek bundles (any route) on that thread
+  std::uint32_t certification_passes{0}; // certify_and_serve runs (each a full American reprice)
+  std::uint32_t channel_solves{0};       // channel objective solves started (native or family)
+  std::uint32_t jacobian_evals{0};       // channel solver iterations of the solves that returned
+                                         // (native: Newton steps; family: refits of the family)
+  std::uint32_t rung_attempts{0};        // per-expiry fits the surface fitter ran for the chain
+  std::uint32_t calendar_pairs{0};       // check_american_calendar pairs charged to the chain
+  std::uint32_t projections{0};          // project_in_channel calls
+  std::uint32_t iv_newton_iters{0};      // American IV inversion iterations (solve ledger)
+  std::uint64_t wall_us{0};              // the sum of the seven exclusive buckets below
+  std::uint64_t deam_us{0};
+  std::uint64_t solve_us{0};
+  std::uint64_t project_us{0};
+  std::uint64_t price_us{0};
+  std::uint64_t certify_us{0};
+  std::uint64_t calendar_us{0};
+  std::uint64_t other_us{0};
+  std::array<std::uint32_t, kBucketCount> al_by_bucket{}; // al_price_calls split by Bucket
+  // Cross-cut, NOT a bucket: the surface fitter's repair rungs (repair_rung /
+  // ladder_repair_rung) INCLUSIVE of every bucket their refits charge; not in wall_us.
+  std::uint32_t repair_rung_visits{0}; // repair-rung visits of the chain
+  std::uint64_t repair_rung_us{0};     // their inclusive wall
+  // De-Am IV cache inversions (lane L2e; VolChannel only, zero otherwise): count, the AL
+  // boundary solves inside them (fallbacks included) and the most one inversion spent;
+  // the Premium attempts, their fallbacks to Search by IvPremiumFallback reason
+  // (index = enum value) and the largest last-solve price residual (USD) of an accepted
+  // Premium root.
+  std::uint32_t deam_inversions{0};
+  std::uint32_t deam_inversion_al{0};
+  std::uint32_t deam_inversion_al_max{0};
+  std::uint32_t deam_premium{0};
+  std::uint32_t deam_premium_fallbacks{0};
+  std::array<std::uint32_t, 8> deam_premium_fallback_by_reason{};
+  double deam_premium_max_residual_usd{0.0};
+  // Opt-in audit (arm_deam_audit): each Premium inversion is ALSO run on Search and the
+  // pair compared; |sigma_premium - sigma_search| histogram by decade (bin 0: exactly
+  // 0; bin b in 1..16: [1e-(17-b), 1e-(16-b)), bin 1 open below, bin 16 open above).
+  std::uint32_t deam_audit_pairs{0};
+  std::uint32_t deam_audit_status_mismatch{0}; // one Ok and the other not
+  double deam_audit_max_dsigma{0.0};
+  std::array<std::uint32_t, 17> deam_audit_dsigma_decades{};
+  // Pairs that differ: each answer's Newton distance |P_am(sigma) - target| / slope on
+  // the accurate map (slope = the map's chord between the two answers; two extra
+  // solves per differing pair), the largest of each, and how many pairs have Search
+  // farther from the accurate root than Premium.
+  double deam_audit_max_newton_premium{0.0};
+  double deam_audit_max_newton_search{0.0};
+  std::uint32_t deam_audit_search_farther{0};
+  // Seed-tier wiring (SPY1s Phase 1, 2026-10-20; QuoteSliceDeamProfile::Screen): the
+  // cache's AL boundary solves by reason (index = DeamReason; the brief's four plus the
+  // band gate's chord solve and the Search route's solves, fallbacks included), the
+  // confirms done and skipped, the ambiguous band edges re-priced accurately, the
+  // inversions routed to accurate iterates by the seed tier's non-monotone gate, and the
+  // largest gate bound (eps_A + eps_r) / v_min (vol) of a skipped root.
+  std::array<std::uint32_t, 7> deam_al_by_reason{};
+  std::uint32_t deam_confirms{0}; // confirming SOLVES (= deam_al_by_reason confirm), not roots
+  std::uint32_t deam_confirms_skipped{0};
+  std::uint32_t deam_ambiguous_edges{0};
+  std::uint32_t deam_seed_routed{0};
+  double deam_gate_max_bound_vol{0.0};
+  // --deam-audit, skipped confirms only: pairs and the largest accurate-map Newton
+  // distance of a root accepted without a confirm (the band gate's or, lane K3, a family
+  // envelope enclosure's).
+  std::uint32_t deam_audit_skipped_pairs{0};
+  double deam_audit_max_newton_skipped{0.0};
+  // Lane K3 (pricing/american_family_error.hpp): the Premium roots by typed acceptance kind
+  // (index = RootAcceptanceKind; None = no family-route root and no skip) and reason (index
+  // = RootAcceptanceReason), and, under --deam-audit, every served typed root re-solved by
+  // bisection on the accurate map to 1e-9: roots audited, references not bracketed,
+  // |served - reference| > kIvRootRequirement (violations), and the largest distance (vol)
+  // of a Skipped and of a Confirmed root. Per root: ATX_VOL_FAMILY_ROOT_AUDIT.
+  std::array<std::uint32_t, 5> deam_accept_by_kind{};
+  std::array<std::uint32_t, 9> deam_accept_by_reason{};
+  std::uint32_t deam_audit_bracket_roots{0};
+  std::uint32_t deam_audit_bracket_unresolved{0};
+  std::uint32_t deam_audit_bracket_violations{0};
+  double deam_audit_bracket_max_skipped{0.0};
+  double deam_audit_bracket_max_confirmed{0.0};
+  // Sigma-family iterates (SPY1s Phase 2; QuoteSliceDeamFamily): families built and the
+  // wall of their node solves (NOT in al_price_calls' reason split: built outside any
+  // inversion), iterates priced on a family, Premium attempts a family refused.
+  std::uint32_t deam_family_builds{0};
+  std::uint64_t deam_family_build_us{0};
+  std::uint32_t deam_family_prices{0};
+  std::uint32_t deam_family_refused{0};
+  // grid_kernel Family (step 5): certification-grid prices served by a (sigma, q) family,
+  // and those priced on Fast instead (no family of the side, a refusal, a bound over the
+  // node's allowance).
+  std::uint32_t deam_family_grid_prices{0};
+  std::uint32_t deam_family_grid_cold{0};
+  // The native fit route (lane K4; deam_native_route, zero otherwise; review-K2 m8: no
+  // native non-acceptance collapses into deam_family_refused). Per request: the family-native
+  // lane's typed outcome (index = iv_batch::InverseStatus; Inactive = no lane ran) and the
+  // route's typed outcome (index = IvRouteOutcome), the lanes started from a retained carry,
+  // the bounded reference route's requests, kernel evaluations and budget refusals. Per band:
+  // edges decided by validated bounds or priced. Per cache: family sides the adaptive rule
+  // asked for, and the certification-grid prices served on a family under its per-point
+  // bound (in deam_family_grid_prices) with the largest such bound (USD).
+  std::array<std::uint32_t, 11> deam_native_status{};
+  std::array<std::uint32_t, 11> deam_route_outcome{};
+  std::uint32_t deam_native_carried{0};
+  std::uint32_t deam_reference_requests{0};
+  std::uint32_t deam_reference_evaluations{0};
+  std::uint32_t deam_reference_budget_refused{0};
+  std::uint32_t deam_edges_bound_decided{0};
+  std::uint32_t deam_edges_priced{0};
+  std::uint32_t deam_family_sides_requested{0};
+  // K4b (review-K4 m8): requested family sides that built none, by DeAmFamilyRefusal
+  // (deam_iv_cache.hpp); the sum is deam_family_sides_requested less the sides built.
+  std::array<std::uint32_t, 7> deam_family_refused_by_reason{};
+  double deam_family_grid_max_bound_usd{0.0};
+  // K4b (r6): the inverse stage's sub-clocks of the chain (nanoseconds; zero when untimed):
+  // the wall of every de-Am inversion request and, inside them, the family-native lane, the
+  // K3 acceptance's family prices, the confirm solves, the seed-leg route less its confirms
+  // and the bounded reference route (index = IvPremiumSubClock, american_iv_premium.hpp),
+  // and the band-edge wall of the chain's bands (the de-Am stage clock's endpoints).
+  std::uint64_t deam_sub_request_ns{0};
+  std::array<std::uint64_t, 5> deam_sub_ns{};
+  std::uint64_t deam_sub_endpoint_ns{0};
+  // K4b (r6): the batched native route (deam_native_batch; zero otherwise). The wall of the
+  // chain's prefill (its lane batches, enclosures and confirm batches are ALSO charged to the
+  // matching deam_sub_ns parts; the requests that consume them are not); invert_many calls
+  // and the lanes they inverted (on AVX2: calls that ran the kernel); requests that consumed
+  // a precomputed lane and requests that ran their own one-lane call (no precomputed lane
+  // with their exact inputs); first confirm prices evaluated in a batch and the requests that
+  // consumed one; reference requests refused by the chain's wall budget (also counted in
+  // deam_reference_budget_refused).
+  std::uint64_t deam_sub_prefill_ns{0};
+  std::uint32_t deam_batch_calls{0};
+  std::uint32_t deam_batch_lanes{0};
+  std::uint32_t deam_batch_avx2_calls{0};
+  std::uint32_t deam_batch_lane_hits{0};
+  std::uint32_t deam_batch_lane_misses{0};
+  std::uint32_t deam_batch_confirms{0};
+  std::uint32_t deam_batch_confirm_hits{0};
+  std::uint32_t deam_reference_wall_refused{0};
+  // K4b (r6): the certification grid's repricing sub-clocks of the chain (ns; zero when
+  // untimed): nodes priced on a family under the per-point bound (and the bound itself), and
+  // nodes priced on an Andersen-Lake kernel (Fast or the fit's own).
+  std::uint64_t deam_sub_grid_family_ns{0};
+  std::uint64_t deam_sub_grid_kernel_ns{0};
+  // K4b (r6): native roots whose acceptance placed its confirm with the lane's fused vega
+  // instead of a family chord (the lane-vega hook; no covering envelope, or a refused chord).
+  std::uint32_t deam_lane_vegas{0};
+};
+
+// Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::
+// deam_al_by_reason): the kIvMin / kIvMax band-edge prices, the inversion iterates (seed
+// tier or accurate), the confirming solve, an ambiguous edge re-priced accurately, the
+// band gate's chord solve, the Search route's solves (plain Search inversions and
+// Premium fallbacks), and (K4, appended) the native fit route's bounded reference route.
+enum class DeamReason : unsigned {
+  RangeEdge = 0,
+  Iterate,
+  Confirm,
+  AmbiguousEdge,
+  Gate,
+  Search,
+  Reference,
+  Count_
+};
+inline constexpr unsigned kDeamReasonCount = static_cast<unsigned>(DeamReason::Count_);
+inline constexpr const char *kDeamReasonNames[kDeamReasonCount] = {
+    "range_edge", "iterate", "confirm", "ambiguous_edge", "gate", "search", "reference"};
+static_assert(decltype(FitTimingCounters::deam_al_by_reason){}.size() == kDeamReasonCount,
+              "deam_al_by_reason is sized by DeamReason");
+
+class ChainRecorder;
+class SurfaceTrace;
+
+namespace detail {
+inline thread_local ChainRecorder *t_chain{nullptr};   // the chain this thread is fitting
+inline thread_local SurfaceTrace *t_surface{nullptr};  // armed by a fit_quote_surface caller
+
+[[nodiscard]] inline std::uint32_t saturate(std::uint64_t n) noexcept {
+  return n > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
+                                                       : static_cast<std::uint32_t>(n);
+}
+} // namespace detail
+
+// One expiry's recorder. Event counts accumulate in `counts`; wall and AL work are
+// charged to the active bucket at every bucket or chain switch.
+class ChainRecorder {
+public:
+  FitTimingCounters counts{};
+
+  // Starts charging (the chain becomes current on this thread).
+  void resume() noexcept {
+    mark_ = Clock::now();
+    al_mark_ = ledger::this_thread(ledger::Solve::AlBoundarySolves);
+    iv_mark_ = ledger::this_thread(ledger::Solve::IvNewtonIters);
+    greeks_mark_ = greeks_now();
+  }
+
+  // Charges the elapsed interval to the active bucket and stops charging.
+  void pause() noexcept { charge(); }
+
+  // Adds one repair-rung visit's inclusive wall (RepairRungScope; not a bucket).
+  void charge_repair_rung(std::chrono::steady_clock::duration elapsed) noexcept {
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    repair_ns_ += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+  }
+
+  // Charges the elapsed interval to the active bucket, then makes `b` active.
+  [[nodiscard]] Bucket switch_to(Bucket b) noexcept {
+    charge();
+    const Bucket previous = active_;
+    active_ = b;
+    return previous;
+  }
+
+  // The counters with wall (microseconds, rounded per bucket) and AL work filled in.
+  [[nodiscard]] FitTimingCounters result() const noexcept {
+    FitTimingCounters out = counts;
+    std::array<std::uint64_t, kBucketCount> us{};
+    std::uint64_t al_total = 0;
+    out.wall_us = 0;
+    for (unsigned b = 0; b < kBucketCount; ++b) {
+      us[b] = (ns_[b] + 500u) / 1000u;
+      out.wall_us += us[b];
+      out.al_by_bucket[b] = detail::saturate(al_[b]);
+      al_total += al_[b];
+    }
+    out.other_us = us[static_cast<unsigned>(Bucket::Other)];
+    out.deam_us = us[static_cast<unsigned>(Bucket::Deam)];
+    out.solve_us = us[static_cast<unsigned>(Bucket::Solve)];
+    out.project_us = us[static_cast<unsigned>(Bucket::Project)];
+    out.price_us = us[static_cast<unsigned>(Bucket::Price)];
+    out.certify_us = us[static_cast<unsigned>(Bucket::Certify)];
+    out.calendar_us = us[static_cast<unsigned>(Bucket::Calendar)];
+    out.al_price_calls = detail::saturate(al_total);
+    out.iv_newton_iters = detail::saturate(iv_iters_);
+    out.al_greeks_calls = detail::saturate(greeks_);
+    out.repair_rung_us = (repair_ns_ + 500u) / 1000u;
+    return out;
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+
+  [[nodiscard]] static std::uint64_t greeks_now() noexcept {
+    return ledger::this_thread(ledger::Solve::GreeksBundlesFd) +
+           ledger::this_thread(ledger::Solve::GreeksBundlesAnalytic) +
+           ledger::this_thread(ledger::Solve::GreeksBundlesAdjoint);
+  }
+
+  void charge() noexcept {
+    const auto now = Clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark_).count();
+    ns_[static_cast<unsigned>(active_)] += elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0u;
+    mark_ = now;
+    const std::uint64_t al = ledger::this_thread(ledger::Solve::AlBoundarySolves);
+    const std::uint64_t iv = ledger::this_thread(ledger::Solve::IvNewtonIters);
+    const std::uint64_t greeks = greeks_now();
+    // Saturating deltas: a ledger::reset() (test seam) between two marks reads as 0.
+    const auto delta = [](std::uint64_t after, std::uint64_t before) noexcept {
+      return after >= before ? after - before : std::uint64_t{0};
+    };
+    al_[static_cast<unsigned>(active_)] += delta(al, al_mark_);
+    iv_iters_ += delta(iv, iv_mark_);
+    greeks_ += delta(greeks, greeks_mark_);
+    al_mark_ = al;
+    iv_mark_ = iv;
+    greeks_mark_ = greeks;
+  }
+
+  std::array<std::uint64_t, kBucketCount> ns_{};
+  std::array<std::uint64_t, kBucketCount> al_{};
+  std::uint64_t iv_iters_{0};
+  std::uint64_t greeks_{0};
+  std::uint64_t repair_ns_{0};
+  Bucket active_{Bucket::Other};
+  Clock::time_point mark_{};
+  std::uint64_t al_mark_{0};
+  std::uint64_t iv_mark_{0};
+  std::uint64_t greeks_mark_{0};
+};
+
+// Makes `rec` the chain this thread is fitting for the scope's lifetime and charges
+// the scope's wall to it. Null `rec` (timing off) is one branch. Re-entering the
+// chain that is already current only counts (the outer scope keeps timing it); a
+// different current chain is paused and resumed around this one.
+class ChainScope {
+public:
+  explicit ChainScope(ChainRecorder *rec, std::uint32_t rungs = 0) noexcept : slot_(rec) {
+    if (rec == nullptr) return;
+    rec->counts.rung_attempts += rungs;
+    prev_ = detail::t_chain;
+    if (prev_ == rec) return;
+    if (prev_ != nullptr) prev_->pause();
+    detail::t_chain = rec;
+    rec->resume();
+    owner_ = true;
+  }
+
+  ~ChainScope() {
+    if (!owner_) return;
+    slot_->pause();
+    detail::t_chain = prev_;
+    if (prev_ != nullptr) prev_->resume();
+  }
+
+  ChainScope(const ChainScope &) = delete;
+  ChainScope &operator=(const ChainScope &) = delete;
+  ChainScope(ChainScope &&) = delete;
+  ChainScope &operator=(ChainScope &&) = delete;
+
+  // One more per-expiry fit attempt charged to the chain.
+  void rung() noexcept {
+    if (slot_ != nullptr) ++slot_->counts.rung_attempts;
+  }
+
+private:
+  ChainRecorder *slot_;
+  ChainRecorder *prev_{nullptr};
+  bool owner_{false};
+};
+
+// Charges its lifetime to bucket `b` of the chain current on this thread (if any).
+class BucketScope {
+public:
+  explicit BucketScope(Bucket b) noexcept : rec_(detail::t_chain) {
+    if (rec_ != nullptr) prev_ = rec_->switch_to(b);
+  }
+
+  ~BucketScope() {
+    if (rec_ != nullptr) static_cast<void>(rec_->switch_to(prev_));
+  }
+
+  BucketScope(const BucketScope &) = delete;
+  BucketScope &operator=(const BucketScope &) = delete;
+  BucketScope(BucketScope &&) = delete;
+  BucketScope &operator=(BucketScope &&) = delete;
+
+private:
+  ChainRecorder *rec_;
+  Bucket prev_{Bucket::Other};
+};
+
+// Cross-cut timer, not a bucket: one repair-rung visit of the chain current on this
+// thread, INCLUSIVE of the buckets its refits charge (so repair_rung_us overlaps them
+// and is not part of wall_us). Open it inside the visit's ChainScope. No chain current
+// (timing off): one branch, no clock read.
+class RepairRungScope {
+public:
+  RepairRungScope() noexcept : rec_(detail::t_chain) {
+    if (rec_ == nullptr) return;
+    ++rec_->counts.repair_rung_visits;
+    start_ = std::chrono::steady_clock::now();
+  }
+
+  ~RepairRungScope() {
+    if (rec_ != nullptr) rec_->charge_repair_rung(std::chrono::steady_clock::now() - start_);
+  }
+
+  RepairRungScope(const RepairRungScope &) = delete;
+  RepairRungScope &operator=(const RepairRungScope &) = delete;
+  RepairRungScope(RepairRungScope &&) = delete;
+  RepairRungScope &operator=(RepairRungScope &&) = delete;
+
+private:
+  ChainRecorder *rec_;
+  std::chrono::steady_clock::time_point start_{};
+};
+
+// Adds `n` to one event count of the chain current on this thread (if any).
+inline void count(std::uint32_t FitTimingCounters::*field, std::uint32_t n = 1) noexcept {
+  if (ChainRecorder *rec = detail::t_chain) rec->counts.*field += n;
+}
+
+// The counters of the chain current on this thread, or null (timing off).
+[[nodiscard]] inline FitTimingCounters *current_counts() noexcept {
+  ChainRecorder *rec = detail::t_chain;
+  return rec != nullptr ? &rec->counts : nullptr;
+}
+
+// Process-wide opt-in for the de-Am Premium audit (quote-bench --deam-audit): set once
+// before any fit starts and only read by the fitting threads (relaxed: a plain flag,
+// no data is published through it).
+namespace detail {
+inline std::atomic<bool> g_deam_audit{false};
+} // namespace detail
+inline void arm_deam_audit(bool on) noexcept {
+  detail::g_deam_audit.store(on, std::memory_order_relaxed);
+}
+[[nodiscard]] inline bool deam_audit_armed() noexcept {
+  return detail::g_deam_audit.load(std::memory_order_relaxed);
+}
+
+// Armed by a caller on its own thread around fit_quote_surface: the fitter records
+// one FitTimingCounters per expiry (input order) into `chains` when it returns Ok.
+// RAII; nesting restores the prior trace.
+class SurfaceTrace {
+public:
+  SurfaceTrace() noexcept : prev_(detail::t_surface) { detail::t_surface = this; }
+  ~SurfaceTrace() { detail::t_surface = prev_; }
+
+  SurfaceTrace(const SurfaceTrace &) = delete;
+  SurfaceTrace &operator=(const SurfaceTrace &) = delete;
+  SurfaceTrace(SurfaceTrace &&) = delete;
+  SurfaceTrace &operator=(SurfaceTrace &&) = delete;
+
+  std::vector<FitTimingCounters> chains;
+
+private:
+  SurfaceTrace *prev_;
+};
+
+// The trace armed on the calling thread, or null (timing off).
+[[nodiscard]] inline SurfaceTrace *armed_surface() noexcept { return detail::t_surface; }
+
+} // namespace fit_timing
 
 } // namespace atx::vol::counters

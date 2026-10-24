@@ -22,6 +22,30 @@ faithfully and mirror the upstream test tolerances.
 
 ## Ported modules
 
+The newer common-process American lane lives in `american_markov.hpp`,
+`american_markov_batch.hpp`, `american_markov_fit.hpp`, and
+`american_markov_policy.hpp`. It fits raw bid/ask intervals under one finite
+Bermudan stock process, with separate calendar/variance clocks and dated cash
+events. Explicit Euler is the default; positive variance resolvents are opt-in
+through `diffusion_method: "variance-resolvent"` in native common policies.
+Both retain bounded work and numerical admission checks. Finite-process
+no-arbitrage does not certify continuous-American or boundary accuracy; see the
+[resolvent audit](sprints/2026-10-16-american-markov-resolvent-sprint.md).
+The negative-rate limitation below describes the Andersen-Lake family; it does
+not apply to the common finite-process Snell rollback. Equivalent-IV reporting
+still uses that family's inversion convention and can refuse separately.
+Native common policies can also request
+`"initialization": {"mode": "quote-seed"}`. The bounded quote-only estimator
+changes only the starting parameters, retains the configured prior and all
+fitting quotes, and reports incomplete/error fallbacks. See the
+[initializer contract](sprints/2026-10-16-native-common-quote-seeds.md).
+A profile may select `"time_shape": "variance-time-knots"` with explicit
+absolute `variance_time_knots` (variance years). Its parameter count follows the
+knot count, not the expiry count. Log sigma is sampled at each original
+interval's variance midpoint and frozen for that interval, a measured
+approximation rather than exact integrated variance; quote seeding refuses this
+shape. See the [time-knot contract](sprints/2026-10-16-american-markov-time-knots-sprint.md).
+
 | Layer | Header(s) | What it does |
 |---|---|---|
 | Types / version | `types.hpp`, `version.hpp` | `Side`, `ExerciseStyle`, numeric constants, `atx::core` error re-exports |
@@ -969,7 +993,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 20 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 38 | Public and supported to include; **not** frozen |
 | `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
@@ -1045,6 +1069,20 @@ surface. Tier-A's own forward-declaration of `SnapshotPool` in
 `backtest.hpp` is unchanged in mechanism (still forward-declared, never
 `#include`d) precisely so Tier-A's closed-under-inclusion rule does not pull
 this newly-Tier-B header into Tier-A.
+
+The implied-forward sprint (2026-10-16) added `api/marketdata/implied_forward.hpp` (per-expiry
+option-implied forward / carry estimator from raw put-call pairs) and
+`api/fitting/quote_slice_carry.hpp` (the quote slice's opt-in carry-mode types),
+both outside the umbrella: Tier-B 32 → **34**, no Tier-A change.
+
+The dividend-schedule sprint (2026-10-16), rebased onto the tick-path lane's two
+headers below, added `api/marketdata/dividend_schedule.hpp` (dated cash-dividend
+schedule inferred from per-expiry dividend sums and their present values), outside
+the umbrella: Tier-B 36 → **37**, api/ headers 95 → **96**, no Tier-A change.
+
+The batch-pricing lane (2026-10-17) added `api/pricing/batch_chain.hpp` (chain-level
+batch price / Greeks / implied vol over structure-of-arrays columns), outside the
+umbrella: Tier-B 37 → **38**, api/ headers 96 → **97**, no Tier-A change.
 
 That drift is now caught by a test rather than by a reader, for the counts
 that can be.
@@ -1134,6 +1172,15 @@ reconciliation moves two digits where the pre-restructure ones moved three.
 `vrp_signal_v1` signal contract plus the ranked long/short vega-normalized
 straddle book (`VolEdgeStrategy`), header-only and deliberately outside the
 umbrella — so Tier-A (58) held and no other row moved.
+
+**2026-10-16 tick-path lane (pricing hot-path audit items 1-5):** Tier-B 34 →
+**35**, api/ headers 93 → **94**: `chain_tick.hpp` landed under `api/pricing/` —
+the inline, pool-free chain re-mark after a spot tick (`ChainContractsView`,
+`ChainTickOutputs`, the one-byte `TickStatus`, `refresh_chain_cached`) — outside
+the umbrella, so Tier-A (58) held and no other row moved. Then Tier-B 35 →
+**36**, api/ headers 94 → **95**: `expiry_record.hpp` landed under `api/fitting/` —
+the per-expiry (moneyness, sigma) calibration record at the expiry's exact carry
+(`ExpiryRecord`, `ExpiryRecordBank`) — also outside the umbrella.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A

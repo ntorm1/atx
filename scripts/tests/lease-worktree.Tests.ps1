@@ -214,3 +214,49 @@ Describe 'lease-worktree corruption and frozen-base guards' {
       -TestPoolRoot $poolRoot -TestLeaseOnly | Out-Null
   }
 }
+
+Describe 'lease-worktree cold-slot configure preset' {
+  It 'auto-selects vol-rel for vol branches and equity-dev without the optional modules' {
+    $tree = Join-Path $TestDrive 'preset-tree'
+    New-Item -ItemType Directory -Path $tree -Force | Out-Null
+    Resolve-ConfigurePreset 'auto' 'feat/vol-build-infra-20261016' $tree | Should Be 'vol-rel'
+    Resolve-ConfigurePreset 'auto' 'review/vol-time-knots2' $tree | Should Be 'vol-rel'
+    Resolve-ConfigurePreset '' 'feat/x_vol_y' $tree | Should Be 'vol-rel'
+    Resolve-ConfigurePreset 'auto' 'feat/volume-bars' $tree | Should Be 'equity-dev'
+    Resolve-ConfigurePreset 'auto' 'feat/p9-sql4' $tree | Should Be 'equity-dev'
+  }
+
+  It 'selects dev only when the full module checkout exists' {
+    $tree = Join-Path $TestDrive 'full-tree'
+    foreach ($module in @('atx-kb', 'atx-agent-db', 'atx-options-engine')) {
+      New-Item -ItemType Directory -Path (Join-Path $tree $module) -Force | Out-Null
+    }
+    Resolve-ConfigurePreset 'auto' 'feat/p9-sql4' $tree | Should Be 'dev'
+    Resolve-ConfigurePreset 'auto' 'feat/p9-sql4' $tree -SharedLibs | Should Be 'dev-shared'
+  }
+
+  It 'honours an explicit preset or none and refuses it together with -Shared' {
+    $tree = Join-Path $TestDrive 'explicit-tree'
+    New-Item -ItemType Directory -Path $tree -Force | Out-Null
+    Resolve-ConfigurePreset 'vol-rel-avx2' 'feat/vol-x' $tree | Should Be 'vol-rel-avx2'
+    Resolve-ConfigurePreset 'none' 'feat/vol-x' $tree | Should Be 'none'
+    { Resolve-ConfigurePreset 'vol-rel' 'feat/vol-x' $tree -SharedLibs } | Should Throw 'not both'
+  }
+
+  It 'resolves binaryDir through inherits exactly like atx-build.ps1' {
+    $tree = Join-Path $TestDrive 'presets-tree'
+    New-Item -ItemType Directory -Path $tree -Force | Out-Null
+    $json = '{"configurePresets":[' +
+      '{"name":"_base","hidden":true,"binaryDir":"${sourceDir}/build"},' +
+      '{"name":"vol-dev","inherits":"_base","binaryDir":"${sourceDir}/build-vol"},' +
+      '{"name":"vol-rel","inherits":"vol-dev","binaryDir":"${sourceDir}/build-vol-rel"},' +
+      '{"name":"child","inherits":["vol-rel","_base"]}]}'
+    Set-Content -Path (Join-Path $tree 'CMakePresets.json') -Value $json -Encoding Ascii
+    Get-PresetBinaryDir $tree 'vol-rel' | Should Be 'build-vol-rel'
+    Get-PresetBinaryDir $tree 'child' | Should Be 'build-vol-rel'
+    Get-PresetBinaryDir $tree '_base' | Should Be 'build'
+    Test-PresetDefined $tree 'vol-rel' | Should Be $true
+    Test-PresetDefined $tree 'missing' | Should Be $false
+    { Get-PresetBinaryDir $tree 'missing' } | Should Throw 'cannot resolve binaryDir'
+  }
+}

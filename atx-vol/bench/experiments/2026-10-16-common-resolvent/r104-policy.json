@@ -1,0 +1,186 @@
+{
+  "equivalent_iv": {
+    "max_iterations": 64,
+    "min_time_value": 1e-08,
+    "tolerance": 1e-07
+  },
+  "market": {
+    "max_absolute_interval_rate": 10.0,
+    "max_absolute_interval_yield": 10.0,
+    "max_clock_absolute_deviation": 1e-10,
+    "max_dividend_pv_over_spot_deviation": 0.005,
+    "max_expiries": 128,
+    "max_forward_over_spot_deviation": 0.05,
+    "max_prepaid_over_spot_deviation": 0.05,
+    "max_quotes": 4096,
+    "max_rate_absolute_deviation": 0.0025,
+    "max_spot_relative_deviation": 0.005,
+    "max_yield_absolute_deviation": 0.05,
+    "min_calendar_increment": 1e-10
+  },
+  "model": "common-markov",
+  "profiles": [
+    {
+      "base": "dense",
+      "fit": {
+        "batch_options": 128,
+        "initial_log_step": 0.25,
+        "initial_sigma": 0.25,
+        "initial_sigmas": [],
+        "log_state_knots": [
+          -0.5,
+          -0.2,
+          0.0,
+          0.2,
+          0.5
+        ],
+        "max_batch_values": 1048576,
+        "max_evaluations": 512,
+        "max_parameters": 64,
+        "max_quotes": 8192,
+        "max_rollback_work": 100000000,
+        "max_sigma": 3.0,
+        "max_sweeps": 48,
+        "midpoint_weight": 0.0,
+        "min_log_step": 0.0001,
+        "min_sigma": 0.01,
+        "price_scale_floor": 0.01,
+        "prior_sigmas": [],
+        "prior_weight": 0.001,
+        "strike_roughness_weight": 0.01,
+        "time_roughness_weight": 0.02,
+        "time_shape": "per-variance-interval"
+      },
+      "grid": {
+        "concentration_scale": 0.1,
+        "grid_nodes": 129,
+        "max_states": 1025,
+        "upper_spot_multiple": 4.0
+      },
+      "model": {
+        "cfl_fraction": 0.9,
+        "diffusion_method": "variance-resolvent",
+        "grid_nodes": 65,
+        "max_calendar_step": 0.009615384615384616,
+        "max_states": 1025,
+        "max_stored_rows": 1000000,
+        "max_stored_volatility_values": 1000000,
+        "max_transition_work": 8000000,
+        "max_transitions": 8192,
+        "max_variance_step": 0.009615384615384616,
+        "upper_spot_multiple": 4.0
+      },
+      "name": "dense"
+    },
+    {
+      "base": "ordinary",
+      "fit": {
+        "batch_options": 128,
+        "initial_log_step": 0.25,
+        "initial_sigma": 0.25,
+        "initial_sigmas": [],
+        "log_state_knots": [
+          -0.25,
+          0.0,
+          0.25
+        ],
+        "max_batch_values": 1048576,
+        "max_evaluations": 256,
+        "max_parameters": 32,
+        "max_quotes": 4096,
+        "max_rollback_work": 50000000,
+        "max_sigma": 3.0,
+        "max_sweeps": 32,
+        "midpoint_weight": 0.0,
+        "min_log_step": 0.0001,
+        "min_sigma": 0.01,
+        "price_scale_floor": 0.01,
+        "prior_sigmas": [],
+        "prior_weight": 0.01,
+        "strike_roughness_weight": 0.05,
+        "time_roughness_weight": 0.05,
+        "time_shape": "shared"
+      },
+      "grid": {
+        "concentration_scale": 0.1,
+        "grid_nodes": 129,
+        "max_states": 1025,
+        "upper_spot_multiple": 4.0
+      },
+      "model": {
+        "cfl_fraction": 0.9,
+        "diffusion_method": "variance-resolvent",
+        "grid_nodes": 65,
+        "max_calendar_step": 0.009615384615384616,
+        "max_states": 1025,
+        "max_stored_rows": 1000000,
+        "max_stored_volatility_values": 1000000,
+        "max_transition_work": 8000000,
+        "max_transitions": 8192,
+        "max_variance_step": 0.009615384615384616,
+        "upper_spot_multiple": 4.0
+      },
+      "name": "ordinary"
+    },
+    {
+      "base": "sparse",
+      "fit": {
+        "batch_options": 128,
+        "initial_log_step": 0.25,
+        "initial_sigma": 0.25,
+        "initial_sigmas": [],
+        "log_state_knots": [],
+        "max_batch_values": 1048576,
+        "max_evaluations": 128,
+        "max_parameters": 8,
+        "max_quotes": 4096,
+        "max_rollback_work": 50000000,
+        "max_sigma": 3.0,
+        "max_sweeps": 24,
+        "midpoint_weight": 0.0,
+        "min_log_step": 0.0001,
+        "min_sigma": 0.01,
+        "price_scale_floor": 0.01,
+        "prior_sigmas": [],
+        "prior_weight": 0.1,
+        "strike_roughness_weight": 0.1,
+        "time_roughness_weight": 0.1,
+        "time_shape": "shared"
+      },
+      "grid": {
+        "concentration_scale": 0.2,
+        "grid_nodes": 65,
+        "max_states": 1025,
+        "upper_spot_multiple": 4.0
+      },
+      "model": {
+        "cfl_fraction": 0.9,
+        "diffusion_method": "variance-resolvent",
+        "grid_nodes": 65,
+        "max_calendar_step": 0.009615384615384616,
+        "max_states": 1025,
+        "max_stored_rows": 1000000,
+        "max_stored_volatility_values": 1000000,
+        "max_transition_work": 8000000,
+        "max_transitions": 8192,
+        "max_variance_step": 0.009615384615384616,
+        "upper_spot_multiple": 4.0
+      },
+      "name": "sparse"
+    }
+  ],
+  "regimes": {
+    "dense_max_bidless_fraction": 0.1,
+    "dense_max_median_relative_spread": 0.08,
+    "dense_min_median_strikes": 24,
+    "dense_profile": "dense",
+    "near_money_log_band": 0.4,
+    "ordinary_profile": "ordinary",
+    "sparse_min_bidless_fraction": 0.5,
+    "sparse_min_median_relative_spread": 0.6,
+    "sparse_min_median_strikes": 6,
+    "sparse_profile": "sparse"
+  },
+  "schema_version": 1,
+  "symbol_overrides": []
+}

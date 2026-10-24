@@ -1,4 +1,5 @@
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_region.hpp" // L3k: AlExerciseRegion entry points
 
 #include "pricing/american_detail.hpp"
 
@@ -14,6 +15,7 @@
 
 #include "pricing/al_probe.hpp"           // env-gated AL hot-path zone timers (Perf 2b step 1)
 #include "pricing/american_boundary.hpp" // amer:: seam (structs + boundary-solve decls)
+#include "pricing/scalar_erfc.hpp"       // Cody Phi/phi for the opt-in AlProfile::Fast kernel
 #include "atx/core/math.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
@@ -76,6 +78,33 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   return black76_price(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T), Side::Call);
 }
 
+// ── al-speed tier 2 (2026-10-17): AlProfile::Fast arithmetic ───────────────
+//
+// The Fast kernel (american.hpp AlProfile) evaluates Phi / phi with the validated
+// scalar Cody rationals (pricing/scalar_erfc.hpp; ~1e-16 vs std::erfc, ~3x faster
+// here) and is otherwise the same scheme. Everything below with a `_fast` suffix
+// runs ONLY when AlWorkspace::fast is set; the Reference kernel never calls it.
+[[nodiscard]] inline double fast_cdf(double x) noexcept { return detail::norm_cdf_erfc(x); }
+[[nodiscard]] inline double fast_pdf(double x) noexcept { return detail::norm_pdf_cody(x); }
+
+// Black-76 put with Cody Phi — black76_price's put arm, term for term.
+[[nodiscard]] double black76_put_fast(double F, double K, double T, double sigma,
+                                      double df) noexcept {
+  if (T <= 0.0 || sigma <= 0.0) {
+    const double intr = K - F;
+    return df * (intr > 0.0 ? intr : 0.0);
+  }
+  const double v = sigma * std::sqrt(T);
+  const double d1 = (std::log(F / K) + 0.5 * v * v) / v;
+  const double d2 = d1 - v;
+  return df * (K * fast_cdf(-d2) - F * fast_cdf(-d1));
+}
+
+[[nodiscard]] double euro_put_sk_fast(double S, double K, double T, double sigma, double r,
+                                      double q) noexcept {
+  return black76_put_fast(S * std::exp((r - q) * T), K, T, sigma, std::exp(-r * T));
+}
+
 [[nodiscard]] double d1_of(double S, double K, double r, double q, double sigma,
                            double T) noexcept {
   const double v = sigma * std::sqrt(T);
@@ -121,6 +150,100 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   // put). call_residual = Sx - K - cE - Sx*bit/q2 with bit = 1 - e^{-qT}N(d1);
   // d(bit)/dSx = -e^{-qT}phi(d1)/(Sx*v), so -d/dSx[Sx*bit/q2] gives +dq*phip/(q2*v).
   return 1.0 - dq * Np - (1.0 - dq * Np) / q2 + dq * phip / (q2 * v);
+}
+
+// al-speed tier 1 (2026-10-17): the safeguarded critical-price Newton below
+// evaluated put_residual AND put_residual_deriv at every iterate, and between them
+// they recomputed every Sx-independent term — sqrt(T) five times, exp(-qT) twice,
+// the forward and discount exps, sigma*sqrt(T) — plus d1, log(Sx/K) and N(-d1)
+// twice. The cold Andersen-Lake seed runs this Newton at every collocation node
+// (6.3 iterations per node on the ladder grid), so it was ~25% of a bulk-preset
+// price. The pair below evaluates both from ONE d1 and the hoisted terms.
+//
+// BIT-IDENTICAL, not close: every hoisted term is formed by the exact expression
+// the separate functions evaluate (same operands, same operator order, and the
+// same multiply-add shapes, so FMA contraction is unchanged), and std::log /
+// std::exp / norm_cdf are pure. The Black-76 leg goes through
+// black76_price_from_lnfk with ln(F/K) and sqrt(T) passed in, which is
+// black76_price's own body. Proved by BawResidualEval.FusedPairMatchesSeparateBits
+// and by the al_preset_ladder_bench fingerprint (sprints/2026-10-17-al-speed).
+struct BawResidualTerms {
+  double sqrt_t = 0.0; // std::sqrt(T)
+  double v = 0.0;      // sigma * std::sqrt(T)
+  double drift = 0.0;  // r - q + 0.5 * sigma * sigma (d1_of)
+  double fwd = 0.0;    // std::exp((r - q) * T)      (euro_*_sk forward factor)
+  double df = 0.0;     // std::exp(-r * T)           (euro_*_sk discount factor)
+  double dq = 0.0;     // std::exp(-q * T)
+};
+
+[[nodiscard]] BawResidualTerms baw_residual_terms(double T, double sigma, double r,
+                                                  double q) noexcept {
+  BawResidualTerms t;
+  t.sqrt_t = std::sqrt(T);
+  t.v = sigma * t.sqrt_t;
+  t.drift = r - q + 0.5 * sigma * sigma;
+  t.fwd = std::exp((r - q) * T);
+  t.df = std::exp(-r * T);
+  t.dq = std::exp(-q * T);
+  return t;
+}
+
+struct BawResidualPair {
+  double f = 0.0;  // put_residual / call_residual
+  double fp = 0.0; // put_residual_deriv / call_residual_deriv
+};
+
+[[nodiscard]] BawResidualPair put_residual_pair(double Sx, double K, double T, double sigma,
+                                                double q1, const BawResidualTerms &t) noexcept {
+  const double F = Sx * t.fwd;
+  const double pE =
+      black76_price_from_lnfk(F, K, T, sigma, t.df, std::log(F / K), t.sqrt_t, Side::Put);
+  const double d1 = (std::log(Sx / K) + t.drift * T) / t.v;
+  const double Nm = norm_cdf(-d1);
+  const double bit = 1.0 - t.dq * Nm;
+  const double phim = norm_pdf(-d1);
+  return {K - Sx - pE + Sx * bit / q1,
+          -1.0 + t.dq * Nm + (1.0 - t.dq * Nm) / q1 + t.dq * phim / (q1 * t.v)};
+}
+
+[[nodiscard]] BawResidualPair call_residual_pair(double Sx, double K, double T, double sigma,
+                                                 double q2, const BawResidualTerms &t) noexcept {
+  const double F = Sx * t.fwd;
+  const double cE =
+      black76_price_from_lnfk(F, K, T, sigma, t.df, std::log(F / K), t.sqrt_t, Side::Call);
+  const double d1 = (std::log(Sx / K) + t.drift * T) / t.v;
+  const double Np = norm_cdf(d1);
+  const double bit = 1.0 - t.dq * Np;
+  const double phip = norm_pdf(d1);
+  return {Sx - K - cE - Sx * bit / q2,
+          1.0 - t.dq * Np - (1.0 - t.dq * Np) / q2 + t.dq * phip / (q2 * t.v)};
+}
+
+// AlProfile::Fast put residual pair. Black-76's d1 at F = Sx*e^{(r-q)T} is
+// (ln(Sx/K) + (r - q + sigma^2/2) T) / (sigma sqrt T) — the smooth-pasting d1 — and
+// F*df = Sx*e^{-qT}, so the European leg is df*K*N(v - d1) - Sx*dq*N(-d1): one d1,
+// two Phi and one phi per Newton step (the Reference pair pays three Phi and two
+// logs), all through the Cody kernels.
+[[nodiscard]] BawResidualPair put_residual_pair_fast(double Sx, double K, double T, double q1,
+                                                     const BawResidualTerms &t) noexcept {
+  const double d1 = (std::log(Sx / K) + t.drift * T) / t.v;
+  const double Nm = fast_cdf(-d1);
+  const double pE = t.df * K * fast_cdf(t.v - d1) - Sx * t.dq * Nm;
+  const double bit = 1.0 - t.dq * Nm;
+  const double phim = fast_pdf(-d1);
+  return {K - Sx - pE + Sx * bit / q1,
+          -1.0 + t.dq * Nm + (1.0 - t.dq * Nm) / q1 + t.dq * phim / (q1 * t.v)};
+}
+
+template <bool FAST>
+[[nodiscard]] inline BawResidualPair put_residual_pair_t(double Sx, double K, double T,
+                                                         double sigma, double q1,
+                                                         const BawResidualTerms &t) noexcept {
+  if constexpr (FAST) {
+    return put_residual_pair_fast(Sx, K, T, q1, t);
+  } else {
+    return put_residual_pair(Sx, K, T, sigma, q1, t);
+  }
 }
 
 // A1 convergence contract (finding 8). Reports how the safeguarded critical-price
@@ -200,7 +323,9 @@ enum class BracketRecovery : std::uint8_t { Off, On };
 
 // One safeguarded-Newton attempt inside a FIXED bracket. `stats` (optional) carries
 // the convergence contract and is written only when non-null, so the AL seed path
-// (stats == nullptr, recovery Off) pays no extra residual evaluation.
+// (stats == nullptr, recovery Off) pays no extra residual evaluation. FAST selects
+// the AlProfile::Fast residual (only the Fast AL seed instantiates it).
+template <bool FAST = false>
 [[nodiscard]] double newton_critical_put_in(double lo, double hi, double K, double T, double sigma,
                                             double r, double q, double q1,
                                             std::uint16_t max_iter, double tol,
@@ -209,10 +334,12 @@ enum class BracketRecovery : std::uint8_t { Off, On };
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
+  const BawResidualTerms terms = baw_residual_terms(T, sigma, r, q);
   std::uint16_t it = 0;
   for (; it < max_iter; ++it) {
-    const double f = put_residual(Sx, K, T, sigma, r, q, q1);
-    const double fp = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
+    const BawResidualPair ev = put_residual_pair_t<FAST>(Sx, K, T, sigma, q1, terms);
+    const double f = ev.f;
+    const double fp = ev.fp;
     if (f > 0.0) {
       lo = Sx;
     } else {
@@ -233,13 +360,13 @@ enum class BracketRecovery : std::uint8_t { Off, On };
     if (std::fabs(dS) < tol * K) {
       if (stats) {
         *stats = {static_cast<std::uint16_t>(it + 1),
-                  put_residual(Sx, K, T, sigma, r, q, q1), true};
+                  put_residual_pair_t<FAST>(Sx, K, T, sigma, q1, terms).f, true};
       }
       return Sx;
     }
   }
   if (stats) {
-    *stats = {it, put_residual(Sx, K, T, sigma, r, q, q1), false};
+    *stats = {it, put_residual_pair_t<FAST>(Sx, K, T, sigma, q1, terms).f, false};
   }
   return Sx;
 }
@@ -248,7 +375,9 @@ enum class BracketRecovery : std::uint8_t { Off, On };
 // ACCEPTABLE (baw_critical_accepted — never `converged` alone; REVL1-F1).
 // `attempts_out`, when non-null, receives how many attempts ran (1 == the
 // historical bracket sufficed). The reported stats describe the attempt whose Sx is
-// returned.
+// returned. FAST is the AlProfile::Fast seed's residual (the Fast AL seed runs it
+// with recovery Off, exactly like the Reference seed).
+template <bool FAST = false>
 [[nodiscard]] double newton_critical_put(double K, double T, double sigma, double r, double q,
                                          double q1, std::uint16_t max_iter, double tol,
                                          BracketRecovery recover,
@@ -260,16 +389,16 @@ enum class BracketRecovery : std::uint8_t { Off, On };
     *attempts_out = 1;
   }
   if (recover == BracketRecovery::Off) {
-    return newton_critical_put_in(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, stats);
+    return newton_critical_put_in<FAST>(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, stats);
   }
   // Recovery needs the residual to decide, so a stats sink is mandatory here; a
   // caller that passed none gets a local one.
   NewtonCriticalStats local;
   NewtonCriticalStats *const st = (stats != nullptr) ? stats : &local;
-  double Sx = newton_critical_put_in(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, st);
+  double Sx = newton_critical_put_in<FAST>(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, st);
   for (unsigned k = 0; k < kBawBracketRetries && !baw_critical_accepted(*st, tol, K); ++k) {
     lo *= kBawPutFloorShrink;
-    Sx = newton_critical_put_in(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, st);
+    Sx = newton_critical_put_in<FAST>(lo, hi, K, T, sigma, r, q, q1, max_iter, tol, st);
     if (attempts_out != nullptr) {
       *attempts_out = static_cast<std::uint16_t>(k + 2);
     }
@@ -284,10 +413,12 @@ enum class BracketRecovery : std::uint8_t { Off, On };
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
+  const BawResidualTerms terms = baw_residual_terms(T, sigma, r, q);
   std::uint16_t it = 0;
   for (; it < max_iter; ++it) {
-    const double f = call_residual(Sx, K, T, sigma, r, q, q2);
-    const double fp = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
+    const BawResidualPair ev = call_residual_pair(Sx, K, T, sigma, q2, terms);
+    const double f = ev.f;
+    const double fp = ev.fp;
     if (f < 0.0) {
       lo = Sx;
     } else {
@@ -308,13 +439,13 @@ enum class BracketRecovery : std::uint8_t { Off, On };
     if (std::fabs(dS) < tol * K) {
       if (stats) {
         *stats = {static_cast<std::uint16_t>(it + 1),
-                  call_residual(Sx, K, T, sigma, r, q, q2), true};
+                  call_residual_pair(Sx, K, T, sigma, q2, terms).f, true};
       }
       return Sx;
     }
   }
   if (stats) {
-    *stats = {it, call_residual(Sx, K, T, sigma, r, q, q2), false};
+    *stats = {it, call_residual_pair(Sx, K, T, sigma, q2, terms).f, false};
   }
   return Sx;
 }
@@ -351,7 +482,9 @@ enum class BracketRecovery : std::uint8_t { Off, On };
 
 // Put critical price S* — the Jacobi-Newton seed for the AL boundary. Returns
 // false on degenerate input (matches the C -1 status); the several
-// "no early exercise" corners return true with S* = K.
+// "no early exercise" corners return true with S* = K. FAST: the AlProfile::Fast
+// seed's residual (same Newton, same corners).
+template <bool FAST = false>
 [[nodiscard]] bool baw_critical_put(double K, double T, double sigma, double r, double q,
                                     std::uint16_t max_iter, double tol, double &Sx_out,
                                     BracketRecovery recover) noexcept {
@@ -382,8 +515,8 @@ enum class BracketRecovery : std::uint8_t { Off, On };
     return true;
   }
   const double Sx =
-      newton_critical_put(K, T, sigma, r, q, q1, max_iter ? max_iter : std::uint16_t{16},
-                          tol > 0.0 ? tol : 1.0e-10, recover);
+      newton_critical_put<FAST>(K, T, sigma, r, q, q1, max_iter ? max_iter : std::uint16_t{16},
+                                tol > 0.0 ? tol : 1.0e-10, recover);
   if (!(Sx > 0.0 && Sx <= K)) {
     return false;
   }
@@ -866,10 +999,13 @@ namespace amer {
   // the column existed decodes as 0 and must keep resolving to the boundary it has
   // always resolved to. Treating 0 as a request for 6 would silently re-price every
   // such stored surface. Same convention as n_quad_price below: 0 == unset.
+  // L2f: the opt-in Screen profile admits a smaller boundary (floor 4: three interior
+  // Chebyshev nodes); Reference and Fast keep the floor of 6 byte for byte.
+  const std::uint16_t node_floor = (o.profile == AlProfile::Screen) ? 4 : 6;
   if (o.n_collocation == 0) {
     // leave s.n_boundary at the default
-  } else if (o.n_collocation < 6) {
-    s.n_boundary = 6; // cheapest supported boundary
+  } else if (o.n_collocation < node_floor) {
+    s.n_boundary = node_floor; // cheapest supported boundary
   } else if (o.n_collocation > kAlMaxNodes) {
     s.n_boundary = kAlMaxNodes;
   } else {
@@ -920,6 +1056,9 @@ namespace amer {
   if (o.tol > 0.0) {
     s.tol = o.tol;
   }
+  // al-speed tier 2: the arithmetic profile rides along unchanged (no clamp — the
+  // enum has two values and Reference is the default for every existing caller).
+  s.profile = o.profile;
   return s;
 }
 
@@ -1020,6 +1159,20 @@ void al_init_nodes(AlBoundary &b, std::uint16_t n, double T, double K, double r,
   return std::exp(-std::sqrt(yv));
 }
 
+// AlProfile::Fast: the boundary in log form, sqrt(max(y(u), 0)), so that
+// b(u) = xmax * exp(-al_boundary_sqrt_y_at(b, u)) — al_boundary_factor_at without the
+// exp (its guard branches, factor 1, are sqrt-y 0).
+[[nodiscard]] double al_boundary_sqrt_y_at(const AlBoundary &b, double u) noexcept {
+  if (b.T <= 0.0 || u <= 0.0) {
+    return 0.0;
+  }
+  const double u_eff = (u >= b.T) ? b.T : u;
+  const double z = 2.0 * std::sqrt(u_eff / b.T) - 1.0;
+  const double zc = atx::core::clamp(z, -1.0, 1.0);
+  const double y_val = al_cheb_eval(b.z.data(), b.wbary.data(), b.y.data(), b.n, zc);
+  return std::sqrt((y_val > 0.0) ? y_val : 0.0);
+}
+
 // F5 (perf finding 5): per-boundary premium precompute. premium_integrand_put's
 // per-node work — the barycentric boundary factor, sigma*sqrt(t), exp(-q*t),
 // exp(-r*t) — depends on (boundary, sigma, r, q, t) but NOT on the spot/strike being
@@ -1048,6 +1201,11 @@ struct AlPremiumCache {
   double vv[kAlMaxQuad];   // sigma * sqrt(t_i)
   double dq[kAlMaxQuad];   // exp(-q * t_i)
   double dr[kAlMaxQuad];   // exp(-r * t_i)
+  // AlProfile::Fast bind (al-speed tier 2): sy[i] = sqrt(y) at the node, the log form
+  // of bfac (bfac == exp(-sy)); `fast` records which kernel bound the cache, and a
+  // cache is only reused by a workspace of the same profile.
+  double sy[kAlMaxQuad];
+  bool fast = false;
 };
 
 // Is pc bound for exactly this (boundary, quadrature, sigma, r, q)? A miss falls the
@@ -1056,10 +1214,13 @@ struct AlPremiumCache {
                                             const AlWorkspace &ws, double sigma, double r,
                                             double q) noexcept {
   return pc.valid && pc.bnd_id == &b && pc.nq == ws.n_quad_price && pc.sigma_bound == sigma &&
-         pc.r_bound == r && pc.q_bound == q;
+         pc.r_bound == r && pc.q_bound == q && pc.fast == ws.fast;
 }
 
-void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
+// FAST = the AlProfile::Fast residual inside the per-node Newton; the node loop,
+// guards, clamps, counters and probe zone are shared verbatim.
+template <bool FAST>
+void al_seed_boundary_t(AlBoundary &b, double sigma, double r, double q) noexcept {
   const alprobe::Scope probe_zone(b.n == 7 ? alprobe::Zone::AlSeedBaw
                                            : alprobe::Zone::AlSeedBawAcc);
   // Every AL boundary solve, from any of the four entry paths, passes through here
@@ -1080,7 +1241,7 @@ void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept 
     // of its own, so it stays byte-identical to the pre-recovery solve; widening it
     // is a separate, measured change (see BracketRecovery).
     const bool ok =
-        baw_critical_put(b.K, tau_i, sigma, r, q, 16, 1.0e-10, Sx, BracketRecovery::Off);
+        baw_critical_put<FAST>(b.K, tau_i, sigma, r, q, 16, 1.0e-10, Sx, BracketRecovery::Off);
     if (!ok || !(Sx > 0.0)) {
       const double frac = std::sqrt(tau_i / b.T);
       Sx = b.K * (1.0 - 0.3 * frac);
@@ -1092,6 +1253,20 @@ void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept 
       Sx = 1.0e-6 * b.K;
     }
     b.y[i] = y_from_b(Sx, b.xmax);
+  }
+}
+
+void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
+  al_seed_boundary_t<false>(b, sigma, r, q);
+}
+
+// The cold BAW seed for the workspace's profile (Reference unless ws.fast).
+void al_seed_boundary_for(AlBoundary &b, const AlWorkspace &ws, double sigma, double r,
+                          double q) noexcept {
+  if (ws.fast) {
+    al_seed_boundary_t<true>(b, sigma, r, q);
+  } else {
+    al_seed_boundary_t<false>(b, sigma, r, q);
   }
 }
 
@@ -1170,11 +1345,18 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
     g_specialize_off_fallbacks.fetch_add(1, std::memory_order_relaxed);
     return;
   }
+  // al-speed tier 1: the exp tallies are summed and published once per bind rather
+  // than per (node, quad node) pair — same totals, one thread-local touch.
+  unsigned exp_pairs = 0;
   for (std::uint16_t j = 1; j < bnd.n; ++j) {
     const double tau = bnd.tau[j];
     if (tau <= 1.0e-14) {
       continue; // sweeps skip this node entirely
     }
+    // The sweeps' per-node terms (see AlWorkspace::geo_alpha): the SAME expressions
+    // al_jn_sweep_impl / al_fp_sweep_impl / eqn_b_ND_impl evaluate inline.
+    ws.geo_alpha[j] = bnd.K * std::exp(-(r - q) * tau);
+    ws.geo_sqrt_tau[j] = std::sqrt(tau);
     const double half_tau = 0.5 * tau;
     const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
     const unsigned bpair = (static_cast<unsigned>(j) - 1u) * nq;
@@ -1192,8 +1374,7 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
       ws.geo_zc[gbase + i] = zc;
       ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
       ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
-      ATX_VOL_COUNT_N(ExpCalls, 2); // exp(r·u), exp(q·u) — now paid ONCE per solve
-      counters::lightweight::record_exp_calls(2u);
+      ++exp_pairs; // exp(r·u), exp(q·u) — paid ONCE per solve
       // A6: the barycentric denominator half at this zc — the SAME expression, the
       // SAME operands and the SAME accumulation order al_cheb_eval_t ran inline on
       // every sweep. That is what makes al_cheb_eval_hoisted bit-identical to it.
@@ -1213,6 +1394,10 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
       ws.geo_bary_den[bpair + i] = den;
       ws.geo_bary_hit[bpair + i] = static_cast<std::int8_t>(hit);
     }
+  }
+  if (exp_pairs != 0) {
+    ATX_VOL_COUNT_N(ExpCalls, 2u * exp_pairs);
+    counters::lightweight::record_exp_calls(2u * exp_pairs);
   }
   ws.geo_static_bound = true;
 #ifndef NDEBUG
@@ -1288,10 +1473,20 @@ void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, doub
 // path AND the un-hoisted scalar reference (recomputes the geometry inline exactly
 // as before this task). NB>0 reads the al_bind_geometry precompute — a pure hoist,
 // so the two paths are bit-identical.
+//
+// `tip_out` (nullable) receives the tip's sigma*sqrt(tau) and its shared d+/- base.
+// eqn_b_NDd evaluates exactly those two expressions from the same operands, so the
+// Jacobi-Newton sweep reuses them (eqn_b_NDd_from_tip) instead of paying a second
+// sqrt, log and divide per node (al-speed tier 1; bit-identical).
+struct EqnBTip {
+  double v = 0.0;    // sigma * sqrt(tau)
+  double base = 0.0; // (log(b/K) + (r - q) * tau) / v
+};
+
 template <unsigned NB, unsigned NQ>
 void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_idx, double tau,
                    double b_val, double sigma, double r, double q, double &N_out,
-                   double &D_out) noexcept {
+                   double &D_out, EqnBTip *tip_out = nullptr) noexcept {
   const double K = bnd.K;
   if (tau <= 1.0e-14) {
     if (b_val < K) {
@@ -1309,8 +1504,13 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
   // F7 (perf finding 7): d_plus and d_minus at the tip both recompute
   // sigma*sqrt(tau) and log(b_val/K). Share them once as base +/- v/2 — bit-identical
   // to the two d_plus/d_minus calls (same op order), saving one log + one sqrt/node.
-  const double tip_v = sigma * std::sqrt(tau);
+  // The specialized kernel reads sqrt(tau) from the static bind (geo_sqrt_tau).
+  const double tip_v = (NB != 0) ? sigma * ws.geo_sqrt_tau[node_idx] : sigma * std::sqrt(tau);
   const double tip_base = (std::log(b_val / K) + (r - q) * tau) / tip_v;
+  if (tip_out != nullptr) {
+    tip_out->v = tip_v;
+    tip_out->base = tip_base;
+  }
   const double tip_p = norm_cdf(tip_base + 0.5 * tip_v);
   const double tip_m = norm_cdf(tip_base - 0.5 * tip_v);
   ATX_VOL_COUNT_N(NormCdfCalls, 2); // tip_p, tip_m
@@ -1417,6 +1617,24 @@ void eqn_b_NDd(const AlBoundary &bnd, double tau, double b_val, double sigma, do
   Dd_out = norm_pdf(dpv) / (b_val * v);
 }
 
+// eqn_b_NDd at a node whose eqn_b_ND_impl tip already formed v and base (same
+// expressions, same operands): bit-identical, minus the sqrt, log and divide. Valid
+// only for tau > 1e-14, which is every node a sweep reaches eqn_b_NDd at.
+void eqn_b_NDd_from_tip(double b_val, const EqnBTip &tip, double &Nd_out,
+                        double &Dd_out) noexcept {
+  if (!(b_val > 0.0)) {
+    Nd_out = 0.0;
+    Dd_out = 0.0;
+    return;
+  }
+  const double v = tip.v;
+  const double base = tip.base;
+  const double dpv = base + 0.5 * v;
+  const double dmv = base - 0.5 * v;
+  Nd_out = norm_pdf(dmv) / (b_val * v);
+  Dd_out = norm_pdf(dpv) / (b_val * v);
+}
+
 // One sweep's outcome. `max_dy` is the collocation residual max|Δy| — but ONLY over
 // the nodes that actually moved: a node whose fixed-point denominator D has
 // collapsed is frozen at its current value and skips the |Δy| update, so it cannot
@@ -1433,6 +1651,186 @@ struct AlSweepResult {
   double max_dy = 0.0;
   bool all_frozen = false;
 };
+
+// ── AlProfile::Fast boundary sweeps (al-speed tier 2) ──────────────────────
+//
+// eqn_b_ND_impl term for term, with two arithmetic substitutions: Cody Phi, and the
+// boundary ratio in LOG space. With b = xmax*exp(-sqrt(y)),
+//   log(b_i / b(u)) = sqrt(y(u)) - sqrt(y_i)   and   log(b_i / K) = log(xmax/K) - sqrt(y_i),
+// so a quadrature node costs one sqrt instead of exp(-sqrt) + divide + log (the
+// Reference rounds through the exp and the log; this is the exact identity). The
+// caller passes sy_i = sqrt(max(y_i, 0)) and lxk = log(xmax/K). The Reference skips a
+// node whose b(u) underflows to 0, i.e. sqrt(y(u)) beyond ~745; the explicit bound
+// below skips the same nodes (y ~ 5.5e5 is never reached by a clamped boundary).
+inline constexpr double kFastBoundaryExpLimit = 745.0;
+
+template <unsigned NB, unsigned NQ>
+void eqn_b_ND_fast(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_idx, double tau,
+                   double b_val, double sy_i, double lxk, double sigma, double r, double q,
+                   double &N_out, double &D_out, EqnBTip *tip_out) noexcept {
+  const double K = bnd.K;
+  if (tau <= 1.0e-14) {
+    if (b_val < K) {
+      N_out = 0.0;
+      D_out = 0.0;
+    } else if (b_val > K) {
+      N_out = 1.0;
+      D_out = 1.0;
+    } else {
+      N_out = 0.5;
+      D_out = 0.5;
+    }
+    return;
+  }
+  const double tip_v = (NB != 0) ? sigma * ws.geo_sqrt_tau[node_idx] : sigma * std::sqrt(tau);
+  const double tip_base = ((lxk - sy_i) + (r - q) * tau) / tip_v;
+  if (tip_out != nullptr) {
+    tip_out->v = tip_v;
+    tip_out->base = tip_base;
+  }
+  const double tip_p = fast_cdf(tip_base + 0.5 * tip_v);
+  const double tip_m = fast_cdf(tip_base - 0.5 * tip_v);
+
+  const double *xs = ws.qx_fp;
+  const unsigned nq = (NQ != 0) ? NQ : ws.n_quad_fp;
+  double n_int = 0.0;
+  double d_int = 0.0;
+  const double half_tau = 0.5 * tau;
+  const double rq = r - q;
+  if constexpr (NB != 0) {
+    const unsigned gbase = node_idx * kGeoQuadStride;
+    const unsigned bpair = (node_idx - 1u) * nq;
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      const double t_u = tau - u;
+      if (t_u <= 1.0e-14) {
+        continue;
+      }
+      const double y_val = al_cheb_eval_hoisted<NB>(&ws.geo_bary[(bpair + i) * NB],
+                                                    ws.geo_bary_den[bpair + i],
+                                                    ws.geo_bary_hit[bpair + i], bnd.y.data());
+      const double syu = std::sqrt(y_val > 0.0 ? y_val : 0.0);
+      if (!(syu < kFastBoundaryExpLimit)) {
+        continue;
+      }
+      const double v = ws.geo_v[gbase + i];
+      const double base = ((syu - sy_i) + rq * t_u) / v;
+      n_int += ws.geo_weru[gbase + i] * fast_cdf(base - 0.5 * v);
+      d_int += ws.geo_wequ[gbase + i] * fast_cdf(base + 0.5 * v);
+    }
+  } else {
+    const double *wv = ws.qw_fp;
+    const double T = bnd.T;
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      const double t_u = tau - u;
+      if (t_u <= 1.0e-14) {
+        continue;
+      }
+      // al_boundary_at's argument transform (0 < u < T on every node reached here).
+      const double u_eff = (u >= T) ? T : u;
+      const double zq = atx::core::clamp(2.0 * std::sqrt(u_eff / T) - 1.0, -1.0, 1.0);
+      const double y_val = al_cheb_eval(bnd.z.data(), bnd.wbary.data(), bnd.y.data(), bnd.n, zq);
+      const double syu = std::sqrt(y_val > 0.0 ? y_val : 0.0);
+      if (!(syu < kFastBoundaryExpLimit)) {
+        continue;
+      }
+      const double v = sigma * std::sqrt(t_u);
+      const double base = ((syu - sy_i) + rq * t_u) / v;
+      n_int += wv[i] * std::exp(r * u) * fast_cdf(base - 0.5 * v);
+      d_int += wv[i] * std::exp(q * u) * fast_cdf(base + 0.5 * v);
+    }
+  }
+  n_int *= half_tau;
+  d_int *= half_tau;
+  N_out = tip_m + r * n_int;
+  D_out = tip_p + q * d_int;
+}
+
+// One AlProfile::Fast sweep: Jacobi-Newton (JN) or fixed-point. Same node loop,
+// freeze rule, clamps and benign-corner exemption as al_jn_sweep_impl /
+// al_fp_sweep_impl (documented there); dN/db, dD/db use Cody phi from the tip.
+template <unsigned NB, unsigned NQ, bool JN>
+[[nodiscard]] AlSweepResult al_sweep_fast(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                          double q) noexcept {
+  const unsigned n = (NB != 0) ? NB : b.n;
+  const double lxk = std::log(b.xmax / b.K);
+  double max_dy = 0.0;
+  unsigned n_movable = 0;
+  unsigned n_frozen = 0;
+  ws.next_y[0] = 0.0;
+  for (unsigned i = 1; i < n; ++i) {
+    const double tau = b.tau[i];
+    if (tau <= 1.0e-14) {
+      ws.next_y[i] = 0.0;
+      continue;
+    }
+    ++n_movable;
+    const double sy_i = std::sqrt(b.y[i] > 0.0 ? b.y[i] : 0.0);
+    const double b_val = b.xmax * std::exp(-sy_i); // == b_from_y(b.y[i], b.xmax)
+    double Nv = 0.0;
+    double Dv = 0.0;
+    EqnBTip tip;
+    eqn_b_ND_fast<NB, NQ>(b, ws, i, tau, b_val, sy_i, lxk, sigma, r, q, Nv, Dv, &tip);
+    if (!(Dv > 1.0e-300)) {
+      ws.next_y[i] = b.y[i];
+      ++n_frozen;
+      continue;
+    }
+    const double alpha = (NB != 0) ? ws.geo_alpha[i] : b.K * std::exp(-(r - q) * tau);
+    double b_new = 0.0;
+    if constexpr (JN) {
+      const double f = alpha * Nv / Dv;
+      double Nd = 0.0;
+      double Dd = 0.0;
+      if (b_val > 0.0) {
+        const double dpv = tip.base + 0.5 * tip.v;
+        const double dmv = tip.base - 0.5 * tip.v;
+        Nd = fast_pdf(dmv) / (b_val * tip.v);
+        Dd = fast_pdf(dpv) / (b_val * tip.v);
+      }
+      const double fprime = alpha * (Nd / Dv - Dd * Nv / (Dv * Dv));
+      const double denom = fprime - 1.0;
+      b_new = (std::fabs(denom) > 1.0e-12) ? (b_val - (f - b_val) / denom) : f;
+    } else {
+      b_new = alpha * Nv / Dv;
+    }
+    if (b_new > b.xmax) {
+      b_new = b.xmax;
+    }
+    if (!(b_new > 0.0)) {
+      b_new = 1.0e-6 * b.K;
+    }
+    const double y_new = y_from_b(b_new, b.xmax);
+    const double dy = std::fabs(y_new - b.y[i]);
+    if (dy > max_dy) {
+      max_dy = dy;
+    }
+    ws.next_y[i] = y_new;
+  }
+  for (unsigned i = 0; i < n; ++i) {
+    b.y[i] = ws.next_y[i];
+  }
+  const bool benign_flat_corner = (r == 0.0 && q < 0.0);
+  return AlSweepResult{max_dy, !benign_flat_corner && n_movable > 0 && n_frozen == n_movable};
+}
+
+template <bool JN>
+[[nodiscard]] AlSweepResult al_sweep_fast_dispatch(AlBoundary &b, AlWorkspace &ws, double sigma,
+                                                   double r, double q) noexcept {
+  if (ws.specialize) {
+    if (b.n == 7 && ws.n_quad_fp == 8) {
+      return al_sweep_fast<7, 8, JN>(b, ws, sigma, r, q);
+    }
+    if (b.n == 7 && ws.n_quad_fp == 16) {
+      return al_sweep_fast<7, 16, JN>(b, ws, sigma, r, q);
+    }
+    if (b.n == 12 && ws.n_quad_fp == 24) {
+      return al_sweep_fast<12, 24, JN>(b, ws, sigma, r, q);
+    }
+  }
+  return al_sweep_fast<0, 0, JN>(b, ws, sigma, r, q);
+}
 
 template <unsigned NB, unsigned NQ>
 [[nodiscard]] AlSweepResult al_jn_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
@@ -1452,18 +1850,25 @@ template <unsigned NB, unsigned NQ>
     const double b_val = b_from_y(b.y[i], b.xmax);
     double Nv = 0.0;
     double Dv = 0.0;
-    eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv);
+    EqnBTip tip;
+    eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv, &tip);
     if (!(Dv > 1.0e-300)) {
       ws.next_y[i] = b.y[i];
       ++n_frozen;
       continue;
     }
-    const double alpha = b.K * std::exp(-(r - q) * tau);
+    // The specialized kernel reads the node's drift factor and tip from the static
+    // bind / eqn_b_ND_impl (al-speed tier 1); the generic <0,0> reference stays inline.
+    const double alpha = (NB != 0) ? ws.geo_alpha[i] : b.K * std::exp(-(r - q) * tau);
     const double f = alpha * Nv / Dv;
 
     double Nd = 0.0;
     double Dd = 0.0;
-    eqn_b_NDd(b, tau, b_val, sigma, r, q, Nd, Dd);
+    if constexpr (NB != 0) {
+      eqn_b_NDd_from_tip(b_val, tip, Nd, Dd);
+    } else {
+      eqn_b_NDd(b, tau, b_val, sigma, r, q, Nd, Dd);
+    }
     const double fprime = alpha * (Nd / Dv - Dd * Nv / (Dv * Dv));
 
     const double denom = fprime - 1.0;
@@ -1526,6 +1931,9 @@ template <unsigned NB, unsigned NQ>
   const alprobe::Scope probe_zone(b.n == 7 ? alprobe::Zone::AlSweepJn
                                            : alprobe::Zone::AlSweepJnAcc);
   ATX_VOL_COUNT(JacobiNewtonSweeps);
+  if (ws.fast) {
+    return al_sweep_fast_dispatch<true>(b, ws, sigma, r, q);
+  }
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 8) {
       return al_jn_sweep_impl<7, 8>(b, ws, sigma, r, q);
@@ -1564,7 +1972,7 @@ template <unsigned NB, unsigned NQ>
       ++n_frozen;
       continue;
     }
-    const double alpha = b.K * std::exp(-(r - q) * tau);
+    const double alpha = (NB != 0) ? ws.geo_alpha[i] : b.K * std::exp(-(r - q) * tau);
     double b_new = alpha * Nv / Dv;
     if (b_new > b.xmax) {
       b_new = b.xmax;
@@ -1594,6 +2002,9 @@ template <unsigned NB, unsigned NQ>
   const alprobe::Scope probe_zone(b.n == 7 ? alprobe::Zone::AlSweepFp
                                            : alprobe::Zone::AlSweepFpAcc);
   ATX_VOL_COUNT(FixedPointSweeps);
+  if (ws.fast) {
+    return al_sweep_fast_dispatch<false>(b, ws, sigma, r, q);
+  }
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 8) {
       return al_fp_sweep_impl<7, 8>(b, ws, sigma, r, q);
@@ -1614,9 +2025,13 @@ template <unsigned NB, unsigned NQ>
 // b.xmax * pc->bfac[i] == al_boundary_at(b, rem) bit-for-bit — so the shared dp/return
 // below produce identical bits. The exp counters live only on the inline branch; the
 // cached exps are counted once at al_bind_premium.
+//
+// al-speed tier 1: `evals` counts the nodes that reach the evaluation (the old
+// per-node always-on ledger bump, and on the inline branch its 2 exps), so the
+// caller publishes the tallies once per quadrature instead of per node.
 [[nodiscard]] double premium_integrand_put(double z, const AlBoundary &b, double S, double sigma,
                                            double r, double q, const AlPremiumCache *pc,
-                                           unsigned i) noexcept {
+                                           unsigned i, unsigned &evals) noexcept {
   const double t = z * z;
   if (t <= 1.0e-14) {
     return 0.0;
@@ -1640,11 +2055,10 @@ template <unsigned NB, unsigned NQ>
     dq = std::exp(-q * t);
     dr = std::exp(-r * t);
     ATX_VOL_COUNT_N(ExpCalls, 2);
-    counters::lightweight::record_exp_calls(2u);
   }
   const double dp = std::log(S * dq / (b_t * dr)) / v + 0.5 * v;
   ATX_VOL_COUNT(PremiumQuadEvals);
-  counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals); // V1 always-on
+  ++evals;
   ATX_VOL_COUNT(LogCalls);
   ATX_VOL_COUNT_N(NormCdfCalls, 2);
   return 2.0 * z * (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
@@ -1663,12 +2077,106 @@ template <unsigned NP>
   const double *xs = ws.qx_price;
   const double *wv = ws.qw_price;
   const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
+  unsigned evals = 0;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
-    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q, pc, i);
+    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q, pc, i, evals);
+  }
+  if (evals != 0) {
+    counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals, evals); // V1 always-on
+    if (pc == nullptr) {
+      counters::lightweight::record_exp_calls(2u * evals);
+    }
   }
   total *= half_sqrtT;
   return (total > 0.0) ? total : 0.0;
+}
+
+// AlProfile::Fast premium node (al-speed tier 2): premium_integrand_put with Cody
+// Phi and the boundary in log form, log(S*dq/(b_t*dr)) = log(S/xmax) + sqrt(y(t))
+// + (r - q)*t, `lsx` = log(S/xmax) hoisted by the caller — so no boundary exp and no
+// log per node. Same guards: a node whose b_t would underflow to 0 is skipped.
+[[nodiscard]] double premium_integrand_put_fast(double z, const AlBoundary &b, double S,
+                                                double sigma, double r, double q, double lsx,
+                                                const AlPremiumCache *pc, unsigned i,
+                                                unsigned &evals) noexcept {
+  const double t = z * z;
+  if (t <= 1.0e-14) {
+    return 0.0;
+  }
+  double ld;
+  double v;
+  double dq;
+  double dr;
+  if (pc != nullptr) {
+    v = pc->vv[i];
+    dq = pc->dq[i];
+    dr = pc->dr[i];
+    ld = lsx + pc->sy[i] + (r - q) * t;
+  } else {
+    const double rem = b.T - t;
+    double sy = 0.0;
+    if (rem > 0.0) {
+      sy = al_boundary_sqrt_y_at(b, rem);
+      if (!(sy < kFastBoundaryExpLimit)) {
+        return 0.0;
+      }
+    }
+    v = sigma * std::sqrt(t);
+    dq = std::exp(-q * t);
+    dr = std::exp(-r * t);
+    // rem <= 0 is the Reference's b_t = K branch (unreachable for interior GL nodes).
+    ld = (rem > 0.0) ? lsx + sy + (r - q) * t : std::log(S * dq / (b.K * dr));
+  }
+  ++evals;
+  const double dp = ld / v + 0.5 * v;
+  return 2.0 * z * (r * b.K * dr * fast_cdf(-dp + v) - q * S * dq * fast_cdf(-dp));
+}
+
+template <unsigned NP>
+[[nodiscard]] double al_put_premium_fast_impl(const AlBoundary &b, const AlWorkspace &ws,
+                                              double S, double sigma, double r, double q,
+                                              const AlPremiumCache *pc) noexcept {
+  const double sqrtT = std::sqrt(b.T);
+  const double half_sqrtT = 0.5 * sqrtT;
+  const double lsx = std::log(S / b.xmax);
+  double total = 0.0;
+  const double *xs = ws.qx_price;
+  const double *wv = ws.qw_price;
+  const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
+  unsigned evals = 0;
+  for (unsigned i = 0; i < nq; ++i) {
+    const double zi = half_sqrtT * (1.0 + xs[i]);
+    total += wv[i] * premium_integrand_put_fast(zi, b, S, sigma, r, q, lsx, pc, i, evals);
+  }
+  if (evals != 0) {
+    counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals, evals); // V1 always-on
+    if (pc == nullptr) {
+      counters::lightweight::record_exp_calls(2u * evals);
+    }
+  }
+  total *= half_sqrtT;
+  return (total > 0.0) ? total : 0.0;
+}
+
+[[nodiscard]] double al_put_premium_fast(const AlBoundary &b, const AlWorkspace &ws, double S,
+                                         double sigma, double r, double q,
+                                         const AlPremiumCache *use) noexcept {
+  switch (ws.n_quad_price) {
+  case 8:
+    return al_put_premium_fast_impl<8>(b, ws, S, sigma, r, q, use);
+  case 16:
+    return al_put_premium_fast_impl<16>(b, ws, S, sigma, r, q, use);
+  case 24:
+    return al_put_premium_fast_impl<24>(b, ws, S, sigma, r, q, use);
+  case 32:
+    return al_put_premium_fast_impl<32>(b, ws, S, sigma, r, q, use);
+  case 48:
+    return al_put_premium_fast_impl<48>(b, ws, S, sigma, r, q, use);
+  default:
+    break;
+  }
+  return al_put_premium_fast_impl<0>(b, ws, S, sigma, r, q, use);
 }
 
 [[nodiscard]] double al_put_premium(const AlBoundary &b, const AlWorkspace &ws, double S,
@@ -1679,6 +2187,9 @@ template <unsigned NP>
   // sigma, r, q); any miss uses the bit-identical inline path.
   const AlPremiumCache *use =
       (pc != nullptr && al_premium_cache_matches(*pc, b, ws, sigma, r, q)) ? pc : nullptr;
+  if (ws.fast) {
+    return al_put_premium_fast(b, ws, S, sigma, r, q, use);
+  }
   if (ws.specialize) {
     switch (ws.n_quad_price) {
     case 8:
@@ -1719,6 +2230,7 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
   }
   const double half_sqrtT = 0.5 * std::sqrt(b.T);
   const double *xs = ws.qx_price;
+  pc.fast = ws.fast;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
     const double t = zi * zi;
@@ -1726,11 +2238,20 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
     if (t <= 1.0e-14 || !(rem > 0.0)) {
       return; // degenerate guard: inline path handles it (never hit for GL nodes)
     }
-    const double bfac = al_boundary_factor_at(b, rem);
-    if (!(b.xmax * bfac > 0.0)) {
-      return;
+    if (ws.fast) {
+      // AlProfile::Fast reads the boundary in log form (premium_integrand_put_fast).
+      const double sy = al_boundary_sqrt_y_at(b, rem);
+      if (!(sy < kFastBoundaryExpLimit)) {
+        return;
+      }
+      pc.sy[i] = sy;
+    } else {
+      const double bfac = al_boundary_factor_at(b, rem);
+      if (!(b.xmax * bfac > 0.0)) {
+        return;
+      }
+      pc.bfac[i] = bfac;
     }
-    pc.bfac[i] = bfac;
     pc.vv[i] = sigma * std::sqrt(t);
     pc.dq[i] = std::exp(-q * t);
     pc.dr[i] = std::exp(-r * t);
@@ -1761,8 +2282,14 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
                                                        double q) noexcept {
   const alprobe::Scope probe_zone(alprobe::Zone::AlPriceFromBoundary);
   const bool hit = al_premium_cache_matches(pc, bnd, ws, sigma, r, q);
-  const double euro = hit ? black76_price(S * pc.euro_fwd, K, T, sigma, pc.euro_df, Side::Put)
-                          : euro_put_sk(S, K, T, sigma, r, q);
+  double euro = 0.0;
+  if (ws.fast) {
+    euro = hit ? black76_put_fast(S * pc.euro_fwd, K, T, sigma, pc.euro_df)
+               : euro_put_sk_fast(S, K, T, sigma, r, q);
+  } else {
+    euro = hit ? black76_price(S * pc.euro_fwd, K, T, sigma, pc.euro_df, Side::Put)
+               : euro_put_sk(S, K, T, sigma, r, q);
+  }
   const double prem = al_put_premium(bnd, ws, S, sigma, r, q, hit ? &pc : nullptr);
   double price = euro + prem;
   const double intr = K - S;
@@ -1778,6 +2305,55 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
   return price;
 }
 
+// C1 exercise region (2026-10-22): the class a scalar price site assigns — THE classifier
+// (classify_exercise_region) on the boundary value every site reads
+// (al_boundary_at_expiry). A site is always a put: a call arrives as its internal put.
+[[nodiscard]] AlExerciseClass al_site_class(const AlBoundary &bnd, double S, double K, double T,
+                                            double sigma, double r, double q) noexcept {
+  return classify_exercise_region(S, K, T, r, q, sigma, /*is_call=*/false,
+                                  al_boundary_at_expiry(bnd));
+}
+
+// C1: the price rule of both scalar sites once the class is known. `floor` is the site's
+// own KernelFloor computation, called only where it is the answer. A class outside the
+// American arm means the caller broke the site's precondition (the dispatch handles those
+// classes before any boundary exists): a quiet NaN, never a price.
+template <class Floor>
+[[nodiscard]] double al_region_site_price(AlExerciseClass cls, AlExerciseRegion region,
+                                          double S, double K, Floor &&floor) noexcept {
+  switch (cls) {
+  case AlExerciseClass::ExercisePlateau:
+    return (region == AlExerciseRegion::Intrinsic) ? K - S : floor();
+  case AlExerciseClass::Continuation:
+    return floor();
+  case AlExerciseClass::European:
+  case AlExerciseClass::ExpiryLimit:
+  case AlExerciseClass::ZeroVolLimit:
+  case AlExerciseClass::UnsupportedRegime:
+    break;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+// L3k + C1: the cached site under an explicit AlExerciseRegion (contract on the uncached
+// overload, american_boundary.hpp). KernelFloor without `cls_out` forwards bit-identically.
+[[nodiscard]] double al_put_price_from_boundary_cached(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                       const AlPremiumCache &pc, double S, double K,
+                                                       double T, double sigma, double r, double q,
+                                                       AlExerciseRegion region,
+                                                       AlExerciseClass *cls_out) noexcept {
+  if (region == AlExerciseRegion::KernelFloor && cls_out == nullptr) {
+    return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q);
+  }
+  const AlExerciseClass cls = al_site_class(bnd, S, K, T, sigma, r, q);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return al_region_site_price(cls, region, S, K, [&]() noexcept {
+    return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q);
+  });
+}
+
 // ── Boundary solve / price split (S-independence seam) ───────────────────
 //
 // The Andersen-Lake exercise boundary depends on (K, T, sigma, r, q) but NOT on
@@ -1789,45 +2365,14 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
 // AlSolveStatus and the three entry points below (al_solve_put_boundary[_warm],
 // al_put_price_from_boundary) are part of the boundary seam (amer) reused by
 // boundary_interp.cpp. The enum's declaration is in american_boundary.hpp.
-} // namespace
-// linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
-namespace amer {
 
-// S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
-// `bnd`/`ws` hold a boundary ready for al_put_price_from_boundary — NOT necessarily
-// a CONVERGED one; the sweep budget is fixed and Ok is returned however far it got.
-// `resid_out` carries that evidence; see AlSolveResid in american_boundary.hpp.
-[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma, double r,
-                                                  double q, const AlScheme &sch, AlBoundary &bnd,
-                                                  AlWorkspace &ws, bool specialize,
-                                                  AlSolveResid *resid_out) noexcept { // hdr dflts
-  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
-  // Publish the pessimistic evidence up front so EVERY early return below — the
-  // pre-sweep Collapsed/TableMissing corners included — leaves the caller holding a
-  // report that reads "not converged" rather than a default-constructed one.
-  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
-  if (resid_out != nullptr) {
-    *resid_out = rep;
-  }
-  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
-  if (!(bnd.xmax > 0.0)) {
-    // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
-    return AlSolveStatus::Collapsed;
-  }
-  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
-  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
-  if (!fp || !fp->ok || !pr || !pr->ok) {
-    return AlSolveStatus::TableMissing;
-  }
-  ws.specialize = specialize;
-  ws.qx_fp = fp->nodes.data();
-  ws.qw_fp = fp->weights.data();
-  ws.n_quad_fp = sch.n_quad_fp;
-  ws.qx_price = pr->nodes.data();
-  ws.qw_price = pr->weights.data();
-  ws.n_quad_price = sch.n_quad_price;
-  al_bind_geometry(bnd, ws, sigma, r, q);
-
+// The seed + Jacobi-Newton / fixed-point schedule of a cold boundary solve, from
+// geometry already bound for (sigma, r, q): the tail al_solve_put_boundary and
+// al_solve_put_boundary_prepared share, so a prepared solve runs the very same code.
+[[nodiscard]] AlSolveStatus al_seed_and_sweep(double sigma, double r, double q,
+                                              const AlScheme &sch, AlBoundary &bnd,
+                                              AlWorkspace &ws, AlSolveResid rep,
+                                              AlSolveResid *resid_out) noexcept {
   // A6: the scheme selects the cold critical-boundary seed. QdPlus (Li 2010)
   // steepens the QD/BAW exponent near expiry where the frozen-θ approximation is
   // worst; it reaches the SAME converged fixed point as BAW but from a closer
@@ -1836,7 +2381,7 @@ namespace amer {
   if (sch.seed == detail::AlSeedMode::QdPlus) {
     al_seed_boundary_qdplus(bnd, sigma, r, q);
   } else {
-    al_seed_boundary(bnd, sigma, r, q);
+    al_seed_boundary_for(bnd, ws, sigma, r, q);
   }
 
   // A frozen sweep (below) is DETERMINISTIC: nothing moved, so the next sweep sees
@@ -1885,6 +2430,136 @@ namespace amer {
   return AlSolveStatus::Ok;
 }
 
+// Process-unique ids for prepared orientations (AlOrientedGeometry::id): a retained
+// solve scratch compares ids, never addresses, so a geometry rebuilt in place at the
+// same address can never be mistaken for the one the scratch was loaded from.
+std::atomic<std::uint64_t> g_oriented_geometry_ids{0};
+
+} // namespace
+// linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
+
+namespace amer {
+
+// S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
+// `bnd`/`ws` hold a boundary ready for al_put_price_from_boundary — NOT necessarily
+// a CONVERGED one; the sweep budget is fixed and Ok is returned however far it got.
+// `resid_out` carries that evidence; see AlSolveResid in american_boundary.hpp.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma, double r,
+                                                  double q, const AlScheme &sch, AlBoundary &bnd,
+                                                  AlWorkspace &ws, bool specialize,
+                                                  AlSolveResid *resid_out) noexcept { // hdr dflts
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
+  // Publish the pessimistic evidence up front so EVERY early return below — the
+  // pre-sweep Collapsed/TableMissing corners included — leaves the caller holding a
+  // report that reads "not converged" rather than a default-constructed one.
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
+    return AlSolveStatus::Collapsed;
+  }
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  ws.specialize = specialize;
+  ws.fast = al_fast_arithmetic(sch);
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
+  return al_seed_and_sweep(sigma, r, q, sch, bnd, ws, rep, resid_out);
+}
+
+// Prepare one orientation: exactly al_solve_put_boundary's prefix (node grid, table
+// pointers, flags, static bind) at K = 1, so the stored geo_alpha[j] is 1.0 * the
+// bind's exp — the exp itself — and a solve multiplies it by its own strike.
+void al_prepare_oriented_geometry(double T, double rate, double yield, const AlScheme &sch,
+                                  AlOrientedGeometry &g) noexcept {
+  g.id = 0;
+  g.tables_ok = false;
+  g.sch = sch;
+  g.rate = rate;
+  g.yield = yield;
+  if (!(std::isfinite(T) && T > 0.0 && std::isfinite(rate) && std::isfinite(yield))) {
+    return;
+  }
+  al_init_nodes(g.grid, sch.n_boundary, T, /*K=*/1.0, rate, yield);
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  g.tables_ok = fp != nullptr && fp->ok && pr != nullptr && pr->ok;
+  g.alpha_exp.fill(0.0);
+  if (g.tables_ok) {
+    AlWorkspace &ws = g.ws;
+    ws.specialize = true;
+    ws.fast = al_fast_arithmetic(sch);
+    ws.qx_fp = fp->nodes.data();
+    ws.qw_fp = fp->weights.data();
+    ws.n_quad_fp = sch.n_quad_fp;
+    ws.qx_price = pr->nodes.data();
+    ws.qw_price = pr->weights.data();
+    ws.n_quad_price = sch.n_quad_price;
+    ws.geo_static_bound = false;
+    al_bind_geometry_static(g.grid, ws, rate, yield);
+    if (ws.geo_static_bound) {
+      for (std::uint16_t j = 1; j < g.grid.n; ++j) {
+        if (g.grid.tau[j] > 1.0e-14) {
+          g.alpha_exp[j] = ws.geo_alpha[j]; // 1.0 * exp(-(rate - yield) * tau_j)
+        }
+      }
+    }
+  }
+  g.id = g_oriented_geometry_ids.fetch_add(1, std::memory_order_relaxed) + 1u;
+}
+
+// al_solve_put_boundary from a prepared orientation. The order of the early returns,
+// the rep published up front and the probe zone match the cold solve.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_prepared(const AlOrientedGeometry &g, double K,
+                                                           double sigma, AlBoundary &bnd,
+                                                           AlWorkspace &ws, std::uint64_t *loaded,
+                                                           AlSolveResid *resid_out) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/g.sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
+  if (loaded == nullptr || *loaded != g.id) {
+    // The sweeps never write the static part, so one load serves every later solve
+    // of this orientation through the same scratch.
+    bnd = g.grid;
+    ws = g.ws;
+    if (loaded != nullptr) {
+      *loaded = g.id;
+    }
+  }
+  // al_init_nodes' strike-dependent fields; y is zeroed as it zeroes it.
+  bnd.K = K;
+  bnd.xmax = al_xmax_put(K, g.rate, g.yield);
+  bnd.y.fill(0.0);
+  if (!(bnd.xmax > 0.0)) {
+    return AlSolveStatus::Collapsed;
+  }
+  if (!g.tables_ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  if (ws.geo_static_bound) {
+    for (std::uint16_t j = 1; j < bnd.n; ++j) {
+      if (bnd.tau[j] > 1.0e-14) {
+        ws.geo_alpha[j] = K * g.alpha_exp[j]; // == bnd.K * std::exp(-(r - q) * tau)
+      }
+    }
+  }
+  al_bind_geometry_sigma(bnd, ws, sigma, g.rate, g.yield);
+  return al_seed_and_sweep(sigma, g.rate, g.yield, g.sch, bnd, ws, rep, resid_out);
+}
+
 // Init-ONLY path for the AVX2 boundary batch (Task A5; supersedes A1's
 // al_seed_put_boundary). Runs the pre-sweep prefix of al_solve_put_boundary — node
 // init (z/wbary/x/tau/xmax) + Gauss-Legendre binding — but does NEITHER the cold BAW
@@ -1906,6 +2581,7 @@ namespace amer {
     return AlSolveStatus::TableMissing;
   }
   ws.specialize = false; // AVX2 kernel owns geometry; no ws.geo_* is bound or read
+  ws.fast = false;       // the AVX2 batch keeps its own vector math (Reference profile)
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
@@ -1943,6 +2619,7 @@ namespace amer {
     return AlSolveStatus::TableMissing;
   }
   ws.specialize = true;
+  ws.fast = al_fast_arithmetic(sch);
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
@@ -2016,7 +2693,8 @@ namespace amer {
                                                 double S, double K, double T, double sigma,
                                                 double r, double q) noexcept {
   const alprobe::Scope probe_zone(alprobe::Zone::AlPriceFromBoundary);
-  const double euro = euro_put_sk(S, K, T, sigma, r, q);
+  const double euro =
+      ws.fast ? euro_put_sk_fast(S, K, T, sigma, r, q) : euro_put_sk(S, K, T, sigma, r, q);
   const double prem = al_put_premium(bnd, ws, S, sigma, r, q);
   double price = euro + prem;
   const double intr = K - S;
@@ -2030,6 +2708,63 @@ namespace amer {
     price = 0.0;
   }
   return price;
+}
+
+// C1: B(tau = T) from the Lobatto end node (contract in american_boundary.hpp).
+[[nodiscard]] double al_boundary_at_expiry(double y_T, double xmax) noexcept {
+  return b_from_y(y_T, xmax);
+}
+
+[[nodiscard]] double al_boundary_at_expiry(const AlBoundary &bnd) noexcept {
+  if (bnd.n < 2 || !(bnd.T > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return al_boundary_at_expiry(bnd.y[bnd.n - 1u], bnd.xmax);
+}
+
+// L3k monotone (2026-10-21) + C1: the uncached site under an explicit AlExerciseRegion
+// (contract in american_boundary.hpp). KernelFloor without `cls_out` forwards
+// bit-identically.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                double S, double K, double T, double sigma,
+                                                double r, double q, AlExerciseRegion region,
+                                                AlExerciseClass *cls_out) noexcept {
+  if (region == AlExerciseRegion::KernelFloor && cls_out == nullptr) {
+    return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q);
+  }
+  const AlExerciseClass cls = al_site_class(bnd, S, K, T, sigma, r, q);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return al_region_site_price(cls, region, S, K, [&]() noexcept {
+    return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q);
+  });
+}
+
+// L3k test seam for the cached site (american_boundary.hpp).
+[[nodiscard]] double al_put_price_from_boundary_cached_probe(const AlBoundary &bnd,
+                                                            const AlWorkspace &ws, double S,
+                                                            double K, double T, double sigma,
+                                                            double r, double q,
+                                                            AlExerciseRegion region,
+                                                            bool bind_cache,
+                                                            AlExerciseClass *cls_out) noexcept {
+  AlPremiumCache pc; // invalid until bound: an unbound cache takes the inline arm
+  if (bind_cache) {
+    al_bind_premium(bnd, ws, sigma, r, q, pc);
+  }
+  return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q, region, cls_out);
+}
+
+// Tick-path record seam (american_boundary.hpp): pure forwarders.
+[[nodiscard]] double al_boundary_now(const AlBoundary &bnd) noexcept {
+  return al_boundary_at(bnd, bnd.T);
+}
+
+[[nodiscard]] double al_put_premium_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                  double S, double sigma, double r,
+                                                  double q) noexcept {
+  return al_put_premium(bnd, ws, S, sigma, r, q);
 }
 
 // P2 (WS-P) seam — the PURE collocation residual R(y; sigma, r, q), exposed as a
@@ -2106,6 +2841,7 @@ AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, doubl
   // pure-hoist tolerance (~1e-9 in the delta/price tests), NOT bit-identically, so it is
   // NOT reused as a served mark — the adjoint kernel serves its own AL price.
   ws.specialize = false;
+  ws.fast = false; // the tangent differentiates the Reference map (AlProfile note)
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
@@ -2224,12 +2960,37 @@ constexpr const char *kDoubleContinuationMsg =
     "single-boundary Andersen-Lake scheme cannot represent two exercise "
     "boundaries; see Andersen-Lake 2021 (double-boundary case)";
 
+// C1 (2026-10-22): what an American arm saw — the boundary B(tau = T) it priced against
+// and the class the price site assigned. Filled only when the arm reaches a price site
+// (`ran`); andersen_lake_classified reads it, every legacy caller passes none.
+struct AlArmReport {
+  bool ran = false;
+  double boundary = std::numeric_limits<double>::quiet_NaN();
+  AlExerciseClass cls = AlExerciseClass::Continuation;
+};
+
+// The American arm's price call: without a report it is the L3k call, unchanged.
+[[nodiscard]] double al_arm_price(const AlBoundary &bnd, const AlWorkspace &ws, double S, double K,
+                                  double T, double sigma, double r, double q,
+                                  AlExerciseRegion region, AlArmReport *report) noexcept {
+  if (report == nullptr) {
+    return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q, region);
+  }
+  report->ran = true;
+  report->boundary = al_boundary_at_expiry(bnd);
+  return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q, region, &report->cls);
+}
+
 // Put core — used directly for puts and via McDonald-Schroder for calls. The
 // `specialize` flag (default true) forces the generic runtime-trip-count kernel when
 // false — the seam behind detail::andersen_lake_generic_kernel that proves the
-// specialized fixed-scheme kernel is bit-identical to the generic path.
+// specialized fixed-scheme kernel is bit-identical to the generic path. `region` (L3k)
+// selects the price-from-boundary rule; the KernelFloor default is every legacy caller.
+// `report` (C1) receives the arm's boundary and class when non-null.
 [[nodiscard]] Result<double> al_solve_put(double S, double K, double T, double sigma, double r,
-                                          double q, const AlScheme &sch, bool specialize = true) {
+                                          double q, const AlScheme &sch, bool specialize = true,
+                                          AlExerciseRegion region = AlExerciseRegion::KernelFloor,
+                                          AlArmReport *report = nullptr) {
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
   case ExerciseRegime::European: {
     const double euro = euro_put_sk(S, K, T, sigma, r, q);
@@ -2256,7 +3017,7 @@ constexpr const char *kDoubleContinuationMsg =
   case AlSolveStatus::Ok:
     break;
   }
-  return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
+  return Ok(al_arm_price(bnd, ws, S, K, T, sigma, r, q, region, report));
 }
 
 // A4 (PR-C4): the sigma->0 limit of an American option is the European sigma->0
@@ -2276,15 +3037,13 @@ constexpr const char *kDoubleContinuationMsg =
   return std::max(euro_lim, spot_intr > 0.0 ? spot_intr : 0.0);
 }
 
-// Shared core of the public andersen_lake entry point, parameterized on `specialize`
-// so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
-// kernel for the SAME scheme and prove the specialized path is bit-identical.
-[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T, double sigma,
-                                                double r, double q, Side side,
-                                                const std::optional<AlOpts> &opts, bool specialize,
-                                                std::optional<detail::AlSeedMode> seed_override =
-                                                    std::nullopt,
-                                                std::uint16_t n_quad_price_override = 0) {
+// The andersen_lake decision tree — validation, the degenerate T / sigma closed forms
+// and the regime switch — with the American arm supplied by the caller. The cold
+// entry point and the prepared-geometry overload share it, so they cannot drift.
+template <class AmericanArm>
+[[nodiscard]] Result<double> andersen_lake_dispatch(double S, double K, double T, double sigma,
+                                                    double r, double q, Side side,
+                                                    AmericanArm &&american) {
   if (!(K > 0.0 && S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake: S and K must be > 0");
   }
@@ -2324,22 +3083,103 @@ constexpr const char *kDoubleContinuationMsg =
   case ExerciseRegime::American:
     break;
   }
+  return american();
+}
 
-  AlScheme sch = scheme_from_opts(opts);
-  // A6 measurement seam: force a specific seed / premium-quad order on top of the
-  // preset so the shootout can A/B (BAW vs QD+, 16 vs 8 premium nodes) in one
-  // build. Both overrides are inert (nullopt / 0) on every production call.
-  if (seed_override) {
-    sch.seed = *seed_override;
+// Shared core of the public andersen_lake entry point, parameterized on `specialize`
+// so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
+// kernel for the SAME scheme and prove the specialized path is bit-identical.
+[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T, double sigma,
+                                                double r, double q, Side side,
+                                                const std::optional<AlOpts> &opts, bool specialize,
+                                                std::optional<detail::AlSeedMode> seed_override =
+                                                    std::nullopt,
+                                                std::uint16_t n_quad_price_override = 0,
+                                                AlExerciseRegion region =
+                                                    AlExerciseRegion::KernelFloor,
+                                                AlArmReport *report = nullptr) {
+  return andersen_lake_dispatch(S, K, T, sigma, r, q, side, [&]() -> Result<double> {
+    AlScheme sch = scheme_from_opts(opts);
+    // A6 measurement seam: force a specific seed / premium-quad order on top of the
+    // preset so the shootout can A/B (BAW vs QD+, 16 vs 8 premium nodes) in one
+    // build. Both overrides are inert (nullopt / 0) on every production call.
+    if (seed_override) {
+      sch.seed = *seed_override;
+    }
+    if (n_quad_price_override != 0) {
+      sch.n_quad_price = n_quad_price_override;
+    }
+    if (side == Side::Put) {
+      return al_solve_put(S, K, T, sigma, r, q, sch, specialize, region, report);
+    }
+    // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
+    return al_solve_put(K, S, T, sigma, q, r, sch, specialize, region, report);
+  });
+}
+
+// Maps a boundary-solve status to andersen_lake's error for it (Ok -> Ok()).
+[[nodiscard]] Status al_solve_status_error(AlSolveStatus st) {
+  switch (st) {
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+  case AlSolveStatus::NotConverged:
+    return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
+  case AlSolveStatus::Ok:
+    break;
   }
-  if (n_quad_price_override != 0) {
-    sch.n_quad_price = n_quad_price_override;
-  }
-  if (side == Side::Put) {
-    return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
-  }
-  // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
-  return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
+  return Ok();
+}
+
+// The internal put of (side, S, K, r, q): McDonald-Schroder maps a call to the put
+// with spot K, strike S, rate q and yield r (the same swap andersen_lake_core makes).
+struct AlInternalPut {
+  double S;
+  double K;
+  double rate;
+  double yield;
+};
+[[nodiscard]] inline AlInternalPut al_internal_put(Side side, double S, double K, double r,
+                                                   double q) noexcept {
+  return side == Side::Put ? AlInternalPut{S, K, r, q} : AlInternalPut{K, S, q, r};
+}
+
+// The American arm of andersen_lake through a prepared orientation: the boundary
+// solve of al_solve_put (same statuses, same messages) and the same price call.
+[[nodiscard]] Result<double> al_solve_put_prepared(const AlOrientedGeometry &g,
+                                                   const AlInternalPut &p, double T, double sigma,
+                                                   AlPreparedScratch &s,
+                                                   AlExerciseRegion region =
+                                                       AlExerciseRegion::KernelFloor,
+                                                   AlArmReport *report = nullptr) {
+  ATX_TRY_VOID(al_solve_status_error(
+      al_solve_put_boundary_prepared(g, p.K, sigma, s.bnd, s.ws, &s.loaded)));
+  return Ok(al_arm_price(s.bnd, s.ws, p.S, p.K, T, sigma, p.rate, p.yield, region, report));
+}
+
+// andersen_lake through an expiry geometry with caller-retained scratch (one per
+// orientation, so alternating calls and puts never reload).
+[[nodiscard]] Result<double> andersen_lake_prepared(const AlExpiryGeometry::Impl &g, double S,
+                                                    double K, double sigma, Side side,
+                                                    AlPreparedScratch &put_scratch,
+                                                    AlPreparedScratch &call_scratch,
+                                                    AlExerciseRegion region =
+                                                        AlExerciseRegion::KernelFloor,
+                                                    AlArmReport *report = nullptr) {
+  return andersen_lake_dispatch(S, K, g.T, sigma, g.r, g.q, side, [&]() -> Result<double> {
+    const AlInternalPut p = al_internal_put(side, S, K, g.r, g.q);
+    const AlOrientedGeometry &orient = (side == Side::Put) ? g.put : g.call;
+    if (orient.id == 0) {
+      // Not prepared for this regime (unreachable once dispatch said American with a
+      // valid expiry); the cold solve keeps the answer exact regardless.
+      return andersen_lake_core(S, K, g.T, sigma, g.r, g.q, side, g.opts, /*specialize=*/true,
+                                std::nullopt, 0, region, report);
+    }
+    return al_solve_put_prepared(orient, p, g.T, sigma,
+                                 side == Side::Put ? put_scratch : call_scratch, region, report);
+  });
 }
 
 // ── American Greeks (chain rule + analytic correction derivatives) ───────
@@ -2459,11 +3299,16 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
 // early-exercise boundary `bnd.y[]` alive between price() calls. All calls solve
 // an internal PUT; a Call is the McDonald-Schroder put P(K,S,q,r), so the boundary
 // machinery is identical.
-struct AloPricer::State {
+// C1 fix round 1 (2026-10-22): the state is a named core shared by AloPricer and
+// AloRegionPricer (api/pricing/american_region.hpp), so the scalar inversion's residual
+// map has ONE implementation whichever type holds it.
+namespace detail {
+
+struct AloCore {
   // User-provided construction deliberately avoids value-initializing the four
   // 512-double geometry arrays. reset() binds every active element before a
   // specialized kernel can read it.
-  State() noexcept {}
+  AloCore() noexcept {}
 
   double Sp{}; // internal-put spot   (= K for a call)
   double Kp{}; // internal-put strike (= S for a call) — drives the boundary
@@ -2480,20 +3325,40 @@ struct AloPricer::State {
   double last_sigma{-1.0};
 };
 
-AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
-                     const std::optional<AlOpts> &opts)
-    : st_(std::make_unique<State>()) {
-  ATX_VOL_COUNT(AloStateAllocations);
-  reset(S, K, T, r, q, side, opts);
+} // namespace detail
+
+// AloPricer's PIMPL is the shared core.
+struct AloPricer::State : detail::AloCore {
+  State() noexcept {}
+};
+
+namespace {
+
+constexpr double kNoBoundary = std::numeric_limits<double>::quiet_NaN();
+
+// The class of the branch alo_price takes: THE classifier on the internal put, with the
+// boundary that branch priced against.
+AlExerciseClass alo_report(const detail::AloCore &s, double sigma, double boundary,
+                           AlExerciseClass *cls_out) noexcept {
+  const AlExerciseClass cls =
+      classify_exercise_region(s.Sp, s.Kp, s.T, s.rp, s.qp, sigma, /*is_call=*/false, boundary);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return cls;
 }
 
-void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
-                      const std::optional<AlOpts> &opts) noexcept {
-  assert(st_ != nullptr);
-  if (st_ == nullptr) {
-    return; // moved-from pricer: fail safe without allocating in reset()
+// A branch decided before any boundary exists: records its class when one is asked for,
+// and does nothing at all on the default (no-output) path.
+void alo_note(const detail::AloCore &s, double sigma, AlExerciseClass *cls_out) noexcept {
+  if (cls_out != nullptr) {
+    (void)alo_report(s, sigma, kNoBoundary, cls_out);
   }
-  State &s = *st_;
+}
+
+// The body of AloPricer::reset, unchanged.
+void alo_reset(detail::AloCore &s, double S, double K, double T, double r, double q, Side side,
+               const std::optional<AlOpts> &opts) noexcept {
   s.prepared = false;
   s.european_only = false;
   s.unsupported = false;
@@ -2509,6 +3374,7 @@ void AloPricer::reset(double S, double K, double T, double r, double q, Side sid
   s.ws.n_quad_price = 0;
   s.T = T;
   s.sch = scheme_from_opts(opts);
+  s.ws.fast = al_fast_arithmetic(s.sch);
   // Internal put contract. Put: as-is. Call: McDonald-Schroder swap (S<->K, r<->q).
   if (side == Side::Put) {
     s.Sp = S;
@@ -2557,20 +3423,16 @@ void AloPricer::reset(double S, double K, double T, double r, double q, Side sid
   s.prepared = true;
 }
 
-AloPricer::~AloPricer() = default;
-AloPricer::AloPricer(AloPricer &&) noexcept = default;
-AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
-
-double AloPricer::price(double sigma) noexcept {
+// The body of AloPricer::price plus the C1 rule and class. KernelFloor with no class
+// output runs the pre-C1 operations exactly: alo_note is a no-op without an output and
+// the arm's classification is skipped.
+[[nodiscard]] double alo_price(detail::AloCore &s, double sigma, AlExerciseRegion rule,
+                               AlExerciseClass *cls_out) noexcept {
   const alprobe::Scope probe_zone(alprobe::Zone::AloPricerPrice);
-  assert(st_ != nullptr);
-  if (st_ == nullptr) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
-  State &s = *st_;
   // Degenerate T ~ 0: no time left, collapse to the spot intrinsic (internal-put
   // intrinsic Kp - Sp equals the original option's intrinsic for both sides).
   if (s.T <= 1.0e-12) {
+    alo_note(s, sigma, cls_out);
     const double intr = s.Kp - s.Sp;
     return (intr > 0.0) ? intr : 0.0;
   }
@@ -2581,19 +3443,27 @@ double AloPricer::price(double sigma) noexcept {
   // check — matching the pre-A4 degenerate guard, which priced sigma->0 regardless
   // of regime (the double-continuation corner is a sigma>0 limitation only).
   if (!(sigma > 1.0e-8)) {
+    alo_note(s, sigma, cls_out);
     return sigma_zero_american_limit(s.Sp, s.Kp, s.T, s.rp, s.qp, Side::Put);
   }
   // Double-continuation corner: no single-boundary price exists (andersen_lake
   // returns NotImplemented here). Surface NaN, matching the boundary-collapse
   // failure convention below.
   if (s.unsupported) {
+    alo_note(s, sigma, cls_out);
     return std::numeric_limits<double>::quiet_NaN();
   }
-  const double euro = euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
+  // The European regime stays on the Reference leg under either profile (as
+  // andersen_lake's European short-circuit does); the American arm follows ws.fast.
+  const double euro = (s.ws.fast && !s.european_only)
+                          ? euro_put_sk_fast(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp)
+                          : euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
   if (s.european_only) {
+    alo_note(s, sigma, cls_out);
     return euro;
   }
   if (!s.prepared) {
+    alo_note(s, sigma, cls_out); // collapse / table: no boundary
     return std::numeric_limits<double>::quiet_NaN();
   }
   // Warm-start unless this is the first solve or sigma moved more than ~12% (then
@@ -2603,7 +3473,7 @@ double AloPricer::price(double sigma) noexcept {
   const bool cold =
       !s.seeded || !(s.last_sigma > 0.0) || std::fabs(sigma - s.last_sigma) > 0.12 * s.last_sigma;
   if (cold) {
-    al_seed_boundary(s.bnd, sigma, s.rp, s.qp);
+    al_seed_boundary_for(s.bnd, s.ws, sigma, s.rp, s.qp);
   }
   // reset() retained zc and the weighted rate/yield exponentials. Only the
   // sigma-dependent diffusion scale changes between residual evaluations.
@@ -2624,6 +3494,7 @@ double AloPricer::price(double sigma) noexcept {
       // through this pricer's NaN failure channel. s.seeded / s.last_sigma are left
       // untouched, so the next call's warm/cold decision still refers to the last
       // SOLVED sigma and never records this frozen state as a converged one.
+      alo_note(s, sigma, cls_out);
       return std::numeric_limits<double>::quiet_NaN();
     }
     resid = sw.max_dy;
@@ -2638,6 +3509,7 @@ double AloPricer::price(double sigma) noexcept {
     for (std::uint16_t k = 0; k < s.sch.n_iter_fp; ++k) {
       const AlSweepResult sw = al_fixed_point_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
       if (sw.all_frozen) {
+        alo_note(s, sigma, cls_out);
         return std::numeric_limits<double>::quiet_NaN();
       }
       resid = sw.max_dy;
@@ -2649,6 +3521,13 @@ double AloPricer::price(double sigma) noexcept {
   }
   s.seeded = true;
   s.last_sigma = sigma;
+  if (rule == AlExerciseRegion::Intrinsic || cls_out != nullptr) {
+    // C1: the American arm's class against the boundary this call converged.
+    const AlExerciseClass cls = alo_report(s, sigma, al_boundary_at_expiry(s.bnd), cls_out);
+    if (rule == AlExerciseRegion::Intrinsic && cls == AlExerciseClass::ExercisePlateau) {
+      return s.Kp - s.Sp;
+    }
+  }
 
   const double prem = al_put_premium(s.bnd, s.ws, s.Sp, sigma, s.rp, s.qp);
   double px = euro + prem;
@@ -2660,6 +3539,77 @@ double AloPricer::price(double sigma) noexcept {
     px = euro;
   }
   return (px > 0.0) ? px : 0.0;
+}
+
+} // namespace
+
+AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
+                     const std::optional<AlOpts> &opts)
+    : st_(std::make_unique<State>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  reset(S, K, T, r, q, side, opts);
+}
+
+void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
+                      const std::optional<AlOpts> &opts) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return; // moved-from pricer: fail safe without allocating in reset()
+  }
+  alo_reset(*st_, S, K, T, r, q, side, opts);
+}
+
+AloPricer::~AloPricer() = default;
+AloPricer::AloPricer(AloPricer &&) noexcept = default;
+AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
+
+double AloPricer::price(double sigma) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return alo_price(*st_, sigma, AlExerciseRegion::KernelFloor, nullptr);
+}
+
+// ── AloRegionPricer (C1 fix round 1): the same core under an explicit rule ──
+
+AloRegionPricer::AloRegionPricer(double S, double K, double T, double r, double q, Side side,
+                                 const std::optional<AlOpts> &opts)
+    : core_(std::make_unique<detail::AloCore>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  alo_reset(*core_, S, K, T, r, q, side, opts);
+}
+
+AloRegionPricer::~AloRegionPricer() = default;
+AloRegionPricer::AloRegionPricer(AloRegionPricer &&) noexcept = default;
+AloRegionPricer &AloRegionPricer::operator=(AloRegionPricer &&) noexcept = default;
+
+void AloRegionPricer::reset(double S, double K, double T, double r, double q, Side side,
+                            const std::optional<AlOpts> &opts) noexcept {
+  assert(core_ != nullptr);
+  if (core_ == nullptr) {
+    return; // moved-from pricer
+  }
+  alo_reset(*core_, S, K, T, r, q, side, opts);
+}
+
+double AloRegionPricer::price(double sigma, AlExerciseRegion rule,
+                              AlExerciseClass *cls_out) noexcept {
+  assert(core_ != nullptr);
+  if (core_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return alo_price(*core_, sigma, rule, cls_out);
+}
+
+const detail::AloCore &AloRegionPricer::core() const noexcept {
+  assert(core_ != nullptr);
+  return *core_;
+}
+
+// The ALO boundary seam (pricing/american_boundary.hpp).
+const AlBoundary &amer::al_alo_boundary(const detail::AloCore &core) noexcept {
+  return core.bnd;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -2684,9 +3634,380 @@ AlOpts al_bulk_opts() noexcept {
       .tol = 1.0e-8};
 }
 
+// L2f al-fast-tier: the measured Screen tier (bound and scheme choice on
+// al_screen_opts in american.hpp; scan in sprints/2026-10-19-L2f-al-fast-tier-sprint.md).
+AlOpts al_screen_opts() noexcept {
+  return AlOpts{.n_collocation = 7,
+                .n_quadrature = 16,
+                .n_quad_price = 48,
+                .max_newton_iter = 5,
+                .tol = 1.0e-8,
+                .profile = AlProfile::Screen};
+}
+
+// al-speed tier 2. nullopt's ACCURATE scheme is {12, 24, 48, 2 JN + 4 FP, 1e-10};
+// the explicit opts below map to exactly that through scheme_from_opts (6 sweeps
+// split 2 + 4, price order 48), so only the profile differs.
+AlOpts al_fast_profile(const std::optional<AlOpts> &opts) noexcept {
+  AlOpts o = opts ? *opts
+                  : AlOpts{.n_collocation = 12, .n_quadrature = 24, .n_quad_price = 48,
+                           .max_newton_iter = 6, .tol = 1.0e-10};
+  o.profile = AlProfile::Fast;
+  return o;
+}
+
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
+}
+
+// L3k monotone: the exercise-region rule (american.hpp AlExerciseRegion).
+Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const std::optional<AlOpts> &opts,
+                             AlExerciseRegion region) {
+  return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true, std::nullopt,
+                            0, region);
+}
+
+// ── C1 exercise region (2026-10-22): the one classification + the classified price ──
+
+const char *to_string(AlExerciseClass value) noexcept {
+  switch (value) {
+  case AlExerciseClass::Continuation:
+    return "continuation";
+  case AlExerciseClass::ExercisePlateau:
+    return "exercise_plateau";
+  case AlExerciseClass::European:
+    return "european";
+  case AlExerciseClass::ExpiryLimit:
+    return "expiry_limit";
+  case AlExerciseClass::ZeroVolLimit:
+    return "zero_vol_limit";
+  case AlExerciseClass::UnsupportedRegime:
+    return "unsupported_regime";
+  }
+  return "unknown";
+}
+
+// The order is andersen_lake_dispatch's (degenerate T, degenerate sigma, the carry regime,
+// then the American arm), so a class names the branch that priced the contract.
+AlExerciseClass classify_exercise_region(double S, double K, double T, double r, double q,
+                                         double sigma, bool is_call, double boundary) noexcept {
+  if (T <= kAlExpiryLimitT) {
+    return AlExerciseClass::ExpiryLimit;
+  }
+  if (sigma <= kAlZeroVolSigma) {
+    return AlExerciseClass::ZeroVolLimit;
+  }
+  // The internal put: a call is the put with spot K, strike S, rate q and yield r.
+  const double rate = is_call ? q : r;
+  const double yield = is_call ? r : q;
+  switch (classify_regime(rate, yield)) {
+  case ExerciseRegime::European:
+    return AlExerciseClass::European;
+  case ExerciseRegime::Unsupported:
+    return AlExerciseClass::UnsupportedRegime;
+  case ExerciseRegime::American:
+    break;
+  }
+  const double spot = is_call ? K : S;
+  return (spot <= boundary) ? AlExerciseClass::ExercisePlateau : AlExerciseClass::Continuation;
+}
+
+namespace {
+
+// The classified result of one andersen_lake evaluation `p` whose American arm (if it
+// ran) reported into `arm`. Inputs are those andersen_lake validated; a validation error
+// returns before the classifier is consulted.
+[[nodiscard]] Result<AlRegionPrice> al_classified_result(double S, double K, double T,
+                                                         double sigma, double r, double q,
+                                                         Side side, const Result<double> &p,
+                                                         const AlArmReport &arm) {
+  const bool is_call = (side == Side::Call);
+  if (!p) {
+    // The dispatch validates before it classifies, so a NotImplemented here passed
+    // validation; in the double-continuation regime it is the typed refusal.
+    if (p.error().code() == ErrorCode::NotImplemented &&
+        classify_exercise_region(S, K, T, r, q, sigma, is_call,
+                                 std::numeric_limits<double>::quiet_NaN()) ==
+            AlExerciseClass::UnsupportedRegime) {
+      return Ok(AlRegionPrice{});
+    }
+    return Err(p.error());
+  }
+  AlRegionPrice out;
+  out.price = *p;
+  if (arm.ran) {
+    out.boundary = arm.boundary;
+    out.cls = arm.cls;
+  } else {
+    out.cls = classify_exercise_region(S, K, T, r, q, sigma, is_call,
+                                       std::numeric_limits<double>::quiet_NaN());
+  }
+  return Ok(out);
+}
+
+} // namespace
+
+Result<AlRegionPrice> andersen_lake_classified(double S, double K, double T, double sigma,
+                                               double r, double q, Side side,
+                                               const std::optional<AlOpts> &opts,
+                                               AlExerciseRegion rule) {
+  AlArmReport arm;
+  const Result<double> p = andersen_lake_core(S, K, T, sigma, r, q, side, opts,
+                                              /*specialize=*/true, std::nullopt, 0, rule, &arm);
+  return al_classified_result(S, K, T, sigma, r, q, side, p, arm);
+}
+
+// ── Shared expiry geometry, boundary handle, price pack (L2b, 2026-10-18) ──
+
+AlExpiryGeometry::AlExpiryGeometry() : impl_(std::make_unique<Impl>()) {}
+AlExpiryGeometry::~AlExpiryGeometry() = default;
+AlExpiryGeometry::AlExpiryGeometry(AlExpiryGeometry &&) noexcept = default;
+AlExpiryGeometry &AlExpiryGeometry::operator=(AlExpiryGeometry &&) noexcept = default;
+
+void AlExpiryGeometry::prepare(double T, double r, double q, const std::optional<AlOpts> &opts) {
+  if (!impl_) {
+    impl_ = std::make_unique<Impl>();
+  }
+  Impl &g = *impl_;
+  ++g.generation; // invalidates every handle solved on the previous preparation
+  g.T = T;
+  g.r = r;
+  g.q = q;
+  g.opts = opts;
+  g.sch = scheme_from_opts(opts);
+  g.put.id = 0;
+  g.call.id = 0;
+  // Only an orientation andersen_lake would actually solve is prepared: a valid,
+  // non-degenerate expiry and its side's American regime (put: rate r, yield q;
+  // call: the internal put's rate q, yield r).
+  const bool solvable = std::isfinite(T) && T > 1.0e-12 && std::isfinite(r) && std::isfinite(q);
+  if (solvable && classify_regime(/*rate=*/r, /*yield=*/q) == ExerciseRegime::American) {
+    al_prepare_oriented_geometry(T, r, q, g.sch, g.put);
+  }
+  if (solvable && classify_regime(/*rate=*/q, /*yield=*/r) == ExerciseRegime::American) {
+    al_prepare_oriented_geometry(T, q, r, g.sch, g.call);
+  }
+  g.prepared = true;
+}
+
+bool AlExpiryGeometry::prepared() const noexcept { return impl_ && impl_->prepared; }
+double AlExpiryGeometry::T() const noexcept {
+  return prepared() ? impl_->T : std::numeric_limits<double>::quiet_NaN();
+}
+double AlExpiryGeometry::r() const noexcept {
+  return prepared() ? impl_->r : std::numeric_limits<double>::quiet_NaN();
+}
+double AlExpiryGeometry::q() const noexcept {
+  return prepared() ? impl_->q : std::numeric_limits<double>::quiet_NaN();
+}
+
+AlExpiryGeometry prepare_al_geometry(double T, double r, double q,
+                                     const std::optional<AlOpts> &opts) {
+  AlExpiryGeometry g;
+  g.prepare(T, r, q, opts);
+  return g;
+}
+
+Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, double sigma,
+                             Side side) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  // Stateless: one scratch per call (loaded once, ~46 KB of stack).
+  AlPreparedScratch scratch;
+  return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch);
+}
+
+// L3k monotone: the geometry overload under an explicit exercise-region rule.
+Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, double sigma,
+                             Side side, AlExerciseRegion region) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  AlPreparedScratch scratch;
+  return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch, region);
+}
+
+// C1: the geometry overload, classified (contract in american_region.hpp).
+Result<AlRegionPrice> andersen_lake_classified(const AlExpiryGeometry &g, double S, double K,
+                                               double sigma, Side side, AlExerciseRegion rule) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  AlPreparedScratch scratch;
+  AlArmReport arm;
+  const Result<double> p =
+      andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch, rule, &arm);
+  return al_classified_result(S, K, impl->T, sigma, impl->r, impl->q, side, p, arm);
+}
+
+struct AlBoundaryHandle::State {
+  const AlExpiryGeometry::Impl *g = nullptr;
+  Side side = Side::Call;
+  double anchor = 0.0; // internal-put strike: the spot (call) or the strike (put)
+  double sigma = 0.0;
+  bool solved = false;   // solve() succeeded (boundary or a closed-form regime)
+  bool boundary = false; // ... and laid down a boundary in `scratch`
+  std::uint64_t generation = 0; // the geometry's generation at the last solve()
+  AlPreparedScratch scratch;
+};
+
+AlBoundaryHandle::AlBoundaryHandle(const AlExpiryGeometry &geometry, Side side, double anchor)
+    : st_(std::make_unique<State>()) {
+  st_->g = geometry.impl();
+  st_->side = side;
+  st_->anchor = anchor;
+}
+AlBoundaryHandle::~AlBoundaryHandle() = default;
+AlBoundaryHandle::AlBoundaryHandle(AlBoundaryHandle &&) noexcept = default;
+AlBoundaryHandle &AlBoundaryHandle::operator=(AlBoundaryHandle &&) noexcept = default;
+
+Status AlBoundaryHandle::solve(double sigma) {
+  if (!st_) {
+    return Err(ErrorCode::InvalidArgument, "AlBoundaryHandle: moved-from handle");
+  }
+  State &st = *st_;
+  st.solved = false;
+  st.boundary = false;
+  st.sigma = sigma;
+  if (st.g == nullptr || !st.g->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  const AlExpiryGeometry::Impl &g = *st.g;
+  st.generation = g.generation;
+  // andersen_lake's own decision tree at S = K = anchor: validation and regime depend
+  // on neither beyond their sign, so this takes the branch every contract of the
+  // handle takes; the American arm solves the anchor's boundary once.
+  const Result<double> r = andersen_lake_dispatch(
+      st.anchor, st.anchor, g.T, sigma, g.r, g.q, st.side, [&]() -> Result<double> {
+        const AlOrientedGeometry &orient = (st.side == Side::Put) ? g.put : g.call;
+        if (orient.id == 0) {
+          return Err(ErrorCode::Internal, "AlBoundaryHandle: orientation not prepared");
+        }
+        ATX_TRY_VOID(al_solve_status_error(al_solve_put_boundary_prepared(
+            orient, st.anchor, sigma, st.scratch.bnd, st.scratch.ws, &st.scratch.loaded)));
+        st.boundary = true;
+        return Ok(0.0);
+      });
+  if (!r) {
+    return Err(r.error());
+  }
+  st.solved = true;
+  return Ok();
+}
+
+double AlBoundaryHandle::price_from_boundary(double S, double K) const noexcept {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  if (!st_ || !st_->solved) {
+    return kNaN;
+  }
+  const State &st = *st_;
+  // A geometry re-prepared after solve() has moved (T, r, q, opts) under the boundary
+  // in `scratch`: refuse rather than price the stale boundary (L2b review m2).
+  if (st.g == nullptr || st.g->generation != st.generation) {
+    return kNaN;
+  }
+  const double internal_strike = (st.side == Side::Put) ? K : S;
+  if (std::bit_cast<std::uint64_t>(internal_strike) != std::bit_cast<std::uint64_t>(st.anchor)) {
+    return kNaN;
+  }
+  const AlExpiryGeometry::Impl &g = *st.g;
+  // SAFETY: the dispatch only builds an error message (which may allocate and throw)
+  // on paths that solve() already proved unreachable for this anchor and sigma; the
+  // catch keeps the noexcept contract regardless.
+  try {
+    const Result<double> r =
+        andersen_lake_dispatch(S, K, g.T, st.sigma, g.r, g.q, st.side, [&]() -> Result<double> {
+          if (!st.boundary) {
+            return Err(ErrorCode::Internal, "AlBoundaryHandle: no boundary");
+          }
+          const AlInternalPut p = al_internal_put(st.side, S, K, g.r, g.q);
+          return Ok(al_put_price_from_boundary(st.scratch.bnd, st.scratch.ws, p.S, p.K, g.T,
+                                               st.sigma, p.rate, p.yield));
+        });
+    return r ? *r : kNaN;
+  } catch (...) {
+    return kNaN;
+  }
+}
+
+namespace {
+
+// One sigma level of an al_price_pack call: a retained scratch per orientation plus
+// the (internal strike, sigma) its boundary was solved at, so a contract with the
+// same key prices from it without a re-solve.
+struct PackLevel {
+  AlPreparedScratch put;
+  AlPreparedScratch call;
+  std::uint64_t put_key_k = 0;
+  std::uint64_t put_key_sigma = 0;
+  bool put_valid = false;
+  std::uint64_t call_key_k = 0;
+  std::uint64_t call_key_sigma = 0;
+  bool call_valid = false;
+};
+
+[[nodiscard]] double pack_price(const AlExpiryGeometry::Impl &g, PackLevel &lvl,
+                                const AlContract &c, double sigma) {
+  const Result<double> r =
+      andersen_lake_dispatch(c.S, c.K, g.T, sigma, g.r, g.q, c.side, [&]() -> Result<double> {
+        const bool put = (c.side == Side::Put);
+        const AlOrientedGeometry &orient = put ? g.put : g.call;
+        if (orient.id == 0) {
+          return andersen_lake_core(c.S, c.K, g.T, sigma, g.r, g.q, c.side, g.opts,
+                                    /*specialize=*/true);
+        }
+        const AlInternalPut p = al_internal_put(c.side, c.S, c.K, g.r, g.q);
+        AlPreparedScratch &s = put ? lvl.put : lvl.call;
+        bool &valid = put ? lvl.put_valid : lvl.call_valid;
+        std::uint64_t &key_k = put ? lvl.put_key_k : lvl.call_key_k;
+        std::uint64_t &key_sigma = put ? lvl.put_key_sigma : lvl.call_key_sigma;
+        const std::uint64_t k_bits = std::bit_cast<std::uint64_t>(p.K);
+        const std::uint64_t s_bits = std::bit_cast<std::uint64_t>(sigma);
+        if (!valid || key_k != k_bits || key_sigma != s_bits) {
+          valid = false;
+          ATX_TRY_VOID(al_solve_status_error(
+              al_solve_put_boundary_prepared(orient, p.K, sigma, s.bnd, s.ws, &s.loaded)));
+          valid = true;
+          key_k = k_bits;
+          key_sigma = s_bits;
+        }
+        return Ok(al_put_price_from_boundary(s.bnd, s.ws, p.S, p.K, g.T, sigma, p.rate,
+                                             p.yield));
+      });
+  return r ? *r : std::numeric_limits<double>::quiet_NaN();
+}
+
+} // namespace
+
+Status al_price_pack(const AlExpiryGeometry &g, std::span<const AlContract> contracts,
+                     std::span<const double> sigma, std::span<double> price,
+                     std::span<double> price_sigma_bumped) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "al_price_pack: expiry geometry is not prepared");
+  }
+  const std::size_t n = contracts.size();
+  if (sigma.size() != n || price.size() != n ||
+      (!price_sigma_bumped.empty() && price_sigma_bumped.size() != n)) {
+    return Err(ErrorCode::InvalidArgument, "al_price_pack: span lengths differ");
+  }
+  // ~185 KB of retained solve state: one heap block per call, not worker stack.
+  const auto levels = std::make_unique<std::array<PackLevel, 2>>();
+  PackLevel &base = (*levels)[0];
+  PackLevel &bumped = (*levels)[1];
+  for (std::size_t i = 0; i < n; ++i) {
+    price[i] = pack_price(*impl, base, contracts[i], sigma[i]);
+    if (!price_sigma_bumped.empty()) {
+      price_sigma_bumped[i] = pack_price(*impl, bumped, contracts[i], sigma[i] + kAlPackSigmaBump);
+    }
+  }
+  return Ok();
 }
 
 // T1: the residual seam. Deliberately mirrors andersen_lake_core's validation,
@@ -2753,9 +4074,17 @@ Result<AlBoundaryConvergence> andersen_lake_convergence(double S, double K, doub
   return Ok(AlBoundaryConvergence{ev.resid, ev.tol, ev.converged(), ev.sweeps, budget});
 }
 
-Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T, double sigma,
-                                double r, double q, std::span<double> price_out,
-                                const std::optional<AlOpts> &opts) {
+namespace {
+
+// Body of andersen_lake_call_slice. `b_now_out` (nullable) receives the solved
+// internal-put boundary NOW (amer::al_call_slice_with_edge); writing it changes no
+// price, so the public slice stays bit-identical.
+Status call_slice_impl(double S, std::span<const double> strikes, double T, double sigma,
+                       double r, double q, std::span<double> price_out,
+                       const std::optional<AlOpts> &opts, double *b_now_out) {
+  if (b_now_out != nullptr) {
+    *b_now_out = std::numeric_limits<double>::quiet_NaN();
+  }
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: S must be > 0");
   }
@@ -2841,9 +4170,10 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
+  ws.fast = al_fast_arithmetic(sch);
   al_bind_geometry(bnd, ws, sigma, rp, qp);
 
-  al_seed_boundary(bnd, sigma, rp, qp);
+  al_seed_boundary_for(bnd, ws, sigma, rp, qp);
   double resid = 1.0;
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
     const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, rp, qp);
@@ -2871,6 +4201,9 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
       }
     }
   }
+  if (b_now_out != nullptr) {
+    *b_now_out = al_boundary_now(bnd);
+  }
 
   // F5: the boundary is fixed (Kp = S) across every strike, so the premium's
   // strike-invariant node terms and the euro forward/discount are bound ONCE here
@@ -2882,9 +4215,14 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
   // Per-strike premium: only the internal-put spot Sp = K_i changes.
   for (std::size_t i = 0; i < n; ++i) {
     const double Ki = strikes[i];
-    const double euro = pc_ok
-                            ? black76_price(Ki * pc.euro_fwd, S, T, sigma, pc.euro_df, Side::Put)
-                            : euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
+    double euro = 0.0;
+    if (ws.fast) {
+      euro = pc_ok ? black76_put_fast(Ki * pc.euro_fwd, S, T, sigma, pc.euro_df)
+                   : euro_put_sk_fast(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
+    } else {
+      euro = pc_ok ? black76_price(Ki * pc.euro_fwd, S, T, sigma, pc.euro_df, Side::Put)
+                   : euro_put_sk(/*S=*/Ki, /*K=*/S, T, sigma, rp, qp);
+    }
     const double prem = al_put_premium(bnd, ws, /*S=*/Ki, sigma, rp, qp, pc_ok ? &pc : nullptr);
     double px = euro + prem;
     const double intr = S - Ki; // internal-put intrinsic Kp - Sp == call intrinsic
@@ -2899,9 +4237,15 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
   return Ok();
 }
 
-Status andersen_lake_put_slice(double S, std::span<const double> strikes, double T, double sigma,
-                               double r, double q, std::span<double> price_out,
-                               const std::optional<AlOpts> &opts) {
+// Body of andersen_lake_put_slice. `b_now_out` (nullable) receives the boundary
+// NOW at the reference strike strikes[0] (amer::al_put_slice_with_edge); writing
+// it changes no price, so the public slice stays bit-identical.
+Status put_slice_impl(double S, std::span<const double> strikes, double T, double sigma, double r,
+                      double q, std::span<double> price_out, const std::optional<AlOpts> &opts,
+                      double *b_now_out) {
+  if (b_now_out != nullptr) {
+    *b_now_out = std::numeric_limits<double>::quiet_NaN();
+  }
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: S must be > 0");
   }
@@ -3000,6 +4344,9 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
   case AlSolveStatus::Ok:
     break;
   }
+  if (b_now_out != nullptr) {
+    *b_now_out = al_boundary_now(bnd); // bnd.K is still the reference strike here
+  }
 
   // F5: y[] is homogeneity-invariant, so only bnd.xmax rescales per strike — the
   // premium's pre-xmax boundary factor (and v/dq/dr, euro exps) are bound ONCE and
@@ -3016,6 +4363,36 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
   }
   return Ok();
 }
+
+} // namespace
+
+Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T, double sigma,
+                                double r, double q, std::span<double> price_out,
+                                const std::optional<AlOpts> &opts) {
+  return call_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, nullptr);
+}
+
+Status andersen_lake_put_slice(double S, std::span<const double> strikes, double T, double sigma,
+                               double r, double q, std::span<double> price_out,
+                               const std::optional<AlOpts> &opts) {
+  return put_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, nullptr);
+}
+
+namespace amer {
+
+Status al_call_slice_with_edge(double S, std::span<const double> strikes, double T, double sigma,
+                               double r, double q, std::span<double> price_out,
+                               const std::optional<AlOpts> &opts, double *b_now_out) {
+  return call_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, b_now_out);
+}
+
+Status al_put_slice_with_edge(double S, std::span<const double> strikes, double T, double sigma,
+                              double r, double q, std::span<double> price_out,
+                              const std::optional<AlOpts> &opts, double *b_now_out) {
+  return put_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, b_now_out);
+}
+
+} // namespace amer
 
 Result<double> baw_american(double S, double K, double T, double sigma, double r, double q,
                             Side side, std::uint16_t max_iter, double tol) {
@@ -3742,9 +5119,17 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
   return euro_vega + F * dc_ds;
 }
 
-Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double sigma, double r,
-                                          double q, Side side, const std::optional<AlOpts> &opts,
-                                          bool need_vega, bool need_rho, bool need_charm) {
+namespace {
+
+// Body of american_greeks_al. `base_geo` (nullable) is the prepared orientation of
+// the contract's internal put (puts: rate r, yield q; calls: rate q, yield r): a
+// boundary whose (rate, yield) are bitwise that orientation's — the base and the
+// sigma +/- solves — is solved through it (bit-identical, american_boundary.hpp);
+// the rate-bumped solves are another orientation and solve fresh.
+[[nodiscard]] Result<AmericanGreeks>
+american_greeks_al_core(double S, double K, double T, double sigma, double r, double q, Side side,
+                        const std::optional<AlOpts> &opts, bool need_vega, bool need_rho,
+                        bool need_charm, const AlOrientedGeometry *base_geo) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks_al: S, K, T, sigma must be > 0");
   }
@@ -3806,6 +5191,11 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
   const auto solve = [&](AlBoundary &b, AlWorkspace &w, double sig_s, double dr) -> AlSolveStatus {
     const double rate = is_call ? q : (r + dr);
     const double yield = is_call ? (r + dr) : q;
+    if (base_geo != nullptr && base_geo->id != 0 &&
+        std::bit_cast<std::uint64_t>(rate) == std::bit_cast<std::uint64_t>(base_geo->rate) &&
+        std::bit_cast<std::uint64_t>(yield) == std::bit_cast<std::uint64_t>(base_geo->yield)) {
+      return al_solve_put_boundary_prepared(*base_geo, Kb, sig_s, b, w, /*loaded=*/nullptr);
+    }
     return al_solve_put_boundary(Kb, T, sig_s, rate, yield, sch, b, w);
   };
   AlBoundary b0, bvp, bvm, brp, brm;
@@ -3892,6 +5282,27 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
     }
   }
   return Ok(out);
+}
+
+} // namespace
+
+Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const std::optional<AlOpts> &opts,
+                                          bool need_vega, bool need_rho, bool need_charm) {
+  return american_greeks_al_core(S, K, T, sigma, r, q, side, opts, need_vega, need_rho,
+                                 need_charm, /*base_geo=*/nullptr);
+}
+
+Result<AmericanGreeks> american_greeks_al(const AlExpiryGeometry &g, double S, double K,
+                                          double sigma, Side side, bool need_vega, bool need_rho,
+                                          bool need_charm) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "american_greeks_al: expiry geometry is not prepared");
+  }
+  const AlOrientedGeometry &base = (side == Side::Call) ? impl->call : impl->put;
+  return american_greeks_al_core(S, K, impl->T, sigma, impl->r, impl->q, side, impl->opts,
+                                 need_vega, need_rho, need_charm, &base);
 }
 
 // ── Carry sensitivities: ∂P/∂q and ∂P/∂Div (G2, gaps-review finding 2) ────
@@ -4402,6 +5813,10 @@ BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma, d
     out.q_exp = q1;
     out.f = put_residual(Sx, K, T, sigma, r, q, q1);
     out.fprime = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
+    const BawResidualPair pair =
+        put_residual_pair(Sx, K, T, sigma, q1, baw_residual_terms(T, sigma, r, q));
+    out.f_pair = pair.f;
+    out.fprime_pair = pair.fp;
   } else {
     const double q2 = 0.5 * (-(N - 1.0) + sqrt_disc);
     if (!(q2 > 1.0)) {
@@ -4410,6 +5825,10 @@ BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma, d
     out.q_exp = q2;
     out.f = call_residual(Sx, K, T, sigma, r, q, q2);
     out.fprime = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
+    const BawResidualPair pair =
+        call_residual_pair(Sx, K, T, sigma, q2, baw_residual_terms(T, sigma, r, q));
+    out.f_pair = pair.f;
+    out.fprime_pair = pair.fp;
   }
   out.ok = true;
   return out;

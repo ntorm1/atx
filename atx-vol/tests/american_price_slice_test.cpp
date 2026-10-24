@@ -1,0 +1,974 @@
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <limits>
+#include <optional>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "atx/vol/api/fitting/american_price_slice.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+
+namespace {
+
+using atx::vol::al_fast_opts;
+using atx::vol::AlOpts;
+using atx::vol::AmericanCertificationModel;
+using atx::vol::AmericanCertificationNode;
+using atx::vol::AmericanCertificationStats;
+using atx::vol::AmericanPriceBounds;
+using atx::vol::AmericanPriceNode;
+using atx::vol::AmericanPriceSlice;
+using atx::vol::andersen_lake;
+using atx::vol::CertificationKernel;
+using atx::vol::CertificationScreen;
+using atx::vol::check_american_calendar;
+using atx::vol::check_nondividend_american;
+using atx::vol::kCertificationFastAllowance;
+using atx::vol::kCertificationScreenChunk;
+using atx::vol::Side;
+
+constexpr AmericanPriceBounds kBounds{100.0, 1.0, 1.0, 100.0, 100.0};
+
+[[nodiscard]] std::vector<AmericanPriceNode> clean_nodes() {
+  return {{80.0, 22.0, 2.0},
+          {90.0, 14.0, 4.0},
+          {100.0, 8.0, 8.0},
+          {110.0, 4.0, 14.0},
+          {120.0, 2.0, 22.0}};
+}
+
+// Independent closed form: at zero rates/dividends American = European for
+// both sides. No production pricing kernel is used to produce these fixtures.
+[[nodiscard]] AmericanPriceNode flat_vol_node(double strike, double vol, double time) {
+  const double scale = vol * std::sqrt(time);
+  const double d1 = std::log(100.0 / strike) / scale + 0.5 * scale;
+  const double d2 = d1 - scale;
+  const auto cdf = [](double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); };
+  return {strike, 100.0 * cdf(d1) - strike * cdf(d2), strike * cdf(-d2) - 100.0 * cdf(-d1)};
+}
+
+TEST(AmericanPriceSlice, IndependentFlatVolPricesRemainAdmissibleBetweenNodes) {
+  std::vector<AmericanPriceNode> nodes;
+  for (const double strike : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+    nodes.push_back(flat_vol_node(strike, 0.25, 0.5));
+  }
+  const auto fit = AmericanPriceSlice::create(nodes, kBounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  EXPECT_EQ(fit->nodes().size(), nodes.size());
+  for (const auto &node : nodes) {
+    EXPECT_EQ(fit->price(node.strike, Side::Call), node.call);
+    EXPECT_EQ(fit->price(node.strike, Side::Put), node.put);
+  }
+  double previous_call = *fit->price(80.0, Side::Call);
+  double previous_put = *fit->price(80.0, Side::Put);
+  double previous_call_change = -1.0;
+  double previous_put_change = 0.0;
+  for (int i = 1; i <= 160; ++i) {
+    const double strike = 80.0 + 0.25 * static_cast<double>(i);
+    const double call = *fit->price(strike, Side::Call);
+    const double put = *fit->price(strike, Side::Put);
+    const auto truth = flat_vol_node(strike, 0.25, 0.5);
+    EXPECT_GE(call + 1.0e-12, truth.call); // convex graph lies below each chord
+    EXPECT_GE(put + 1.0e-12, truth.put);
+    EXPECT_NEAR(call - put, 100.0 - strike, 1.0e-12);
+    EXPECT_GE(call, std::max(100.0 - strike, 0.0));
+    EXPECT_GE(put, std::max(strike - 100.0, 0.0));
+    EXPECT_LE(call, 100.0);
+    EXPECT_LE(put, strike);
+    const double dc = call - previous_call;
+    const double dp = put - previous_put;
+    EXPECT_LE(dc, 1.0e-12);
+    EXPECT_GE(dc, -0.25 - 1.0e-12);
+    EXPECT_GE(dp, -1.0e-12);
+    EXPECT_LE(dp, 0.25 + 1.0e-12);
+    EXPECT_GE(dc, previous_call_change - 1.0e-12);
+    EXPECT_GE(dp, previous_put_change - 1.0e-12);
+    previous_call = call;
+    previous_put = put;
+    previous_call_change = dc;
+    previous_put_change = dp;
+  }
+}
+
+TEST(AmericanPriceSlice, OwnsNodesAndRefusesExtrapolationAndInvalidSide) {
+  auto input = clean_nodes();
+  const auto fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_TRUE(fit.has_value());
+  input.front().call = 99.0;
+  input.clear();
+  EXPECT_EQ(fit->price(80.0, Side::Call), 22.0);
+  EXPECT_EQ(fit->price(95.0, Side::Call), 11.0);
+  EXPECT_EQ(fit->price(95.0, Side::Put), 6.0);
+  for (const double strike : {79.99, 120.01, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity()}) {
+    EXPECT_FALSE(fit->price(strike, Side::Call).has_value());
+    EXPECT_FALSE(fit->price(strike, Side::Put).has_value());
+  }
+  EXPECT_FALSE(fit->price(100.0, static_cast<Side>(255)).has_value());
+}
+
+TEST(AmericanPriceSlice, RejectsInvalidNodesAndCarryBounds) {
+  const auto valid = clean_nodes();
+  EXPECT_FALSE(AmericanPriceSlice::create({}, kBounds).has_value());
+  EXPECT_FALSE(AmericanPriceSlice::create(std::span(valid).first(1), kBounds).has_value());
+  for (const double bad :
+       {-1.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    for (const auto member :
+         {&AmericanPriceNode::strike, &AmericanPriceNode::call, &AmericanPriceNode::put}) {
+      auto input = valid;
+      input[2].*member = bad;
+      EXPECT_FALSE(AmericanPriceSlice::create(input, kBounds).has_value());
+    }
+    for (const auto member : {&AmericanPriceBounds::spot, &AmericanPriceBounds::discount_min,
+                              &AmericanPriceBounds::discount_max, &AmericanPriceBounds::prepaid_min,
+                              &AmericanPriceBounds::prepaid_max}) {
+      auto bounds = kBounds;
+      bounds.*member = bad;
+      EXPECT_FALSE(AmericanPriceSlice::create(valid, bounds).has_value());
+    }
+  }
+  auto duplicate = valid;
+  duplicate[2].strike = duplicate[1].strike;
+  EXPECT_FALSE(AmericanPriceSlice::create(duplicate, kBounds).has_value());
+  auto unsorted = valid;
+  std::swap(unsorted[1], unsorted[2]);
+  EXPECT_FALSE(AmericanPriceSlice::create(unsorted, kBounds).has_value());
+  auto bounds = kBounds;
+  bounds.discount_min = 1.01;
+  EXPECT_FALSE(AmericanPriceSlice::create(valid, bounds).has_value());
+  bounds = kBounds;
+  bounds.prepaid_min = 101.0;
+  EXPECT_FALSE(AmericanPriceSlice::create(valid, bounds).has_value());
+}
+
+TEST(AmericanPriceSlice, RejectsHostileButterflyDespiteMonotoneBoundedPrices) {
+  auto input = clean_nodes();
+  input[2].call += 2.0;
+  input[2].put += 2.0; // preserve exact cross-side parity
+  const auto fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("convexity"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, RejectsMonotonicityAndCallAndPutSlopeViolations) {
+  auto input = clean_nodes();
+  input[1].call = 23.0;
+  input[1].put = 13.0;
+  auto fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("vertical-spread"), std::string::npos);
+
+  constexpr AmericanPriceBounds wide{100.0, 1.0, 1.0, 80.0, 120.0};
+  const std::array call_slope{AmericanPriceNode{80.0, 35.0, 2.0},
+                              AmericanPriceNode{90.0, 20.0, 4.0}};
+  fit = AmericanPriceSlice::create(call_slope, wide);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("vertical-spread"), std::string::npos);
+  const std::array put_slope{AmericanPriceNode{80.0, 22.0, 2.0},
+                             AmericanPriceNode{90.0, 14.0, 17.0}};
+  fit = AmericanPriceSlice::create(put_slope, wide);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("vertical-spread"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, RejectsIntrinsicUpperAndCrossSideViolations) {
+  auto input = clean_nodes();
+  input.front().call = 19.0;
+  auto fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("intrinsic"), std::string::npos);
+  input = clean_nodes();
+  input.front().call = 101.0;
+  fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("upper price"), std::string::npos);
+  input = clean_nodes();
+  input.back().put = 121.0;
+  fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("upper price"), std::string::npos);
+  input = clean_nodes();
+  input.front().put = 3.0;
+  fit = AmericanPriceSlice::create(input, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("call-minus-put"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, SupportsNegativeRatesAndPutSlopesAboveOne) {
+  // Deterministic underlying with negative rates: calls exercise immediately;
+  // puts optimally wait. This is independently known at zero volatility.
+  constexpr AmericanPriceBounds bounds{100.0, 1.0, 1.1, 100.0, 100.0};
+  const std::array nodes{AmericanPriceNode{80.0, 20.0, 0.0}, AmericanPriceNode{90.0, 10.0, 0.0},
+                         AmericanPriceNode{100.0, 0.0, 10.0}, AmericanPriceNode{110.0, 0.0, 21.0},
+                         AmericanPriceNode{120.0, 0.0, 32.0}};
+  const auto fit = AmericanPriceSlice::create(nodes, bounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  EXPECT_NEAR(*fit->price(115.0, Side::Put), 26.5, 1.0e-12);
+  EXPECT_FALSE(AmericanPriceSlice::create(nodes, kBounds).has_value());
+}
+
+TEST(AmericanPriceSlice, FixedToleranceAcceptsRoundoffButNotQuoteSizedBreaches) {
+  auto input = clean_nodes();
+  input.front().put += 0.5e-8;
+  EXPECT_TRUE(AmericanPriceSlice::create(input, kBounds).has_value());
+  input.front().put += 1.0e-5;
+  EXPECT_FALSE(AmericanPriceSlice::create(input, kBounds).has_value());
+}
+
+TEST(AmericanPriceSlice, RejectsAccumulatedButterflyAcrossThousandsOfCloseStrikes) {
+  std::vector<AmericanPriceNode> nodes;
+  for (int i = 0; i <= 2000; ++i) {
+    const double x = 0.0005 * static_cast<double>(i);
+    const double strike = 99.5 + x;
+    const double call = 5.0 - 0.2 * x - 0.3 * x * x;
+    nodes.push_back({strike, call, call + strike - 100.0});
+  }
+  // Every local chord misses convexity by only 7.5e-8, below the 1.1e-7
+  // numerical price allowance. The global butterfly costs 0.075, however.
+  for (std::size_t i = 1u; i + 1u < nodes.size(); ++i) {
+    const double fraction = (nodes[i].strike - nodes[i - 1u].strike) /
+                            (nodes[i + 1u].strike - nodes[i - 1u].strike);
+    EXPECT_LT(nodes[i].call - std::lerp(nodes[i - 1u].call, nodes[i + 1u].call, fraction),
+              1.1e-7);
+  }
+  EXPECT_NEAR(nodes[1000].call - 0.5 * (nodes.front().call + nodes.back().call), 0.075, 1.0e-12);
+  const auto fit = AmericanPriceSlice::create(nodes, kBounds);
+  ASSERT_FALSE(fit.has_value());
+  EXPECT_NE(fit.error().message().find("convexity"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, RejectsAccumulatedMonotonicityAndVerticalSpreadDrift) {
+  constexpr AmericanPriceBounds broad{100.0, 1.0, 1.0, 90.0, 110.0};
+  for (int defect = 0; defect != 4; ++defect) {
+    SCOPED_TRACE(defect);
+    std::vector<AmericanPriceNode> nodes;
+    for (int i = 0; i <= 1000; ++i) {
+      const double x = 0.001 * static_cast<double>(i);
+      const double drift = 5.0e-8 * static_cast<double>(i);
+      double call = 5.0 - 0.5 * x;
+      double put = 5.0 + 0.5 * x;
+      if (defect == 0) call = 5.0 + drift;
+      if (defect == 1) put = 5.0 - drift;
+      if (defect == 2) call = 5.0 - x - drift;
+      if (defect == 3) put = 5.0 + x + drift;
+      nodes.push_back({99.5 + x, call, put});
+    }
+    // Only 5e-8 per segment, but 5e-5 across the complete strike interval.
+    const auto fit = AmericanPriceSlice::create(nodes, broad);
+    ASSERT_FALSE(fit.has_value());
+    EXPECT_NE(fit.error().message().find("vertical-spread"), std::string::npos);
+  }
+}
+
+TEST(AmericanPriceSlice, DenseGloballyBoundedRoundoffRemainsAcceptedWithoutProjection) {
+  std::vector<AmericanPriceNode> nodes;
+  for (int i = 0; i <= 2000; ++i) {
+    const double x = 0.0005 * static_cast<double>(i);
+    const double strike = 99.5 + x;
+    const double noise = (i % 2 == 0 ? 1.0 : -1.0) * 5.0e-9;
+    const double call = 5.0 - 0.5 * x + noise;
+    nodes.push_back({strike, call, call + strike - 100.0});
+  }
+  const auto fit = AmericanPriceSlice::create(nodes, kBounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  for (const auto &node : nodes) {
+    EXPECT_EQ(fit->price(node.strike, Side::Call), node.call);
+    EXPECT_EQ(fit->price(node.strike, Side::Put), node.put);
+  }
+}
+
+TEST(AmericanPriceSlice, CalendarFindsCrossingAtTheOtherSlicesInteriorKnot) {
+  const std::array sparse{AmericanPriceNode{90.0, 14.0, 4.0}, AmericanPriceNode{110.0, 4.0, 14.0}};
+  const std::array dense{AmericanPriceNode{90.0, 14.0, 4.0}, AmericanPriceNode{100.0, 8.0, 8.0},
+                         AmericanPriceNode{110.0, 4.0, 14.0}};
+  const auto earlier = AmericanPriceSlice::create(sparse, kBounds);
+  const auto later = AmericanPriceSlice::create(dense, kBounds);
+  ASSERT_TRUE(earlier.has_value());
+  ASSERT_TRUE(later.has_value());
+  EXPECT_EQ(earlier->price(90.0, Side::Call), later->price(90.0, Side::Call));
+  EXPECT_EQ(earlier->price(110.0, Side::Call), later->price(110.0, Side::Call));
+  const auto crossing = check_american_calendar(*earlier, *later);
+  ASSERT_FALSE(crossing.has_value());
+  EXPECT_NE(crossing.error().message().find("100.000000"), std::string::npos);
+  EXPECT_TRUE(check_american_calendar(*later, *earlier).has_value());
+}
+
+TEST(AmericanPriceSlice, CalendarChecksBothSidesOnPartialOverlapAndDisjointDomains) {
+  constexpr AmericanPriceBounds wide{100.0, 0.95, 1.0, 95.0, 105.0};
+  const std::array near_nodes{AmericanPriceNode{80.0, 22.0, 2.0},
+                              AmericanPriceNode{100.0, 8.0, 8.0},
+                              AmericanPriceNode{120.0, 2.0, 22.0}};
+  const std::array far_nodes{AmericanPriceNode{90.0, 15.0, 4.0}, AmericanPriceNode{100.0, 9.0, 7.0},
+                             AmericanPriceNode{110.0, 5.0, 14.0}};
+  const auto earlier = AmericanPriceSlice::create(near_nodes, wide);
+  const auto later = AmericanPriceSlice::create(far_nodes, wide);
+  ASSERT_TRUE(earlier.has_value());
+  ASSERT_TRUE(later.has_value()) << later.error().to_string();
+  const auto crossing = check_american_calendar(*earlier, *later);
+  ASSERT_FALSE(crossing.has_value());
+  EXPECT_NE(crossing.error().message().find("put"), std::string::npos);
+  const std::array far_domain{AmericanPriceNode{130.0, 0.5, 30.5},
+                              AmericanPriceNode{140.0, 0.25, 40.25}};
+  const auto disjoint = AmericanPriceSlice::create(far_domain, kBounds);
+  ASSERT_TRUE(disjoint.has_value());
+  EXPECT_TRUE(check_american_calendar(*earlier, *disjoint).has_value());
+  EXPECT_TRUE(check_american_calendar(*disjoint, *earlier).has_value());
+}
+
+TEST(AmericanPriceSlice, CarryEnvelopesMustContainImmediateExercise) {
+  const auto nodes = clean_nodes();
+  for (const AmericanPriceBounds bounds : {AmericanPriceBounds{100.0, 1.01, 1.02, 100.0, 100.0},
+                                           AmericanPriceBounds{100.0, 0.98, 0.99, 100.0, 100.0},
+                                           AmericanPriceBounds{100.0, 1.0, 1.0, 101.0, 102.0},
+                                           AmericanPriceBounds{100.0, 1.0, 1.0, 98.0, 99.0}}) {
+    const auto fit = AmericanPriceSlice::create(nodes, bounds);
+    ASSERT_FALSE(fit.has_value());
+    EXPECT_NE(fit.error().message().find("carry bounds"), std::string::npos);
+  }
+}
+
+TEST(AmericanPriceSlice, NondividendAdmitsZeroRateAndPositiveRateAnalyticCases) {
+  std::vector<AmericanPriceNode> flat_vol;
+  for (const double strike : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+    flat_vol.push_back(flat_vol_node(strike, 0.25, 0.5));
+  }
+  const auto zero_rate = AmericanPriceSlice::create(flat_vol, kBounds);
+  ASSERT_TRUE(zero_rate.has_value());
+  EXPECT_TRUE(check_nondividend_american(*zero_rate, 1.0).has_value());
+
+  // Zero-volatility non-dividend stock: call continuation and put immediate
+  // exercise are independently analytic. Include both payoff kink strikes.
+  constexpr double df = 0.9;
+  constexpr AmericanPriceBounds bounds{100.0, df, 1.0, 100.0, 100.0};
+  std::vector<AmericanPriceNode> deterministic;
+  for (const double strike : {80.0, 100.0, 100.0 / df, 120.0}) {
+    deterministic.push_back(
+        {strike, std::max(100.0 - df * strike, 0.0), std::max(strike - 100.0, 0.0)});
+  }
+  const auto positive_rate = AmericanPriceSlice::create(deterministic, bounds);
+  ASSERT_TRUE(positive_rate.has_value()) << positive_rate.error().to_string();
+  const auto check = check_nondividend_american(*positive_rate, df);
+  EXPECT_TRUE(check.has_value()) << check.error().to_string();
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsUnsupportedDiscountAndEmptyComparisonDomain) {
+  const auto fit = AmericanPriceSlice::create(clean_nodes(), kBounds);
+  ASSERT_TRUE(fit.has_value());
+  for (const double df : {0.0, -0.1, 1.01, std::numeric_limits<double>::quiet_NaN(),
+                          std::numeric_limits<double>::infinity()}) {
+    EXPECT_FALSE(check_nondividend_american(*fit, df).has_value());
+  }
+  const std::array narrow{AmericanPriceNode{90.0, 91.0, 0.0}, AmericanPriceNode{100.0, 90.0, 0.0}};
+  const auto no_overlap =
+      AmericanPriceSlice::create(narrow, AmericanPriceBounds{100.0, 0.1, 1.0, 100.0, 100.0});
+  ASSERT_TRUE(no_overlap.has_value());
+  const auto check = check_nondividend_american(*no_overlap, 0.1);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_EQ(check.error().code(), atx::vol::ErrorCode::Unavailable);
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsEuropeanCallBoundsAndSlopes) {
+  constexpr AmericanPriceBounds bounds{100.0, 0.9, 1.0, 100.0, 100.0};
+  const std::array too_low{AmericanPriceNode{80.0, 20.0, 0.0}, AmericanPriceNode{90.0, 10.0, 0.0}};
+  const auto lower_fit = AmericanPriceSlice::create(too_low, bounds);
+  ASSERT_TRUE(lower_fit.has_value());
+  auto check = check_nondividend_american(*lower_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("call price bound"), std::string::npos);
+  const std::array steep{AmericanPriceNode{80.0, 35.0, 7.0}, AmericanPriceNode{90.0, 25.5, 8.0}};
+  const auto slope_fit = AmericanPriceSlice::create(steep, bounds);
+  ASSERT_TRUE(slope_fit.has_value());
+  check = check_nondividend_american(*slope_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("call slope"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsAccumulatedDiscountedCallSlopeDrift) {
+  constexpr double df = 0.9;
+  constexpr AmericanPriceBounds bounds{100.0, df, 1.0, 100.0, 100.0};
+  std::vector<AmericanPriceNode> nodes;
+  for (int i = 0; i <= 1000; ++i) {
+    const double x = 0.001 * static_cast<double>(i);
+    nodes.push_back({100.0 + x, 30.0 - (df + 0.00005) * x, 20.0});
+  }
+  const auto fit = AmericanPriceSlice::create(nodes, bounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  const auto check = check_nondividend_american(*fit, df);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("call slope"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, NondividendRejectsAmericanBelowEuropeanAndLegendreViolation) {
+  constexpr AmericanPriceBounds broad{100.0, 0.8, 1.0, 100.0, 100.0};
+  const std::array below{AmericanPriceNode{80.0, 34.0, 5.0}, AmericanPriceNode{90.0, 27.0, 7.0},
+                         AmericanPriceNode{100.0, 20.0, 9.0}};
+  const auto below_fit = AmericanPriceSlice::create(below, broad);
+  ASSERT_TRUE(below_fit.has_value());
+  auto check = check_nondividend_american(*below_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("below its European"), std::string::npos);
+
+  // E(K)=.2*K-10 and A(K)=E(K)+1. The upper/lower price bounds hold,
+  // but the flat exercise premium violates K*(A'-E') >= A-E.
+  const std::array premium{AmericanPriceNode{80.0, 34.0, 7.0}, AmericanPriceNode{90.0, 27.0, 9.0},
+                           AmericanPriceNode{100.0, 20.0, 11.0}};
+  const auto premium_fit = AmericanPriceSlice::create(premium, broad);
+  ASSERT_TRUE(premium_fit.has_value());
+  check = check_nondividend_american(*premium_fit, 0.9);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("Legendre"), std::string::npos);
+}
+
+TEST(AmericanPriceSlice, NondividendUpperBoundFindsHiddenScaledKnotViolation) {
+  constexpr double df = 0.9;
+  constexpr AmericanPriceBounds bounds{100.0, df, 1.0, 100.0, 100.0};
+  const std::array nodes{AmericanPriceNode{90.0, 23.0, 4.0}, AmericanPriceNode{100.0, 14.0, 4.7},
+                         AmericanPriceNode{110.0, 5.0, 12.0}, AmericanPriceNode{120.0, 3.0, 22.0}};
+  const auto fit = AmericanPriceSlice::create(nodes, bounds);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  // Native knots and overlap endpoints are clean. Only the transformed
+  // call knot at .9*110=99 reveals the upper-bound crossing.
+  for (const double strike : {90.0, 100.0, 108.0}) {
+    EXPECT_LE(*fit->price(strike, Side::Put),
+              *fit->price(strike / df, Side::Call) - 100.0 + strike + 1.0e-12);
+  }
+  EXPECT_GT(*fit->price(99.0, Side::Put), *fit->price(110.0, Side::Call) - 1.0);
+  const auto check = check_nondividend_american(*fit, df);
+  ASSERT_FALSE(check.has_value());
+  EXPECT_NE(check.error().message().find("scaled European upper bound"), std::string::npos);
+  EXPECT_NE(check.error().message().find("99.000000"), std::string::npos);
+}
+
+// ── Model-priced certification (L2b al-geometry, 2026-10-19) ─────────────
+
+constexpr double kCertSpot = 100.0;
+constexpr double kCertT = 0.25;
+constexpr double kCertRate = 0.05;
+
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+[[nodiscard]] std::optional<AlOpts> opts_of(const AmericanCertificationModel &model) {
+  return model.al_opts != nullptr ? std::optional<AlOpts>(*model.al_opts) : std::nullopt;
+}
+
+// The bounds the quote-slice certification derives (quote_slice.cpp certify_and_serve):
+// the unit-straddling discount range and the yield range's prepaid range.
+[[nodiscard]] AmericanPriceBounds model_bounds(std::span<const AmericanCertificationNode> nodes) {
+  double q_min = nodes.front().yield;
+  double q_max = q_min;
+  for (const auto &node : nodes) {
+    q_min = std::min(q_min, node.yield);
+    q_max = std::max(q_max, node.yield);
+  }
+  const double discount = std::exp(-kCertRate * kCertT);
+  return {kCertSpot, std::min(1.0, discount), std::max(1.0, discount),
+          kCertSpot * std::exp(-std::max(q_max, 0.0) * kCertT),
+          kCertSpot * std::exp(std::max(-q_min, 0.0) * kCertT)};
+}
+
+// What every caller composes today: andersen_lake per price (NaN where it errors).
+[[nodiscard]] std::vector<AmericanPriceNode>
+model_prices(std::span<const AmericanCertificationNode> nodes, const std::optional<AlOpts> &opts) {
+  std::vector<AmericanPriceNode> prices;
+  for (const auto &n : nodes) {
+    const auto call =
+        andersen_lake(kCertSpot, n.strike, kCertT, n.sigma, kCertRate, n.yield, Side::Call, opts);
+    const auto put =
+        andersen_lake(kCertSpot, n.strike, kCertT, n.sigma, kCertRate, n.yield, Side::Put, opts);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    prices.push_back({n.strike, call ? *call : nan, put ? *put : nan});
+  }
+  return prices;
+}
+
+// A clean smile on `count` strikes from 70, 2.5 apart, at one yield.
+[[nodiscard]] std::vector<AmericanCertificationNode> smile_nodes(std::size_t count, double yield) {
+  std::vector<AmericanCertificationNode> nodes;
+  for (std::size_t i = 0; i < count; ++i) {
+    const double strike = 70.0 + 2.5 * static_cast<double>(i);
+    const double m = std::log(strike / kCertSpot);
+    nodes.push_back({strike, 0.25 + 0.3 * m * m, yield});
+  }
+  return nodes;
+}
+
+[[nodiscard]] bool same_nodes(const AmericanPriceSlice &a, const AmericanPriceSlice &b) {
+  if (a.nodes().size() != b.nodes().size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.nodes().size(); ++i) {
+    const auto &x = a.nodes()[i];
+    const auto &y = b.nodes()[i];
+    if (!same_bits(x.strike, y.strike) || !same_bits(x.call, y.call) || !same_bits(x.put, y.put)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Both accepted with bit-identical nodes, or both refused with the same message.
+[[nodiscard]] bool same_verdict(const atx::core::Result<AmericanPriceSlice> &a,
+                                const atx::core::Result<AmericanPriceSlice> &b) {
+  if (a.has_value() != b.has_value()) {
+    return false;
+  }
+  if (a) {
+    return same_nodes(*a, *b);
+  }
+  return a.error().code() == b.error().code() && a.error().message() == b.error().message();
+}
+
+TEST(AmericanCertification, DefaultOverloadEqualsPricingThenCreate) {
+  const std::vector<std::optional<AlOpts>> schemes{std::nullopt, al_fast_opts()};
+  for (const auto &opts : schemes) {
+    const AmericanCertificationModel model{
+        .T = kCertT, .rate = kCertRate, .al_opts = opts ? &*opts : nullptr};
+    auto clean = smile_nodes(25, 0.01);
+    auto spiked = clean;
+    spiked[12].sigma = 0.6; // a butterfly no price-input create() admits
+    for (const auto &nodes : {clean, spiked}) {
+      const AmericanPriceBounds bounds = model_bounds(nodes);
+      const auto want = AmericanPriceSlice::create(model_prices(nodes, opts_of(model)), bounds);
+      AmericanCertificationStats stats;
+      const auto got = AmericanPriceSlice::create(nodes, model, bounds,
+                                                  CertificationKernel::Scalar,
+                                                  CertificationScreen::AccurateOnly, &stats);
+      EXPECT_TRUE(same_verdict(want, got))
+          << (want ? std::string("accepted") : want.error().to_string()) << " | "
+          << (got ? std::string("accepted") : got.error().to_string());
+      EXPECT_EQ(stats.accurate_prices, 2u * nodes.size());
+      EXPECT_EQ(stats.fast_prices, 0u);
+      EXPECT_FALSE(stats.screen_refused);
+      // The defaulted trailing parameters are the same path.
+      EXPECT_TRUE(same_verdict(want, AmericanPriceSlice::create(nodes, model, bounds)));
+    }
+    EXPECT_TRUE(AmericanPriceSlice::create(model_prices(clean, opts_of(model)),
+                                           model_bounds(clean))
+                    .has_value());
+    EXPECT_FALSE(AmericanPriceSlice::create(model_prices(spiked, opts_of(model)),
+                                            model_bounds(spiked))
+                     .has_value());
+  }
+}
+
+TEST(AmericanCertification, BatchedKernelIsBitIdenticalToScalar) {
+  // Yields that change in runs, return to an earlier value, and come as singletons: the
+  // batched kernel re-prepares its one geometry per run and must never price a node on
+  // another run's geometry.
+  auto varying = smile_nodes(30, 0.01);
+  for (std::size_t i = 0; i < varying.size(); ++i) {
+    const double step = (i < 8u) ? 0.0 : (i < 13u) ? 1.0e-4 : (i == 17u || i == 21u) ? 2.0e-4 : 0.0;
+    varying[i].yield = 0.01 + step;
+  }
+  auto spiked = smile_nodes(30, 0.01);
+  spiked[9].sigma = 0.7;
+  const std::vector<std::vector<AmericanCertificationNode>> slices{smile_nodes(30, 0.01), varying,
+                                                                   spiked};
+  const std::vector<std::optional<AlOpts>> schemes{std::nullopt, al_fast_opts()};
+  std::size_t accepted = 0;
+  for (const auto &opts : schemes) {
+    const AmericanCertificationModel model{
+        .T = kCertT, .rate = kCertRate, .al_opts = opts ? &*opts : nullptr};
+    for (const auto &nodes : slices) {
+      const AmericanPriceBounds bounds = model_bounds(nodes);
+      for (const auto screen :
+           {CertificationScreen::AccurateOnly, CertificationScreen::FastThenAccurate}) {
+        AmericanCertificationStats scalar_stats;
+        AmericanCertificationStats batched_stats;
+        const auto scalar = AmericanPriceSlice::create(nodes, model, bounds,
+                                                       CertificationKernel::Scalar, screen,
+                                                       &scalar_stats);
+        const auto batched = AmericanPriceSlice::create(nodes, model, bounds,
+                                                        CertificationKernel::Batched, screen,
+                                                        &batched_stats);
+        EXPECT_TRUE(same_verdict(scalar, batched))
+            << (scalar ? std::string("accepted") : scalar.error().to_string()) << " | "
+            << (batched ? std::string("accepted") : batched.error().to_string());
+        EXPECT_EQ(scalar_stats.accurate_prices, batched_stats.accurate_prices);
+        EXPECT_EQ(scalar_stats.fast_prices, batched_stats.fast_prices);
+        EXPECT_EQ(scalar_stats.screen_refused, batched_stats.screen_refused);
+        accepted += scalar.has_value() ? 1u : 0u;
+      }
+    }
+  }
+  EXPECT_EQ(accepted, 8u); // the clean and the varying-yield slices, both schemes and screens
+}
+
+// Review Focus #1 (a): a convexity violation larger than the tolerance but within the
+// Fast allowance cannot be proven by the screen, so the accurate kernel confirms it
+// (2N accurate prices) and the refusal is the accurate create()'s own.
+TEST(AmericanCertification, FastScreenConfirmsASubAllowanceViolationAccurately) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  std::vector<AmericanCertificationNode> nodes{
+      {95.0, 0.3, 0.01}, {100.0, 0.3, 0.01}, {105.0, 0.3, 0.01}};
+  // Raise the middle node's yield (its put up, its call down) until the accurate put
+  // sits above the 95-105 chord by tol + half the screen's slack.
+  const auto excess = [&nodes](double q) {
+    nodes[1].yield = q;
+    const auto p = model_prices(nodes, std::nullopt);
+    const auto allowance = [](double x) { return kCertificationFastAllowance * std::max(x, 1.0); };
+    const double slack = allowance(p[1].put) + std::max(allowance(p[0].put), allowance(p[2].put));
+    const double tol = 1.0e-8 + 1.0e-9 * kCertSpot;
+    const double above = p[1].put - std::lerp(p[0].put, p[2].put, 0.5) - tol;
+    return std::pair{above - 0.5 * slack, slack};
+  };
+  double lo = 0.01;
+  double hi = 0.5;
+  ASSERT_LT(excess(lo).first, 0.0);
+  ASSERT_GT(excess(hi).first, 0.0);
+  bool found = false;
+  for (int it = 0; it < 200 && !found; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    const auto [f, slack] = excess(mid);
+    if (std::abs(f) < 0.3 * slack) {
+      found = true;
+    } else if (f < 0.0) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  ASSERT_TRUE(found) << "no yield puts the violation inside the screen's slack";
+  const AmericanPriceBounds bounds = model_bounds(nodes);
+  AmericanCertificationStats accurate_stats;
+  const auto accurate = AmericanPriceSlice::create(nodes, model, bounds,
+                                                   CertificationKernel::Scalar,
+                                                   CertificationScreen::AccurateOnly,
+                                                   &accurate_stats);
+  ASSERT_FALSE(accurate.has_value());
+  EXPECT_NE(accurate.error().message().find("convexity"), std::string::npos)
+      << accurate.error().message();
+  for (const auto kernel : {CertificationKernel::Scalar, CertificationKernel::Batched}) {
+    AmericanCertificationStats stats;
+    const auto screened = AmericanPriceSlice::create(
+        nodes, model, bounds, kernel, CertificationScreen::FastThenAccurate, &stats);
+    ASSERT_FALSE(screened.has_value());
+    EXPECT_EQ(screened.error().message(), accurate.error().message());
+    EXPECT_FALSE(stats.screen_refused);
+    EXPECT_EQ(stats.fast_prices, 2u * nodes.size());
+    EXPECT_EQ(stats.accurate_prices, 2u * nodes.size());
+  }
+}
+
+// Review Focus #1 (b): a violation beyond the allowance is refused by the screen on
+// the priced prefix, without a single accurate price.
+TEST(AmericanCertification, FastScreenRefusesACertainViolationWithoutAccuratePrices) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  auto nodes = smile_nodes(40, 0.01);
+  nodes[3].yield = 0.3; // its put jumps above its right neighbour's
+  const AmericanPriceBounds bounds = model_bounds(nodes);
+  AmericanCertificationStats accurate_stats;
+  const auto accurate = AmericanPriceSlice::create(nodes, model, bounds,
+                                                   CertificationKernel::Scalar,
+                                                   CertificationScreen::AccurateOnly,
+                                                   &accurate_stats);
+  ASSERT_FALSE(accurate.has_value()); // the verdicts agree
+  EXPECT_EQ(accurate_stats.accurate_prices, 2u * nodes.size());
+  for (const auto kernel : {CertificationKernel::Scalar, CertificationKernel::Batched}) {
+    AmericanCertificationStats stats;
+    const auto screened = AmericanPriceSlice::create(
+        nodes, model, bounds, kernel, CertificationScreen::FastThenAccurate, &stats);
+    ASSERT_FALSE(screened.has_value());
+    EXPECT_EQ(screened.error().code(), atx::core::ErrorCode::InvalidArgument);
+    EXPECT_NE(screened.error().message().find("certification screen"), std::string::npos)
+        << screened.error().message();
+    EXPECT_TRUE(stats.screen_refused);
+    EXPECT_EQ(stats.accurate_prices, 0u);
+    // Refused on the first chunk's prefix: the other 32 nodes are never priced.
+    EXPECT_EQ(stats.fast_prices, 2u * kCertificationScreenChunk);
+  }
+}
+
+TEST(AmericanCertification, AcceptedSliceUnderTheScreenEqualsAccurateOnly) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  const auto nodes = smile_nodes(25, 0.01);
+  const AmericanPriceBounds bounds = model_bounds(nodes);
+  const auto accurate = AmericanPriceSlice::create(nodes, model, bounds);
+  ASSERT_TRUE(accurate.has_value()) << accurate.error().to_string();
+  AmericanCertificationStats stats;
+  const auto screened =
+      AmericanPriceSlice::create(nodes, model, bounds, CertificationKernel::Scalar,
+                                 CertificationScreen::FastThenAccurate, &stats);
+  ASSERT_TRUE(screened.has_value()) << screened.error().to_string();
+  EXPECT_TRUE(same_nodes(*accurate, *screened));
+  EXPECT_FALSE(stats.screen_refused);
+  EXPECT_EQ(stats.fast_prices, 2u * nodes.size());
+  EXPECT_EQ(stats.accurate_prices, 2u * nodes.size());
+}
+
+TEST(AmericanCertification, MalformedInputKeepsCreatesOwnErrorUnderTheScreen) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  const auto clean = smile_nodes(10, 0.01);
+  auto unordered = clean;
+  std::swap(unordered[4], unordered[5]);
+  auto refused = clean;
+  refused[6].sigma = std::numeric_limits<double>::quiet_NaN(); // andersen_lake refuses
+  AmericanPriceBounds bad_bounds = model_bounds(clean);
+  bad_bounds.discount_max = 0.5; // must contain one
+  const std::vector<std::pair<std::vector<AmericanCertificationNode>, AmericanPriceBounds>> cases{
+      {unordered, model_bounds(unordered)}, {refused, model_bounds(clean)}, {clean, bad_bounds}};
+  for (const auto &[nodes, bounds] : cases) {
+    const auto accurate = AmericanPriceSlice::create(nodes, model, bounds);
+    AmericanCertificationStats stats;
+    const auto screened =
+        AmericanPriceSlice::create(nodes, model, bounds, CertificationKernel::Batched,
+                                   CertificationScreen::FastThenAccurate, &stats);
+    ASSERT_FALSE(accurate.has_value());
+    EXPECT_TRUE(same_verdict(accurate, screened))
+        << accurate.error().to_string() << " | "
+        << (screened ? std::string("accepted") : screened.error().to_string());
+    EXPECT_FALSE(stats.screen_refused);
+  }
+  const auto pricing = AmericanPriceSlice::create(refused, model, model_bounds(clean));
+  ASSERT_FALSE(pricing.has_value());
+  EXPECT_NE(pricing.error().message().find("node 6: model pricing failed"), std::string::npos)
+      << pricing.error().message();
+  const auto bad_kernel = AmericanPriceSlice::create(clean, model, model_bounds(clean),
+                                                     static_cast<CertificationKernel>(7));
+  ASSERT_FALSE(bad_kernel.has_value());
+  EXPECT_EQ(bad_kernel.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── Box certificate (lane L3r1 dense-certificate, 2026-10-20) ──────────────
+
+using atx::vol::AmericanPriceBox;
+using atx::vol::certify_american_box;
+using atx::vol::project_convex_price_box;
+
+// Carry bounds with slack in the affine call-minus-put band (a 1 % discount
+// range, a 1 % prepaid range), as real quotes have; kBounds' zero-width band
+// would turn the exact certificate into a put-call-parity equality.
+constexpr AmericanPriceBounds kBoxBounds{100.0, 0.99, 1.0, 99.0, 100.0};
+
+// An arbitrage-free market whose three middle call nodes are collinear (the call
+// envelope is affine there), so any lift at the middle strike is a kink. Puts
+// keep put-call parity at zero carry.
+[[nodiscard]] std::vector<AmericanPriceNode> flat_segment_market() {
+  return {{80.0, 22.0, 2.0}, {90.0, 14.0, 4.0}, {100.0, 9.0, 9.0}, {110.0, 4.0, 14.0},
+          {120.0, 2.0, 22.0}};
+}
+
+// Each side's box of half-width `h` around the market price.
+[[nodiscard]] std::vector<AmericanPriceBox> boxes_around(std::span<const AmericanPriceNode> market,
+                                                         double h) {
+  std::vector<AmericanPriceBox> out;
+  out.reserve(market.size());
+  for (const auto &node : market) {
+    out.push_back({node.call - h, node.call + h, node.put - h, node.put + h});
+  }
+  return out;
+}
+
+TEST(AmericanBoxCertificate, ServesASubTickKinkTheExactCertificateRefuses) {
+  // The fit sits 5e-5 above the affine call envelope at the middle strike: the
+  // exact certificate refuses it (allowance ~1.3e-7), yet the market's boxes of
+  // half a tick contain an arbitrage-free curve. The box certificate serves that
+  // curve, moving no node by more than the kink and no put at all.
+  const auto market = flat_segment_market();
+  auto fitted = market;
+  fitted[2].call += 5.0e-5;
+  const auto exact = AmericanPriceSlice::create(fitted, kBoxBounds);
+  ASSERT_FALSE(exact.has_value());
+  EXPECT_NE(exact.error().message().find("convexity"), std::string::npos)
+      << exact.error().message();
+  const auto boxes = boxes_around(market, 0.005);
+  const auto box = certify_american_box(fitted, boxes, kBoxBounds);
+  ASSERT_TRUE(box.has_value()) << box.error().to_string();
+  EXPECT_TRUE(AmericanPriceSlice::create(box->slice.nodes(), kBoxBounds).has_value());
+  EXPECT_GE(box->moved_nodes, 1u);
+  EXPECT_GT(box->max_price_move, 0.0);
+  EXPECT_LE(box->max_price_move, 5.0e-5);
+  const auto nodes = box->slice.nodes();
+  ASSERT_EQ(nodes.size(), fitted.size());
+  ASSERT_EQ(box->moved.size(), fitted.size());
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    EXPECT_GE(nodes[i].call, boxes[i].call_lo) << i;
+    EXPECT_LE(nodes[i].call, boxes[i].call_hi) << i;
+    // Puts were never in question: untouched bit for bit, never flagged.
+    EXPECT_EQ(nodes[i].put, fitted[i].put) << i;
+    EXPECT_EQ(box->moved[i] & 2u, 0u) << i;
+    EXPECT_EQ((box->moved[i] & 1u) != 0u, nodes[i].call != fitted[i].call) << i;
+  }
+  EXPECT_LT(nodes[2].call, fitted[2].call);
+}
+
+TEST(AmericanBoxCertificate, RefusesAKinkTwoTicksAboveTheMarketEnvelope) {
+  // Here the MARKET itself is kinked two ticks above its envelope: no convex
+  // curve passes through boxes of half a tick, and the exact feasibility test
+  // (greatest convex minorant of the upper edges against the lower edges) says
+  // so before any projection, naming the node.
+  auto market = flat_segment_market();
+  market[2].call += 0.02;
+  const auto boxes = boxes_around(market, 0.005);
+  const auto box = certify_american_box(market, boxes, kBoxBounds);
+  ASSERT_FALSE(box.has_value());
+  EXPECT_EQ(box.error().code(), atx::core::ErrorCode::Unavailable);
+  EXPECT_NE(box.error().message().find("node 2: no arbitrage-free curve inside the boxes"),
+            std::string::npos)
+      << box.error().message();
+  // The neighbours may rise by h and the middle fall by h, closing 2h of the
+  // 0.02 kink: three-quarter-tick boxes still cannot hold it, full-tick boxes
+  // hold it exactly (the middle node lands on its lower edge).
+  EXPECT_FALSE(
+      certify_american_box(market, boxes_around(market, 0.0075), kBoxBounds).has_value());
+  const auto exact_fit = certify_american_box(market, boxes_around(market, 0.01), kBoxBounds);
+  ASSERT_TRUE(exact_fit.has_value()) << exact_fit.error().to_string();
+  EXPECT_LE(exact_fit->max_price_move, 0.01 + 1.0e-9);
+  EXPECT_NEAR(exact_fit->slice.nodes()[2].call, 9.01, 1.0e-9);
+}
+
+TEST(AmericanBoxCertificate, MalformedBoxesAreInvalidAndExerciseBoundsAreHard) {
+  const auto market = flat_segment_market();
+  auto boxes = boxes_around(market, 0.005);
+  // One box per node, lo <= hi, finite: anything else is the caller's error.
+  EXPECT_EQ(certify_american_box(market, std::span(boxes).first(4), kBoxBounds).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+  auto inverted = boxes;
+  inverted[1].put_lo = inverted[1].put_hi + 1.0;
+  EXPECT_EQ(certify_american_box(market, inverted, kBoxBounds).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+  auto open = boxes;
+  open[3].call_hi = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(certify_american_box(market, open, kBoxBounds).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+  // A quote entirely below intrinsic (the 120 put is worth at least 20) is no
+  // box: refused as infeasible, never served.
+  auto stale = boxes;
+  stale[4].put_lo = 19.0;
+  stale[4].put_hi = 19.5;
+  const auto refused = certify_american_box(market, stale, kBoxBounds);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), atx::core::ErrorCode::Unavailable);
+  EXPECT_NE(refused.error().message().find("exercise bounds"), std::string::npos)
+      << refused.error().message();
+  // A side held fixed (lo == hi) stays exactly where it is while the other side
+  // is projected.
+  auto fitted = market;
+  fitted[2].call += 5.0e-5;
+  auto fixed_puts = boxes;
+  for (std::size_t i = 0; i < fixed_puts.size(); ++i) {
+    fixed_puts[i].put_lo = fitted[i].put;
+    fixed_puts[i].put_hi = fitted[i].put;
+  }
+  const auto box = certify_american_box(fitted, fixed_puts, kBoxBounds);
+  ASSERT_TRUE(box.has_value()) << box.error().to_string();
+  for (std::size_t i = 0; i < fitted.size(); ++i) {
+    EXPECT_EQ(box->slice.nodes()[i].put, fitted[i].put) << i;
+  }
+}
+
+TEST(AmericanBoxCertificate, ProjectionLeavesAFeasibleCurveBitForBit) {
+  // Nothing binds: every multiplier stays zero and the box clamp is the identity,
+  // so the first sweep settles and no price changes in any bit.
+  const auto market = flat_segment_market();
+  std::vector<double> strikes;
+  std::vector<double> prices;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  for (const auto &node : market) {
+    strikes.push_back(node.strike);
+    prices.push_back(node.call);
+    lo.push_back(node.call - 1.0);
+    hi.push_back(node.call + 1.0);
+  }
+  const std::vector<double> weights(prices.size(), 1.0);
+  const auto before = prices;
+  ASSERT_TRUE(project_convex_price_box(strikes, prices, lo, hi, weights, -1.0, 0.0));
+  for (std::size_t i = 0; i < prices.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(prices[i]), std::bit_cast<std::uint64_t>(before[i]))
+        << i;
+  }
+  // An empty box is refused outright.
+  auto empty_hi = hi;
+  empty_hi[0] = lo[0] - 1.0;
+  EXPECT_FALSE(project_convex_price_box(strikes, prices, lo, empty_hi, weights, -1.0, 0.0));
+}
+
+// ── Distance to market and the joint calendar projection (lane L3q) ─────────
+
+TEST(AmericanPriceSlice, MarketDistanceIsInSpreadsOfTheQuoteBand) {
+  using atx::vol::market_distance_spreads;
+  EXPECT_EQ(market_distance_spreads(1.05, 1.00, 1.10, 0.01), 0.0);
+  EXPECT_NEAR(market_distance_spreads(1.40, 1.00, 1.10, 0.01), 3.0, 1.0e-12); // above the ask
+  EXPECT_NEAR(market_distance_spreads(0.80, 1.00, 1.10, 0.01), 2.0, 1.0e-12); // below the bid
+  EXPECT_NEAR(market_distance_spreads(0.03, 0.00, 0.01, 0.01), 2.0, 1.0e-12); // zero bid: s = ask
+  EXPECT_NEAR(market_distance_spreads(1.03, 1.00, 1.001, 0.01), 2.9, 1.0e-12); // tick floor
+  EXPECT_TRUE(std::isnan(market_distance_spreads(1.0, 1.1, 1.0, 0.01)));       // crossed
+  EXPECT_TRUE(std::isnan(market_distance_spreads(1.0, -0.1, 1.0, 0.01)));
+  EXPECT_TRUE(std::isnan(market_distance_spreads(1.0, 0.9, 1.0, 0.0)));
+  EXPECT_TRUE(std::isnan(market_distance_spreads(std::nan(""), 0.9, 1.0, 0.01)));
+}
+
+TEST(AmericanPriceSlice, JointCalendarProjectionSharesACrossingNeitherSliceAbsorbsAlone) {
+  // Two expiries of one side on the same strikes: the earlier price sits 0.10
+  // above the later one at the first two strikes. Each box lets its slice move
+  // only 0.06 toward the other, so neither one-sided move can remove the
+  // crossing; the joint projection moves both and orders them at every knot.
+  using atx::vol::JointPriceSide;
+  using atx::vol::project_calendar_joint;
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  std::vector<double> near{2.0, 1.2, 0.6};
+  std::vector<double> far{1.9, 1.1, 0.9};
+  const std::vector<double> near_lo{1.94, 1.14, 0.54};
+  const std::vector<double> near_hi{2.0, 1.2, 0.6};
+  const std::vector<double> far_lo{1.9, 1.1, 0.9};
+  const std::vector<double> far_hi{1.96, 1.16, 0.96};
+  std::vector<JointPriceSide> sides{{strikes, near, near_lo, near_hi, -1.0, 0.0, 100.0},
+                                    {strikes, far, far_lo, far_hi, -1.0, 0.0, 100.0}};
+  ASSERT_TRUE(project_calendar_joint(sides));
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    EXPECT_GE(far[i] - near[i], -1.0e-9) << i;
+    EXPECT_GE(near[i], near_lo[i] - 1.0e-12) << i;
+    EXPECT_LE(near[i], near_hi[i] + 1.0e-12) << i;
+    EXPECT_GE(far[i], far_lo[i] - 1.0e-12) << i;
+    EXPECT_LE(far[i], far_hi[i] + 1.0e-12) << i;
+  }
+  EXPECT_LT(near[0], 2.0); // both moved
+  EXPECT_GT(far[0], 1.9);
+  for (const std::vector<double> *p : {&near, &far}) { // convex, decreasing (calls)
+    EXPECT_LE((*p)[1], 0.5 * ((*p)[0] + (*p)[2]) + 1.0e-9);
+    EXPECT_LE((*p)[1], (*p)[0] + 1.0e-12);
+  }
+  // One-sided (the later slice held at its prices): no curve inside the boxes.
+  std::vector<double> near2{2.0, 1.2, 0.6};
+  std::vector<double> far2{1.9, 1.1, 0.9};
+  const std::vector<double> held_box = far2;
+  std::vector<JointPriceSide> held{{strikes, near2, near_lo, near_hi, -1.0, 0.0, 100.0},
+                                   {strikes, far2, held_box, held_box, -1.0, 0.0, 100.0}};
+  EXPECT_FALSE(project_calendar_joint(held));
+}
+
+TEST(AmericanPriceSlice, JointCalendarProjectionLeavesAnOrderedPairBitForBit) {
+  using atx::vol::JointPriceSide;
+  using atx::vol::project_calendar_joint;
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  const std::vector<double> near0{1.5, 0.8, 0.4};
+  const std::vector<double> far0{2.0, 1.2, 0.7};
+  std::vector<double> near = near0;
+  std::vector<double> far = far0;
+  const std::vector<double> lo{0.0, 0.0, 0.0};
+  const std::vector<double> hi{5.0, 5.0, 5.0};
+  std::vector<JointPriceSide> sides{{strikes, near, lo, hi, -1.0, 0.0, 100.0},
+                                    {strikes, far, lo, hi, -1.0, 0.0, 100.0}};
+  ASSERT_TRUE(project_calendar_joint(sides));
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(near[i]), std::bit_cast<std::uint64_t>(near0[i]));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(far[i]), std::bit_cast<std::uint64_t>(far0[i]));
+  }
+  std::vector<double> short_prices{1.0, 0.5}; // malformed: mismatched sizes
+  std::vector<JointPriceSide> bad{{strikes, short_prices, lo, hi, -1.0, 0.0, 100.0}};
+  EXPECT_FALSE(project_calendar_joint(bad));
+}
+
+} // namespace

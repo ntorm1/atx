@@ -19,8 +19,11 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 
+#include "atx/vol/api/core/types.hpp"        // Status
 #include "atx/vol/api/pricing/american.hpp"  // AlOpts (scheme_from_opts input)
+#include "atx/vol/api/pricing/american_region.hpp"  // AlExerciseRegion (L3k price sites)
 #include "pricing/american_detail.hpp"        // detail::AlSeedMode (AlScheme::seed default)
 
 namespace atx::vol::amer {
@@ -125,7 +128,17 @@ struct AlScheme {
   // see the qdplus_critical_put note in american.cpp. Defaulting to Baw leaves the
   // accurate / reference / boundary_interp schemes byte-unchanged.
   detail::AlSeedMode seed = detail::AlSeedMode::Baw;
+  // Kernel arithmetic (AlOpts::profile; american.hpp AlProfile). Reference keeps
+  // every solve byte-identical; Fast is the opt-in al-speed tier-2 kernel.
+  AlProfile profile = AlProfile::Reference;
 };
+
+// The workspace's Fast-arithmetic flag (AlWorkspace::fast) for a scheme: every opt-in
+// profile (Fast, and Screen's small scheme on the same arithmetic) runs it; Reference
+// keeps the shipped arithmetic.
+[[nodiscard]] constexpr bool al_fast_arithmetic(const AlScheme& sch) noexcept {
+  return sch.profile != AlProfile::Reference;
+}
 
 struct AlBoundary {
   std::array<double, kAlMaxNodes> z{};
@@ -154,6 +167,10 @@ struct AlWorkspace {
   // True only after the sigma-independent geometry below has been bound for the
   // current (T,r,q,node-grid) contract. Retained pricers clear it on reset.
   bool geo_static_bound = false;
+  // AlProfile::Fast kernel selected for this solve (set from AlScheme::profile by
+  // every entry that binds a scheme; false — the Reference kernel — everywhere
+  // else, including the AVX2 batch init and the adjoint tape).
+  bool fast = false;
   // Sweep-invariant geometry for eqn_b_ND. zc/weru/wequ are bound once per
   // contract; geo_v is rebound for each sigma. NOT zero-init'd (active elements
   // are filled before read), so stacked workspaces do not pay four 512-double
@@ -167,6 +184,13 @@ struct AlWorkspace {
   // so a retained workspace carries it across a sigma sweep exactly as it does zc.
   std::array<double, kGeoBarySize> geo_bary;      // wbary[k] / (zc_ji - z[k])
   std::array<double, kGeoBaryPairs> geo_bary_den; // sum_k of the above, same order
+  // al-speed tier 1 (2026-10-17): the two per-collocation-node terms every sweep
+  // recomputed at every node — the eqn_b drift factor K * exp(-(r - q) * tau_j) and
+  // sqrt(tau_j) of the tip — are sigma-independent, so the same static bind lays
+  // them down once (same expressions, bit-identical) and a retained workspace
+  // carries them across a sigma sweep with the rest of the static geometry.
+  std::array<double, kAlMaxNodes> geo_alpha;     // K * exp(-(r - q) * tau_j)
+  std::array<double, kAlMaxNodes> geo_sqrt_tau;  // sqrt(tau_j)
   std::array<std::int8_t, kGeoBaryPairs> geo_bary_hit;  // exact-node index; -1 = none
 #ifndef NDEBUG
   // R-30: Debug-only bind key naming the contract the sweep-invariant static
@@ -278,6 +302,156 @@ struct AlSolveResid {
                                                 double K, double T, double sigma,
                                                 double r, double q) noexcept;
 
+// C1 exercise region (2026-10-22): B(tau = T) — the value every price site classifies
+// against (classify_exercise_region, api/pricing/american_region.hpp). It reads the
+// boundary's Lobatto END node: at u = T al_boundary_at evaluates z = 2 sqrt(T/T) - 1 =
+// +1 exactly, which is node n-1 (al_cheb_node returns exactly 1.0 there), so the
+// exact-node guard returns y[n-1] and the value is b_from_y(y[n-1], xmax). Taking
+// (y_T, xmax) as plain doubles lets the laned AVX2 kernel feed one lane's Y[nb-1] / xmax
+// through the SAME scalar code, so the scalar and laned sites see the same boundary bits.
+[[nodiscard]] double al_boundary_at_expiry(double y_T, double xmax) noexcept;
+
+// The same for a solved boundary: bit-identical to al_boundary_now(bnd) when bnd.n >= 2
+// and bnd.T > 0 (AmericanExerciseRegion pins it); NaN for a boundary with no nodes or no
+// time (nothing to classify against: the American regime then reads Continuation).
+[[nodiscard]] double al_boundary_at_expiry(const AlBoundary& bnd) noexcept;
+
+// C1 fix round 1: the boundary the warm-started ALO state (AloPricer / AloRegionPricer)
+// holds after its last price() — the fourth site's boundary, handed to the other three
+// sites by the site-agreement test. Its node grid is reset()'s; its y[] is meaningful
+// once a price() call in the American regime has converged.
+[[nodiscard]] const AlBoundary& al_alo_boundary(const atx::vol::detail::AloCore& core) noexcept;
+
+// L3k monotone (2026-10-21) + C1: the same price under an explicit exercise-region rule
+// (AlExerciseRegion, api/pricing/american_region.hpp). KernelFloor with no `cls_out`
+// forwards to the function above (bit-identical, no extra work). Otherwise the site
+// classifies (S, K, T, r, q, sigma, put, al_boundary_at_expiry(bnd)) and writes the class
+// to `cls_out` when non-null; Intrinsic then returns K - S — no euro leg, no premium
+// quadrature — on ExercisePlateau (K - S >= 0 there because B(T) <= xmax = K min(1, r/q)
+// <= K) and forwards on Continuation. Precondition (the dispatch's): American regime,
+// T > kAlExpiryLimitT, sigma > kAlZeroVolSigma. A classified call that violates it gets
+// that class back and a quiet NaN, never a price.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary& bnd,
+                                                const AlWorkspace& ws, double S,
+                                                double K, double T, double sigma,
+                                                double r, double q,
+                                                AlExerciseRegion region,
+                                                AlExerciseClass* cls_out = nullptr) noexcept;
+
+// L3k test seam for the CACHED price site (al_put_price_from_boundary_cached, file-local
+// in american.cpp, the slice / greeks engines' route): binds its premium cache for
+// (bnd, ws, sigma, r, q) first when `bind_cache` is true, so a test reaches both the
+// cache-hit and the inline arm. Same contract as the overload above.
+[[nodiscard]] double al_put_price_from_boundary_cached_probe(const AlBoundary& bnd,
+                                                            const AlWorkspace& ws, double S,
+                                                            double K, double T, double sigma,
+                                                            double r, double q,
+                                                            AlExerciseRegion region,
+                                                            bool bind_cache,
+                                                            AlExerciseClass* cls_out =
+                                                                nullptr) noexcept;
+
+// ── Prepared expiry geometry seam (L2b al-geometry, 2026-10-18) ──────────────
+//
+// WHAT IS SHARED. A cold solve of an internal put (strike K, rate, yield, T, sigma)
+// first lays down the node grid (al_init_nodes: z, wbary, x, tau depend on (n, T)
+// only), points the workspace at the process-wide Gauss-Legendre tables, and runs
+// the sweep-invariant static bind (al_bind_geometry_static: geo_zc, geo_weru,
+// geo_wequ, geo_bary*, geo_sqrt_tau depend on (T, rate, yield, scheme); the one
+// strike-dependent entry is geo_alpha = K * exp(-(rate - yield) * tau_j)). An
+// AlOrientedGeometry holds that strike- and sigma-free state for ONE orientation
+// (rate, yield), bound once at K = 1 so alpha_exp[j] is exactly the exp the bind
+// multiplies by K. A prepared solve at (K, sigma) loads it, writes geo_alpha[j] =
+// K * alpha_exp[j] (the same product the bind forms), binds sigma
+// (al_bind_geometry_sigma) and runs the SAME seed + sweep code as
+// al_solve_put_boundary, so every value the kernel reads equals the cold path's:
+// the boundary, and every price from it, is bit-identical.
+//
+// OWNERSHIP / THREADS. An AlOrientedGeometry is immutable after
+// al_prepare_oriented_geometry and may be read by any number of threads at once.
+// The solve state (bnd, ws) is the caller's and is single-thread scratch.
+struct AlOrientedGeometry {
+  AlScheme sch{};
+  AlBoundary grid{};  // n, T, z, wbary, x, tau; y == 0; K/xmax are set per solve
+  AlWorkspace ws{};   // table pointers, flags and the static bind (made at K = 1)
+  std::array<double, kAlMaxNodes> alpha_exp{};  // exp(-(rate - yield) * tau_j)
+  double rate = 0.0;
+  double yield = 0.0;
+  std::uint64_t id = 0;  // process-unique per prepare; 0 = not prepared
+  bool tables_ok = false;
+};
+
+// Prepare `g` for the orientation (rate, yield) of an expiry T under `sch`. Requires
+// finite T > 0 and finite rate / yield (callers validate first); otherwise `g` is left
+// unprepared (id 0). Each call stamps a new process-unique id.
+void al_prepare_oriented_geometry(double T, double rate, double yield, const AlScheme& sch,
+                                  AlOrientedGeometry& g) noexcept;
+
+// Solve the boundary at (K, sigma) from a prepared orientation. (bnd, ws) are loaded
+// from `g` unless `*loaded == g.id` (they already hold its static part — the solve
+// never writes it); on return `*loaded == g.id`. A null `loaded` always loads.
+// Bit-identical to al_solve_put_boundary(K, g.grid.T, sigma, g.rate, g.yield, g.sch,
+// bnd, ws, /*specialize=*/true, resid_out), statuses included.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_prepared(const AlOrientedGeometry& g,
+                                                           double K, double sigma,
+                                                           AlBoundary& bnd, AlWorkspace& ws,
+                                                           std::uint64_t* loaded,
+                                                           AlSolveResid* resid_out = nullptr) noexcept;
+
+// Caller-owned retained solve state for prepared solves (one per thread; ~46 KB).
+struct AlPreparedScratch {
+  AlBoundary bnd{};
+  AlWorkspace ws{};
+  std::uint64_t loaded = 0;
+};
+
+// ── Tick-path record seam (pricing hot-path audit 2026-10-16, item 2) ─────────
+//
+// The per-expiry calibration record (fitting/expiry_record.cpp) samples the
+// early-exercise premium on a (log-moneyness, sigma) grid and splits its
+// moneyness domain at the CURRENT exercise boundary, so it needs two quantities
+// the price entry point above folds away. Both are pure forwarders onto the
+// file-local helpers american.cpp already uses; numerics are unchanged.
+
+// The exercise boundary at time-to-expiry tau = bnd.T, i.e. NOW: the critical
+// put spot at or below which immediate exercise is optimal. The same
+// barycentric interpolant the premium quadrature reads (al_boundary_at).
+[[nodiscard]] double al_boundary_now(const AlBoundary& bnd) noexcept;
+
+// The early-exercise premium integral alone at spot S — the quantity
+// al_put_price_from_boundary adds to the European put before its intrinsic /
+// European / zero clamps. Unclamped by those, so it stays a smooth function of S
+// across the exercise boundary (it is floored at 0 like the price path).
+[[nodiscard]] double al_put_premium_from_boundary(const AlBoundary& bnd, const AlWorkspace& ws,
+                                                  double S, double sigma, double r,
+                                                  double q) noexcept;
+
+// ── Serve-path seam (2026-10-16): the correction-cache build's exercise edge ──
+//
+// andersen_lake_put_slice / andersen_lake_call_slice solve ONE early-exercise
+// boundary per (T, sigma) row of a CorrectionCache build. The cache keeps each
+// row's CURRENT exercise edge so the session serve path can route queries near
+// the boundary off the tensor (the tensor is smooth across the edge's kink, so it
+// is least accurate there). These run the public slices' own code — prices are
+// bit-identical — and additionally write the boundary at tau = T into
+// *b_now_out (nullable):
+//   put slice  — the boundary for the reference strike strikes[0] (it scales
+//                linearly in K by homogeneity);
+//   call slice — the McDonald-Schroder internal-put boundary (internal strike S,
+//                internal spot = the call strike).
+// *b_now_out is NaN when no boundary was solved (degenerate T or sigma, the
+// European regime, or an error return).
+[[nodiscard]] Status al_put_slice_with_edge(double S, std::span<const double> strikes, double T,
+                                            double sigma, double r, double q,
+                                            std::span<double> price_out,
+                                            const std::optional<AlOpts>& opts,
+                                            double* b_now_out);
+[[nodiscard]] Status al_call_slice_with_edge(double S, std::span<const double> strikes, double T,
+                                             double sigma, double r, double q,
+                                             std::span<double> price_out,
+                                             const std::optional<AlOpts>& opts,
+                                             double* b_now_out);
+
 // ── P2 (WS-P) seam: the PURE collocation residual R(y; sigma, r) ──────────
 //
 // Adjoint / implicit-function-theorem greeks (detail/adjoint_greeks.cpp) need the
@@ -359,3 +533,27 @@ void al_seed_boundary_into(const AlBoundary& bnd, double sigma, double r, double
                            double* y_out) noexcept;
 
 }  // namespace atx::vol::amer
+
+namespace atx::vol {
+
+// The prepared state behind the public AlExpiryGeometry (api/pricing/american.hpp).
+// `put` is the puts' orientation (rate r, yield q; internal strike = the strike);
+// `call` is the calls' McDonald-Schroder internal put (rate q, yield r; internal
+// strike = the spot). An orientation is prepared only when the expiry is
+// non-degenerate (finite T > 1e-12, finite r and q) and its side is in the American
+// regime; every other case prices in closed form or errors before any solve.
+struct AlExpiryGeometry::Impl {
+  double T = 0.0;
+  double r = 0.0;
+  double q = 0.0;
+  std::optional<AlOpts> opts{};
+  amer::AlScheme sch{};
+  amer::AlOrientedGeometry put{};
+  amer::AlOrientedGeometry call{};
+  bool prepared = false;
+  // Bumped by every prepare(): a boundary handle records it at solve() and refuses to
+  // price once the geometry has been re-prepared (L2b review m2, enforced by L2f).
+  std::uint64_t generation = 0;
+};
+
+}  // namespace atx::vol

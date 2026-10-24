@@ -7,13 +7,16 @@ C++20 monorepo, layered: `atx-core` (vocab + IO) → `atx-tsdb` (shm store) → 
 Ninja lives inside the VS install, not on PATH. Use `scripts/atx-build.ps1` (sources vcvars, pins Ninja + `mt.exe`, exports `CCACHE_BASEDIR`, has a wrong-tree guard). `pwsh` may be absent — use `powershell` (5.1).
 
 ```powershell
-powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/
-powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp  # single-TU compile, seconds — the shaping loop
-powershell scripts\atx-build.ps1 build atx-vol-tests        # ALWAYS target-scoped, never bare all-targets
+# atx-vol lanes: ALWAYS -Preset vol-rel (Release+AVX2, no ThinLTO, vol-only closure)
+powershell scripts\atx-build.ps1 configure -Preset vol-rel                  # build-vol-rel/
+powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp -Preset vol-rel  # single-TU compile, seconds — the shaping loop
+powershell scripts\atx-build.ps1 build atx-vol-quote-slice-tests -Preset vol-rel -Jobs 2  # focused target, NEVER atx-vol-tests in a lane
+powershell scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-quote-slice$"         # anchored
+powershell scripts\atx-build.ps1 -Bench configure -Preset vol-rel-avx2      # perf pins only (ThinLTO)
 powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # release qualification only; forbidden in oracle loop
 ```
 
-Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCACHE_BASEDIR`). Iterate with `check <file>` → `build <owning-test-target>` → anchored `-Ctest -R <Suite>`. Full labels belong only to release qualification outside `vol-oracle-iter`; the oracle loop never runs them.
+Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCACHE_BASEDIR`). Iterate with `check <file>` → `build <owning-test-target>` → anchored `-Ctest -R <Suite>`. Full labels belong only to release qualification outside `vol-oracle-iter`; the oracle loop never runs them. atx-vol lane rules (focused targets, `-Jobs` for N concurrent lanes): `atx-vol/CLAUDE.md` "Build lanes".
 
 ## Parallel work — worktree POOL, never raw `git worktree add`
 
@@ -23,7 +26,7 @@ powershell scripts\lease-worktree.ps1 -Status           # who holds what
 powershell scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 ```
 
-Warm tree: 5 s no-op / 27 s branch flip. Fresh worktree: 132 s at 38% cache — and manual `git worktree add` skips submodules. Lease v3 publication is atomic and records run_id, branch, frozen base SHA, time, and an explicit durable process or heartbeat owner. Heartbeat acquisition starts an independent continuously renewing keeper; foreground commands do not own liveness. Production callers must never use the short-lived launcher PID. Release requires the acquiring run_id and stops the keeper; investigate owner state before explicit stale recovery.
+Warm tree: 5 s no-op / 27 s branch flip. Fresh worktree: 132 s at 38% cache — and manual `git worktree add` skips submodules. The lease configures `-ConfigurePreset auto` (vol branch → `vol-rel`, else `dev`/`equity-dev`; `none` skips): a slot already warm for that preset leases in ~7 s (measured 6.6 s), a cold one pays one configure (~42–55 s, deps cloned from local mirrors). Lease v3 publication is atomic and records run_id, branch, frozen base SHA, time, and an explicit durable process or heartbeat owner. Heartbeat acquisition starts an independent continuously renewing keeper; foreground commands do not own liveness. Production callers must never use the short-lived launcher PID. Release requires the acquiring run_id and stops the keeper; investigate owner state before explicit stale recovery.
 
 ## House style — mandatory reading before C++
 

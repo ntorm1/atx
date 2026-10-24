@@ -58,14 +58,58 @@ set(ATX_VOL_PRICING_SOURCES
     # Andersen-Lake machinery, while its public entries sit beside them in
     # api/pricing/american.hpp.
     src/pricing/american_discrete_div.cpp
+    # Its caller-owned workspace, Screen tier and seeded inversion (lane L3f,
+    # 2026-10-20): prices through the seam src/pricing/american_discrete_div_detail.hpp;
+    # public header api/pricing/american_discrete_div_kernel.hpp (Tier-B).
+    src/pricing/american_discrete_div_kernel.cpp
+    # The schedule-grouped batch of the D1 production path (lane D1, 2026-10-22):
+    # routes and step maps once per (schedule, T) group, then allocation-free loops.
+    # Public header api/pricing/american_discrete_div_batch.hpp (Tier-B).
+    src/pricing/american_discrete_div_batch.cpp
+    # The INDEPENDENT cash-dividend reference (lane D0, 2026-10-22): event-aligned
+    # PDE + ex-date-aligned trinomial lattice with stated uncertainty. Library-private
+    # header src/pricing/american_discrete_div_reference.hpp; selected by no default.
+    src/pricing/american_discrete_div_reference.cpp
+    src/pricing/american_markov.cpp
+    src/pricing/american_markov_grid.cpp
+    src/pricing/american_markov_batch.cpp
+    src/pricing/american_markov_pwl.cpp
+    src/pricing/pwl_strike.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
     src/pricing/boundary_interp.cpp
+    # L2h sigma-family (2026-10-19): the per-(expiry, side) sigma-Chebyshev boundary
+    # family on the prepared AL geometry (AlSigmaFamily, api/pricing/american.hpp).
+    src/pricing/american_sigma_family.cpp
+    # L3g family-greeks (2026-10-20): analytic Greeks, the exact Newton slope, chain and
+    # shock-grid evaluation and the detached serve copy on that family.
+    src/pricing/american_family_greeks.cpp
+    # L2h-b sigma-q family (2026-10-21): the (sigma, q) tensor boundary family — the
+    # per-strike effective yield as a second interpolation axis (AlSigmaQFamily).
+    src/pricing/american_sigma_q_family.cpp
+    # K2 (r5, 2026-10-22): the varying-parameter batch IV inversion on that family (SoA
+    # lanes, bracketed Newton, typed outcomes; AVX2 kernel src/simd/american_iv_batch_avx2.cpp).
+    src/pricing/american_iv_batch.cpp
+    src/pricing/american_iv_stream.cpp
+    # A0 sigma-q family Greeks (r6, 2026-10-23): the primary Greek bundle (masks, reasons,
+    # convention), the rate-bump set and the structure-of-arrays chain entry on that family.
+    src/pricing/american_sigma_q_family_greeks.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
+    # K3 (r5): the (sigma, q) family's error envelope and root-acceptance context
+    src/pricing/american_family_error.cpp
     src/pricing/dividend.cpp
     src/pricing/adjusted_greeks.cpp
     src/pricing/pricing_executor.cpp
+    # Tick-path chain refresh (pricing hot-path audit 2026-10-16): inline, pool-free
+    # chain re-mark after a spot tick; public header api/pricing/chain_tick.hpp.
+    src/pricing/chain_tick.cpp
+    # ... and its per-contract Chebyshev spot ladders (ChainSpotLadder).
+    src/pricing/spot_ladder.cpp
+    # Chain-level batch price / Greeks / implied vol (batch-pricing lane 2026-10-17);
+    # public header api/pricing/batch_chain.hpp.
+    src/pricing/batch_chain.cpp
+    src/pricing/batch_chain_iv.cpp
     # declarative swap-lane DSL
     src/pricing/swap_leg.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
@@ -76,6 +120,9 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/surface.cpp
     src/fitting/vol_surface.cpp
     src/fitting/correction.cpp
+    # Per-expiry (k, sigma) calibration record at the expiry's exact carry
+    # (pricing hot-path audit 2026-10-16 item 2); header api/fitting/expiry_record.hpp.
+    src/fitting/expiry_record.cpp
     src/fitting/arb.cpp
     src/fitting/surface_policy.cpp
     # Task F-8: SurfaceOverlay/StickyMode bump algebra over a fitted surface --
@@ -85,6 +132,27 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/risk_surface_validation.cpp
     src/fitting/convex_recovery.cpp
     src/fitting/quote_feasibility.cpp
+    src/fitting/quote_slice.cpp
+    src/fitting/quote_slice_carry.cpp
+    src/fitting/quote_slice_vol_space.cpp
+    src/fitting/quote_slice_publication.cpp
+    # Lane H0-A (r6): the immutable fitted serving record; api/fitting/slice_serve_record.hpp.
+    src/fitting/slice_serve_record.cpp
+    src/fitting/quote_slice_call_floor.cpp
+    # Lane H1 (r6): live publication of serving records; api/fitting/serve_book.hpp.
+    src/fitting/serve_book.cpp
+    # Lane C4 (r6): the opt-in exact in-box projection rung (src/fitting/inbox_projection.hpp).
+    src/fitting/inbox_projection.cpp
+    src/fitting/deam_iv_cache.cpp
+    src/fitting/quote_surface.cpp
+    src/fitting/slice_channel.cpp
+    src/fitting/term_prior.cpp
+    src/fitting/quote_fit_policy.cpp
+    src/fitting/american_markov_fit.cpp
+    src/fitting/american_markov_time_basis.cpp
+    src/fitting/american_markov_seed.cpp
+    src/fitting/american_markov_policy.cpp
+    src/fitting/american_price_slice.cpp
     src/fitting/calib.cpp
     src/fitting/prepared_fitting.cpp
     src/fitting/c8.cpp
@@ -118,6 +186,9 @@ set(ATX_VOL_FITTING_SOURCES
 )
 
 set(ATX_VOL_MARKETDATA_SOURCES
+    src/marketdata/american_markov_market.cpp
+    src/marketdata/dividend_schedule.cpp
+    src/marketdata/implied_forward.cpp
     src/marketdata/universe.cpp
     src/marketdata/data.cpp
     src/marketdata/opra_panel.cpp
@@ -140,6 +211,11 @@ set(ATX_VOL_STORAGE_SOURCES
     # catalog, which is genuinely lakehouse-only).
     src/storage/writer_lock.cpp
     src/storage/surface_archive.cpp
+    # ATXVFA fitted-surface archive (docs/storage/ARCHIVE_FORMAT.md): opt-in,
+    # no existing path reads or writes it.
+    src/storage/fit_archive.cpp
+    src/storage/fit_archive_records.cpp
+    src/storage/fit_archive_series.cpp
     src/storage/run_archive.cpp
     src/storage/run_diagnostics.cpp
     src/storage/surface_db.cpp
@@ -191,6 +267,13 @@ set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/realized_vol.cpp
     # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
     src/analytics/breakeven.cpp
+    # Lane A1 (r6): declared analytics on the live serving book (hedge conventions, Taylor /
+    # exact scenarios, attribution); European-only outputs on the common model; the curve
+    # session served through the book. api/analytics/{served_analytics,
+    # common_model_analytics,served_session}.hpp.
+    src/analytics/served_analytics.cpp
+    src/analytics/common_model_analytics.cpp
+    src/analytics/served_session.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES
@@ -899,6 +982,62 @@ endif()
 # banner text line by line. Renaming is a separable change with its own blast
 # radius; the promotion does not need it.
 if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-american-markov-audit tools/american_markov_audit_main.cpp)
+    target_link_libraries(atx-vol-american-markov-audit PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-american-markov-storage-bench
+        tools/american_markov_storage_bench_main.cpp)
+    target_link_libraries(atx-vol-american-markov-storage-bench PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # ATXVFA archive CLI: inspect | dump | verify (docs/storage/ARCHIVE_FORMAT.md).
+    add_executable(atx-vol-surface-archive tools/surface_archive_main.cpp)
+    target_link_libraries(atx-vol-surface-archive PRIVATE atx::vol atx::core atx_warnings)
+    # Its write / open / random-read benchmark over a graded quote-slice run.
+    # Named fit-archive: bench/ already owns atx-vol-surface-archive-bench (the
+    # ATXVSA2 bench).
+    add_executable(atx-vol-fit-archive-bench tools/surface_archive_bench_main.cpp)
+    target_link_libraries(atx-vol-fit-archive-bench PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # Label-free benchmark runner. Reference values exist only in the separate
+    # Python scorer; the native tool accepts a closed raw-quote input schema.
+    # Benchmark clock contract (lane B0; tools/bench_clocks.hpp, docs/benchmark-clocks.md):
+    # cold clocks, exclusive phase attribution, affinity receipt, in-process cold reset.
+    # The compile flags are embedded so every receipt names the flags of its own binary.
+    add_library(atx-vol-bench-clocks STATIC tools/bench_clocks.cpp)
+    target_include_directories(atx-vol-bench-clocks PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+    target_link_libraries(atx-vol-bench-clocks PUBLIC atx::vol atx::core
+        nlohmann_json::nlohmann_json PRIVATE atx_warnings)
+    if(WIN32)
+        target_link_libraries(atx-vol-bench-clocks PRIVATE PowrProf)
+    endif()
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _atx_bench_config)
+    string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_atx_bench_config}}" _atx_bench_flags)
+    string(REGEX REPLACE "  +" " " _atx_bench_flags "${_atx_bench_flags}")
+    target_compile_definitions(atx-vol-bench-clocks PRIVATE
+        "ATX_VOL_BENCH_CXX_FLAGS=\"${_atx_bench_flags}\""
+        "ATX_VOL_BENCH_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\"")
+    # Independent IV comparator (lane B0): brackets each served row's American IV root
+    # with the cold reference pricer by bisection (no Newton, no family) and tabulates
+    # the continuous-carry price error at the served IV.
+    add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)
+    target_link_libraries(atx-vol-iv-comparator PRIVATE atx-vol-bench-clocks atx::vol
+        atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # Production cash-dividend latency / coverage (lane D1, vol-sota r6): per-contract
+    # cold price, prepared price / IV / Greek bundle and per-group setup on B0's clocks
+    # (the setup charged to the family_build_validation stage).
+    add_executable(atx-vol-ddiv-latency tools/ddiv_latency_main.cpp)
+    target_link_libraries(atx-vol-ddiv-latency PRIVATE atx-vol-bench-clocks atx::vol
+        atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
+        tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp
+        tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
+    target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings
+        nlohmann_json::nlohmann_json atx-vol-bench-clocks)
+    # Lane U0 (r6): hot queries on published serve records at a declared rate while a universe
+    # fit runs elsewhere; torn / stale checks and pool queue ages (docs/universe-census.md).
+    add_executable(atx-vol-quote-query-load tools/quote_query_load_main.cpp)
+    target_link_libraries(atx-vol-quote-query-load PRIVATE atx::vol atx::core atx_warnings
+        nlohmann_json::nlohmann_json)
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
     # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
     # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
@@ -970,10 +1109,15 @@ if(ATX_BUILD_TOOLS)
     # dir; Eigen arrives transitively (atx::core links Eigen3::Eigen PUBLIC).
     # The atx::engine::learn definitions live in atx-engine/src/learn/*.cpp,
     # which is why an include-dir grant alone would not link. This edge stays
-    # confined to THIS executable and atx-vol-tests — the atx-vol LIBRARY
-    # never includes an atx-engine header (layering).
-    add_executable(atx-vol-vrp-train tools/vrp_train_main.cpp)
-    target_link_libraries(atx-vol-vrp-train PRIVATE atx::vol atx::core atx-engine atx_warnings)
+    # confined to THIS executable and atx-vol-vrp-model-tests (tests/) — the
+    # atx-vol LIBRARY never includes an atx-engine header (layering).
+    #
+    # Absent under ATX_VOL_ONLY (every vol-* preset): the engine is not
+    # configured there, so a vol lane can never compile it through this tool.
+    if(NOT ATX_VOL_ONLY)
+        add_executable(atx-vol-vrp-train tools/vrp_train_main.cpp)
+        target_link_libraries(atx-vol-vrp-train PRIVATE atx::vol atx::core atx-engine atx_warnings)
+    endif()
 
     # alpha layer CLI: adjudicate a panel's inputs and target BEFORE a fit.
     # Reads the panel's header as its schema (columns by NAME, no version

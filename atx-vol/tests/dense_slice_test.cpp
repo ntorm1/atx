@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <iterator>
 #include <limits>
 #include <span>
@@ -13,10 +15,12 @@
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX -- QP-kernel unit tests below
 
 #include "atx/vol/api/fitting/arb.hpp"          // arb_check_calendar
-#include "atx/vol/api/pricing/black76.hpp"      // black76_price, black76_value_and_vega
 #include "atx/vol/api/fitting/calib.hpp"        // FitObs
 #include "atx/vol/api/fitting/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit, kMaxIntervalSlackRows
 #include "atx/vol/api/core/types.hpp"           // Side
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"  // black76_price, black76_value_and_vega
+#include "atx/vol/api/pricing/greeks.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp"    // fit_slice_curve, CurveSurface
 
 // Task C-7 (FIT-C3/FIT-C4): forward declaration of the QP-kernel test-only
@@ -34,17 +38,6 @@ Result<atx::core::linalg::VecX> qp_active_set_for_test(
     atx::core::linalg::VecX x0, int max_iter, bool *converged_out, int *iterations_out,
     std::vector<Eigen::Index> *dropped_rows_out = nullptr);
 } // namespace atx::vol
-
-// Task P-5 review N-1: forward declaration of the P-5 test/bench seam defined
-// in src/dense_slice.cpp -- mirrors derivatives.cpp's
-// `set_strip_batch_disabled_for_test` forward-declare-in-the-consumer
-// convention (no header touched). Reads the SAME predicate
-// ConvexSliceFit::iv() reads (env_flag_enabled's exact `"1"` match), so this
-// test's skip guard cannot disagree with what production actually did, the
-// way a local presence-only re-check of the environment variable could.
-namespace atx::vol::detail {
-[[nodiscard]] bool iv_early_exit_disabled_for_test() noexcept;
-} // namespace atx::vol::detail
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:
@@ -1426,59 +1419,172 @@ TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
   EXPECT_LT(max_abs_diff, 1.0e-11);
 }
 
-// Task P-5 review I-2 fix: the PRIOR version of this test asserted `iters <
-// 64` against a hand-rolled REPLICA of the bisection loop, never calling
-// `fit->iv()`. The review verified that deleting the early-exit break in
-// `src/dense_slice.cpp` left that version green (the replica kept its own
-// copy of the break condition, so it stayed "early-exiting" regardless of
-// what production did), and that the drift-tolerance sibling above ALSO
-// cannot catch a reverted optimization -- under
-// `ATX_VOL_DISABLE_IV_EARLY_EXIT=1` (behaviourally identical to deleting the
-// break) it passes bit-exactly, because its pinned values ARE the pre-P-5
-// values. So the shipped optimization had no regression guard at all.
-//
-// This version calls the SHIPPING `fit->iv()` directly. The early exit
-// provably changes the returned midpoint whenever it fires before iteration
-// 64 (it stops at a strictly wider bracket than 64 fixed halvings would have
-// reached), so if the break is ever silently reverted, every one of these
-// 41 points becomes bit-identical to the pre-P-5 `kPreP5Iv` again --
-// verified BOTH ways below by actually deleting the break, rebuilding, and
-// observing this exact test fail, then restoring it and observing green
-// again. Skipped when `detail::iv_early_exit_disabled_for_test()`
-// reports the intentional bench-only override that restores pre-P-5
-// arithmetic -- bit-identity is the CORRECT behavior there, not a
-// regression. Task P-5 review N-1: this used to re-derive "is the override
-// on?" from a local presence-only check of the environment variable, which
-// disagreed with production's exact-match-"1" semantics at, e.g.,
-// ATX_VOL_DISABLE_IV_EARLY_EXIT=0 (production runs the early exit; the old
-// guard would have skipped anyway). Now reads the same accessor production
-// itself is built from, so this guard cannot disagree with what the binary
-// actually did.
-TEST(ConvexSliceFit, IvBisectionEarlyExitIsActuallyEngagedInProduction) {
-  using namespace atx::vol;
-  if (detail::iv_early_exit_disabled_for_test()) {
-    GTEST_SKIP() << "ATX_VOL_DISABLE_IV_EARLY_EXIT is set -- bit-identity to "
-                    "the pre-P-5 baseline is the intended bench-A/B behavior here";
-  }
-  std::vector<FitObs> obs;
-  for (const double K : strike_grid(kP5F)) {
-    obs.push_back(mk_obs(kP5F, kP5T, kP5Df, K, 0.22));
-  }
-  const auto fit = fit_convex_slice(obs, kP5F, kP5T, kP5Df, ConvexFitOpts{});
-  ASSERT_TRUE(fit.has_value());
+TEST(ConvexSliceFit, CertifiedIvMatchesIndependentBisectionAcrossScalesAndWings) {
+  // Exercise the served inverter without a QP: node prices come from known
+  // Black volatilities, while the reference bisects the actual projected node
+  // premium. This includes quotes whose time value is rounded to intrinsic,
+  // and true vols below the market quote inverter's reporting floor.
+  std::size_t compared = 0;
+  std::size_t american_compared = 0;
+  double max_iv_error = 0.0;
+  double max_price_error = 0.0;
+  double max_greek_scaled_error = 0.0;
+  double max_american_price_error = 0.0;
+  double max_american_greek_scaled_error = 0.0;
+  constexpr std::array<double atx::vol::Greeks::*, 8> european_fields{
+      &atx::vol::Greeks::delta, &atx::vol::Greeks::gamma, &atx::vol::Greeks::vega,
+      &atx::vol::Greeks::theta, &atx::vol::Greeks::rho, &atx::vol::Greeks::vanna,
+      &atx::vol::Greeks::volga, &atx::vol::Greeks::charm};
+  constexpr std::array<double atx::vol::AmericanGreeks::*, 8> american_fields{
+      &atx::vol::AmericanGreeks::delta, &atx::vol::AmericanGreeks::gamma,
+      &atx::vol::AmericanGreeks::vega, &atx::vol::AmericanGreeks::theta,
+      &atx::vol::AmericanGreeks::rho, &atx::vol::AmericanGreeks::vanna,
+      &atx::vol::AmericanGreeks::volga, &atx::vol::AmericanGreeks::charm};
+  for (const double F : {0.25, 100.0, 5000.0}) {
+    for (const double T : {1.0e-6, 1.0 / 365.0, 0.25, 2.0, 10.0}) {
+      for (const double sigma : {0.001, 0.01, 0.2, 0.8, 3.0, 4.9, 9.9, atx::vol::kIvMax}) {
+        for (const double z : {-8.0, -3.0, -1.0, 0.0, 1.0, 3.0, 8.0}) {
+          const double k = std::clamp(z * sigma * std::sqrt(T), -12.0, 12.0);
+          const double K = F * std::exp(k);
+          const double df = std::exp(-0.04 * T);
+          ConvexSliceFit fit;
+          fit.F = F;
+          fit.T = T;
+          fit.df = df;
+          fit.u = {K};
+          fit.C = {black76_price(F, K, T, sigma, df, Side::Call)};
 
-  int bit_identical_to_pre_p5 = 0;
-  for (int i = 0; i <= 40; ++i) {
-    const double k = -0.60 + 0.03 * static_cast<double>(i);
-    const double iv = fit->iv(k);
-    if (iv == kPreP5Iv[static_cast<std::size_t>(i)]) {
-      ++bit_identical_to_pre_p5;
+          const double lower = df * std::max(F - K, 0.0);
+          const double upper = df * F;
+          const double epsilon = std::min(1.0e-6 * std::max(1.0, upper),
+                                          0.25 * (upper - lower));
+          const double target = std::min(std::max(fit.C.front(), lower + epsilon),
+                                         std::nextafter(upper, lower));
+          const double actual = fit.iv(k);
+          if (!(target > lower && target < upper) ||
+              black76_price(F, K, T, atx::vol::kIvMax, df, Side::Call) < target) {
+            EXPECT_TRUE(std::isnan(actual));
+            continue;
+          }
+          double lo = 1.0e-10;
+          double hi = atx::vol::kIvMax;
+          for (int iter = 0; iter < 80; ++iter) {
+            const double mid = 0.5 * (lo + hi);
+            if (black76_price(F, K, T, mid, df, Side::Call) < target) {
+              lo = mid;
+            } else {
+              hi = mid;
+            }
+          }
+          const double reference = 0.5 * (lo + hi);
+          EXPECT_NEAR(actual, reference, 1.0e-11 * std::max(1.0, reference))
+              << "F=" << F << " T=" << T << " sigma=" << sigma << " z=" << z;
+          max_iv_error = std::max(max_iv_error, std::fabs(actual - reference));
+          const auto expected = atx::vol::black76_greeks(F, K, T, reference, 0.04, df, Side::Call);
+          const auto value = atx::vol::black76_greeks(F, K, T, actual, 0.04, df, Side::Call);
+          const double price_error = std::fabs(value.price - expected.price);
+          max_price_error = std::max(max_price_error, price_error);
+          EXPECT_LE(price_error, 1.0e-11 * std::max(1.0, df * F));
+          for (const auto member : european_fields) {
+            const double error = std::fabs(value.greeks.*member - expected.greeks.*member) /
+                                 std::max(1.0, std::fabs(expected.greeks.*member));
+            max_greek_scaled_error = std::max(max_greek_scaled_error, error);
+            EXPECT_LE(error, 1.0e-8) << "F=" << F << " T=" << T << " z=" << z;
+          }
+          // Exercise-sensitive repricing on the same forward/carry, for both
+          // sides. FD-based higher Greeks have a larger rounding floor than
+          // the analytic European bundle; report their measured drift too.
+          if (F == 100.0 && T >= 0.25 && T <= 2.0 && sigma >= 0.2 && sigma <= 0.8 &&
+              std::fabs(z) <= 1.0) {
+            const double spot = F * std::exp(-0.01 * T);
+            for (const Side side : {Side::Call, Side::Put}) {
+              const auto expected_am = atx::vol::american_greeks_al(
+                  spot, K, T, reference, 0.04, 0.03, side, atx::vol::al_fast_opts());
+              const auto value_am = atx::vol::american_greeks_al(
+                  spot, K, T, actual, 0.04, 0.03, side, atx::vol::al_fast_opts());
+              ASSERT_TRUE(expected_am.has_value());
+              ASSERT_TRUE(value_am.has_value());
+              const double am_price_error = std::fabs(value_am->price - expected_am->price);
+              max_american_price_error = std::max(max_american_price_error, am_price_error);
+              EXPECT_LE(am_price_error, 1.0e-9);
+              for (const auto member : american_fields) {
+                const double error = std::fabs((*value_am).*member - (*expected_am).*member) /
+                                     std::max(1.0, std::fabs((*expected_am).*member));
+                max_american_greek_scaled_error = std::max(max_american_greek_scaled_error, error);
+                EXPECT_LE(error, 1.0e-6) << "T=" << T << " z=" << z;
+              }
+              ++american_compared;
+            }
+          }
+          ++compared;
+        }
+      }
     }
   }
-  EXPECT_EQ(bit_identical_to_pre_p5, 0)
-      << "fit->iv() matched the pre-P-5 pinned baseline bit-for-bit at "
-      << bit_identical_to_pre_p5
-      << "/41 points -- the early exit is not firing in production (deleting "
-         "the break condition in ConvexSliceFit::iv(), src/fitting/dense_slice.cpp, "
-         "reproduces exactly this failure)";
+  EXPECT_GT(compared, 800u);
+  EXPECT_EQ(american_compared, 24u);
+  std::printf("[DenseIvAccuracy] cases=%zu american_cases=%zu max_iv=%.17g "
+              "max_price=%.17g max_scaled_greek=%.17g max_american_price=%.17g "
+              "max_scaled_american_greek=%.17g\n", compared, american_compared, max_iv_error,
+              max_price_error, max_greek_scaled_error, max_american_price_error,
+              max_american_greek_scaled_error);
+}
+
+TEST(ConvexSliceFit, IvRejectsNonFiniteAndUnrepresentableStrikeCoordinates) {
+  ConvexSliceFit fit;
+  fit.F = 100.0;
+  fit.T = 0.25;
+  fit.df = 0.99;
+  fit.u = {90.0, 110.0};
+  fit.C = {12.0, 2.0};
+  for (const double k : {std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::infinity(),
+                         -std::numeric_limits<double>::infinity(), 1000.0, -1000.0}) {
+    EXPECT_TRUE(std::isnan(fit.iv(k))) << "k=" << k;
+  }
+  fit.T = std::numeric_limits<double>::infinity();
+  EXPECT_TRUE(std::isnan(fit.iv(0.0)));
+}
+
+TEST(ConvexSliceFit, RepricedIvRetainsDenseCallBoundsMonotonicityAndConvexity) {
+  constexpr double F = 100.0;
+  constexpr double T = 0.25;
+  const double df = std::exp(-0.03 * T);
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  }
+  const auto fit = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+  ASSERT_TRUE(fit.has_value());
+  expect_arb_free(*fit);
+
+  constexpr std::size_t samples = 257;
+  constexpr double first_strike = 50.0;
+  constexpr double step = 100.0 / static_cast<double>(samples - 1);
+  constexpr double tolerance = 2.0e-9;
+  std::array<double, samples> prices{};
+  for (std::size_t i = 0; i < samples; ++i) {
+    const double K = first_strike + step * static_cast<double>(i);
+    const double sigma = fit->iv(std::log(K / F));
+    ASSERT_TRUE(std::isfinite(sigma)) << "K=" << K;
+    prices[i] = black76_price(F, K, T, sigma, df, Side::Call);
+    const double intrinsic = df * std::max(F - K, 0.0);
+    const double forward = df * F;
+    const double epsilon = std::min(1.0e-6 * std::max(1.0, forward),
+                                    0.25 * (forward - intrinsic));
+    const double projected = std::min(std::max(fit->call_price(K), intrinsic + epsilon),
+                                      std::nextafter(forward, intrinsic));
+    EXPECT_NEAR(prices[i], projected, tolerance) << "K=" << K;
+    EXPECT_GE(prices[i], intrinsic - tolerance);
+    EXPECT_LE(prices[i], forward + tolerance);
+    if (i > 0) {
+      const double change = prices[i] - prices[i - 1];
+      EXPECT_LE(change, tolerance) << "K=" << K;
+      EXPECT_GE(change, -df * step - tolerance) << "K=" << K;
+    }
+    if (i > 1) {
+      EXPECT_GE(prices[i] - 2.0 * prices[i - 1] + prices[i - 2], -tolerance)
+          << "K=" << K;
+    }
+  }
 }

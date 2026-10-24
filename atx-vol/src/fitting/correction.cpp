@@ -12,6 +12,7 @@
 #include "atx/vol/api/pricing/black76.hpp"
 #include "fitting/correction_detail.hpp" // Chebyshev primitives (kChebMaxNodes, cheb_*)
 #include "fitting/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "pricing/american_boundary.hpp" // amer::al_{put,call}_slice_with_edge
 
 namespace atx::vol {
 
@@ -524,6 +525,18 @@ Result<CorrectionCache> CorrectionCache::build(std::uint16_t n_log_moneyness,
   // (validated to the §9 accuracy gates against cold andersen_lake). Either side
   // falls back to the scalar per-node sample_correction (the reference) for any
   // (T, sigma) row the slice rejects (Unsupported / collapsed boundary).
+  //
+  // Each row's slice also reports its solved boundary NOW, from which the row's
+  // exercise edge z* = k* / (sigma sqrt T) is recorded (exercise_edge_distance).
+  // That is a by-product of the solve the row pays anyway; the prices are the
+  // public slices' own, bit-for-bit.
+  const bool american_regime =
+      detail::classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                              /*yield=*/(side == Side::Put) ? q : r) ==
+      detail::ExerciseRegime::American;
+  bool edge_complete = american_regime;
+  std::vector<double> edge_vals(static_cast<std::size_t>(n_T) * static_cast<std::size_t>(n_s),
+                                0.0);
   std::array<double, kChebMaxNodes> strike_buf{};
   std::array<double, kChebMaxNodes> px_buf{};
   for (std::uint16_t j = 0; j < n_T; ++j) {
@@ -534,16 +547,17 @@ Result<CorrectionCache> CorrectionCache::build(std::uint16_t n_log_moneyness,
       const double sig = sigma_grid[k];
       double *row = coefs + detail::cheb_idx(0, j, k, n_k, n_s); // i-contiguous
       bool used_slice = false;
+      double b_now = std::numeric_limits<double>::quiet_NaN();
       if (side == Side::Call || side == Side::Put) {
         for (std::uint16_t i = 0; i < n_k; ++i) {
           strike_buf[i] = std::exp(k_log_grid[i]);
         }
+        const std::span<const double> strikes(strike_buf.data(), n_k);
+        const std::span<double> prices(px_buf.data(), n_k);
         const Status st =
             (side == Side::Call)
-                ? andersen_lake_call_slice(S_j, std::span<const double>(strike_buf.data(), n_k), Tj,
-                                           sig, r, q, std::span<double>(px_buf.data(), n_k), opts)
-                : andersen_lake_put_slice(S_j, std::span<const double>(strike_buf.data(), n_k), Tj,
-                                          sig, r, q, std::span<double>(px_buf.data(), n_k), opts);
+                ? amer::al_call_slice_with_edge(S_j, strikes, Tj, sig, r, q, prices, opts, &b_now)
+                : amer::al_put_slice_with_edge(S_j, strikes, Tj, sig, r, q, prices, opts, &b_now);
         if (st) {
           for (std::uint16_t i = 0; i < n_k; ++i) {
             const double euro = black76_price(1.0, strike_buf[i], Tj, sig, df_j, side);
@@ -558,7 +572,43 @@ Result<CorrectionCache> CorrectionCache::build(std::uint16_t n_log_moneyness,
           row[i] = sample_correction(k_log_grid[i], Tj, sig, r, q, side, opts);
         }
       }
+      if (edge_complete) {
+        // Put: exercised iff S_j <= b(K) = K b_now / K_ref <=> k >= ln S_j - ln(b_now / K_ref).
+        // Call: internal put (strike S_j, spot K) exercised iff K <= b_now <=> k <= ln b_now.
+        const double k_star = (side == Side::Put) ? std::log(S_j) - std::log(b_now / strike_buf[0])
+                                                  : std::log(b_now);
+        const double z = k_star / (sig * std::sqrt(Tj));
+        if (!used_slice || !(b_now > 0.0) || !std::isfinite(z)) {
+          edge_complete = false;
+        } else {
+          edge_vals[static_cast<std::size_t>(j) * n_s + k] = z;
+        }
+      }
     }
+  }
+  if (!american_regime) {
+    cache.edge_state_ = EdgeState::European;
+  } else if (edge_complete) {
+    // 2-D DCT-II of the node edges: the sigma axis (l) per T row, then the T axis.
+    cache.edge_coefs_.assign(edge_vals.size(), 0.0);
+    std::array<double, kChebMaxNodes> e_in{};
+    std::array<double, kChebMaxNodes> e_out{};
+    for (std::uint16_t j = 0; j < n_T; ++j) {
+      detail::cheb_dct2(edge_vals.data() + static_cast<std::size_t>(j) * n_s, e_out.data(), n_s);
+      for (std::uint16_t l = 0; l < n_s; ++l) {
+        edge_vals[static_cast<std::size_t>(j) * n_s + l] = e_out[l];
+      }
+    }
+    for (std::uint16_t l = 0; l < n_s; ++l) {
+      for (std::uint16_t j = 0; j < n_T; ++j) {
+        e_in[j] = edge_vals[static_cast<std::size_t>(j) * n_s + l];
+      }
+      detail::cheb_dct2(e_in.data(), e_out.data(), n_T);
+      for (std::uint16_t j = 0; j < n_T; ++j) {
+        cache.edge_coefs_[static_cast<std::size_t>(j) * n_s + l] = e_out[j];
+      }
+    }
+    cache.edge_state_ = EdgeState::Recorded;
   }
 
   // Step 2: separable DCT-II along each axis.
@@ -641,6 +691,34 @@ bool CorrectionCache::contains(double k_log, double T, double sigma) const noexc
   return populated_ && std::isfinite(k_log) && std::isfinite(T) && std::isfinite(sigma) &&
          k_log >= k_log_min_ && k_log <= k_log_max_ && T >= T_min_ && T <= T_max_ &&
          sigma >= sigma_min_ && sigma <= sigma_max_;
+}
+
+double CorrectionCache::exercise_edge_distance(double k_log, double T,
+                                               double sigma) const noexcept {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  if (!populated_ || !std::isfinite(k_log) || !std::isfinite(T) || !std::isfinite(sigma) ||
+      !(T > 0.0) || !(sigma > 0.0)) {
+    return kNaN;
+  }
+  switch (edge_state_) {
+  case EdgeState::Unknown:
+    return kNaN;
+  case EdgeState::European:
+    return std::numeric_limits<double>::infinity();
+  case EdgeState::Recorded:
+    break;
+  }
+  const double xt = detail::cheb_to_unit(atx::core::clamp(T, T_min_, T_max_), T_min_, T_max_);
+  const double xs =
+      detail::cheb_to_unit(atx::core::clamp(sigma, sigma_min_, sigma_max_), sigma_min_, sigma_max_);
+  std::array<double, detail::kChebMaxNodes> col{};
+  for (std::uint16_t j = 0; j < n_T_; ++j) {
+    col[j] = detail::cheb_clenshaw1d(edge_coefs_.data() + static_cast<std::size_t>(j) * n_s_,
+                                     n_s_, xs);
+  }
+  const double z_star = detail::cheb_clenshaw1d(col.data(), n_T_, xt);
+  const double z = k_log / (sigma * std::sqrt(T));
+  return (side_ == Side::Put) ? (z_star - z) : (z - z_star);
 }
 
 double CorrectionCache::eval(double k_log, double T, double sigma) const noexcept {
@@ -1008,6 +1086,24 @@ bool CorrectionBlend::contains(double k_log, double T, double sigma) const noexc
     return upper->contains(k_log, T, sigma);
   }
   return lower->contains(k_log, T, sigma) && upper->contains(k_log, T, sigma);
+}
+
+bool CorrectionBlend::clear_of_exercise_edge(double k_log, double T, double sigma,
+                                             double band) const noexcept {
+  if (!valid() || std::isnan(band)) {
+    return false;
+  }
+  // `>` is false for a NaN distance, so an unrecorded edge never clears.
+  const auto clear = [&](const CorrectionCache *cache) noexcept {
+    return cache->exercise_edge_distance(k_log, T, sigma) > band;
+  };
+  if (upper_weight == 0.0 || lower == upper) {
+    return clear(lower);
+  }
+  if (upper_weight == 1.0) {
+    return clear(upper);
+  }
+  return clear(lower) && clear(upper);
 }
 
 double CorrectionBlend::eval(double k_log, double T, double sigma) const noexcept {

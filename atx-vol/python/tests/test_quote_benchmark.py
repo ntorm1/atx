@@ -1,0 +1,1187 @@
+"""Post-implementation verification of cohort isolation and score integrity."""
+from __future__ import annotations
+
+import datetime as dt
+import importlib.util
+import json
+from pathlib import Path
+
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+
+TOOLS = Path(__file__).resolve().parents[2] / "tools"
+SPEC = importlib.util.spec_from_file_location("quote_benchmark", TOOLS / "quote_benchmark.py")
+qb = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(qb)
+
+
+def source_table() -> pa.Table:
+    n = 6
+    table = pa.table({
+        "okey_tk": ["AAA"] * 3 + ["BBB"] * 3,
+        "okey_dt": [dt.date(2027, 1, 15)] * n,
+        "okey_xx": [90., 100., 110.] * 2,
+        "okey_cp": ["Call", "Put", "Call"] * 2,
+        "date": [dt.datetime(2026, 10, 14, 14, 30, tzinfo=dt.timezone.utc)] * n,
+        "timestamp": [dt.datetime(2026, 10, 14, 14, 30, 1, tzinfo=dt.timezone.utc)] * n,
+        "undSecKey_tk": ["AAA"] * 3 + ["BBB"] * 3,
+        "uBid": [99.99] * n, "uAsk": [100.01] * n,
+        "bidPrc": [1.] * n, "askPrc": [1.2] * n,
+        "bidSz": [10] * n, "askSz": [10] * n,
+        "years": [.3] * n, "yearsC": [.25] * n,
+        "rate": [.04] * n, "sdiv": [.01] * n,
+        "ddiv": [0.] * n, "ddivPv": [0.] * n,
+        "exType": ["American"] * n,
+        "srPrc": [1.1] * n, "srVol": [.3] * n,
+        "bidIV": [998.] * n, "askIV": [999.] * n, "synSpot": [9999.] * n,
+        "atmVol": [999.] * n, "error": [999] * n,
+    })
+    return table
+
+
+def prepare(tmp_path: Path, table: pa.Table | None = None, *, name="cohort", batch_size=2):
+    source = tmp_path / f"{name}.parquet"
+    pq.write_table(table if table is not None else source_table(), source, row_group_size=3)
+    output = tmp_path / name
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output", str(output),
+                                  "--split", "all", "--csv", "--batch-size", str(batch_size)])
+    manifest = qb.prepare(args)
+    return output, manifest
+
+
+def prediction_receipt(dataset: Path, *, rows=None):
+    quotes = pl.read_parquet(dataset / "quotes.parquet")
+    if rows is not None:
+        quotes = quotes.head(rows)
+    pred = quotes.select("row_id", "chain_id").with_columns(
+        pl.lit(1.11).alias("predicted_price"), pl.lit(.31).alias("predicted_vol"),
+        pl.lit("ok").alias("status"))
+    path = dataset / "predictions.csv"
+    pred.write_csv(path)
+    receipt = dataset / "predictions.csv.run.json"
+    qb.write_json(receipt, {"predictions": str(path), "prediction_sha256": qb.sha256(path),
+                           "quote_parquet_sha256": qb.sha256(dataset / "quotes.parquet"),
+                           "quote_csv_sha256": qb.sha256(dataset / "quotes.csv")})
+    return path, receipt
+
+
+def score(dataset: Path, receipt: Path):
+    args = qb.parser().parse_args(["score", "--dataset", str(dataset), "--run-receipt", str(receipt),
+                                  "--output", str(dataset / "score.json"), "--split", "all"])
+    return qb.score(args)
+
+
+def test_poisoning_reference_and_vendor_model_fields_cannot_change_inputs(tmp_path):
+    first, manifest = prepare(tmp_path, name="original")
+    table = source_table()
+    for name in ("srPrc", "srVol", "bidIV", "askIV", "synSpot", "atmVol"):
+        table = table.set_column(table.schema.get_field_index(name), name,
+                                 pa.array([float("nan")] * table.num_rows))
+    second, changed = prepare(tmp_path, table, name="poisoned")
+    assert manifest["files"]["quotes.parquet"] == changed["files"]["quotes.parquet"]
+    assert manifest["files"]["quotes.csv"] == changed["files"]["quotes.csv"]
+    assert manifest["files"]["labels.parquet"] != changed["files"]["labels.parquet"]
+    assert set(pq.read_schema(first / "quotes.parquet").names).isdisjoint(qb.LABEL_COLUMNS)
+    assert set(pq.read_schema(second / "labels.parquet").names) == set(qb.LABEL_SCHEMA.names)
+
+
+def test_row_identity_and_chain_groups_survive_batch_boundaries(tmp_path):
+    one, _ = prepare(tmp_path, name="small", batch_size=2)
+    two, _ = prepare(tmp_path, name="large", batch_size=20)
+    a, b = pl.read_parquet(one / "quotes.parquet"), pl.read_parquet(two / "quotes.parquet")
+    assert a.equals(b)
+    assert a["row_id"].to_list() == list(range(6))
+    assert a["chain_id"].n_unique() == 2
+    assert a.group_by("underlier").agg(pl.col("split").n_unique())["split"].to_list() == [1, 1]
+    assert a["spot"].to_list() == [100.] * 6
+
+
+def test_rejections_are_retained_and_accounted_without_labels(tmp_path):
+    table = source_table()
+    table = table.set_column(table.schema.get_field_index("exType"), "exType",
+                             pa.array(["European"] + ["American"] * 5))
+    table = table.set_column(table.schema.get_field_index("uBid"), "uBid",
+                             pa.array([99.99, -99.] + [99.99] * 4))
+    table = table.set_column(table.schema.get_field_index("yearsC"), "yearsC",
+                             pa.array([.25, .25, 0., .25, .25, .25]))
+    dataset, manifest = prepare(tmp_path, table)
+    q = pl.read_parquet(dataset / "quotes.parquet")
+    assert manifest["rows_selected"] == 6
+    assert q["input_status"].to_list() == ["unsupported_exercise", "invalid_underlier_quote",
+                                          "invalid_time", "ok", "ok", "ok"]
+    assert pl.read_parquet(dataset / "labels.parquet").height == 6
+
+
+def test_normalization_refuses_a_label_bearing_frame():
+    batch = source_table().to_batches()[0]
+    with pytest.raises(ValueError, match="allowlist"):
+        qb.normalize_quotes(batch, 0, bucket_minutes=30, validation_fraction=.2, split_seed="seed")
+
+
+def test_distinct_snapshots_in_one_selection_bucket_never_merge(tmp_path):
+    table = source_table()
+    times = [dt.datetime(2026, 10, 14, 14, minute, tzinfo=dt.timezone.utc)
+             for minute in (30, 35, 55, 30, 35, 55)]
+    table = table.set_column(table.schema.get_field_index("date"), "date", pa.array(times))
+    dataset, _ = prepare(tmp_path, table)
+    q = pl.read_parquet(dataset / "quotes.parquet")
+    assert q["snapshot_ns"].n_unique() == 3
+    assert q["chain_id"].n_unique() == 6
+
+
+def test_missing_predictions_reduce_coverage_instead_of_silently_shrinking_cohort(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=4)
+    metrics = score(dataset, receipt)["metrics"]
+    assert metrics["rows"] == metrics["eligible_rows"] == 6
+    assert metrics["price_scored_rows"] == 4
+    assert metrics["price_coverage"] == pytest.approx(4 / 6)
+    assert metrics["price_mae"] == pytest.approx(.01)
+    assert metrics["vol_bp_mae"] == pytest.approx(100.)
+    assert metrics["price_in_spreads_mae"] == pytest.approx(.05)
+    assert metrics["midpoint_price_mae"] == pytest.approx(0.)
+
+
+def test_missing_reference_labels_do_not_reduce_prediction_coverage(tmp_path):
+    table = source_table()
+    table = table.set_column(table.schema.get_field_index("srPrc"), "srPrc",
+                             pa.array([-99.] * 6))
+    dataset, _ = prepare(tmp_path, table)
+    _, receipt = prediction_receipt(dataset)
+    metrics = score(dataset, receipt)["metrics"]
+    assert metrics["price_coverage"] == 1.
+    assert metrics["price_scoring_coverage"] == 0.
+    assert metrics["price_prediction_rows"] == 6
+    assert metrics["price_label_rows"] == metrics["price_scored_rows"] == 0
+    assert metrics["price_mae"] is None
+
+
+@pytest.mark.parametrize("corruption", ["duplicates", "unknown", "wrong_chain", "null_chain", "hash"])
+def test_score_refuses_identity_or_provenance_corruption(tmp_path, corruption):
+    dataset, _ = prepare(tmp_path)
+    path, receipt = prediction_receipt(dataset)
+    df = pl.read_csv(path, schema_overrides={"row_id": pl.UInt64, "chain_id": pl.UInt64})
+    if corruption == "duplicates":
+        df = pl.concat([df, df.head(1)])
+    elif corruption == "unknown":
+        df = df.with_columns(pl.lit(100, dtype=pl.UInt64).alias("row_id"))
+    elif corruption == "wrong_chain":
+        df = df.with_columns(pl.lit(0, dtype=pl.UInt64).alias("chain_id"))
+    elif corruption == "null_chain":
+        df = df.with_columns(pl.lit(None, dtype=pl.UInt64).alias("chain_id"))
+    else:
+        df = df.with_columns(pl.lit(999.).alias("predicted_price"))
+    df.write_csv(path)
+    if corruption != "hash":
+        data = json.loads(receipt.read_text())
+        data["prediction_sha256"] = qb.sha256(path)
+        qb.write_json(receipt, data)
+    with pytest.raises(ValueError):
+        score(dataset, receipt)
+
+
+def test_explicit_selection_is_label_independent_and_keeps_original_row_ids(tmp_path):
+    source = tmp_path / "source.parquet"
+    pq.write_table(source_table(), source)
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output", str(tmp_path / "chosen"),
+                                  "--symbols", "BBB", "--split", "all", "--buckets", "1030"])
+    qb.prepare(args)
+    q = pl.read_parquet(tmp_path / "chosen" / "quotes.parquet")
+    assert q["row_id"].to_list() == [3, 4, 5]
+    assert q["underlier"].to_list() == ["BBB"] * 3
+
+
+def test_american_exercise_spelling_is_canonical_for_the_native_boundary(tmp_path):
+    table = source_table()
+    table = table.set_column(table.schema.get_field_index("exType"), "exType",
+                             pa.array(["american", "AMERICAN", "AmErIcAn", "American",
+                                       "European", None]))
+    dataset, _ = prepare(tmp_path, table)
+    quotes = pl.read_parquet(dataset / "quotes.parquet")
+    assert quotes["exercise"].to_list() == ["American"] * 4 + ["European", None]
+    assert quotes["input_status"].to_list() == ["ok"] * 4 + ["unsupported_exercise"] * 2
+
+
+@pytest.mark.parametrize("extra", [["--curve", "svi"], ["--curve=svi"],
+                                  ["--policy", "auto"], ["--policy=auto"],
+                                  ["--dividends", "none"], ["--dividends=escrowed-pv"],
+                                  ["--model", "common-markov"], ["--model=common-markov"],
+                                  ["--common-policy", "auto"], ["--common-policy=auto"]])
+def test_native_extras_cannot_override_the_recorded_curve(tmp_path, monkeypatch, extra):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid provenance arguments reached subprocess execution")
+    monkeypatch.setattr(qb.subprocess, "run", forbidden)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(tmp_path / "new-predictions.csv"), "--curve", "essvi", "--", *extra,
+    ])
+    with pytest.raises(ValueError, match="provenance-bound"):
+        qb.run_native(args)
+
+
+@pytest.mark.parametrize("target", ["manifest.json", "quotes.parquet", "labels.parquet",
+                                   "predictions.csv", "predictions.csv.run.json"])
+def test_score_never_overwrites_validated_inputs_or_receipts(tmp_path, target):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset)
+    destination = dataset / target
+    before = destination.read_bytes()
+    args = qb.parser().parse_args([
+        "score", "--dataset", str(dataset), "--run-receipt", str(receipt),
+        "--output", str(destination), "--split", "all",
+    ])
+    with pytest.raises(ValueError, match="output already exists"):
+        qb.score(args)
+    assert destination.read_bytes() == before
+
+
+def test_exclusive_json_write_preserves_a_concurrent_output(tmp_path):
+    output = tmp_path / "already-created.json"
+    output.write_text("existing evidence")
+    with pytest.raises(FileExistsError):
+        qb.write_json(output, {"replacement": True}, overwrite=False)
+    assert output.read_text() == "existing evidence"
+
+
+@pytest.mark.parametrize("target", ["labels.parquet", "manifest.json", "predictions", "receipt"])
+def test_native_report_cannot_replace_cohort_or_pending_run_artifacts(tmp_path, monkeypatch, target):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+    report = (output if target == "predictions" else Path(str(output) + ".run.json")
+              if target == "receipt" else dataset / target)
+    before = report.read_bytes() if report.exists() else None
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsafe report output reached native execution")
+    monkeypatch.setattr(qb.subprocess, "run", forbidden)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(output), "--", "--report", str(report),
+    ])
+    with pytest.raises(ValueError, match="timing report must use a new path"):
+        qb.run_native(args)
+    if before is not None:
+        assert report.read_bytes() == before
+    else:
+        assert not report.exists()
+
+
+def test_native_new_timing_report_remains_usable(tmp_path, monkeypatch):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+    report = tmp_path / "new-timing.json"
+    def execute(command, **kwargs):
+        assert command[command.index("--report") + 1] == str(report)
+        assert command[command.index("--dividends") + 1] == "funding-pv"
+        output.write_text("predictions")
+        report.write_text("{}")
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{"policy_mode":"auto"}')
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(output), "--", "--report", str(report),
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["curve"] is None
+    assert receipt["policy"] == "auto"
+    assert receipt["dividends"] == "funding-pv"
+    assert receipt["dividend_model"] == "aggregate_funding_pv_approximation"
+    assert receipt["native_report"] == {"policy_mode": "auto"}
+    assert report.read_text() == "{}"
+    assert Path(str(output) + ".run.json").is_file()
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_custom_policy_content_is_bound_to_run_receipt(tmp_path, monkeypatch, mutate):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+    policy = tmp_path / "policy.json"
+    document = {"schema_version": 1, "symbol_overrides": [
+        {"symbol": "AAA", "profile": "sparse"}]}
+    policy.write_text(json.dumps(document))
+    original_hash = qb.sha256(policy)
+
+    def execute(command, **kwargs):
+        assert command[command.index("--policy") + 1] == str(policy.resolve())
+        assert "--curve" not in command
+        output.write_text("predictions")
+        if mutate:
+            policy.write_text('{"schema_version":1}')
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{"policy_mode":"file"}')
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(output), "--policy", str(policy),
+    ])
+    if mutate:
+        with pytest.raises(ValueError, match="policy configuration changed"):
+            qb.run_native(args)
+        assert not Path(str(output) + ".run.json").exists()
+    else:
+        receipt = qb.run_native(args)
+        assert receipt["policy_sha256"] == original_hash
+        assert receipt["policy_document"] == document
+        assert receipt["policy"] == str(policy.resolve())
+
+
+def test_policy_and_fixed_curve_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        qb.parser().parse_args([
+            "run", "--dataset", "dataset", "--binary", "runner", "--output", "predictions",
+            "--policy", "auto", "--curve", "essvi",
+        ])
+
+
+@pytest.mark.parametrize("custom,mutate", [(False, False), (True, False), (True, True)])
+def test_common_model_policy_and_provenance_are_bound(tmp_path, monkeypatch, custom, mutate):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "common-predictions.csv"
+    policy = tmp_path / "common-policy.json"
+    document = {"schema_version": 1, "model": "common-markov"}
+    policy.write_text(json.dumps(document))
+    original_hash = qb.sha256(policy)
+    selection = str(policy) if custom else "auto"
+
+    def execute(command, **kwargs):
+        assert command[command.index("--model") + 1] == "common-markov"
+        assert command[command.index("--common-policy") + 1] == (
+            str(policy.resolve()) if custom else "auto")
+        assert "--policy" not in command and "--curve" not in command
+        output.write_text("predictions")
+        if mutate:
+            policy.write_text('{"schema_version":1,"model":"changed"}')
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{"model":"common-markov"}')
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--common-policy", selection,
+    ])
+    if mutate:
+        with pytest.raises(ValueError, match="policy configuration changed"):
+            qb.run_native(args)
+        assert not Path(str(output) + ".run.json").exists()
+    else:
+        receipt = qb.run_native(args)
+        assert receipt["model"] == "common-markov"
+        assert receipt["policy"] is None
+        assert receipt["common_policy"] == (str(policy.resolve()) if custom else "auto")
+        assert receipt["policy_sha256"] == (original_hash if custom else None)
+        assert receipt["policy_document"] == (document if custom else None)
+
+
+@pytest.mark.parametrize("selection", [
+    ["--model", "common-markov", "--policy", "auto"],
+    ["--model", "common-markov", "--curve", "essvi"],
+    ["--model", "quote-slice", "--common-policy", "auto"],
+])
+def test_wrapper_refuses_incompatible_model_policy_before_accessing_data(selection):
+    args = qb.parser().parse_args([
+        "run", "--dataset", "unused", "--binary", "unused", "--output", "unused", *selection,
+    ])
+    with pytest.raises(ValueError, match="requires"):
+        qb.run_native(args)
+
+
+def test_start_receipt_survives_interruption_before_final_run_receipt(tmp_path, monkeypatch):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    output, progress = tmp_path / "predictions.csv", tmp_path / "progress.jsonl"
+    policy = tmp_path / "common-policy.json"
+    policy.write_text('{"schema_version":1,"model":"common-markov"}')
+    start_path = Path(str(output) + ".start.json")
+
+    def interrupted(command, **kwargs):
+        assert command[command.index("--progress") + 1] == str(progress.resolve())
+        start = json.loads(start_path.read_text())
+        assert start["state"] == "started_incomplete"
+        assert start["command"] == command
+        assert start["runner_sha256"] == qb.ADAPTER_SHA256
+        assert start["binary_sha256"] == qb.sha256(binary)
+        assert start["quote_csv_sha256"] == qb.sha256(dataset / "quotes.csv")
+        assert start["policy_sha256"] == qb.sha256(policy)
+        assert start["policy_document"] == json.loads(policy.read_text())
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(qb.subprocess, "run", interrupted)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--common-policy", str(policy), "--progress", str(progress),
+    ])
+    with pytest.raises(KeyboardInterrupt):
+        qb.run_native(args)
+    assert start_path.is_file()
+    assert not Path(str(output) + ".run.json").exists()
+    with pytest.raises(ValueError, match="output already exists"):
+        qb.run_native(args)
+
+
+def progress_fixture(path, start):
+    """Small valid journal boundary fixture, without invoking numerical work."""
+    report = {"rows": start["input_rows"], "snapshots": 1,
+              "model": start["model"], "dividend_model": start["dividends"],
+              "policy_definition": {"profile": "fixture"},
+              "progress": {"completed_rows": 2, "run_binding_sha256": "binding",
+                           "configuration_sha256": "configuration"}}
+    records = [
+        {"record_type": "start", "sequence": 0, "run_binding_sha256": "binding",
+         "snapshots_expected": 1, "input_rows": start["input_rows"],
+         "rows_excluded_by_input_status": start["input_rows"] - 2,
+         "configuration": report["policy_definition"].copy(),
+         "run_binding": {"model": start["model"], "dividends": start["dividends"],
+                         "configuration_sha256": "configuration", "source": {
+             "input_sha256": start["quote_csv_sha256"], "policy_sha256": start["policy_sha256"],
+             "executable_sha256": start["binary_sha256"]}}},
+        {"record_type": "snapshot", "sequence": 1, "run_binding_sha256": "binding",
+         "rows": 2, "completed_rows": 2, "completed_snapshots": 1},
+        {"record_type": "complete", "sequence": 2, "run_binding_sha256": "binding",
+         "completed_rows": 2, "completed_snapshots": 1, "input_rows": start["input_rows"],
+         "rows_excluded_by_input_status": start["input_rows"] - 2,
+         "state": "numerical_processing_complete"},
+    ]
+    for record in records:
+        record["schema_version"] = 1
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    return report, records
+
+
+def test_wrapper_binds_progress_and_prelaunch_receipt_to_final_receipt(tmp_path, monkeypatch):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    output, progress = tmp_path / "predictions.csv", tmp_path / "progress.jsonl"
+    start_path = Path(str(output) + ".start.json")
+
+    def execute(command, **kwargs):
+        start = json.loads(start_path.read_text())
+        report, _ = progress_fixture(progress, start)
+        output.write_text("predictions")
+        return qb.subprocess.CompletedProcess(command, 0, stdout=json.dumps(report))
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--progress", str(progress),
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["start_receipt_sha256"] == qb.sha256(start_path)
+    assert receipt["progress"]["sha256"] == qb.sha256(progress)
+    assert receipt["progress"]["records"] == 3
+    assert receipt["progress"]["completed_snapshots"] == 1
+
+
+@pytest.mark.parametrize("mutation", ["partial", "missing_complete", "sequence", "binding",
+                                     "rows", "input", "trailing", "oversized", "configuration",
+                                     "configuration_hash", "model", "dividends", "excluded",
+                                     "header_rows"])
+def test_wrapper_refuses_invalid_or_incomplete_progress(tmp_path, mutation):
+    path = tmp_path / "progress.jsonl"
+    start = {"input_rows": 3, "quote_csv_sha256": "input", "policy_sha256": None,
+             "binary_sha256": "binary", "model": "common-markov", "dividends": "funding-pv"}
+    report, records = progress_fixture(path, start)
+    if mutation == "missing_complete":
+        records.pop()
+    elif mutation == "sequence":
+        records[1]["sequence"] = 3
+    elif mutation == "binding":
+        records[1]["run_binding_sha256"] = "other"
+    elif mutation == "rows":
+        records[-1]["completed_rows"] = 3
+    elif mutation == "input":
+        records[0]["run_binding"]["source"]["input_sha256"] = "changed"
+    elif mutation == "trailing":
+        records.append(records[-1])
+    elif mutation == "configuration":
+        records[0]["configuration"]["profile"] = "changed"
+    elif mutation == "configuration_hash":
+        records[0]["run_binding"]["configuration_sha256"] = "changed"
+    elif mutation in ("model", "dividends"):
+        records[0]["run_binding"][mutation] = "changed"
+    elif mutation == "excluded":
+        records[-1]["rows_excluded_by_input_status"] = 0
+    elif mutation == "header_rows":
+        records[0]["input_rows"] = 4
+    payload = "".join(json.dumps(record) + "\n" for record in records)
+    if mutation == "partial":
+        payload = payload[:-1]
+    elif mutation == "oversized":
+        payload = " " * (4 * 1024 * 1024 + 1) + "\n"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(ValueError, match="progress journal"):
+        qb._verify_native_progress(path, report, start)
+
+
+@pytest.mark.parametrize("target", ["input", "output", "start", "receipt", "report", "binary"])
+def test_wrapper_protects_progress_aliases_before_native_launch(tmp_path, monkeypatch, target):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    output, report = tmp_path / "predictions.csv", tmp_path / "report.json"
+    progress = {"input": dataset / "quotes.csv", "output": output,
+                "start": Path(str(output) + ".start.json"),
+                "receipt": Path(str(output) + ".run.json"),
+                "report": report, "binary": binary}[target]
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsafe progress path reached native execution")
+    monkeypatch.setattr(qb.subprocess, "run", forbidden)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--progress", str(progress), "--", "--report", str(report),
+    ])
+    with pytest.raises(ValueError, match="must use a new path"):
+        qb.run_native(args)
+    assert not Path(str(output) + ".start.json").exists()
+
+
+@pytest.mark.parametrize("extra", [["--progress", "override"], ["--progress=override"]])
+def test_wrapper_progress_is_not_overridable_via_passthrough(tmp_path, monkeypatch, extra):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(tmp_path / "predictions.csv"), "--model", "common-markov", "--", *extra,
+    ])
+    with pytest.raises(ValueError, match="provenance-bound"):
+        qb.run_native(args)
+
+
+def candidate_receipt(dataset: Path, name: str, ids: list[int], prices: list[float],
+                      vols: list[float]) -> Path:
+    q = pl.read_parquet(dataset / "quotes.parquet").filter(pl.col("row_id").is_in(ids))
+    pred = q.select("row_id", "chain_id").with_columns(
+        pl.Series("predicted_price", prices), pl.Series("predicted_vol", vols),
+        pl.lit("ok").alias("status"))
+    path = dataset / f"{name}.csv"
+    pred.write_csv(path)
+    receipt = dataset / f"{name}.run.json"
+    qb.write_json(receipt, {"predictions": str(path), "prediction_sha256": qb.sha256(path),
+                           "quote_parquet_sha256": qb.sha256(dataset / "quotes.parquet"),
+                           "quote_csv_sha256": qb.sha256(dataset / "quotes.csv")})
+    return receipt
+
+
+def compare(dataset: Path, a: Path, b: Path, *, name="compare") -> dict:
+    args = qb.parser().parse_args([
+        "compare", "--dataset", str(dataset), "--run-a", str(a), "--run-b", str(b),
+        "--output", str(dataset / f"{name}.json"), "--split", "all",
+    ])
+    return qb.compare(args)
+
+
+def test_paired_comparison_cannot_claim_improvement_by_dropping_hard_contracts(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0, 1, 2], [1.1, 3.1, 101.1], [.3, .4, .5])
+    b = candidate_receipt(dataset, "b", [0, 1], [1.1, 4.1], [.31, float("nan")])
+    result = compare(dataset, a, b)
+    own_a = result["arm_a"]["metrics_own_population"]
+    own_b = result["arm_b"]["metrics_own_population"]
+    assert own_b["price_mae"] < own_a["price_mae"]  # Misleading unpaired headline.
+    assert own_a["price_coverage"] == .5
+    assert own_b["price_coverage"] == pytest.approx(1 / 3)
+    paired = result["paired"]
+    assert paired["price_intersection_rows"] == 2
+    assert paired["price_a_only_scored_rows"] == 1
+    assert paired["price_b_only_scored_rows"] == 0
+    assert paired["price_a_mae"] == pytest.approx(1.)
+    assert paired["price_b_mae"] == pytest.approx(1.5)
+    assert paired["price_paired_mean_abs_error_reduction"] == pytest.approx(-.5)
+    assert paired["price_fraction_worsened"] == .5
+    assert paired["price_fraction_unchanged"] == .5
+    assert paired["vol_bp_intersection_rows"] == 1  # Independent finite-vol mask.
+    assert paired["vol_bp_paired_mean_abs_error_reduction"] == pytest.approx(-100.)
+    reversed_result = compare(dataset, b, a, name="reversed")
+    assert reversed_result["paired"]["price_paired_mean_abs_error_reduction"] == pytest.approx(.5)
+
+
+def test_empty_paired_intersection_reports_unknown_errors_not_perfect_fit(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0, 1], [1.1, 1.2], [.3, .4])
+    b = candidate_receipt(dataset, "b", [2, 3], [1.1, 1.2], [.3, .4])
+    result = compare(dataset, a, b)["paired"]
+    assert result["price_intersection_rows"] == result["vol_bp_intersection_rows"] == 0
+    assert result["price_a_mae"] is None
+    assert result["price_b_mae"] is None
+    assert result["price_paired_mean_abs_error_reduction"] is None
+    assert result["price_fraction_improved"] is None
+
+
+def test_comparison_rejects_a_receipt_from_another_input_cohort(tmp_path):
+    original, _ = prepare(tmp_path, name="original")
+    changed = source_table()
+    changed = changed.set_column(changed.schema.get_field_index("okey_xx"), "okey_xx",
+                                 pa.array([95., 100., 110.] * 2))
+    other, _ = prepare(tmp_path, changed, name="other")
+    a = candidate_receipt(original, "a", [0], [1.1], [.3])
+    b = candidate_receipt(other, "b", [0], [1.1], [.3])
+    with pytest.raises(ValueError, match="different quote cohort"):
+        compare(original, a, b)
+
+
+def test_comparison_verifies_actual_native_csv_digest_not_only_parquet(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0], [1.1], [.3])
+    b = candidate_receipt(dataset, "b", [0], [1.1], [.3])
+    changed = json.loads(b.read_text())
+    changed["quote_csv_sha256"] = "0" * 64
+    qb.write_json(b, changed)
+    with pytest.raises(ValueError, match="quote CSV digest"):
+        compare(dataset, a, b)
+
+
+def test_report_strata_and_outside_reference_diagnostic_preserve_original_coverage(tmp_path):
+    table = source_table()
+    for column, values in {
+        "okey_tk": ["AAA1", "AAA", "AAA", "BBB", "BBB", "BBB"],
+        "okey_xx": [25., 50., 110., 90., 100., 110.],
+        "ddivPv": [1., 0., 0., 0., 0., 0.],
+        "srPrc": [100., 1.1, 1.1, 1.1, 1.1, 1.1],
+    }.items():
+        table = table.set_column(table.schema.get_field_index(column), column, pa.array(values))
+    dataset, _ = prepare(tmp_path, table)
+    _, receipt = prediction_receipt(dataset)
+    result = score(dataset, receipt)
+    assert result["metrics"]["eligible_rows"] == 6
+    assert result["metrics"]["price_scored_rows"] == 6
+    assert result["metrics"]["reference_outside_quote_rows"] == 1
+    for rows in result["raw_strata"].values():
+        assert sum(row["rows"] for row in rows) == 6
+        assert sum(row["eligible_rows"] for row in rows) == 6
+    kinds = {row["contract_kind"]: row for row in result["raw_strata"]["contract_kind"]}
+    assert kinds["adjusted_suffix"]["eligible_rows"] == 1
+    assert kinds["standard_symbol"]["eligible_rows"] == 5
+    ref = {row["reference_location"]: row for row in result["reference_nbbo_diagnostic"]}
+    assert ref["outside"]["price_scored_rows"] == 1  # It remains scored, not discarded.
+    assert ref["inside"]["price_scored_rows"] == 5
+
+
+def test_comparison_never_overwrites_a_provenance_artifact(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0], [1.1], [.3])
+    b = candidate_receipt(dataset, "b", [0], [1.1], [.3])
+    before = a.read_bytes()
+    args = qb.parser().parse_args([
+        "compare", "--dataset", str(dataset), "--run-a", str(a), "--run-b", str(b),
+        "--output", str(a), "--split", "all",
+    ])
+    with pytest.raises(ValueError, match="output already exists"):
+        qb.compare(args)
+    assert a.read_bytes() == before
+
+
+def update_prediction_artifact(receipt: Path, frame: pl.DataFrame, suffix=".csv"):
+    document = json.loads(receipt.read_text())
+    path = Path(document["predictions"]).with_suffix(suffix)
+    if suffix == ".parquet":
+        frame.write_parquet(path)
+    else:
+        frame.write_csv(path)
+    document.update(predictions=str(path), prediction_sha256=qb.sha256(path))
+    qb.write_json(receipt, document)
+
+
+def prediction_frame(receipt: Path) -> pl.DataFrame:
+    return pl.read_csv(json.loads(receipt.read_text())["predictions"],
+                       schema_overrides={"row_id": pl.UInt64, "chain_id": pl.UInt64})
+
+
+def test_policy_score_partitions_failures_missing_predictions_and_independent_masks(tmp_path):
+    table = source_table().set_column(source_table().schema.get_field_index("exType"),
+                                      "exType", pa.array(["American"] * 5 + ["European"]))
+    dataset, _ = prepare(tmp_path, table)
+    receipt = candidate_receipt(dataset, "metadata", [0, 1, 2, 3, 5],
+                                [1.2, 100., float("nan"), 10., 1.1], [.31, .9, .32, .9, .3])
+    frame = prediction_frame(receipt).with_columns(
+        pl.Series("status", ["ok", "fit_failure", "ok", "invalid_market", "ok"]),
+        pl.Series("resolved_profile", ["dense", "dense", "sparse", None, "dense"]),
+        pl.Series("policy_source", ["raw-liquidity", "raw-liquidity",
+                                    "exact-symbol-override", None, "raw-liquidity"]),
+        pl.Series("configured_curve", ["convex-dense", "convex-dense", "essvi", None,
+                                       "convex-dense"]),
+        pl.Series("actual_curve", ["convex-dense", "", "essvi", None, "convex-dense"]))
+    update_prediction_artifact(receipt, frame)
+    result = score(dataset, receipt)
+    assert result["metrics"]["eligible_rows"] == 5
+    assert result["metrics"]["price_prediction_rows"] == 1
+    assert result["metrics"]["vol_prediction_rows"] == 2
+    for groups in result["policy_strata"].values():
+        for key in ("rows", "eligible_rows", "price_prediction_rows", "vol_prediction_rows",
+                    "price_scored_rows", "vol_scored_rows"):
+            assert sum(group[key] for group in groups) == result["metrics"][key]
+    groups = {(group["resolved_profile"], group["resolved_profile_state"]): group
+              for group in result["policy_strata"]["resolved_profile"]}
+    dense = groups["dense", "reported"]
+    assert dense["rows"] == 3  # Includes the ineligible prediction, without scoring it.
+    assert dense["eligible_rows"] == 2
+    assert dense["price_coverage"] == .5
+    assert dense["price_mae"] == pytest.approx(.1)
+    sparse = groups["sparse", "reported"]
+    assert sparse["price_coverage"] == 0
+    assert sparse["price_mae"] is None
+    assert sparse["vol_bp_mae"] == pytest.approx(200)
+    assert groups[None, "value_absent"]["eligible_rows"] == 1
+    assert groups[None, "prediction_absent"]["eligible_rows"] == 1
+    actual = {(group["actual_curve"], group["actual_curve_state"]): group
+              for group in result["policy_strata"]["actual_curve"]}
+    assert actual[None, "value_absent"]["rows"] == 2
+
+
+def test_legacy_metadata_absence_is_distinct_from_missing_prediction_rows(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=2)
+    result = score(dataset, receipt)
+    assert set(result["policy_metadata_states"]) == {
+        "reported", "value_absent", "column_absent", "prediction_absent"}
+    for key in qb.POLICY_METADATA_COLUMNS:
+        groups = {group[f"{key}_state"]: group for group in result["policy_strata"][key]}
+        assert set(groups) == {"column_absent", "prediction_absent"}
+        assert groups["column_absent"]["rows"] == 2
+        assert groups["column_absent"]["price_coverage"] == 1
+        assert groups["prediction_absent"]["eligible_rows"] == 4
+        assert groups["prediction_absent"]["price_coverage"] == 0
+        assert all(group[key] is None for group in groups.values())
+
+
+def test_empty_prediction_artifact_keeps_entire_metadata_coverage_denominator(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=0)
+    frame = prediction_frame(receipt).with_columns(
+        pl.lit(None, dtype=pl.String).alias("resolved_profile"))
+    update_prediction_artifact(receipt, frame)
+    result = score(dataset, receipt)
+    assert result["metrics"]["eligible_rows"] == 6
+    assert result["metrics"]["price_coverage"] == 0
+    for key in qb.POLICY_METADATA_COLUMNS:
+        group, = result["policy_strata"][key]
+        assert group[f"{key}_state"] == "prediction_absent"
+        assert group["eligible_rows"] == 6
+        assert group["price_mae"] is None
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".parquet"])
+def test_metadata_text_is_lossless_and_partial_columns_remain_explicit(tmp_path, suffix):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=4)
+    frame = prediction_frame(receipt).with_columns(
+        pl.Series("resolved_profile", ["nan", "NaN", "123", "column_absent"]),
+        pl.lit(None, dtype=pl.String).alias("policy_source"),
+        pl.lit("essvi").alias("configured_curve"))
+    update_prediction_artifact(receipt, frame, suffix)
+    result = score(dataset, receipt)
+    reported = {row["resolved_profile"] for row in result["policy_strata"]["resolved_profile"]
+                if row["resolved_profile_state"] == "reported"}
+    assert reported == {"nan", "NaN", "123", "column_absent"}
+    assert {row["policy_source_state"] for row in result["policy_strata"]["policy_source"]} == {
+        "value_absent", "prediction_absent"}
+    actual = {row["actual_curve_state"]: row
+              for row in result["policy_strata"]["actual_curve"]}
+    assert actual["column_absent"]["eligible_rows"] == 4
+    assert actual["prediction_absent"]["eligible_rows"] == 2
+    assert all(row["actual_curve"] is None for row in actual.values())
+
+
+@pytest.mark.parametrize("value,suffix", [(123, ".parquet"), ("x" * 129, ".csv"),
+                                         ("bad\nname", ".csv")])
+def test_malformed_optional_metadata_is_rejected_without_creating_score(tmp_path, value, suffix):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset)
+    frame = prediction_frame(receipt).with_columns(pl.lit(value).alias("resolved_profile"))
+    update_prediction_artifact(receipt, frame, suffix)
+    with pytest.raises(ValueError, match="prediction metadata"):
+        score(dataset, receipt)
+    assert not (dataset / "score.json").exists()
+
+
+def test_profile_transition_comparison_preserves_pair_masks_and_all_coverage(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0, 1, 2, 3], [1.2, 3.1, 101.1, 1.1],
+                          [.31, .4, .5, .3])
+    b = candidate_receipt(dataset, "b", [0, 1, 2, 4], [1.11, 4.1, float("nan"), 1.1],
+                          [.305, float("nan"), .3, .3])
+    for receipt, profiles, families in [
+            (a, ["dense", "dense", "sparse", "sparse"],
+             ["convex-dense", "convex-dense", "essvi", "essvi"]),
+            (b, ["dense", "sparse", "sparse", "ordinary"],
+             ["convex-dense", "essvi", "essvi", "svi"])]:
+        frame = prediction_frame(receipt).with_columns(
+            pl.Series("resolved_profile", profiles),
+            pl.Series("configured_curve", families), pl.Series("actual_curve", families))
+        update_prediction_artifact(receipt, frame)
+    result = compare(dataset, a, b)
+    for groups in result["policy_transitions_paired"].values():
+        for key in ("rows", "eligible_rows", "price_intersection_rows", "vol_bp_intersection_rows",
+                    "price_a_prediction_rows", "price_b_prediction_rows",
+                    "vol_bp_a_prediction_rows", "vol_bp_b_prediction_rows"):
+            assert sum(group[key] for group in groups) == result["paired"][key]
+    transitions = {(row["resolved_profile_a"], row["resolved_profile_b"]): row
+                   for row in result["policy_transitions_paired"]["resolved_profile"]}
+    changed = transitions["dense", "sparse"]
+    assert changed["eligible_rows"] == 1
+    assert changed["price_intersection_rows"] == 1
+    assert changed["price_paired_mean_abs_error_reduction"] == pytest.approx(-1)
+    assert changed["vol_bp_intersection_rows"] == 0
+    assert changed["vol_bp_b_coverage"] == 0
+    assert changed["vol_bp_paired_mean_abs_error_reduction"] is None
+    unchanged = transitions["sparse", "sparse"]
+    assert unchanged["price_intersection_rows"] == 0
+    assert unchanged["vol_bp_intersection_rows"] == 1
+    assert unchanged["vol_bp_paired_mean_abs_error_reduction"] == pytest.approx(2000)
+    dropped = transitions["sparse", None]
+    assert dropped["resolved_profile_state_b"] == "prediction_absent"
+    assert dropped["price_a_coverage"] == 1
+    assert dropped["price_b_coverage"] == 0
+    added = transitions[None, "ordinary"]
+    assert added["resolved_profile_state_a"] == "prediction_absent"
+    assert added["price_a_coverage"] == 0
+    assert added["price_b_coverage"] == 1
+    assert transitions[None, None]["eligible_rows"] == 1
+    for arm in ("arm_a", "arm_b"):
+        for groups in result[arm]["policy_strata"].values():
+            assert sum(group["eligible_rows"] for group in groups) == 6
+    reverse = compare(dataset, b, a, name="reverse")
+    changed_reverse = next(row for row in reverse["policy_transitions_paired"]["resolved_profile"]
+                            if (row["resolved_profile_a"], row["resolved_profile_b"])
+                            == ("sparse", "dense"))
+    assert changed_reverse["price_paired_mean_abs_error_reduction"] == pytest.approx(1)
+
+
+def test_legacy_and_new_artifacts_compare_without_imputing_legacy_profile(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "legacy", [0, 1], [1.1, 1.2], [.3, .3])
+    b = candidate_receipt(dataset, "current", [0, 1], [1.1, 1.2], [.3, .3])
+    update_prediction_artifact(b, prediction_frame(b).with_columns(
+        pl.lit("dense").alias("resolved_profile")))
+    result = compare(dataset, a, b)
+    transitions = result["policy_transitions_paired"]["resolved_profile"]
+    reported = next(row for row in transitions if row["resolved_profile_b"] == "dense")
+    assert reported["resolved_profile_a"] is None
+    assert reported["resolved_profile_state_a"] == "column_absent"
+    assert reported["resolved_profile_state_b"] == "reported"
+    assert reported["price_intersection_rows"] == 2
+    assert reported["price_paired_mean_abs_error_reduction"] == 0
+    missing = next(row for row in transitions if row["resolved_profile_b"] is None)
+    assert missing["resolved_profile_state_a"] == "prediction_absent"
+    assert missing["resolved_profile_state_b"] == "prediction_absent"
+    assert missing["eligible_rows"] == 4
+
+
+@pytest.mark.parametrize("choice,model", [("funding-pv", "aggregate_funding_pv_approximation"),
+                                         ("escrowed-pv", "aggregate_pv_approximation"),
+                                         ("none", "continuous_yield")])
+def test_dividend_convention_is_bound_to_native_command_and_receipt(
+        tmp_path, monkeypatch, choice, model):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+
+    def execute(command, **kwargs):
+        assert command[command.index("--dividends") + 1] == choice
+        output.write_text("predictions")
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{}')
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--dividends", choice,
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["dividends"] == choice
+    assert receipt["dividend_model"] == model
+
+
+def test_ambiguous_aggregate_pv_cli_alias_is_refused():
+    with pytest.raises(SystemExit):
+        qb.parser().parse_args([
+            "run", "--dataset", "dataset", "--binary", "runner", "--output", "predictions",
+            "--dividends", "aggregate-pv",
+        ])
+
+
+def breadth_source(tmp_path: Path, underliers: int = 40) -> Path:
+    """Underlier i lists i + 1 contracts, so whole-source row count orders liquidity."""
+    rows = [(f"U{i:02d}", k) for i in range(underliers) for k in range(i + 1)]
+    n = len(rows)
+    base = source_table()
+    table = pa.table({
+        name: (pa.array([r[0] for r in rows]) if name in ("okey_tk", "undSecKey_tk")
+               else pa.array([90. + r[1] for r in rows]) if name == "okey_xx"
+               else pa.repeat(base.column(name)[0], n))
+        for name in base.column_names})
+    source = tmp_path / "breadth.parquet"
+    pq.write_table(table, source, row_group_size=97)
+    return source
+
+
+def draw(tmp_path: Path, source: Path, name: str, *extra: str) -> dict:
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output",
+                                  str(tmp_path / name), "--split", "all", "--batch-size", "50",
+                                  "--max-underliers", "8", *extra])
+    return qb.prepare(args)
+
+
+def test_default_draw_keeps_the_split_seed_hash_order(tmp_path):
+    source = breadth_source(tmp_path)
+    manifest = draw(tmp_path, source, "default")
+    expected = sorted((f"U{i:02d}" for i in range(40)),
+                      key=lambda n: (qb.stable_id(["atx-vol-v1", n]), n))[:8]
+    selection = manifest["selection"]
+    assert selection["selected_underliers"] == sorted(expected)
+    assert selection["draw_seed"] == "atx-vol-v1"
+    assert selection["liquidity_strata"] is None and selection["excluded_cohorts"] == []
+
+
+def test_second_draw_excludes_reference_and_matches_its_strata(tmp_path):
+    source = breadth_source(tmp_path)
+    first = draw(tmp_path, source, "first")
+    reference = tmp_path / "first" / "manifest.json"
+    second = draw(tmp_path, source, "second", "--draw-seed", "other", "--exclude-cohort",
+                  str(reference), "--liquidity-strata", "4", "--match-strata-cohort",
+                  str(reference))
+    old = set(first["selection"]["selected_underliers"])
+    new = set(second["selection"]["selected_underliers"])
+    assert len(new) == 8 and not old & new
+    # Equal-count strata of 40 names ordered by rows: stratum = index // 10.
+    def strata(names):
+        return sorted(int(n[1:]) // 10 for n in names)
+    assert strata(new) == strata(old)
+    block = second["selection"]["liquidity_strata"]
+    allocated = [s["allocated"] for s in block["per_stratum"]]
+    assert allocated == [strata(old).count(s) for s in range(4)]
+    assert block["match_cohort_manifest_sha256"] == qb.sha256(reference)
+    assert second["selection"]["excluded_underliers"] == 8
+    again = draw(tmp_path, source, "again", "--draw-seed", "other", "--exclude-cohort",
+                 str(reference), "--liquidity-strata", "4", "--match-strata-cohort",
+                 str(reference))
+    assert again["selection"]["selected_underliers"] == second["selection"]["selected_underliers"]
+
+
+def test_proportional_strata_allocate_evenly(tmp_path):
+    manifest = draw(tmp_path, breadth_source(tmp_path), "even", "--liquidity-strata", "4")
+    names = manifest["selection"]["selected_underliers"]
+    assert sorted(int(n[1:]) // 10 for n in names) == [0, 0, 1, 1, 2, 2, 3, 3]
+
+
+@pytest.mark.parametrize("extra", [["--liquidity-strata", "-1"],
+                                   ["--match-strata-cohort", "x.json"]])
+def test_invalid_draw_options_are_refused(tmp_path, extra):
+    with pytest.raises(ValueError):
+        draw(tmp_path, breadth_source(tmp_path), "bad", *extra)
+
+
+def test_cohort_exclusion_requires_a_capped_draw(tmp_path):
+    source = breadth_source(tmp_path)
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output",
+                                  str(tmp_path / "x"), "--exclude-cohort", "m.json"])
+    with pytest.raises(ValueError):
+        qb.prepare(args)
+    assert not (tmp_path / "x").exists()
+
+
+def test_price_only_rows_are_price_served_but_never_vol_served(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    receipt = candidate_receipt(dataset, "price-only", [0, 1, 2], [1.2, 1.0, 1.1],
+                                [.31, .32, .33])
+    frame = prediction_frame(receipt).with_columns(
+        pl.Series("status", ["ok", "ok_price_only", "invalid_volatility"]))
+    update_prediction_artifact(receipt, frame)
+    metrics = score(dataset, receipt)["metrics"]
+    assert metrics["eligible_rows"] == 6
+    assert metrics["predicted_rows"] == 2  # price-served: ok and ok_price_only
+    assert metrics["price_only_predicted_rows"] == 1
+    assert metrics["price_prediction_rows"] == 2
+    assert metrics["price_scored_rows"] == 2
+    assert metrics["price_mae"] == pytest.approx(.1)
+    # A finite vol on a price-only row is still not a vol prediction.
+    assert metrics["vol_prediction_rows"] == 1
+    assert metrics["vol_scored_rows"] == 1
+    assert metrics["price_coverage"] == pytest.approx(2 / 6)
+    assert metrics["vol_coverage"] == pytest.approx(1 / 6)
+
+
+CSPEC = importlib.util.spec_from_file_location(
+    "compose_predictions_by_status", TOOLS / "compose_predictions_by_status.py")
+compose_tool = importlib.util.module_from_spec(CSPEC)
+CSPEC.loader.exec_module(compose_tool)
+
+
+def composer_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    graded, markov = tmp_path / "graded.csv", tmp_path / "markov.csv"
+    pl.DataFrame({"row_id": [1, 2, 3], "chain_id": [7, 7, 7],
+                  "status": ["ok", "ok_price_only", "calendar_arbitrage"],
+                  "predicted_price": ["1.5", "2.5", ""]}).write_csv(graded)
+    pl.DataFrame({"row_id": [1, 2, 3], "chain_id": [7, 7, 7], "status": ["ok", "ok", "ok"],
+                  "predicted_price": ["9", "8", "7"]}).write_csv(markov)
+    return graded, markov
+
+
+def test_composer_routes_price_only_rows_only_when_asked(tmp_path):
+    graded, markov = composer_inputs(tmp_path)
+    base = ["--inputs", str(graded), str(markov), "--labels", "graded", "markov"]
+    default = tmp_path / "default.csv"
+    assert compose_tool.main([*base, "--output", str(default)]) == 0
+    out = pl.read_csv(default, infer_schema_length=0)
+    assert out["source_model"].to_list() == ["graded", "markov", "markov"]
+    receipt = json.loads(Path(str(default) + ".run.json").read_text())
+    # A single served status keeps the historical receipt wording.
+    assert receipt["selection_rule"] == ("first input whose status == 'ok'; "
+                                         "otherwise input 0's row unchanged")
+    both = tmp_path / "both.csv"
+    assert compose_tool.main([*base, "--served-status", "ok", "ok_price_only",
+                              "--output", str(both)]) == 0
+    out = pl.read_csv(both, infer_schema_length=0)
+    assert out["source_model"].to_list() == ["graded", "graded", "markov"]
+    assert out["status"].to_list() == ["ok", "ok_price_only", "ok"]
+    assert out["predicted_price"].to_list() == ["1.5", "2.5", "7"]
+    receipt = json.loads(Path(str(both) + ".run.json").read_text())
+    assert "('ok', 'ok_price_only')" in receipt["selection_rule"]
+    assert receipt["counts"]["per_source"][0]["served_rows_in_input"] == 2
+
+
+def test_composer_refuses_duplicate_served_statuses(tmp_path):
+    graded, markov = composer_inputs(tmp_path)
+    output = tmp_path / "dup.csv"
+    assert compose_tool.main(["--inputs", str(graded), str(markov), "--labels", "a", "b",
+                              "--served-status", "ok", "ok", "--output", str(output)]) == 2
+    assert not output.exists()
+
+
+NEAR, FAR = dt.date(2026, 10, 16), dt.date(2027, 1, 15)
+# AAA calls on NEAR and FAR, BBB calls on FAR. AAA NEAR 12/8/3 breaks convexity at K=100
+# (chord 7.5) and crosses FAR (14/7/2.5) at K=100 and K=110: one convex and two calendar breaks.
+SHAPE_LEGS = ([("AAA", NEAR, k) for k in (90., 100., 110.)] + [("AAA", FAR, k) for k in (90., 100., 110.)]
+              + [("BBB", FAR, k) for k in (90., 100., 110.)])
+SHAPE_PRICES = [12., 8., 3., 14., 7., 2.5, 13., 6., 2.]
+
+
+def shape_source() -> pa.Table:
+    n = len(SHAPE_LEGS)
+    snap = dt.datetime(2026, 10, 14, 14, 30, tzinfo=dt.timezone.utc)
+    return pa.table({
+        "okey_tk": [u for u, _, _ in SHAPE_LEGS], "okey_dt": [e for _, e, _ in SHAPE_LEGS],
+        "okey_xx": [k for _, _, k in SHAPE_LEGS], "okey_cp": ["Call"] * n,
+        "date": [snap] * n, "timestamp": [snap] * n,
+        "undSecKey_tk": [u for u, _, _ in SHAPE_LEGS], "uBid": [99.99] * n, "uAsk": [100.01] * n,
+        "bidPrc": [p - .5 for p in SHAPE_PRICES], "askPrc": [p + .5 for p in SHAPE_PRICES],
+        "bidSz": [10] * n, "askSz": [10] * n, "years": [.3] * n, "yearsC": [.25] * n,
+        "rate": [.04] * n, "sdiv": [.01] * n, "ddiv": [0.] * n, "ddivPv": [0.] * n,
+        "exType": ["American"] * n, "srPrc": [p - .1 for p in SHAPE_PRICES], "srVol": [.3] * n,
+    })
+
+
+def class_manifest(dataset: Path, classes: dict, *, quotes_hash: str | None = None) -> Path:
+    folder = dataset / "classes"
+    folder.mkdir(exist_ok=True)
+    entries = []
+    for name, (kind, keys) in classes.items():
+        path = folder / f"{name}.csv"
+        pl.DataFrame({"cohort": ["t"] * len(keys), "underlier": [u for u, _ in keys],
+                      "expiry_days": [(e - dt.date(1970, 1, 1)).days for _, e in keys]},
+                     schema={"cohort": pl.String, "underlier": pl.String,
+                             "expiry_days": pl.Int32}).write_csv(path)
+        entries.append({"name": name, "kind": kind, "file": path.name,
+                        "sha256": qb.sha256(path), "rule": f"test rule {name}"})
+    manifest = folder / "manifest.json"
+    qb.write_json(manifest, {"schema_version": 1, "classes": entries, "cohorts": {"t": {
+        "quotes_parquet_sha256": quotes_hash or qb.sha256(dataset / "quotes.parquet")}}})
+    return manifest
+
+
+SHAPE_CLASSES = {"aaa": ("symbol", [("AAA", NEAR), ("AAA", FAR)]),
+                 "far": ("expiry", [("AAA", FAR), ("BBB", FAR)]),
+                 "near": ("expiry", [("AAA", NEAR)])}
+
+
+def score_to(dataset: Path, receipt: Path, name: str, *extra: str) -> dict:
+    args = qb.parser().parse_args(["score", "--dataset", str(dataset), "--run-receipt", str(receipt),
+                                  "--output", str(dataset / name), "--split", "all", *extra])
+    return qb.score(args)
+
+
+def shape_run(tmp_path: Path) -> tuple[Path, Path]:
+    dataset, _ = prepare(tmp_path, shape_source())
+    receipt = candidate_receipt(dataset, "shape", list(range(len(SHAPE_LEGS))), SHAPE_PRICES,
+                                [.31] * len(SHAPE_LEGS))
+    return dataset, receipt
+
+
+def test_class_manifest_is_opt_in_and_only_adds_class_strata(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    manifest = class_manifest(dataset, SHAPE_CLASSES)
+    plain = score_to(dataset, receipt, "plain.json")
+    flagged = score_to(dataset, receipt, "flagged.json", "--class-manifest", str(manifest))
+    assert "class_strata" not in plain
+    assert "class_strata" not in json.loads((dataset / "plain.json").read_text(encoding="utf-8"))
+    strata = flagged.pop("class_strata")
+    assert flagged == plain
+    assert strata["cohort"] == "t" and strata["manifest_sha256"] == qb.sha256(manifest)
+    assert json.loads((dataset / "flagged.json").read_text(encoding="utf-8"))["class_strata"] == strata
+
+
+def test_class_strata_score_each_class_and_attribute_served_shape_breaks(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    manifest = class_manifest(dataset, SHAPE_CLASSES)
+    result = score_to(dataset, receipt, "flagged.json", "--class-manifest", str(manifest))
+    rows = {r["shape_class"]: r for r in result["class_strata"]["classes"]}
+    assert list(rows) == ["aaa", "far", "near", "no_symbol_class", "all_rows"]
+    aaa = rows["aaa"]
+    assert (aaa["kind"], aaa["rule"], aaa["underliers"], aaa["expiries"]) == ("symbol", "test rule aaa", 1, 2)
+    assert (aaa["rows"], aaa["eligible_rows"], aaa["price_coverage"]) == (6, 6, 1.0)
+    assert aaa["price_mae"] == pytest.approx(.1)
+    assert aaa["price_in_spreads_mae"] == pytest.approx(.1)
+    assert aaa["price_quote_containment"] == 1.0
+    assert aaa["vol_bp_median_abs"] == pytest.approx(100.)
+    assert aaa["standard_symbol_price_coverage"] == 1.0
+    assert aaa["served_shape_violations"] == {"monotone": 0, "convex": 1, "calendar": 2}
+    # Calendar breaks count wherever either expiry is a member; the convex one sits on NEAR.
+    assert rows["far"]["served_shape_violations"] == {"monotone": 0, "convex": 0, "calendar": 2}
+    assert rows["near"]["served_shape_violations"] == {"monotone": 0, "convex": 1, "calendar": 2}
+    rest = rows["no_symbol_class"]
+    assert (rest["rows"], rest["underliers"], rest["kind"]) == (3, 1, "complement")
+    assert rest["served_shape_violations"] == {"monotone": 0, "convex": 0, "calendar": 0}
+    everything = rows["all_rows"]
+    assert everything["served_shape_violations"] == {"monotone": 0, "convex": 1, "calendar": 2}
+    assert everything["served_duplicate_strike_disagreements"] == 0
+    assert {k: everything[k] for k in result["metrics"]} == result["metrics"]
+
+
+def test_an_empty_class_reports_zero_rows_and_no_metric(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    manifest = class_manifest(dataset, {"none": ("symbol", [])})
+    rows = {r["shape_class"]: r for r in score_to(
+        dataset, receipt, "flagged.json", "--class-manifest", str(manifest))["class_strata"]["classes"]}
+    assert (rows["none"]["rows"], rows["none"]["price_coverage"], rows["none"]["price_mae"]) == (0, None, None)
+    assert rows["no_symbol_class"]["rows"] == 9
+
+
+def test_class_manifest_must_bind_to_this_dataset_and_its_files(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    foreign = class_manifest(dataset, SHAPE_CLASSES, quotes_hash="0" * 64)
+    with pytest.raises(ValueError, match="no unique cohort"):
+        score_to(dataset, receipt, "a.json", "--class-manifest", str(foreign))
+    manifest = class_manifest(dataset, SHAPE_CLASSES)
+    with (manifest.parent / "far.csv").open("a", encoding="utf-8") as stream:
+        stream.write("t,BBB,20000\n")
+    with pytest.raises(ValueError, match="class file hash mismatch: far.csv"):
+        score_to(dataset, receipt, "b.json", "--class-manifest", str(manifest))
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["classes"][1] = dict(document["classes"][0])
+    qb.write_json(manifest, document)
+    with pytest.raises(ValueError, match="unique name"):
+        score_to(dataset, receipt, "c.json", "--class-manifest", str(manifest))
+    assert not any((dataset / name).exists() for name in ("a.json", "b.json", "c.json"))

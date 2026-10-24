@@ -239,6 +239,18 @@ if(NOT eigen3_POPULATED)
     target_include_directories(eigen SYSTEM INTERFACE
         $<BUILD_INTERFACE:${eigen3_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>)
+    # Deterministic GEMM/TRSM blocking (lane P0, 2026-10-23). Eigen otherwise reads the
+    # L1/L2/L3 sizes with CPUID once per process, on whichever core runs the first blocked
+    # product, and a hybrid CPU answers per core (i7-1260P: P 48 KiB / 1.25 MiB, E 32 KiB /
+    # 2 MiB), so blocked products - the dense slice's normal matrix among them - summed in
+    # a core-type-dependent order and served rows flipped between runs. With the query off
+    # every core uses these sizes (the i7-1260P P-core answers, so P-core results are
+    # unchanged). INTERFACE, so every Eigen consumer, and the install export, agrees.
+    target_compile_definitions(eigen INTERFACE
+        EIGEN_NO_CPUID
+        EIGEN_DEFAULT_L1_CACHE_SIZE=49152
+        EIGEN_DEFAULT_L2_CACHE_SIZE=1310720
+        EIGEN_DEFAULT_L3_CACHE_SIZE=18874368)
     add_library(Eigen3::Eigen ALIAS eigen)
 endif()
 
@@ -393,6 +405,32 @@ if(ATX_EQUITY_ONLY AND ATX_BUILD_UI)
     message(FATAL_ERROR "ATX_BUILD_UI requires the full module checkout; disable ATX_EQUITY_ONLY")
 endif()
 
+# ---- Vol-only closure (build-infra sprint 2026-10-16) -----------------------
+# ON in every vol-* preset: configure ONLY atx-vol's real dependency closure --
+# atx-core, atx-tsdb (atx-vol links atx::tsdb PRIVATE for the read-only surface
+# mmap) and atx-vol itself. atx-engine, atx-impl and every optional module are
+# never added, so no vol lane can compile them by accident: measured before this
+# switch, each vol lane that built atx-vol-tests also compiled all 146 atx-engine
+# TUs under the lane's Release+ThinLTO flags (~930-1060 CPU-s per tree; the engine
+# PCH makes those objects worktree-private, so ccache never shared them) because
+# atx-vol-tests and atx-vol-vrp-train linked atx-engine. Both engine consumers
+# now exist only when the engine is configured: atx-vol-vrp-train and the
+# atx-vol-vrp-model-tests exe (atx-vol/tests/CMakeLists.txt). Opt back in for
+# that cross-module work with -DATX_VOL_ONLY=OFF on a vol preset.
+option(ATX_VOL_ONLY "Configure only the atx-vol closure (atx-core, atx-tsdb, atx-vol); no atx-engine/atx-impl" OFF)
+if(ATX_VOL_ONLY)
+    if(NOT ATX_BUILD_VOL)
+        message(FATAL_ERROR "ATX_VOL_ONLY=ON requires ATX_BUILD_VOL=ON")
+    endif()
+    if(ATX_BUILD_SERVER OR ATX_BUILD_UI)
+        message(FATAL_ERROR "ATX_VOL_ONLY=ON excludes atx-server/atx-ui; disable ATX_BUILD_SERVER/ATX_BUILD_UI")
+    endif()
+    # Engine-only knobs the inherited presets set; consumed here so CMake does
+    # not warn that a manually-specified variable went unused.
+    set(_atx_vol_only_unused "${ATX_TEST_GROUPS}")
+    unset(_atx_vol_only_unused)
+endif()
+
 if(ATX_BUILD_TESTS)
     enable_testing()
 
@@ -413,20 +451,22 @@ if(ATX_BUILD_VOL)
     add_subdirectory(atx-vol)
 endif()
 add_subdirectory(atx-tsdb)
-if(NOT ATX_EQUITY_ONLY)
-    add_subdirectory(atx-kb)
-    add_subdirectory(atx-agent-db)
-endif()
-add_subdirectory(atx-engine)
-if(NOT ATX_EQUITY_ONLY)
-    add_subdirectory(atx-options-engine)
-endif()
-add_subdirectory(atx-impl)
-if(ATX_BUILD_SERVER)
-    add_subdirectory(atx-server)
-endif()
-if(ATX_BUILD_UI)
-    add_subdirectory(atx-ui)
+if(NOT ATX_VOL_ONLY)
+    if(NOT ATX_EQUITY_ONLY)
+        add_subdirectory(atx-kb)
+        add_subdirectory(atx-agent-db)
+    endif()
+    add_subdirectory(atx-engine)
+    if(NOT ATX_EQUITY_ONLY)
+        add_subdirectory(atx-options-engine)
+    endif()
+    add_subdirectory(atx-impl)
+    if(ATX_BUILD_SERVER)
+        add_subdirectory(atx-server)
+    endif()
+    if(ATX_BUILD_UI)
+        add_subdirectory(atx-ui)
+    endif()
 endif()
 
 # ---- Distribution package: install + export the atx-vol tree (plan 5.1) ----

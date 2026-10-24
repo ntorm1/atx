@@ -445,6 +445,50 @@ target_include_directories(atx-vol-al-preset-ladder-bench
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )
 
+# ── L3f (2026-10-20) — discrete-cash-dividend lattice kernel rows ─────────────
+# The first measurement of the V&N lattice's release cost per price
+# (american/discrete_div/price/<scheme>/<steps> on the SPY dividend ladder), the
+# Screen-tier scan and error tables against the CONVERGED lattice, the seeded
+# inversion's cost per root beside a verbatim twin of the fitting layer's
+# dated_cash_iv secant. Rows on the dev200 payer set register only when
+# ATX_VOL_DDIV_DEV200 names the input CSV (see the TU header). Own target (one
+# owner per TU).
+add_executable(atx-vol-discrete-div-bench
+    bench_main.cpp
+    discrete_div_bench.cpp
+)
+target_link_libraries(atx-vol-discrete-div-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-discrete-div-benchmark-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-discrete-div-bench>
+            --required american/discrete_div/price/spliced/301
+            --required american/discrete_div/price/spliced-bbs/301
+            --required american/discrete_div/price/spliced-bbsr/301
+            --required american/discrete_div/price/escrowed-lr/301
+            --required american/discrete_div/price/spliced/2401
+            --required american/discrete_div/price_ws/spliced/301
+            --required american/discrete_div/screen_price/spy
+            --required american/discrete_div/screen_scan/spy
+            --required american/discrete_div/error/spy
+            --required american/discrete_div/iv/spy/seeded
+            --required american/discrete_div/iv/spy/unseeded
+            --required american/discrete_div/secant_twin/spy
+    )
+    set_tests_properties(atx-vol-discrete-div-benchmark-name-coverage PROPERTIES LABELS atx_vol)
+endif()
+
 # ── WS-F F-b (fit) — fused streaming fit->serialize throughput ─────────────────
 # surfaces/sec through populate_surface_db (U1 streaming per-date fit->serialize->
 # release into a SurfaceDb, ATXVSA2 writer). Distinct from corpus_build_bench.cpp
@@ -535,3 +579,152 @@ target_link_libraries(atx-vol-theo-bench
         atx_warnings
         Threads::Threads
 )
+
+# ── Pricing hot-path audit 2026-10-16 §4 — chain-refresh bench ───────────────
+# Re-marks a deterministic 2,000-contract chain (20 expiries x 50 strikes x 2
+# sides) after every tick of a fixed-seed spot tape: per-tick p50/p90/p99/p99.9
+# latency (manual time, pinned main thread, never the pricing pool) plus untimed
+# accuracy against the cold Andersen-Lake reference. Rows chain/refresh/<route>/
+# n2000. Own target (one owner per TU).
+add_executable(atx-vol-chain-refresh-bench
+    bench_main.cpp
+    chain_refresh_bench.cpp
+)
+target_link_libraries(atx-vol-chain-refresh-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# ── Lane H0-A (r6, 2026-10-23) — serving-record bench ────────────────────────
+# api/fitting/slice_serve_record.hpp on a fitted surface: per-contract p50 / p99 /
+# p99.9 per tier (TSC-timed calls), the 300-contract served chain per tier, the
+# tick-rate implied volatility, build clocks, bytes and an untimed consistency row.
+# Inputs by environment (ATX_VOL_SERVE_RECORD_ARCHIVE, ATX_VOL_SERVE_RECORD_SPY23;
+# see the TU banner); no input, no rows. Own target (one owner per TU).
+add_executable(atx-vol-serve-record-bench
+    bench_main.cpp
+    serve_record_bench.cpp
+)
+target_link_libraries(atx-vol-serve-record-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(atx-vol-serve-record-bench PRIVATE psapi)
+endif()
+
+# ── Lane A1 (r6, 2026-10-23) — served-analytics bench (the A1 row) ────────────────
+# api/analytics/served_analytics.hpp on the fitted SPY 23 d expiry served from a live
+# book: the scenario matrix by Taylor and by exact repricing (per-contract p50 / p99,
+# whole-matrix time), the error domain, failed exposure, memory, the near-boundary and the
+# ex-dividend tables. Input by environment (ATX_VOL_SERVE_RECORD_SPY23; see the TU
+# banner); no input, no rows. Own target (one owner per TU).
+add_executable(atx-vol-served-analytics-bench
+    bench_main.cpp
+    served_analytics_bench.cpp
+)
+target_link_libraries(atx-vol-served-analytics-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(atx-vol-served-analytics-bench PRIVATE psapi)
+endif()
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-chain-refresh-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-chain-refresh-bench>
+            --required chain/refresh/cached_scalar/n2000
+            --required chain/refresh/cached_ladder/n2000
+            --required chain/refresh/cold_al_qlfast/n2000
+            --required chain/refresh/cold_al_avx2_batch/n2000
+            --required chain/refresh/record_direct/n2000
+            --required chain/refresh/record_price_only/n2000
+            --required chain/refresh/record_ladder/n2000
+            --required chain/iv/record_warm/n2000
+            --required chain/iv/record_cold/n2000
+            --required chain/serve/cached/n2000
+            --required chain/serve/gated_b0.5/n2000
+            --required chain/serve/gated_b1/n2000
+            --required chain/serve/gated_b2/n2000
+            --required chain/serve/gated_b3/n2000
+            --required chain/serve/records/n2000
+            --required chain/catchup/jump7/index_b32/n600
+            --required chain/catchup/jump7/atm_b32/n600
+            --required chain/catchup/jump7/atm_b64/n600
+            --required chain/catchup/jump7/index_b32/n2000
+            --required chain/catchup/jump7/atm_b32/n2000
+            --required chain/catchup/jump7/atm_b64/n2000
+            --required chain/records/build/certified/n2000
+            --required chain/records/build/uncertified/n2000
+            --required chain/records/build/certified_w3/n2000
+    )
+    set_tests_properties(atx-vol-chain-refresh-name-coverage PROPERTIES LABELS atx_vol)
+endif()
+
+# ── Batch-pricing lane 2026-10-17 — chain batch bench ────────────────────────
+# api/pricing/batch_chain.hpp on the chain-refresh 2,000-contract chain (and an
+# optional dev200 sample named by ATX_VOL_BATCH_DEV200_CSV): contracts/s of the
+# per-contract loop vs the Scalar / LanedAvx2 routes inline and fanned out over the
+# pinned pool, batch IV (PerContract / Lockstep), and output-hash identity counters.
+# Rows chain/batch/<route>/<kind>/t<k>/n2000. Own target (one owner per TU).
+add_executable(atx-vol-chain-batch-bench
+    bench_main.cpp
+    chain_batch_bench.cpp
+)
+target_link_libraries(atx-vol-chain-batch-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-chain-batch-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-chain-batch-bench>
+            --required chain/batch/loop/greeks/n2000
+            --required chain/batch/scalar/greeks/t1/n2000
+            --required chain/batch/scalar/greeks/t2/n2000
+            --required chain/batch/scalar/greeks/t3/n2000
+            --required chain/batch/scalar/greeks/t4/n2000
+            --required chain/batch/laned_avx2/greeks/t1/n2000
+            --required chain/batch/laned_avx2/greeks/t3/n2000
+            --required chain/batch/loop/price/n2000
+            --required chain/batch/scalar/price/t1/n2000
+            --required chain/batch/laned_avx2/price/t1/n2000
+            --required chain/batch/iv/loop/n2000
+            --required chain/batch/iv/per_contract/t1/n2000
+            --required chain/batch/iv/per_contract/t3/n2000
+            --required chain/batch/iv/lockstep/t1/n2000
+            --required chain/batch/iv/lockstep/t3/n2000
+            --required chain/batch/dev200/loop/greeks
+            --required chain/batch/dev200/scalar/greeks/t1
+            --required chain/batch/dev200/scalar/greeks/t3
+            --required chain/batch/dev200/iv/per_contract/t1
+            --required chain/batch/dev200/iv/lockstep/t1
+    )
+    set_tests_properties(atx-vol-chain-batch-name-coverage PROPERTIES LABELS atx_vol)
+endif()

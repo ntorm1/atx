@@ -25,6 +25,325 @@
 # Those lanes get a `FAIL_REGULAR_EXPRESSION` instead — see each one.
 set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 
+# This entry point is also consumable without the engine/backtest test graph.
+# Keep a focused executable so numerical and include checks stay inexpensive.
+add_executable(atx-vol-quote-slice-tests
+    quote_slice_test.cpp american_price_slice_test.cpp quote_fit_policy_test.cpp
+    quote_surface_test.cpp slice_channel_test.cpp term_prior_test.cpp
+    quote_slice_vol_space_test.cpp quote_slice_identification_test.cpp
+    quote_slice_publication_test.cpp
+    fit_native_route_test.cpp quote_slice_call_floor_test.cpp
+    quote_slice_admission_test.cpp fit_fanout_determinism_test.cpp
+    inbox_projection_test.cpp)
+target_link_libraries(atx-vol-quote-slice-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+# The channel/term-prior suites test internal fitting headers (src/fitting/).
+target_include_directories(atx-vol-quote-slice-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# Every suite the executable links must be listed: a gtest filter silently drops
+# an unlisted one (QuoteSurfaceLadder.* was missing until L2d, so the knot-ladder
+# tests never ran under this ctest).
+string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* QuoteFitPolicy.*
+       QuoteSliceChannel.* QuoteSurface.* QuoteSurfaceLadder.* QuoteSurfaceTiming.*
+       SliceChannel.* SliceChannelFamily.* TermPrior.* QuoteSliceVolSpace.* DeAmIvCache.*
+       AmericanCertification.* QuoteSurfaceRungMemo.* AmericanBoxCertificate.*
+       QuoteSliceBoxCertificate.* QuoteSliceIdentification.* QuoteSlicePublication.*
+       FitNativeRoute.* QuoteSliceCallFloor.* QuoteSliceAdmission.* FitFanoutDeterminism.*
+       FitFanoutDeterminismChild.* InboxProjection.* QuoteSliceInboxProjection.*)
+add_test(NAME atx-vol-quote-slice
+    COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
+set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
+
+# Implied forward / carry estimator and the quote slice's opt-in carry mode. The
+# allocation test replaces global operator new, so it lives ONLY in this focused
+# executable (the monolithic atx-vol-tests has its own replacement).
+add_executable(atx-vol-implied-forward-tests
+    implied_forward_test.cpp quote_slice_carry_test.cpp implied_forward_alloc_test.cpp)
+target_link_libraries(atx-vol-implied-forward-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-implied-forward COMMAND atx-vol-implied-forward-tests)
+set_tests_properties(atx-vol-implied-forward PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# Discrete dividend schedule inference from per-expiry (ddiv, ddiv_pv, rate). The
+# allocation test links support/alloc_counter.cpp, which replaces global operator
+# new, so it lives ONLY in this focused executable (the monolithic atx-vol-tests
+# has its own replacement).
+add_executable(atx-vol-dividend-schedule-tests
+    dividend_schedule_test.cpp dividend_schedule_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-dividend-schedule-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-dividend-schedule-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-dividend-schedule COMMAND atx-vol-dividend-schedule-tests)
+set_tests_properties(atx-vol-dividend-schedule PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# ATXVFA fitted-surface archive (docs/storage/ARCHIVE_FORMAT.md). Focused and
+# PCH-less: framing refusals, record round trips, series, the CLI. Links
+# support/alloc_counter.cpp (replaces global operator new), so these files stay
+# out of the monolithic atx-vol-tests. The series test drives the private
+# storage/writer_lock.hpp to hold the lock.
+add_executable(atx-vol-fit-archive-tests
+    fit_archive_test.cpp fit_archive_records_test.cpp fit_archive_series_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-fit-archive-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-fit-archive-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(ATX_BUILD_TOOLS)
+    # The CLI tool is defined after this directory; the generator expression and
+    # the dependency resolve at generate time.
+    target_sources(atx-vol-fit-archive-tests PRIVATE fit_archive_cli_test.cpp)
+    target_compile_definitions(atx-vol-fit-archive-tests PRIVATE
+        "ATX_VOL_SURFACE_ARCHIVE_CLI=\"$<TARGET_FILE:atx-vol-surface-archive>\"")
+    add_dependencies(atx-vol-fit-archive-tests atx-vol-surface-archive)
+endif()
+add_test(NAME atx-vol-fit-archive COMMAND atx-vol-fit-archive-tests)
+set_tests_properties(atx-vol-fit-archive PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# The opt-in strike-smoothing lattice schemes of the dated-cash American route
+# (DiscreteDivScheme, api/pricing/american.hpp). Focused executable for the same
+# reason as the schedule target above: its allocation test replaces global
+# operator new through support/alloc_counter.cpp.
+add_executable(atx-vol-discrete-div-smoothing-tests
+    discrete_div_smoothing_test.cpp discrete_div_smoothing_alloc_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-discrete-div-smoothing-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-smoothing-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-discrete-div-smoothing COMMAND atx-vol-discrete-div-smoothing-tests)
+set_tests_properties(atx-vol-discrete-div-smoothing PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# The dated-cash lattice KERNEL objects (api/pricing/american_discrete_div_kernel.hpp,
+# lane L3f 2026-10-20): workspace bit-identity / concurrency, the Screen tier's
+# measured bound, the seeded inversion's root distance and typed fallbacks. Focused
+# executable for the same reason as the two above: its allocation test replaces
+# global operator new through support/alloc_counter.cpp.
+add_executable(atx-vol-discrete-div-kernel-tests
+    discrete_div_kernel_test.cpp discrete_div_kernel_alloc_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-discrete-div-kernel-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-kernel-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-discrete-div-kernel COMMAND atx-vol-discrete-div-kernel-tests)
+set_tests_properties(atx-vol-discrete-div-kernel PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# The INDEPENDENT cash-dividend reference (src/pricing/american_discrete_div_reference.hpp,
+# lane D0 2026-10-22). One focused executable, two ctest cases: the engine mechanics
+# (fast label) and the data-driven matrix against the lattice kernel (slow label; its
+# suite is also listed in ATX_VOL_SLOW_FILTER below so it stays slow-labelled if it is
+# ever compiled into atx-vol-tests).
+add_executable(atx-vol-discrete-div-reference-tests
+    american_discrete_div_reference_test.cpp american_discrete_div_reference_matrix_test.cpp)
+target_link_libraries(atx-vol-discrete-div-reference-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-reference-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-discrete-div-reference COMMAND atx-vol-discrete-div-reference-tests
+    "--gtest_filter=-DiscreteDivReferenceMatrix.*")
+set_tests_properties(atx-vol-discrete-div-reference PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+add_test(NAME atx-vol-discrete-div-reference-matrix COMMAND atx-vol-discrete-div-reference-tests
+    "--gtest_filter=DiscreteDivReferenceMatrix.*")
+set_tests_properties(atx-vol-discrete-div-reference-matrix PROPERTIES
+    LABELS "atx_vol_slow" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}" TIMEOUT 1200)
+
+# The PRODUCTION cash-dividend path (lane D1 2026-10-22): the cubic splice, the
+# event-adaptive route, schedule-grouped batching and the event-aware sensitivities
+# (api/pricing/american_discrete_div_kernel.hpp, american_discrete_div_batch.hpp). One
+# focused executable, two ctest cases: the fast suites, and the slow comparison
+# against D0's independent reference (suite also in ATX_VOL_SLOW_FILTER). The
+# allocation test replaces global operator new through support/alloc_counter.cpp.
+add_executable(atx-vol-discrete-div-production-tests
+    american_discrete_div_production_test.cpp american_discrete_div_production_alloc_test.cpp
+    american_discrete_div_production_matrix_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-discrete-div-production-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-production-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-discrete-div-production COMMAND atx-vol-discrete-div-production-tests
+    "--gtest_filter=-DiscreteDivProductionMatrix.*")
+set_tests_properties(atx-vol-discrete-div-production PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+add_test(NAME atx-vol-discrete-div-production-matrix
+    COMMAND atx-vol-discrete-div-production-tests "--gtest_filter=DiscreteDivProductionMatrix.*")
+set_tests_properties(atx-vol-discrete-div-production-matrix PROPERTIES
+    LABELS "atx_vol_slow" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}" TIMEOUT 1200)
+
+add_executable(atx-vol-american-markov-tests
+    american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
+    american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)
+target_link_libraries(atx-vol-american-markov-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov COMMAND atx-vol-american-markov-tests)
+set_tests_properties(atx-vol-american-markov PROPERTIES LABELS "atx_vol_fast")
+
+add_executable(atx-vol-american-markov-fit-tests american_markov_fit_test.cpp)
+target_link_libraries(atx-vol-american-markov-fit-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+# The variance-time-knot basis tests drive the private
+# fitting/american_markov_time_basis.hpp helper directly: no public fitter input
+# can produce the unordered rows its refusals guard against.
+target_include_directories(atx-vol-american-markov-fit-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-american-markov-fit COMMAND atx-vol-american-markov-fit-tests)
+set_tests_properties(atx-vol-american-markov-fit PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+add_executable(atx-vol-american-markov-seed-tests american_markov_seed_test.cpp)
+target_link_libraries(atx-vol-american-markov-seed-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov-seed COMMAND atx-vol-american-markov-seed-tests)
+set_tests_properties(atx-vol-american-markov-seed PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+add_executable(atx-vol-american-markov-market-tests american_markov_market_test.cpp)
+target_link_libraries(atx-vol-american-markov-market-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov-market COMMAND atx-vol-american-markov-market-tests)
+set_tests_properties(atx-vol-american-markov-market PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+add_executable(atx-vol-american-markov-policy-tests american_markov_policy_test.cpp)
+target_link_libraries(atx-vol-american-markov-policy-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov-policy COMMAND atx-vol-american-markov-policy-tests)
+set_tests_properties(atx-vol-american-markov-policy PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# Pricing hot-path audit 2026-10-16 (tick-path lane): the chain-refresh entry
+# points, the per-expiry calibration record and the per-contract spot ladders.
+# Focused so the lane never relinks the monolithic exe. These three suites live
+# ONLY here (not in atx-vol-tests or a slice), so atx_vol_fast runs each case
+# once. The PricingExecutor suite (worker pinning behind the cpu_topology seam)
+# is owned by atx-vol-pricing-slice / atx-vol-tests and is not duplicated here.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only
+# (thread-local armed tally) to prove the tick path allocates nothing.
+include(GoogleTest) # gtest_discover_tests (idempotent; also included further down)
+add_executable(atx-vol-tick-path-tests
+    chain_tick_test.cpp expiry_record_test.cpp spot_ladder_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-tick-path-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-tick-path-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# One ctest case per gtest case so each touched suite is selectable by an
+# anchored -R (e.g. -R "^tick-path:ChainTickCached") and a vanished suite is
+# visible.
+gtest_discover_tests(atx-vol-tick-path-tests
+    TEST_PREFIX "tick-path:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
+# Lane H0-A (r6, 2026-10-23): the immutable fitted serving record
+# (api/fitting/slice_serve_record.hpp) - build, ownership, tiered serve, tick-rate IV and
+# the zero-allocation Ladder / Family reads. Lane H1 (r6): its live publication
+# (api/fitting/serve_book.hpp, live_publication_test.cpp) - versions, readers x publisher,
+# reclamation, the rebuild queue and the allocation-free query path.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only, so the
+# suites live only here (not in atx-vol-tests or a slice) and atx_vol_fast runs each case
+# once.
+add_executable(atx-vol-serve-record-tests
+    slice_serve_record_test.cpp live_publication_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-serve-record-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-serve-record-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+gtest_discover_tests(atx-vol-serve-record-tests
+    TEST_PREFIX "serve-record:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
+# Lane A1 (r6, 2026-10-23): declared analytics on the live serving book
+# (api/analytics/served_analytics.hpp: hedge conventions, Taylor / exact scenarios, events,
+# failed exposure, attribution, deterministic aggregation), European-only outputs on the
+# common model (common_model_analytics.hpp) and the curve session served through the book
+# (served_session.hpp). The suites live only here (not in atx-vol-tests or a slice), so
+# atx_vol_fast runs each case once.
+add_executable(atx-vol-served-analytics-tests
+    served_analytics_test.cpp common_model_analytics_test.cpp served_session_test.cpp)
+target_link_libraries(atx-vol-served-analytics-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-served-analytics-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+gtest_discover_tests(atx-vol-served-analytics-tests
+    TEST_PREFIX "served-analytics:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
+# Chain-level batch price / Greeks / implied vol (batch-pricing lane, 2026-10-17):
+# api/pricing/batch_chain.hpp. Focused, and this suite lives ONLY here (not in
+# atx-vol-tests or a slice), so atx_vol_fast runs each case once.
+# support/process_alloc_counter.cpp replaces global operator new for THIS binary only
+# (alloc_counter.hpp's thread-local tally plus a process-wide one that sees the pool
+# workers).
+add_executable(atx-vol-chain-batch-tests batch_chain_test.cpp support/process_alloc_counter.cpp)
+target_link_libraries(atx-vol-chain-batch-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-chain-batch-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(atx-vol-chain-batch-tests
+    TEST_PREFIX "chain-batch:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
+# L2h-b sigma-q family (2026-10-21): the AlSigmaQFamily price path's zero-allocation
+# count. support/alloc_counter.cpp replaces global operator new for THIS binary only, so
+# the suite lives only here (its accuracy / identity suite AlSigmaQFamily.* is in
+# atx-vol-tests and atx-vol-pricing-slice).
+add_executable(atx-vol-sigma-q-family-alloc-tests
+    american_sigma_q_family_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-sigma-q-family-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+# K1 (r5): the fused price + vega entries are internal (src/pricing/american_sigma_q_family.hpp).
+target_include_directories(atx-vol-sigma-q-family-alloc-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-tests)
+set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# K2 (r5): the batch IV inversion's query loop allocates nothing once its scratch is warm.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only (the accuracy
+# suite IvBatch.* is in atx-vol-tests and atx-vol-pricing-slice).
+add_executable(atx-vol-iv-batch-alloc-tests
+    american_iv_batch_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-iv-batch-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-iv-batch-alloc-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-iv-batch-alloc COMMAND atx-vol-iv-batch-alloc-tests)
+set_tests_properties(atx-vol-iv-batch-alloc PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
+# arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
+# in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
+# tools target, hence the guard.
+if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-bench-clocks-tests bench_clocks_test.cpp)
+    target_link_libraries(atx-vol-bench-clocks-tests
+        PRIVATE atx-vol-bench-clocks atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-bench-clocks-tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_test(NAME atx-vol-bench-clocks COMMAND atx-vol-bench-clocks-tests)
+    set_tests_properties(atx-vol-bench-clocks PROPERTIES
+        LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+endif()
+
+add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
+target_link_libraries(atx-vol-umbrella-tests PRIVATE
+    atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)
+target_compile_definitions(atx-vol-umbrella-tests PRIVATE
+    "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
+    "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/api/vol.hpp\""
+    "ATX_VOL_INSTALL_CMAKE=\"${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/atx-vol-install.cmake\"")
+add_test(NAME atx-vol-umbrella COMMAND atx-vol-umbrella-tests)
+set_tests_properties(atx-vol-umbrella PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-tests
     convex_recovery_test.cpp
     quote_feasibility_test.cpp
@@ -42,6 +361,13 @@ add_executable(atx-vol-tests
     robust_test.cpp
     american_test.cpp
     american_batch_test.cpp
+    american_geometry_test.cpp
+    american_family_greeks_test.cpp
+    american_sigma_q_family_test.cpp
+    american_family_error_test.cpp
+    american_family_root_audit_test.cpp
+    american_sigma_q_family_vega_test.cpp
+    american_sigma_q_family_greeks_test.cpp
     counters_test.cpp
     phase_profile_test.cpp
     correction_test.cpp
@@ -64,6 +390,33 @@ add_executable(atx-vol-tests
     cstar_test.cpp
     cstar_calib_test.cpp
     dense_slice_test.cpp
+    quote_slice_test.cpp
+    quote_slice_vol_space_test.cpp
+    quote_slice_identification_test.cpp
+    quote_slice_publication_test.cpp
+    fit_native_route_test.cpp
+    fit_fanout_determinism_test.cpp
+    quote_slice_call_floor_test.cpp
+    quote_slice_admission_test.cpp
+    inbox_projection_test.cpp
+    quote_slice_carry_test.cpp
+    implied_forward_test.cpp
+    quote_surface_test.cpp
+    slice_channel_test.cpp
+    term_prior_test.cpp
+    dividend_schedule_test.cpp
+    quote_fit_policy_test.cpp
+    american_price_slice_test.cpp
+    american_markov_test.cpp
+    american_markov_grid_test.cpp
+    american_markov_batch_test.cpp
+    american_markov_pwl_test.cpp
+    american_markov_fit_test.cpp
+    american_markov_resolvent_test.cpp
+    american_markov_seed_test.cpp
+    american_markov_market_test.cpp
+    american_markov_policy_test.cpp
+    pwl_strike_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
     curve_selector_test.cpp
@@ -79,6 +432,7 @@ add_executable(atx-vol-tests
     var_report_test.cpp
     var_validation_test.cpp
     american_iv_test.cpp
+    american_iv_batch_test.cpp
     dividend_test.cpp
     s3_test.cpp
     fit_metrics_test.cpp
@@ -93,6 +447,7 @@ add_executable(atx-vol-tests
     opra_hive_test.cpp
     opra_batch_test.cpp
     session_test.cpp
+    session_serve_test.cpp
     vol_umbrella_test.cpp
     spy_real_test.cpp
     curve_noarb_test.cpp
@@ -213,6 +568,8 @@ add_executable(atx-vol-tests
     amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
     # pricing-greeks SOTA (Agent G4) — appended target:
     american_exercise_boundary_test.cpp # G4: public exercise_boundary + assignment_risk screen
+    american_monotone_test.cpp       # L3k: AlExerciseRegion::Intrinsic (monotone AL in sigma)
+    american_region_test.cpp         # C1: one exercise classification, plateau, limits, regimes
     # SPY-dispersion hot-path WS-C (correctness cluster) — appended target:
     dispersion_workflow_test.cpp     # C1 point-in-time universe, C3 removals, M2 dup keys, M4 index symbol
     # SPY-dispersion hot-path WS-X (config + execution realism) — appended target:
@@ -272,15 +629,11 @@ add_executable(atx-vol-tests
     # matches nothing in ATX_VOL_SLOW_FILTER, so the suite lands in the
     # atx_vol_fast label.
     oracle_bench_test.cpp
-    # vrp-ml sprint, lane vrp-model — appended target: the schema-v2
-    # IFairVolModel seam (pricing/theo.hpp: fair_vol_feature_count, linear-v2
-    # coefficient TSV, flat-array GBT scorer) + the walk-forward VRP trainer
-    # logic header (tools/vrp_train.hpp). The trainer calls atx-engine's learn
-    # layer (fit_gbt / fit_linear / elastic_net), whose definitions live in
-    # the atx-engine LIBRARY — hence the extra target_link_libraries below.
-    # The atx-vol LIBRARY itself still never includes an atx-engine header;
-    # the engine edge exists only on this test exe and atx-vol-vrp-train.
-    vrp_model_test.cpp
+    # vrp_model_test.cpp (vrp-ml lane vrp-model) is NOT listed here: it needs
+    # the atx-engine learn layer, so it builds into its own
+    # atx-vol-vrp-model-tests exe further down, which exists only when the
+    # engine is configured. Keeping it out keeps atx-engine out of this exe's
+    # link closure (build-infra sprint 2026-10-16).
 )
 
 # Oracle RSI charter stage 2: the non-driver TUs of atx-vol-oracle-bench
@@ -350,15 +703,27 @@ target_link_libraries(atx-vol-tests
         atx-test-scratch    # FIX-3/F3-B: per-process temp root (was a listed source in F2-A)
 )
 
-# vrp-ml lane vrp-model: vrp_model_test.cpp includes tools/vrp_train.hpp,
-# which calls into atx::engine::learn (fit_gbt / fit_linear / elastic_net —
-# declared in headers, DEFINED in atx-engine/src/learn/*.cpp), so this exe
-# links the atx-engine library. Spelled as the plain target name (not the
-# atx::engine ALIAS): atx-vol is add_subdirectory'd BEFORE atx-engine at the
-# root, and a namespaced name must already exist at the call site while a
-# plain name resolves at generate time. Eigen arrives transitively (atx::core
-# links Eigen3::Eigen PUBLIC); atx-engine's PUBLIC include dir rides this edge.
-target_link_libraries(atx-vol-tests PRIVATE atx-engine)
+# vrp-ml lane vrp-model: vrp_model_test.cpp covers the schema-v2
+# IFairVolModel seam (pricing/theo.hpp: fair_vol_feature_count, linear-v2
+# coefficient TSV, flat-array GBT scorer) and the walk-forward VRP trainer
+# logic header (tools/vrp_train.hpp), which calls into atx::engine::learn
+# (fit_gbt / fit_linear / elastic_net -- declared in headers, DEFINED in
+# atx-engine/src/learn/*.cpp). That engine edge used to sit on atx-vol-tests
+# itself, which made every vol lane that built the monolithic exe compile all
+# of atx-engine (146 TUs, ~1000 CPU-s per tree under Release+ThinLTO). The
+# suite now owns a dedicated exe that exists only when the engine is
+# configured, i.e. NOT under ATX_VOL_ONLY (every vol-* preset); configure a vol
+# preset with -DATX_VOL_ONLY=OFF to build it. Plain target name `atx-engine`
+# (not the atx::engine ALIAS): atx-vol is add_subdirectory'd BEFORE atx-engine
+# at the root and a plain name resolves at generate time. The atx-vol LIBRARY
+# itself never includes an atx-engine header.
+if(NOT ATX_VOL_ONLY)
+    add_executable(atx-vol-vrp-model-tests vrp_model_test.cpp)
+    target_link_libraries(atx-vol-vrp-model-tests PRIVATE
+        atx::vol atx::core atx-engine GTest::gtest_main atx_warnings)
+    target_include_directories(atx-vol-vrp-model-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+endif()
 
 # Wave E T7 fix round 1, I5: listed_definitions_cache_test.cpp's peak-RSS
 # harness calls GetProcessMemoryInfo/EmptyWorkingSet (psapi.h). Linked
@@ -506,7 +871,7 @@ gtest_discover_tests(atx-vol-discrete-div-tests
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*:DiscreteDivReferenceMatrix.*:AmericanFamilyRootAudit.*:DiscreteDivProductionMatrix.*:AlSigmaQFamilyGreeksModel.*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a
@@ -519,6 +884,13 @@ gtest_discover_tests(atx-vol-tests
     TEST_FILTER "${ATX_VOL_SLOW_FILTER}"
     PROPERTIES LABELS atx_vol_slow SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
+# VrpModel/VrpTrain cases keep the fast-lane label they had inside atx-vol-tests;
+# their exe exists only when atx-engine is configured (see its definition above).
+if(TARGET atx-vol-vrp-model-tests)
+    gtest_discover_tests(atx-vol-vrp-model-tests
+        PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+        DISCOVERY_MODE PRE_TEST)
+endif()
 
 # Oracle RSI charter stage 4 (Mode B). scripts/oracle-targeted-gate.ps1
 # -Gate mode_b_targeted_tests runs `ctest -R ^mode_b_targeted_tests$`, so a
@@ -616,6 +988,49 @@ if(Python3_Interpreter_FOUND)
         LABELS atx_vol
         SKIP_RETURN_CODE 77
         TIMEOUT 900)
+
+    # Standalone offline tools import their source by exact path and do not use
+    # the compiled atxvol extension. Keep its checkout guard out of these lanes;
+    # missing Python dependencies or skipped checks must fail explicitly.
+    add_test(NAME atx-vol-quote-benchmark-tools
+        COMMAND ${Python3_EXECUTABLE} -m pytest --noconftest -q
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_benchmark.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_american_audit_compare.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_compose_predictions_by_status.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_shape_cohort.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_shape_matrix.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_build_universe_dataset.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_universe_census.py)
+    set_tests_properties(atx-vol-quote-benchmark-tools PROPERTIES
+        LABELS atx_vol_tools TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+    if(ATX_BUILD_TOOLS)
+        add_test(NAME atx-vol-quote-benchmark-native
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ATX_QUOTE_BENCH_BINARY=$<TARGET_FILE:atx-vol-quote-bench>"
+                ${Python3_EXECUTABLE} -m pytest --noconftest -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_bench_cli.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_common_markov_bench_cli.py)
+        set_tests_properties(atx-vol-quote-benchmark-native PROPERTIES
+            LABELS atx_vol_tools TIMEOUT 120
+            FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+        add_test(NAME atx-vol-american-markov-audit-native
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ATX_AMERICAN_MARKOV_AUDIT_BINARY=$<TARGET_FILE:atx-vol-american-markov-audit>"
+                ${Python3_EXECUTABLE} -m pytest --noconftest -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_american_markov_audit_cli.py)
+        set_tests_properties(atx-vol-american-markov-audit-native PROPERTIES
+            LABELS atx_vol_tools TIMEOUT 120
+            FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+        add_test(NAME atx-vol-quote-benchmark-campaign
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ATX_QUOTE_BENCH_BINARY=$<TARGET_FILE:atx-vol-quote-bench>"
+                ${Python3_EXECUTABLE} -m pytest --noconftest -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_benchmark_campaign.py)
+        set_tests_properties(atx-vol-quote-benchmark-campaign PROPERTIES
+            LABELS atx_vol_tools TIMEOUT 120
+            FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+    endif()
 endif()
 
 # PR-C2 non-AVX2 scalar leg: a registered ctest lane (`atx-vol-pricing-forcescalar`,
@@ -717,3 +1132,7 @@ add_test(NAME AlphaRegistry COMMAND atx-vol-alpha-tests)
 set_tests_properties(AlphaRegistry PROPERTIES
     FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
     LABELS "atx_vol;atx_vol_fast")
+
+# Module test slices for lanes (atx-vol-<module>-slice): partitioned from
+# atx-vol-tests' SOURCES, so keep this include LAST. See slices.cmake.
+include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)

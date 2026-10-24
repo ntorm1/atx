@@ -32,15 +32,30 @@
 //       so an AVX2 run can never overwrite an SSE2 baseline (or vice-versa).
 //       Convention: i7-1260p-clang18-{sse2,avx2}-<bench>.json.
 //
-// `--atx-self-check` runs the (c)+(d) self-tests (CV gate rejects a synthetic
+//   (e) MAIN-THREAD PINNING (perf audit 2026-10-16 §0 / item 5a) — (a) pins only the
+//       pool WORKERS; every single-threaded row runs on the Google Benchmark main
+//       thread, which was never pinned and could land on an E-core or migrate
+//       mid-run (the audit traced 2.6-3x run-to-run swings in pinned baselines to
+//       it). main() now pins THIS thread to one P-core with the pool's own
+//       discovery + affinity call (pricing/cpu_topology.hpp), raises it to
+//       THREAD_PRIORITY_HIGHEST and opts it out of power throttling, records the
+//       outcome in the JSON context (atx_main_cpu / atx_main_pinned / ...), and
+//       REFUSES a --benchmark_out under baselines/ when the pin did not take. The
+//       CPU defaults to the highest-numbered P-core logical CPU; override with
+//       ATX_BENCH_MAIN_CPU=<logical cpu id>.
+//
+// `--atx-self-check` runs the (c)+(d)+(e) self-tests (CV gate rejects a synthetic
 // high-variance sample / accepts a low-variance one; naming enforcement accepts
-// this-ISA and rejects other-ISA / ISA-less names) and exits without touching
-// Google Benchmark. It is the in-tree verification for M3.
+// this-ISA and rejects other-ISA / ISA-less names; the main thread pins onto a
+// discovered P-core) and exits without touching Google Benchmark. It is the
+// in-tree verification for M3 and for audit item 5a.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -50,6 +65,7 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/api/pricing/pricing_executor.hpp"
+#include "pricing/cpu_topology.hpp" // performance_core_cpus / pin_current_thread_for_latency
 
 #include "bench_util.hpp"
 
@@ -147,6 +163,64 @@ constexpr double kCvGateThreshold = 0.05;
 #endif
 }
 
+// ── (e) main-thread pinning ──────────────────────────────────────────────────
+// The logical CPU to pin the measuring thread to: ATX_BENCH_MAIN_CPU when set to a
+// non-negative integer, else the highest-numbered discovered P-core logical CPU
+// (away from CPU 0, which services most interrupts). -1 when no P-core is known.
+[[nodiscard]] int select_main_cpu(const std::vector<unsigned> &pcores) {
+#if defined(_MSC_VER)
+  char *raw = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&raw, &n, "ATX_BENCH_MAIN_CPU") == 0 && raw != nullptr) {
+    char *end = nullptr;
+    const long v = std::strtol(raw, &end, 10);
+    const bool ok = end != raw && *end == '\0' && v >= 0 && v < 64;
+    std::free(raw);
+    if (ok) {
+      return static_cast<int>(v);
+    }
+  }
+#endif
+  if (pcores.empty()) {
+    return -1;
+  }
+  return static_cast<int>(*std::max_element(pcores.begin(), pcores.end()));
+}
+
+struct MainPin {
+  int cpu = -1;
+  bool is_pcore = false;
+  atx::vol::detail::ThreadPinReport report{};
+  [[nodiscard]] bool pinned() const noexcept { return cpu >= 0 && report.pinned(); }
+};
+
+[[nodiscard]] MainPin pin_main_thread() {
+  const std::vector<unsigned> pcores = atx::vol::detail::performance_core_cpus();
+  MainPin pin;
+  pin.cpu = select_main_cpu(pcores);
+  if (pin.cpu < 0) {
+    return pin;
+  }
+  pin.is_pcore = std::find(pcores.begin(), pcores.end(), static_cast<unsigned>(pin.cpu)) !=
+                 pcores.end();
+  pin.report = atx::vol::detail::pin_current_thread_for_latency(static_cast<unsigned>(pin.cpu));
+  return pin;
+}
+
+// The pricing-pool CPU set that leaves the main thread's PHYSICAL core alone
+// (tick-path review dcb6e3f1 nit 13): every P-core logical CPU except the main
+// CPU and its SMT sibling, so a pool row never time-shares the measuring
+// thread's core. 0 when no main CPU or no other P-core is known (the caller then
+// keeps Topology::PerformanceCores).
+[[nodiscard]] std::uint64_t pool_mask_for_main_cpu() {
+  const int main_cpu = select_main_cpu(atx::vol::detail::performance_core_cpus());
+  if (main_cpu < 0) {
+    return 0u;
+  }
+  return atx::vol::detail::pool_mask_excluding_core_of(atx::vol::detail::performance_core_masks(),
+                                                        static_cast<unsigned>(main_cpu));
+}
+
 void print_quiet_window_preamble() {
   std::fprintf(stderr,
                "[atx-vol bench] quiet-window protocol (M3, tooling) | build ISA=%.*s\n"
@@ -221,6 +295,27 @@ void turbo_warmup() {
   check("enforce ignores scratch output (not under baselines/)",
         enforce_baseline_path_isa("scratch/e2e.json") == 0);
 
+  // (e) Main-thread pinning: the measuring thread lands on a discovered P-core and
+  // the scheduler actually moved it there (observed CPU == requested CPU).
+  const MainPin pin = pin_main_thread();
+  check("main thread pinned to a P-core (observed == requested)", pin.pinned() && pin.is_pcore);
+  std::fprintf(stderr,
+               "   main cpu=%d observed=%d pcore=%d affinity=%d priority=%d throttle_off=%d\n",
+               pin.cpu, pin.report.observed_cpu, pin.is_pcore ? 1 : 0,
+               pin.report.affinity_set ? 1 : 0, pin.report.priority_raised ? 1 : 0,
+               pin.report.throttling_disabled ? 1 : 0);
+  // (f) The pool's CPU set excludes the main thread's whole physical core.
+  const std::uint64_t pool = pool_mask_for_main_cpu();
+  std::uint64_t main_core = 0u;
+  for (const std::uint64_t core : atx::vol::detail::performance_core_masks()) {
+    if (pin.cpu >= 0 && pin.cpu < 64 && ((core >> pin.cpu) & 1u) != 0u) {
+      main_core = core;
+    }
+  }
+  check("pool CPU set excludes the main thread's core", pool != 0u && (pool & main_core) == 0u);
+  std::fprintf(stderr, "   pool mask=0x%llx main core mask=0x%llx\n",
+               static_cast<unsigned long long>(pool), static_cast<unsigned long long>(main_core));
+
   std::fprintf(stderr, "[atx-bench self-check] %d failure(s) | build ISA=%.*s\n", failures,
                static_cast<int>(kBuildIsa.size()), kBuildIsa.data());
   return failures == 0 ? 0 : 1;
@@ -252,11 +347,40 @@ int main(int argc, char **argv) {
   // A refusal here means something built the pool before main() got to it, so
   // this run is NOT pinned and its numbers are not citable under (a) — say so on
   // stderr rather than measuring an unpinned box while claiming otherwise.
-  if (const atx::vol::Status pinned = atx::vol::configure_pricing_executor(
-          atx::vol::ExecutorConfig{atx::vol::Topology::PerformanceCores});
+  // The pool gets every P-core EXCEPT the main thread's physical core, so pool
+  // rows never time-share the measuring thread's core (review dcb6e3f1 nit 13).
+  // This is one P-core fewer than Topology::PerformanceCores: pool-row timings
+  // are not comparable with baselines captured before 2026-10-16.
+  const std::uint64_t pool_mask = b::pool_mask_for_main_cpu();
+  const atx::vol::ExecutorConfig pool_cfg =
+      pool_mask != 0u
+          ? atx::vol::ExecutorConfig{atx::vol::Topology::ExplicitCpuSet, pool_mask}
+          : atx::vol::ExecutorConfig{atx::vol::Topology::PerformanceCores};
+  if (const atx::vol::Status pinned = atx::vol::configure_pricing_executor(pool_cfg);
       !pinned.has_value()) {
     std::fprintf(stderr, "[atx-bench] P-core pinning NOT applied: %s\n",
                  pinned.error().to_string().c_str());
+  }
+  // (e) pin the MEASURING thread (audit item 5a). A baseline write from an
+  // unpinned main thread is refused: its single-thread rows are not citable.
+  const b::MainPin main_pin = b::pin_main_thread();
+  std::fprintf(stderr,
+               "[atx-bench] main thread cpu=%d observed=%d pcore=%d affinity=%d priority=%d "
+               "throttle_off=%d -> %s\n",
+               main_pin.cpu, main_pin.report.observed_cpu, main_pin.is_pcore ? 1 : 0,
+               main_pin.report.affinity_set ? 1 : 0, main_pin.report.priority_raised ? 1 : 0,
+               main_pin.report.throttling_disabled ? 1 : 0,
+               main_pin.pinned() ? "PINNED" : "NOT PINNED (rows not citable)");
+  // A baseline needs the main thread pinned AND on a P-core: an ATX_BENCH_MAIN_CPU
+  // naming an E-core pins fine but is not a citable measurement (review nit 13).
+  if (!main_pin.pinned() || !main_pin.is_pcore) {
+    std::string out = b::find_benchmark_out(argc, argv);
+    std::replace(out.begin(), out.end(), '\\', '/');
+    if (out.find("baselines/") != std::string::npos) {
+      std::fprintf(stderr, "[atx-vol bench] REFUSING baseline write: main thread is not pinned "
+                           "to a P-core (audit item 5a)\n");
+      return 3;
+    }
   }
   b::turbo_warmup();
 
@@ -265,6 +389,21 @@ int main(int argc, char **argv) {
   // prevents accidental overwrites; this context also catches mislabeled or
   // hand-moved result files at compare time.
   ::benchmark::AddCustomContext("atx_build_isa", std::string(b::kBuildIsa));
+  ::benchmark::AddCustomContext("atx_main_cpu", std::to_string(main_pin.cpu));
+  ::benchmark::AddCustomContext("atx_main_cpu_observed",
+                                std::to_string(main_pin.report.observed_cpu));
+  ::benchmark::AddCustomContext("atx_main_pinned", main_pin.pinned() ? "1" : "0");
+  ::benchmark::AddCustomContext("atx_main_is_pcore", main_pin.is_pcore ? "1" : "0");
+  ::benchmark::AddCustomContext("atx_main_priority_highest",
+                                main_pin.report.priority_raised ? "1" : "0");
+  ::benchmark::AddCustomContext("atx_main_power_throttling_off",
+                                main_pin.report.throttling_disabled ? "1" : "0");
+  {
+    std::array<char, 32> mask_hex{};
+    std::snprintf(mask_hex.data(), mask_hex.size(), "0x%llx",
+                  static_cast<unsigned long long>(pool_mask));
+    ::benchmark::AddCustomContext("atx_pool_cpu_mask", mask_hex.data());
+  }
   ::benchmark::Initialize(&argc, argv);
   if (::benchmark::ReportUnrecognizedArguments(argc, argv)) {
     return 1;

@@ -1,0 +1,217 @@
+{
+  "baseline_boundary_exposure": {
+    "fitted_snapshots": 162,
+    "maximum": 0.15304467644489098,
+    "median": 3.410225434489759e-11,
+    "scope": "Largest-expiry unconditional upper-boundary probability per fitted snapshot; not per-contract mass or price-error bound.",
+    "threshold_counts": [
+      {
+        "associated_rows": 10826,
+        "snapshots_above": 56,
+        "threshold": 1e-06
+      },
+      {
+        "associated_rows": 7430,
+        "snapshots_above": 36,
+        "threshold": 0.001
+      },
+      {
+        "associated_rows": 3436,
+        "snapshots_above": 17,
+        "threshold": 0.01
+      }
+    ]
+  },
+  "baseline_prediction_sha256": "3f6965872f72e137956f8a8534adbd0e2755f6804023cec333860e7faf835cd3",
+  "baseline_price_rows": 25014,
+  "baseline_vol_rows": 18978,
+  "dataset": "C:\\atx-cache\\quote-benchmark\\20261014-dev200",
+  "eligible_rows": 63942,
+  "formula": {
+    "dividends": "funding-PV common continuous-yield approximation; no explicit cash transitions",
+    "fit_rollback_work": "2 * N * sum(expiry_quote_count * cumulative_interval_steps_at_expiry)",
+    "interval_steps": "max(1,ceil(calendar_delta/max_calendar_step),ceil(variance_delta/max_variance_step))",
+    "model_rows": "N * sum(interval_steps)",
+    "model_transition_work": "2 * model_rows"
+  },
+  "frozen_base": "b2909ede55300a6a47751292a0d09daec3806b38",
+  "policy_files_sha256": {
+    "e0-policy.json": "3d42a3bb5d661fa3d262aedf09474aebbfc6b8a7a1c4b5b4310d6d996c7a5217",
+    "r104-policy.json": "dc5e0d56170ff78e66e5c46b009a8f3c2e0b247c710a8956bff8cd54712a6d2e",
+    "r416-policy.json": "f3cc39c5dc7b333263dadd88574e470d0e1d27db998eb205a83f6d2d3e16f41f"
+  },
+  "results": [
+    {
+      "cap_feasible_eligible_fraction_upper_bound": 0.7048575271339651,
+      "cap_feasible_rollback_work_maximum": 27417144,
+      "cap_feasible_rollback_work_median": 729108.0,
+      "cap_feasible_rows_upper_bound": 45070,
+      "cap_feasible_snapshots": 184,
+      "max_calendar_step": 0.009615384615384616,
+      "max_variance_step": 0.009615384615384616,
+      "maximum_model_rows_all_considered": 31863,
+      "maximum_model_transition_work_all_considered": 63726,
+      "maximum_transitions_all_considered": 247,
+      "profile_counts": [
+        {
+          "count": 91,
+          "profile": "ordinary",
+          "status": "cap_feasible"
+        },
+        {
+          "count": 93,
+          "profile": "sparse",
+          "status": "cap_feasible"
+        }
+      ],
+      "refused_snapshots": [],
+      "rows_considered": 45070,
+      "snapshots_considered": 184,
+      "trial": "r104"
+    },
+    {
+      "cap_feasible_eligible_fraction_upper_bound": 0.5399893653623596,
+      "cap_feasible_rollback_work_maximum": 49314636,
+      "cap_feasible_rollback_work_median": 2604420.0,
+      "cap_feasible_rows_upper_bound": 34528,
+      "cap_feasible_snapshots": 176,
+      "max_calendar_step": 0.002403846153846154,
+      "max_variance_step": 0.002403846153846154,
+      "maximum_model_rows_all_considered": 122679,
+      "maximum_model_transition_work_all_considered": 245358,
+      "maximum_transitions_all_considered": 951,
+      "profile_counts": [
+        {
+          "count": 83,
+          "profile": "ordinary",
+          "status": "cap_feasible"
+        },
+        {
+          "count": 8,
+          "profile": "ordinary",
+          "status": "refused"
+        },
+        {
+          "count": 93,
+          "profile": "sparse",
+          "status": "cap_feasible"
+        }
+      ],
+      "refused_snapshots": [
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 77215788,
+          "rollback_work_cap": 50000000,
+          "root": "ADP",
+          "rows": 1446,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "ADP"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 65897328,
+          "rollback_work_cap": 50000000,
+          "root": "CVX",
+          "rows": 1148,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "CVX"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 68307564,
+          "rollback_work_cap": 50000000,
+          "root": "EXPE",
+          "rows": 1540,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "EXPE"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 102427548,
+          "rollback_work_cap": 50000000,
+          "root": "HUT",
+          "rows": 1744,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "HUT"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 85164252,
+          "rollback_work_cap": 50000000,
+          "root": "IEF",
+          "rows": 1488,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "IEF"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 51330648,
+          "rollback_work_cap": 50000000,
+          "root": "MOD",
+          "rows": 620,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "MOD"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 59723904,
+          "rollback_work_cap": 50000000,
+          "root": "SCHW",
+          "rows": 1160,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "SCHW"
+        },
+        {
+          "baseline_status": "fit_failure",
+          "profile": "ordinary",
+          "reasons": [
+            "fit_rollback_work"
+          ],
+          "rollback_work": 62313192,
+          "rollback_work_cap": 50000000,
+          "root": "UPRO",
+          "rows": 1396,
+          "snapshot_ns": "1791988200000000000",
+          "underlier": "UPRO"
+        }
+      ],
+      "rows_considered": 45070,
+      "snapshots_considered": 184,
+      "trial": "r416"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "Predetermined development experiment; raw schedule resource feasibility, not a successful-fit forecast or pricing accuracy claim. No labels are inputs.",
+  "seed_mode": "disabled; fixed initial_sigma=0.25 and empty initial/prior vectors, no quote-seed call",
+  "selected_rows": 72348,
+  "source_report": "C:\\atx-cache\\quote-benchmark\\20261014-dev200\\20261016-common-storage-parity-v2-native.json",
+  "source_report_sha256": "1575729e86f5c9dc2a04c6e19673f01471511d518328628f30791970c1963524"
+}

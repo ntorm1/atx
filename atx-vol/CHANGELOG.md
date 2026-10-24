@@ -5,6 +5,829 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — family enclosure: the computed bracket meets the width (lane K5)
+
+`family_enclosure` (`src/pricing/american_iv.cpp`, the Skipped rule of K3's family-route root
+acceptance) placed its ends at x -/+ W/2 and refused the skip when the computed width `b - a`
+exceeded W. The two roundings leave `b - a` one ulp of x above W exactly when
+frac(W / (2 ulp(x))) > 1/2, a per-binade condition: at W = acceptance_width(1e-7), on the
+inverse's range [0.005, 5], for every x in [0.005, 2^-7), [2^-6, 2^-2), [1, 2) and [4, 5] (not
+in [2^-7, 2^-6), [0.25, 1) or [2, 4)) - so roots whose two ends the validated envelope certified
+paid a Fast-AL confirm. The upper end now steps toward the lower one (at most
+`kEnclosureWidthSteps` ulps) until the computed bracket meets the unchanged rule, and both ends
+are priced and certified after the step; the envelope and the 1e-7 criterion are unchanged.
+Opt-in keys only (`graded.family_q` with `family_native`, and the B-family Band arm); the keys-OFF
+defaults are bit-identical. SPY native route (K4's policy): skipped roots 8,739 -> 25,925 of
+28,117 (31.1 % -> 92.2 %; calls 18.2 % -> 90.3 %, puts 43.6 % -> 94.0 %), confirm solves 22,823 ->
+5,637. Served sets are unchanged on SPY / cohort5 / dev200 / dev200b; served prices move by at
+most 8.3e-9 USD (a root moves inside its certified bracket). Pinned by
+`AmericanIvPremium.FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds` and (fix round 1,
+review-K5 m2) `AmericanIvPremium.FamilyEnclosureCertifiesTheEndsItServes`; design note
+`docs/sigma-q-family-error-envelope.md` section 9.
+
+### NEW — served analytics: declared hedge Greeks, scenarios, attribution, European-only outputs, session wiring (lane A1)
+
+New headers under `api/analytics/`; the contract is `docs/analytics-contracts.md`. No
+existing number moves: no kernel, fitter, serve-record, serve-book, session, priced-surface
+or chain-tick file is touched (SPY default parity hash unchanged).
+
+**Declarations** (`served_analytics.hpp`). Every answer carries an `AnalyticsDeclaration`:
+book version, record digests, model (`AnalyticsModel`), the Greek map, hedge convention,
+clock and `price_map_delta`. `classify_served_answer` / `classify_served_statement`: only an
+Ok / Exercised, non-Sampled answer with an Exact, RefinementValidated or KernelTested
+statement is a certified input; Sampled or slice-only answers are `Estimate` and totalled
+apart; price-only and refused answers keep their typed reasons.
+
+**Hedge Greeks.** `hedge_greeks(reader, request)`: `ContractSigma` / `StickyStrike` (the
+record's numbers), `StickyDeltaMoneyness` (delta + vega x dsigma/dS from the fitted curve's
+slope; gamma `NeedsVannaVolga`), `RefittedSurface` (every Greek `RequiresRefit`).
+
+**Scenarios.** `served_scenarios(book, portfolio, spec)`: spot x vol x time matrices on one
+book version (one rerun on a publication, else `VersionMoved`); Taylor (spot 2, vol 1, time
+1, declared box) with a Sampled remainder estimate that measures the cross terms and the
+record-vs-cold-kernel map term; exact repricing on one map per cell (`RecordTier`,
+`ColdKernel`, `EventSettlement`); rolls through expiry or the entry's next event are event
+operations (`EventOperation` / `EventRequiresRefit`), never theta. Per-reason failed exposure
+(legs, USD premium) for each method, and like-for-like `matched_*` totals. Dated cash runs on
+D1's production lattice (`cash_dividend_scenarios`) with D1's event roll.
+
+**Attribution and aggregation.** `served_attribution`: per-leg delta / gamma / vega / theta,
+explained, actual, unexplained. Every total is a Neumaier sum over legs in input order on the
+calling thread; workers are `std::jthread`s with one reader each: bit-identical for any
+worker count.
+
+**European-only outputs** (`common_model_analytics.hpp`). `european_outputs`: density, CDF,
+variance strip and local vol on a compiled Markov common model only; the American quoting
+surface (a record or a book expiry) is refused with `AmericanQuotingSurface` and no number.
+
+**Session wiring** (`served_session.hpp`). `ServedSession` binds a `VolaSession` or
+`PricedSurface` to a `ServeBook` through public APIs: bound expiries answer from the book
+(`serve`, and `serve_chain` into `ChainTickOutputs` with each `ServedChainStatement`),
+unbound ones from the session's cold route as `TickStatus::Fallback` / `Estimate`.
+
+Bench `atx-vol-served-analytics-bench` (the A1 row: SPY 23-day chain and a 300-leg book,
+30 cells; near-boundary and ex-dividend tables). Tests: `atx-vol-served-analytics-tests`
+(34, ctest `served-analytics:`).
+
+### NEW — live query: the fitter's hand-off, the serve book, the evaluate_quote_slice fast path (lane H1)
+
+**Hand-off.** `certify_and_serve` now ends with `detail::stamp_serve_handoff`: when the fit
+ran with `deam_family_q` families, `QuoteSliceFit::serve_handoff` carries their recipe, lane
+K3's validated envelope, the grid bound and two of their own prices; `build_serve_record`
+re-prepares the families from it and accepts them only when both prices and the envelope are
+reproduced bit for bit (else `ServeUnsupportedReason::HandoffMismatch`). No fitted or served
+number reads it: the 9 default parity hashes and K4's 4 native-route hashes are unchanged.
+
+**Serve book** (`api/fitting/serve_book.hpp`). Immutable copy-on-write versions of
+per-expiry records, published by one atomic store (`ServeBookTransaction::commit`; a
+publisher that dies before it publishes nothing), read through per-thread `ServeBookReader`s
+that re-pin only when the version counter moves, retired versions reclaimed on the publisher
+once no reader holds them. Readers cap every request at `primary_tier_max` (Family: no
+reader-triggered cold solve), answer `Invalidated` past an entry's `expiry_ns` /
+`next_event_ns`, `Stale` without a clock, and queue rebuilds on a bounded, deduplicated
+queue for `std::jthread` workers (`BudgetExhausted` when full). `serve_chain` serves a chain
+from one pinned version into `ChainTickOutputs` plus one fixed-size `ServedChainStatement`
+per contract (status, route, tier, certificate class and USD, the Greek map's statement,
+`sampled`, a price-only node's reason and IV interval); a `Sampled` answer's `TickStatus` is
+`Fallback`, never `Ok` (review-H1 F1). `serve_build` publishes the first usable
+bundle (tiers 1-2), then the laddered record on the same families. New `ServeStatus` values
+`BudgetExhausted` (11), `Invalidated` (12). `ServeAnswer` gains `price_only_reason`,
+`iv_lower`, `iv_upper` (lane C0's typed price-only answer at the node). Normal queries
+allocate nothing.
+
+**Fast path.** `evaluate_quote_slice` reads `QuoteSliceFit::serve_record` when the caller
+attached one built from that fit: a between-node or moved-node volatility is the record's
+family root of the same certified price where K3's enclosure accepts it (within
+`iv_tolerance`); everything else is answered as before. Opt-in by the record's presence.
+
+**Quote bench.** Opt-in `graded.serve_records` (+ `serve_record_profile`: default, tick,
+no_ladders) builds and publishes every served slice's record after its fit (B0's new
+`serve_build` stage, `stages_json` `fit_clock_s`, `ready_to_quote_s` timed) and audits the
+fast path against the record-free answer, listing every difference with both volatilities'
+Newton distances to the accurate root. Off: byte-identical predictions; the stage table
+gains a `serve_build` row reported `not_built`.
+
+### CHANGED — serving record statements rest on K3's validated per-point bound (lane H1)
+
+**Bound provenance (review-W2ci m3).** The record's families are now certified through lane
+K3's `deam_family_certify` (validated envelope, 9-probe audit, grid bound) whether handed by
+the fitter or built by the record; the file-local copy of the pre-K3 sampled
+`deam_family_probe_worst` bound is deleted. Family-tier `certificate_usd` is K3's per-point
+bound (`family_price_bounded`) at the contract, never the domain-wide scalar. Every statement
+carries `ServeBoundClass` (`Exact`, `RefinementValidated`, `Sampled`, `KernelTested`); a
+`Sampled` answer sets `ServeAnswer::sampled` and is never called certified. A ladder is
+`RefinementValidated` only when its Chebyshev tail verifies and K3's per-point bounds cover
+its samples; otherwise it is served `Sampled` (`ServeRecordPolicy::sampled_ladders`, default
+on) or dropped (off). **Behaviour changes:** a ladder IV root is `Ok` only on a validated
+statement within `iv_tolerance` (the default 12 × 6 ladder's roots are now `Unconfirmed`;
+`serve_record_policy_tick()` accepts them); a put ladder K3's put envelope leaves unverified
+is `Sampled` (the fixture's, until K5); the piecewise-linear slice between nodes claims no
+certificate (NaN, review-H0A m3); `max_age_ns` without a request clock refuses (`Stale` /
+`ColdPath`, m2) and IV is stale-checked (m1); `implied_vol` with `tier = Cold` is a route, no
+solve (m5); `bytes()` counts all three geometries of the holder (m4); every record's
+`policy_sha256` changes.
+
+### NEW — batched native route, reference wall budget, grid error metadata, opt-in parity-coupled calendar clamp (lane K4b)
+
+**Library (every key opt-in, default off: the nine keys-OFF default hashes are bit for bit).**
+- `QuoteSliceChannelConfig::deam_native_batch` (requires `deam_native_route`): per chain cache side
+  the mid / bid / ask lanes run in `iv_batch::invert_many` batches (AVX2 on the side's
+  `PremiumTable`, the family's scalar map otherwise) and the K3 acceptance is prepared per lane; a
+  request consumes a prepared value only on bit-identical inputs (scalar ISA: the unbatched route
+  bit for bit; AVX2: K2's rounding class, identical statuses). First confirm prices run in one AVX2
+  boundary batch on the ACCURATE confirm kernel only: on the Fast kernel the batch is no faster than
+  the scalar solve (72-84 vs 61-79 us per lane).
+- `deam_native_no_leg`: a request with no family of its side goes to the bounded reference route
+  from its Black-76 IV (no seed leg, no BAW on the route; review-K4 m5).
+- `deam_reference_max_wall_us`: the reference route's per-chain wall budget on top of the count
+  budget; a stop is `BudgetExhausted`, counted. A binding wall budget makes the served output
+  host-dependent.
+- Native route fixes (on the route only): a price-only low-vega outcome publishes only certified
+  ends (review-K4 m1); a crossing certified end leaves the bracket `Unresolved` (m2); a served
+  reference root whose low end is an exercise-plateau point is re-decided on the kernel-floor map,
+  and a price inside the plateau edge's jump is `PriceOnlyPlateau` (dev200b's one K3-audit
+  violation, BABO 3 call at 42 % carry: 0.138 vol). The lane-vega hook reaches the enclosure step.
+- `QuoteSliceRow::grid_bound_usd`: per-contract error metadata of the native route's family grid
+  (review-K4 m6), carried through the rung memo.
+- Family refusals typed by reason (review-K4 m8): `DeAmFamilyRefusal` via
+  `DeAmFamilyRequest::refused`, counted by `FitTimingCounters::deam_family_refused_by_reason`
+  (counters only; SPY: 62 sides asked, 59 built, 2 `short_expiry` + 1 `call_no_carry`).
+- `QuoteSliceRepairConfig::calendar_parity_clamp` (C3 review D2): in the calendar repair, a node
+  whose clamped call - put leaves the certificate's affine bound has its put raised to the bound
+  inside its calendar cap. On C3's dev200b combined-h0 arm it serves TIGR 20770's 36 rows (and
+  162 more on four expiries; 0 lost, publication violations 0); on by default it would change the
+  dev200 / dev200b graded-v1 defaults (+40 / +162 rows, 0 lost), hence opt-in.
+
+**Bench.** `graded.native_batch`, `graded.native_no_leg`, `graded.reference_budget.wall_us`,
+`graded.calendar_parity_clamp`; `fit_work.native_route.subclock` (inverse sub-clocks: lane,
+family_accept, confirm, leg, reference, endpoint, prefill, grid family / kernel; `--timing-detail`
+only), `.batch`, `.reference_wall_refused`; `families.lane_vegas` is now counted;
+`families.refused_by_reason`.
+
+**Measured (SPY historical, CPU 6, 1 fit worker, `--timing-detail`, development rows: other r6
+leases live).** `graded.native_batch` on the K4 speed arm, 10 cold trials: 3.466 / 4.170 / 4.406 /
+4.406 s (min / median / p95 / max); the speed arm itself on the same binary and host window
+(3 trials): median 4.497 s. Inverse sub-clocks (medians, before -> after): lane 320 -> 66 ms,
+family side (lane + K3 acceptance) 1,323 -> 1,095 ms, confirms 1,282 -> 1,210 ms (22,823 solves,
+56.2 -> 53.0 us each), reference 375 -> 341 ms; stages: inverses 2,715 -> 2,453 ms, endpoints
+409 -> 406 ms, final grid 606 -> 587 ms. The family side is now K3's enclosure (`family_accept`
+1,025 ms). With `reference_budget.wall_us` 2500 (3 trials) the reference stage is 44 ms and the
+SPY served output is byte-identical to the batch arm (dev200: 317 rows lost, 1,931 gained: the
+wall budget binds and is host-dependent). Served set vs the K4 speed arm: SPY and dev200b lost 0
+/ gained 0; SPY moves are the AVX2 rounding class (827 rows, |d vol| <= 2.3e-12); dev200b 4,225
+rows <= 1e-9 vol plus 43 rows on BABO's two chains (the plateau-end fix).
+
+### NEW — label-free universe census runner and a simultaneous quote-query load tool (lane U0)
+
+`tools/universe_census.py` runs `atx-vol-quote-bench` over the L5u label-free universe
+(`universe-20261014`: 2,082,476 rows, 6,067 underliers, 37,086 chains) under declared bounds:
+whole-underlier jobs cut byte for byte from `quotes.csv`, K processes in flight, a 20 s
+per-chain budget with single-underlier isolation of a failed job, a working-set cap sampled
+every 100 ms, a host memory floor, ≤ 10-min checkpointed chunks (`jobs.jsonl`; a chunk stop
+re-runs in a new attempt directory) and a cumulative cap. `verify` recomputes the dataset's
+counts and per-stratum chain lists, `plan` draws the stratified sample (every non-empty
+stratum covered, ≤ 5 % of chains) or orders the full board by `sha256(seed | underlier)`,
+`summarize` / `compare` build the cost, support, failure, memory and identity tables.
+Nothing is scored: no labels, marks or holdout membership are read.
+
+`atx-vol-quote-query-load` (new tool target) drives H0-A's `SliceServeRecord::serve()` at a
+declared open-loop rate on one thread while a publisher re-fits one underlier's board and
+publishes versions through `std::atomic<std::shared_ptr>`. It reports service and response
+p50 / p99 / p99.9 / max, the miss rate, torn and stale results (each answer is checked bit for
+bit against its version's precomputed answer), rebuild clocks and P0's pass-A pool queue ages
+(from the `expiry_schedule.hpp` task hook). Results: `docs/universe-census.md`.
+
+**Number change: none.** No library file changed; both are tools.
+
+### FIXED — served rows no longer depend on the core type that ran the first Eigen product (lane P0)
+
+Eigen 3.4 read L1/L2/L3 with CPUID once per process and sized its GEMM/TRSM blocking from
+the answer. On a hybrid CPU (i7-1260P: P core 48 KiB / 1.25 MiB, E core 32 KiB / 2 MiB) the
+blocking, and with it the summation order of every blocked dense product, followed the core
+TYPE of the first blocked product of the process. That is the C2 "fan-out nondeterminism"
+(SPY h0 + repair `ba413a85…` / `99f67416…`; cohort5 h0.5 + repair `a90b5047…` /
+`be888dc5…`), and a serial run pinned to an E core reproduced it. The root `CMakeLists.txt`
+now gives the `eigen` INTERFACE target `EIGEN_NO_CPUID` and
+`EIGEN_DEFAULT_L{1,2,3}_CACHE_SIZE` = 49152 / 1310720 / 18874368 (the P-core sizes every
+reference was recorded under).
+
+**Number change: none for any recorded reference.** Only the E-core alternates become
+unreachable. Changing those sizes is a numerical decision (`docs/all-core-scheduling.md`).
+
+### CHANGED — `fit_quote_surface` per-expiry fan-out runs on the persistent pool (lane P0)
+
+Pass A / the knot pass, B1 and B2 run on `pricing_executor()` instead of fresh `std::jthread`s
+per stage. The pool is bounded and persistent, the caller takes part, and no fit creates a
+thread after the first.
+
+- **Nested dispatch:** a plain `pricing_executor().run_*` inside a fit task runs inline, so
+  live fitting never nests or oversubscribes the pool.
+- **Width:** `fit_workers` is clamped to the pool (`size() + 1`, sized by the same
+  `ATX_VOL_FIT_WORKERS` cap). A stage of fewer than 4 expiries runs inline on the caller.
+- **Numbers:** byte-identical for every width.
+- **Test changes:**
+  - `QuoteSurface.FanOutRunsOffTheCallingThreadAboveOneWorker` became
+    `FanOutRunsEveryTaskOnceOnThePoolAboveOneWorker`, because the caller now runs tasks.
+  - L575 (`PricingExecutor.NestedDispatch_ReachesAPoolWorkerAndWakesThePool`) was a race
+    against the help-first join. It now waits, bounded, for a pool worker.
+
+### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
+
+`ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` now default to 1, since both lanes
+are in the root. The record's Family tier serves A0's six Greeks, and a family root can be
+accepted by K3's envelope enclosure. Every record's `policy_sha256` changes (the default
+policy: `87318ae7…cefe` to `57902383…f3fc`). No default quote-bench path builds a record.
+
+### NEW — opt-in exact in-box projection rung behind the box certificate (lane C4)
+
+**Library (opt-in; default unchanged).** `QuoteSliceRepairConfig::inbox_projection` (inert under the
+exact certificate). When `certify_american_box` refuses a slice's fitted prices, the fitted grid
+is projected onto the certificate's polytope intersected with the same quote boxes (convex sides,
+the certificate's slopes and node bounds, the affine call-minus-put bound; in the non-dividend
+regime also the discounted-intrinsic call floor, call slopes >= -df and the Legendre segment
+condition) by a two-phase log-barrier interior-point method on a banded Newton system
+(`src/fitting/inbox_projection.{hpp,cpp}`; one call site, `box_certify_slice`). The result lies
+strictly inside every box and is served only when the unchanged `AmericanPriceSlice::create`
+passes it; its moved sides are re-implied like any repair's. An empty set is typed
+`InfeasibleData` with its conflict (`EmptyBox`, `NoConvexCurve`, `AffineBox`, `Coupled`); a spent
+Newton budget is `NonConverged`; neither changes anything. Boxes are never widened. New additive
+types: `QuoteSliceInboxOutcome`, `QuoteSliceInboxConflict`, `QuoteSliceBoxRefusal`,
+`QuoteSliceInboxRecord` (`QuoteSliceRepairRecord::inbox`, filled on `diagnostics.box`). Bench key
+`graded.inbox_projection` (requires `certificate box`; the policy echo, a per-slice
+`inbox_projection` record and run counters appear only when on). The 9 default hashes are
+unchanged. Design: `docs/inbox-projection.md`.
+
+**Measured (opt-in arm `C4-inbox-h0` vs `combined-h0`, same binary).** SPY served expiries 17 -> 26 / 32
+fitted (every rung run `applied`; Gate-G4's 31 / 33 is not met); cohort5 / dev200 / dev200b eligible
+coverage +20.69 / +3.94 / +0.96 pp, 0 violations. The SPY cold wall rises 17.4 -> 63.5 s (re-implication
+of moved nodes and the calendar passes, the rung itself ~11 ms per expiry). The remaining SPY refusals
+are the joint calendar rung's (`calendar_arbitrage`, 6 expiries).
+
+### NEW — opt-in shared call floor, shape-class matrix, admission contracts (lane C3)
+
+**Shared call floor (opt-in; default unchanged).** `QuoteSliceConfig::call_floor`
+(`QuoteSliceCallFloorConfig {mode, lines}`, `QuoteSliceCallFloor::Legacy | DiscountedIntrinsic`)
+and `quote_surface_call_floor_lines(expiries)` (one line {T, S, exp(-rT)} per expiry in the
+non-dividend regime). Under `DiscountedIntrinsic` each expiry is held to the lines of the
+expiries at or before it, floor(K) = max over T' <= T of S' - K * df' (valid for every later
+expiry, dividend payers included: C(T) >= C(T') >= S' - K * df'); `certify_and_serve` lifts the
+certified slice's calls onto it after its own repairs and re-certifies (a lift the certificate
+refuses is refused whole, `diagnostics.call_floor_refused`); lifted nodes are moved nodes, so their
+rows' volatilities are re-implied (`ReimpliedRepaired`). New diagnostics: `call_floor_lines`,
+`call_floor_lifted`, `call_floor_refused`. Bench key `serve.call_floor: legacy |
+discounted_intrinsic` (graded admission only; the native report adds per-slice `call_floor` and
+run counters only when on). Legacy with lines is refused (`InvalidArgument`). **Behaviour change
+under the key only:** deep in-the-money non-dividend calls the graded path served at S - K (below
+S - K * df; C2 review B(3)) now serve at or above the bound, which can change which of two
+crossing expiries the calendar pass keeps (see `docs/curve-admission-matrix.md`). The 9 default
+hashes are unchanged.
+
+**Shape-class matrix.** `tools/shape_matrix.py` (`run` / `table` / `select`): policy x cohort x
+the L1b shape classes, development split only, with the refusal taxonomy, per-expiry
+completeness, the per-expiry fit clock and a deterministic per-class selection; the scorer is
+imported, never edited.
+
+**Admission contracts pinned (no behaviour change).** A zero-bid quote is never a point
+observation and only an upper bound in the channel (never a midpoint); a surface fit depends only
+on its own snapshot (`QuoteSliceAdmission.*`).
+
+**Gate G4 (lane C3 verdict): OPEN.** On the combined arm (C2 box h0 + market-distance repair +
+validate, C0 serve keys + one-spot, C3 call floor; one binary) C1 PASSES (0 served shape and
+publication violations on dev200, dev200b, cohort5 and SPY); C2 MISSES (eligible coverage dev200
+88.33 %, dev200b 93.68 %, SPY 48.80 %; 7 class cells under 98.5 % containment) and C3 MISSES (SPY
+MAE/spread 0.227, dev200b sparse 0.303; identified IV median SPY 9.7 / mega 22.5-60.6 bp), each
+with one named next experiment in the lane report (SPY: an exact in-box projection rung at h0).
+F2 is untested on this binary: G3 missed, and the K4 speed arm is not in this lane's base.
+
+### NEW — served support, publication validation, typed joint projection (lane C2)
+
+**Served support.** `QuoteSliceFit::withheld_nodes` marks the node sides whose certified
+value is withheld from the served representation; `served_quote_slice_price` (allocation-free
+served price) and `quote_slice_gaps` (the support / gap mask) read it. The opt-in
+market-distance gate (`QuoteSliceRepairConfig::market_distance` Gate / Repair) now withholds
+every row it refuses, and any other row of that node side: `query_quote_slice` answers
+`MarketDistanceFailure` (no price, no volatility) and `evaluate_quote_slice` refuses
+(`Unavailable`, "withheld") at the refused node side and at every strike strictly between it
+and its neighbouring nodes. **Behaviour change (opt-in gate only):** the API used to return
+the refused row's off-market certified price (review-L3q m5). The default path never gates.
+The fit archive does not store the mask yet (hand-off to the archive owner: a decoded fit
+with `MarketDistanceFailure` rows serves their node values again).
+
+**Publication validation.** `validate_published_representation` checks what API callers
+evaluate - the served price function on its support - at every node, dense interior points
+and, for EVERY calendar pair (not adjacent maturities only), the union knots and their
+midpoints. Classes: Certificate, Shape, CrossSide, Nondividend, QuoteBox (at a market-distance
+bound), Calendar, Extrapolation, Support (rows versus the API) and Identification (a row's
+labels versus `query_quote_slice`, lane C0's one answer per contract). Opt-in
+`QuoteSurfaceConfig::publication = Validate` (bench `graded.publication: validate`): every
+repair trial is validated after its library commit (so after `align_with_query`) and rolled
+back on any violation; last, the whole served set is checked until clean (a structural
+violation refuses the slice "publication_invalid", a QuoteBox / Support one withholds the
+row; Identification findings are counted). Counters on `QuoteSurfaceSlice`
+(`publication_*`, `withheld_rows`, `joint_*`); the bench reports them under
+`graded_stats.publication` only when the key is on. `Off` is the historical path bit for bit.
+
+**Repairs re-certified (review-L3q m2 / m3).** All four calendar repairs can re-certify a
+non-dividend slice with `check_nondividend_american` before committing: the bounded-move
+(`repair_quote_slice_calendar`), the channel / box (`repair_quote_slice_calendar_in_channel`),
+the in-box market (`repair_quote_slice_market`) and the joint rung
+(`repair_quote_slice_calendar_joint`). Each takes `QuoteSliceNondividendRecheck`:
+- `Recheck` is the default for direct callers. This is a **behaviour change** for them: such
+  a result is now refused.
+- `Skip` is the historical rule. `fit_quote_surface` uses it for all four unless
+  `publication = Validate`.
+
+So the default surface, and every keys-ON repair arm without `Validate`, serve exactly what
+they served before (PM ruling: a keys-ON repair arm never loses a row its base served). The
+four are gated alike: the channel / market recheck was new in lane C2 and changed no row on
+any measured arm, and fix round 1 gated it on the same rule (review m4). Separately, the
+market repair refuses a band result that moves a row out of its own quote (`LeftChannel`).
+
+Measured exposure:
+- dev200 / dev200b graded-v1 serve 17 / 18 non-dividend chains (440 / 498 rows) whose
+  bounded calendar repair fails the non-dividend certificate.
+- dev200b's box h0 / h0.5 + market-distance repair arms serve 80 rows on 3 SJB / LEMB
+  chains from joint repairs that fail it.
+
+`Validate` refuses them.
+
+**Bounded joint projection.** `project_calendar_joint_bounded` (budget `max_sweeps`,
+`relative_tolerance`) returns `Feasible`, `InfeasibleData` with an exact certificate naming
+the conflict (`EmptyBox`, `NoConvexCurve`, `CalendarBox`: slice, node, partner, strike,
+excess), `NonConverged` or `InvalidInput`; prices change only when `Feasible`. The joint rung
+(`repair_quote_slice_calendar_joint`) uses it with `QuoteSliceRepairConfig::joint_max_sweeps`
+(default 20,000, the historical budget) and records `QuoteSliceRepairOutcome::NonConverged`
+(previously reported as `Infeasible`), the sweeps and the conflict. The rung's own empty-box
+exits record an `EmptyBox` conflict too (member, node, strike, excess). Those exits are: the
+fixed neighbours' floor above their cap at a member's node, or a member's quote box outside
+that clamp. So every `Infeasible` names one. Every outcome but a certified, applied projection
+rolls back (no member changes). `project_calendar_joint` keeps its historical behaviour.
+
+### NEW — immutable fitted serving record of one expiry, tiered serve and tick-rate IV (lane H0-A, phase A)
+
+**Library.** New public header `fitting/slice_serve_record.hpp`:
+- `build_serve_record(fit, policy)` builds a `shared_ptr<const SliceServeRecord>` from a
+  completed `QuoteSliceFit`. The record copies the slice's node prices byte for byte and
+  carries C0's typed answer per node side. It holds the expiry's (σ, q) families together
+  with their geometries, per-node (ln S, σ) Chebyshev ladders, a clone of the curve, SHA-256
+  version digests, the build clocks and its bytes.
+- `serve()` walks four tiers and answers from the first that can: Ladder (tier 0: price,
+  Δ, Γ, vega, θ from one map), Family (K1's fused price and vega; A0's Greeks under the A0
+  seam), Certified (the slice at the fit spot, else the family plus one `AlProfile::Fast`
+  solve), and Cold (a typed route only, never run inside a call).
+- `implied_vol()` runs the L1c band gate, then a ladder root, a family root (K3 enclosure
+  under the K3 seam) and a Fast confirm.
+- At the fit spot every tier serves the certified slice price. A Greek map's distance from
+  it is declared as `price_map_delta`.
+- θ and Γ are withheld with `NearExerciseEdge` within 0.25 σ√T of the exercise edge, on
+  every tier (A0's fix-round band, `edge_sd` / `near_edge` on every answer).
+- Ladder and Family reads allocate nothing.
+
+**Default path.** Nothing default constructs a record, and no existing number changes: the
+9 default hashes match. The phase-B publish hook is `detail::build_serve_record_with`. A0
+and K3 are compile-time seams (`ATX_VOL_SERVE_RECORD_A0` / `_K3`, default off).
+
+**Measured** (`vol-rel-avx2`, unqualified, docs/serve-bundle.md):
+- tier 0: 141 ns p50 / 188 ns p99 per contract.
+- record IV: 264 ns p50.
+- 300-contract chain: tier 0 18 µs; tier 1 1.5 ms (target missed; per-contract family
+  evaluation).
+- record size: 642 KB per SPY expiry, 2.57 MB per symbol.
+- build: 1.46 s per SPY symbol (ladders 96 %).
+
+### NEW — opt-in native fit route: typed inversion outcomes, a bounded reference route, no Search (lane K4)
+
+**Library (opt-in, default off: every default and keys-ON output is bit for bit).**
+`QuoteSliceChannelConfig::deam_native_route` (requires `deam_family_native`) with
+`deam_reference_max_calls` / `deam_reference_max_evaluations` (per chain cache, both > 0, memo-keyed).
+On the route a Premium inversion never runs the seed leg's Search restart: a price inside the edge
+band is classified by C1's `andersen_lake_classified` before any root attempt (on the exercise
+plateau: price-only; at the floor: price-only; at the range's top: refused); K3's unaccepted
+`PriceOnly` / `Interval` roots are typed outcomes; a refused family-native lane, a request with no
+family and every other failure go to a bounded reference route on the confirm kernel (K3's bracket
+rule, at most 32 evaluations per request and the chain's budget; exhaustion is a typed, counted
+refusal). The band's bid and ask start from the mid's retained native carry (review-K2 MJ1), its edges
+are decided by validated bounds when every comparison is decided, a typed non-identifiable mid is
+`UnidentifiableVolatility`, and the family certification grid serves a node's family price only under
+its per-point bound. Measured (SPY historical, one pinned P core, 10 fresh-process cold trials,
+development rows): cold calibration median 4.54 s against the family-native route's 8.01 s on the
+same host and core; served sets on SPY, cohort5, dev200 and dev200b: lost 0, gained 0 against the
+family-native route; zero Search solves. Still far above the 1 s bar (G3 missed): inverses 2.77 s.
+Bench: `graded.native_route`, `graded.reference_budget {calls, evaluations}`; the native lane
+statuses, route outcomes, reference requests and bound-decided edges in the fit counters.
+
+### NEW — typed price-only identifiability, one spot per snapshot, convention metadata (lane C0)
+
+**Library.** `QuoteSliceConfig::floor_policy` (`QuoteSliceFloorPolicy`): `Legacy`, the
+default, is the historical path bit for bit; under `PriceOnly` a served row whose volatility
+would sit at `kIvMin`, or would re-imply only on a flat exercise-region plateau or with no
+vega, is a typed `PriceOnly` row that keeps its certified price. Every `PriceOnly` row now
+carries `QuoteSliceRow::price_only_reason` (`floor_vol`, `flat_exercise_region`, `low_vega`,
+`unidentified_interval`) and, where known, the IV interval `[iv_lower, iv_upper]`; every
+served row records where its volatility came from (`vol_convention(row)`: `fitted_curve`
+or `reimplied_repaired`). New `query_quote_slice` (the typed answer: price, status, reason,
+interval, convention), `model_kind(fit)`, `QuoteSliceSnapshotInfo` provenance on
+`QuoteSliceFit::snapshot` / `QuoteSurfaceExpiry::snapshot` (quote and underlying clocks,
+spot and carry versions, the rule that chose the spot - `QuoteSliceSpotRule` own / nearest
+/ median -, carry convention, raw spot, stale flag), and
+`rebase_quote_slice_spot`, which re-expresses an expiry on a snapshot spot S* with the
+forward-preserving carry of its dividend model (dated cash solves the lattice forward).
+The fit archive is ATXVFA 1.1: `PriceOnlyNodes` section and minor-1 tails on fit and quote
+rows (minor-0 files read the tails as absent). Python: `fit_quote_slice`,
+`query_quote_slice`, `evaluate_quote_slice`, `rebase_quote_slice_spot` and the metadata.
+
+**One answer per contract (fix round 1).** Under the default `Legacy` policy a served row
+whose volatility `query_quote_slice` does not identify keeps its historical status and
+value bit for bit, but is labelled with the query's answer: `vol_convention(row)` is now
+`None` (it used to say `reimplied_repaired` or `fitted_curve`) and the row carries the
+query's `price_only_reason` and interval, so the row and the query never disagree. A row
+demoted from served (market-distance gate, refused slice, repair pricing failure) carries
+no reason or interval. Statuses, prices and volatilities are unchanged under both
+policies.
+
+**Behaviour change.** `evaluate_quote_slice` now refuses (`OutOfRange`) every answer that
+`query_quote_slice` types `PriceOnly`, whatever the fit's `floor_policy`. Three classes
+used to return a volatility: (1) a re-implied volatility at the floor `kIvMin` (between
+nodes or at a repaired node), returned as if identified; (2) an UNMOVED node whose fitted
+curve value is at or below `kIvMin` - the curve's own value, not a re-implied one; (3) a
+re-implied root above the floor that the inverter's opt-in non-monotone refusal types
+`FlatExerciseRegion` (inside the kernel's exercise region) or `LowVega` (uncertified
+slope / Newton distance) - these used to return that above-floor, non-unique root. The
+refusal's `OutOfRange` is the SAME code as "strike outside the certified domain", so a
+caller that must tell "a price exists but its IV is not identified" from "no price" must
+call `query_quote_slice`, which discriminates (status `PriceOnly` with the price, reason
+and interval, versus an error). Callers are tests and the Python binding only - no tool,
+atx-impl or atx-engine caller. **Migration:** call `query_quote_slice` for the typed
+answer, or `fit.prices->price(K, side)` for the price.
+
+**Bench (opt-in).** Policy key `serve` {`floor_price_only`, `metadata`}: the first sets
+every profile's `floor_policy` to `PriceOnly` and IMPLIES the top-level `price_only`
+(echoed as `"price_only": true` in `policy_definition`), so every PriceOnly row - the
+newly typed ones and the historical `unidentified_interval` ones - is served
+`ok_price_only` with its price (report `identifiability`: price and identified-IV coverage
+separately - `served_vol_rows`, `identified_vol_rows` -, reason counts,
+`identified_floor_vol_rows`); the second appends the metadata columns
+`price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,dividend_convention,
+quote_ns,underlying_ns,spot_version,spot_rule,carry_version,carry_convention,raw_spot,
+spot_stale,price_valid,vol_valid` (`vol_valid` 1 only for a volatility the query
+identifies) and the report block `output_conventions`. Not published yet: an
+exercise-style / deliverable-support / certified-domain support flag (master plan 3.2) -
+handed to H0 / A1. Policy key `snapshot`
+{`one_spot` off | nearest | median, `stale_spot_bps`, `stale_spot` flag | refuse}: one
+authoritative spot per underlying snapshot from the rows' own timestamped observations,
+each expiry rebased forward-preserving (American prices are not preserved), raw per-chain
+spots kept in the report block `one_spot`, stale chains flagged or refused `stale_spot`.
+
+**Migration:** none for the bench: with the keys absent or off, predictions are
+byte-identical (9/9 default hashes, the SPY kill switch included) and the report is
+unchanged.
+
+### CHANGED (opt-in keys only) — (sigma, q) family route: validated error envelope and typed root acceptance (lane K3)
+
+The (sigma, q) family route (`graded.family_q`, `graded.family_native`, the B-family
+`confirm: band` arm) no longer rests on a sampled bound. `deam_family_probe_worst` and its
+`max(10 x worst probe, 1e-12)` bound are removed; `deam_family_certify` builds a
+`ValidatedErrorEnvelope` from the family's own node tensor (refinement-verified Chebyshev
+tails, node parity, target noise, rounding; `src/pricing/american_family_error.hpp`),
+audits it with 9 probes independent of the nodes (a violation makes the family
+Uncovered), and sets the grid's `q_bound` to the envelope's domain-wide USD bound.
+Behaviour changes on those keys: (1) a confirm is skipped only when two family prices and
+their bounds enclose the accurate root in at most 1e-7 vol; the B-family arm no longer
+skips on the half-spread band gate anywhere (a quote whose side has no family is confirmed;
+the band gate now runs only in the Screen `confirm: band` arm without `family_q`); (2) the family-native confirm (R1-A MJ1) closes a bracket whose ends
+carry certified sides instead of dividing by the iterate's secant: C at the root plus one
+solve per bracket end the envelope cannot certify (at most 3; the secant confirm spent 1-2),
+and a root it cannot bracket falls back to Search typed `PriceOnly` / `Interval` / `None`; (3) the family certification grid
+serves a family price only under the domain-wide bound, which is looser than the old
+sampled one (inert on wide carry boxes). Every family-route root is typed
+(`IvPremiumStats::acceptance`; `FitTimingCounters::deam_accept_by_kind` /
+`deam_accept_by_reason`); `--deam-audit` re-solves each by bisection of the accurate map
+(`deam_audit_bracket_*`; per-root CSV via `ATX_VOL_FAMILY_ROOT_AUDIT`). Defaults: no
+change (no default reaches the family route). Design: `docs/sigma-q-family-error-envelope.md`.
+Fix round 1 (review-K3): the grid's domain-wide `q_bound` now carries `e^{-qt} > 1` for a
+negative carry (it understated the bound of a hard-to-borrow put box; non-negative carry
+bit-identical; the acceptance never reads it).
+
+### FIXED — D1 cash-dividend Greeks, archive scheme range, batch lifetime (review-D1 round 1)
+
+The D1 review blocked on two majors.
+
+**M1, Greeks.** The slow Greek study (`atx-vol-discrete-div-production-matrix`) was red on
+three real defects. The bundle (`american_discrete_div_production_greeks`, and the batch's
+`greeks()`) changes as follows.
+- **delta / gamma.** On the Refined route they were the fine lattice's alone, first order
+  in 1/N (E20p +2.9e-4). They now take the route's own Richardson pair, as its price does.
+  Every study row is now within 2.3e-5 of the reference.
+- **vega.** It was one 10 % central bump (E20p -0.268 %). It is now the Richardson pair of
+  central bumps at h and h/2 (E20p +0.003 %), which costs 2 more rollbacks.
+- **Exercise-dominated calls.** On an American call that is exercise-dominated before an
+  in-life ex-date, vega is now NaN with reason `ExerciseDominated` instead of a number.
+  - The test: the cash beats the interest on the strike up to the next ex-date or expiry,
+    and the cum-dividend forward there is at least 2 sd in the money.
+  - On D0 row F1c that number was off by 1.3-1.7 % at every N and every bump size.
+- **Reasons.** Every unsupported greek now carries a typed reason (`DiscreteDivUnsupportedReason`,
+  `DiscreteDivProductionGreeks::reasons`).
+- **Bounds.** The study now carries the reference's own u per greek and row. Every claim is
+  bounded by min(the checkpoint bound, max(3u, class)): delta class 5e-5, vega class 0.1 %,
+  so neither bound is looser than before.
+- **Coverage.** The study adds D0 rows F1p, F2c and F2p.
+- **Not met.** None of this meets the plan's D1 objective of being within the reference's
+  uncertainty. Standard ≤ 3 bp and Refined ≤ 1 bp of IV on D0's RESOLVED rows is an accuracy
+  class; doc section 11.3 has the drift finding.
+
+**M2, archive.** `fit_archive_records.cpp` range-checked the stored `DiscreteDivScheme`
+against `EscrowedLeisenReimer`. A keys-ON `atx-vol-fit-archive-bench` run with
+`dividend_lattice: "spliced-cubic"` therefore published archives that every reader refused
+(RecordInvalid). The check now admits `SplicedCubic`, and a round-trip test covers every
+named scheme.
+
+**Minors.**
+- A moved-from `DiscreteDivBatch` used to dereference a null state. It is now empty: every
+  contract comes back RefusedGroup.
+- The pre-step count and `GridBottomExtrapolated` are now documented as a sigma >= 0.10
+  statement.
+- The cubic splice deliberately stays without a zero floor. A floor broke European put-call
+  parity and raised the European error in 30 of 32 measured cases. A fast test now pins
+  European parity and accuracy on the cubic route.
+- `docs/hft-support-matrix.md` names the dominating stage (the inversions, 99.9 % of the cold
+  clock) and one challenger with a predeclared acceptance table.
+
+**Behaviour change:**
+- The production bundle's vega, and its Refined delta / gamma, are new numbers.
+- Vega on an exercise-dominated call is now NaN.
+- In `DiscreteDivBatch::implied_vol`, a quote strictly below the exercise value is now
+  RefusedRange, not PriceOnly. A quote on the plateau (within 1e-12 max(S, K)) stays
+  PriceOnly.
+
+**Migration:**
+- Read `unsupported` / `reasons` before using a bundle field.
+- Archives of spliced-cubic fits need this build to open.
+- Default paths and hashes are unchanged.
+
+### NEW — opt-in production cash-dividend lattice: cubic splice, routes, batch, event-aware Greeks
+
+D0 measured the 301-step spliced lattice 2.8-4.4 IV bp per ex-date off on multi-event chains.
+The cause is the splice's linear interpolation: the chord of the convex continuation lies above
+it at every ex-date. A production lattice now exists beside the historical one
+(`api/pricing/american_discrete_div_kernel.hpp` section 4,
+`src/pricing/american_discrete_div.cpp` `run_production_lattice`). It has:
+- a 4-point cubic splice on the CRR nodes;
+- forward-preserving re-dating of rounded ex-dates;
+- exercise rights re-timed to the true ex-date;
+- pre-steps, so that an early ex-date has the nodes a splice needs and delta / gamma are
+  read at t = 0.
+
+The route rule `discrete_div_lattice_route` is a pure function of (S, T, schedule, opts). Every
+result carries a `route` field.
+- **Standard**: CubicCrr at max(301, 25 x in-life events) steps (capped at 2401), plus
+  pre-steps up to 1024.
+  It is within 3 bp of IV of D0's reference on every RESOLVED matrix row (the historical lattice
+  reaches 34 bp).
+- **Refined**: the BBS-Richardson pair 1201 / 601, or CubicCrr at 2401 when an ex-date falls in
+  the last two coarse steps (flag `NearExpiryExDate`). It is within 1 bp on every RESOLVED row.
+- **Kill switch**: the historical SplicedCrr, call for call.
+
+`api/pricing/american_discrete_div_batch.hpp` `DiscreteDivBatch` builds routes and step maps once
+per (S, T, r, q, schedule) group in `prepare()`, and its price, implied_vol and greeks loops
+allocate nothing per contract.
+
+The Greek bundle `american_discrete_div_production_greeks` returns:
+- delta and gamma from the t = 0 stencil (the Refined route's Richardson pair of it, fix
+  round 1 above);
+- vega (a Richardson pair of sigma bumps; unsupported on an exercise-dominated call, above);
+- rho / phi from 1e-3 central bumps (a 1e-4 bump read the lattice's ripple in r and q);
+- per-event dP/dD;
+- theta and charm;
+- an event-aware one-day roll. A roll across an ex-date takes the cash off the stock; it is
+  not a derivative.
+
+Unsupported Greeks are NaN with a bit and a typed reason, never 0. The production inversion
+returns OutOfRange (price-only) for a quote at or below the exercise value; the batch types a
+quote strictly below it as RefusedRange (above).
+
+Other additions:
+- quote-bench accepts `dividend_lattice: "spliced-cubic"`.
+- `atx-vol-ddiv-latency` (tools) measures per-event-count latency and coverage on B0's
+  harness.
+- `docs/hft-support-matrix.md` holds the latency row. It is a MISS on every P1 / P2 / P3 budget.
+- Accuracy, routing and Greek studies: `docs/american-cash-dividend-reference.md` section 11.
+
+**Behaviour change:** `american_discrete_div_converged_price` now returns OutOfRange for a
+cash-dominated contract. That is one whose spot, after the cash paid up to an ex-date, sits
+beyond the 6-sd band of log spot there. On D0 row E64 (cash 64 % of spot) the comparator was
++2.61 USD off the reference while claiming 1.0 (L3f review m1).
+
+**Migration:**
+- Default routes are unchanged: the nine default prediction hashes and the keys-OFF dividend
+  hashes `abc75955` / `747d3e6c` reproduce byte for byte.
+- A caller of the converged comparator must handle the new OutOfRange.
+- `DiscreteDivScheme` gains the enumerator `SplicedCubic`. A switch over it must add the case,
+  and so must every range check over it (the fit archive's did not: fixed above, M2).
+
+### NEW — primary Greek bundle on the (σ, q) family: masks, reasons, convention, rate bumps, SoA chain
+
+`AlSigmaQFamily` (opt-in, no default caller) gains `family_greeks(fam[, rate], S, K, σ, q,
+req)` and `family_greeks_many` (`api/pricing/american.hpp`, the A0 block;
+`src/pricing/american_sigma_q_family_greeks.cpp`; contract and measurements in
+`docs/sigma-q-family-greeks.md`): price, Δ, Γ, vega, θ (the continuation-region PDE
+identity), phi (∂P/∂q through the tensor's q axis, boundary motion included) and rho
+(only with an `AlSigmaQFamilyRateBumps`: two second families at r ± 1e-4) from one fused
+premium pass over K1's stages. Every requested Greek carries a typed
+`AlFamilyGreekReason` (`Served`, `Exercised`, `Refused`, `NoCarryBumps`,
+`CarryBumpRefused`, `NoQAxis`, `NearNodeDegenerate`, `ConventionUnsupported`,
+`NearExerciseEdge`) and the `supported` mask; an unsupported Greek is NaN, never 0.0
+marked served. Every bundle
+carries an `AlFamilyGreekConvention` (held fixed: `ContractSigma` / `StickyStrike`
+implemented, `StickyMoneyness` / `RefittedSurface` declared unsupported; model
+`SigmaQFamily`; clock `GeometryTime`; the caller's `surface_version`). The SoA entry takes
+per-lane K / σ / q and an active mask and is the scalar entry lane for lane, bit for bit.
+`AlSigmaFamilyPriceVega` gains `exercised` (review-L3g m4): its vega is 0.0 by
+construction on those rows.
+
+The near-edge band (A0 fix round 1, review-A0 MJ1): every Ok bundle carries `edge_sd` =
+ln(S' / B'_now) / (σ√T), the distance to the family's current exercise edge in the
+internal put's coordinates, and `near_edge` (SoA: flags bit 2 and an `edge_sd` column).
+On a continuation row with `edge_sd < kAlFamilyGreekEdgeBand` (0.25) θ and Γ are NaN with
+`NearExerciseEdge`: there the PDE-identity θ was measured up to 138 % off the converged
+calendar difference, with the wrong sign, and Γ (the term it amplifies) is not validated.
+The L3g σ-family bundle (`AlSigmaFamilyGreeks`) serves the same in-band θ with status Ok
+and has no per-Greek reason: its header now says so, and review-L3g m5's in-band part is
+OPEN for its owner. `family_greeks_many`'s InvalidArgument refusal allocates nothing
+either (review-A0 m5).
+
+**No number changes.** Nothing default selects the bundle; the bundle's price and served
+vega are K1's fused pass's bits; the 9 default quote-bench hashes match. The L3g σ-family
+Greek pass reuses the integrand's Φ values for its derivative terms (review-L3g m3) — the
+same bits in every field, measured before / after.
+
+### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
+
+Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
+(`tools/bench_clocks.{hpp,cpp}`; definitions in `docs/benchmark-clocks.md`): the
+historical `legacy_fit_reprice_s` (unchanged), `cold_calibration_s` (adds the row
+classification and grouping the legacy timer skips; excludes I/O and the policy load),
+`ready_to_quote_s` reported `not_built`, and `process_wall_s` with startup / setup / read /
+decode / compute / write sub-timers. New flags: `--reps N` with min / median / p95 / p99 /
+max, `--cold-reset` (clears the de-Am IV thread memo and the carry memo before each rep),
+`--affinity CPU` (process and fit-worker pinning; requires `ATX_VOL_FIT_WORKERS=1`) and
+`--require-pcore`. Under `--timing-detail` the cold clock is split into exclusive
+measured stages (normalization, family build + validation, inverses, endpoints,
+curve/repair, final grid, reference exceptions, publication, fit_timing other; the family
+stage is `not_built` when no family was built), and `unattributed_s` = cold clock - stage
+sum is the time no timer measured (a real reconciliation, failing above 1%), with the
+fit-route and family counters; exact SIMD counters report `unavailable` when compiled
+out. `src/fitting/deam_iv_cache.*` gains `DeAmStageClock`, an opt-in, thread-armed
+timer of band-edge prices and fallback inversions (unarmed: one TLS load, no clock read).
+New tools: `bench/run_cold_trials.ps1` (fresh-process trials into one manifest with
+binary / policy / input hashes, source SHA, embedded build flags, a P-core proof and an
+SMT-contention flag per trial, threshold `-SiblingBusyThresholdPct` 10%) and
+`atx-vol-iv-comparator` (bisected American IV roots of served prices, in absolute vol, on
+the fitter's own Andersen-Lake accurate preset - independent root finding only, circular
+for pricer error on curve-priced rows - reported as populations: resolved pass /
+resolved fail / decidable fail (error > threshold + 3 x the reference uncertainty) /
+reference unresolved / IV not identified, with the non-circular count of each, the
+reference uncertainty and a continuous-carry price table).
+
+**Migration:** none. Predictions are byte-identical with and without every new flag; the
+report only gains the `bench` key.
+
+### NEW — fused price + analytic vega on the internal (σ, q) boundary family
+
+`AlSigmaQFamily` could only price; a slope meant two prices (`price_and_chord`).
+The internal `sigma_q_family_detail` namespace now returns price AND `dP/dσ` of
+the family's own price map from ONE premium-quadrature pass, the σ-motion of the
+interpolated transformed boundary included: `price_and_vega` (one strike),
+`price_vega_strikes` (one boundary shared across a strike vector, bit-identical
+to the per-strike calls) and a precontracted table path (`build_premium_table`,
+`contract_q`, `price_vega_on`) with the τ interpolation folded into the node
+tensor once. Statuses are typed (`Ok` / `OutsideBox` / `NearNodeDegenerate` /
+`Unsupported`); exact σ / τ / q node hits are stable (nodal differentiation
+matrix, no quotient rule); nothing in the evaluation path allocates.
+
+**No number changes.** `AlSigmaQFamily::price` (`price_on`) is untouched and
+stays the default evaluation; no policy routes through the family, and the SPY
+default (`feac8d2c`) and dev200b graded (`ed34eef7`) hashes match. The fused
+price equals `price_on` to 2.2e-16 scaled on the 18000-row SPY probe grid. The
+fused vega matches step-refined differences of the family map to 2.9e-11
+relative on the RESOLVED rows (smooth 516/930, exact node hits 226/636), where
+the reference's own tolerance is within 1e-9 of the vega. Full-price
+differences barely resolve σ = 0.05 (6/212, 0/140); differencing the premium
+alone there gives 1.5e-12 (24/24 smooth) and 1.1e-11 (47/52 node hits) on
+at-the-money SPY puts. Premium tables are move-only, and a moved-from table
+is a default (refused) table. On vol-rel-avx2 (spy23, 12 σ x 4 q nodes) price + vega costs 5.0 us
+one-shot and 3.5 us from a table tile against 6.2 us for `price_on` alone and
+275 us for the scalar two-solve path; a family pays for itself after about 9
+evaluations. Design, validation tables and the full cost table:
+`atx-vol/docs/sigma-q-fused-vega.md`.
+
+### NEW — an independent cash-dividend reference, and the dividend convention declared on kernel results
+
+The American discrete-cash-dividend kernel (spliced CRR, 301 steps) had only itself to be
+checked against: its refined comparator is the same splice at 2401 steps. A library-private
+reference now exists, `src/pricing/american_discrete_div_reference.{hpp,cpp}`
+(`atx::vol::ddiv_ref`). It has two methods. One is an event-aligned Crank–Nicolson PDE in log
+state: Rannacher restarts, per-segment graded steps, every ex-date on the grid, and the American
+constraint solved as an exact LCP by Howard iteration. The other is an event-aligned trinomial
+lattice. They share the model, the event schedule and three primitives (payoff cell average,
+cubic interpolation, jump operator), each pinned to exact values by the fast suite. They share
+no time discretisation, constraint treatment or grid. Each method converges on its own ladder;
+the PDE reports time and space independently, and each axis gets a Richardson estimate and a
+conservative uncertainty. A RESOLVED row is certified by the PDE's own convergence; the
+trinomial, much coarser, confirms it only to its own uncertainty. The cash-exceeds-spot
+treatment is a stated model choice (`CashProcess::SpotLiquidator`, the kernel's;
+`SpotSurvivor`; `Escrowed`), never substituted.
+Nothing selects it by default.
+
+`api/pricing/american_discrete_div_kernel.hpp` gains `DiscreteDivConvention` (process, cum and
+post exercise rights, cash-excess treatment, ex-date grid rule, spot or escrowed volatility) and
+the constexpr map `discrete_div_convention(DiscreteDivScheme)`. `DiscreteDivConverged` and
+`DiscreteDivIvResult` carry it as an APPENDED field (`convention`), filled from the scheme.
+**No number moves.** The change is additive and no arithmetic is touched. The dividend parity
+cohorts reproduce their control hashes on the new build: dev200 `abc75955...`, dev200b
+`747d3e6c...`. Aggregate initialisation that spelled out every member of either struct
+positionally still compiles, because the new member is last and defaulted.
+
+Tests: `atx-vol-discrete-div-reference` (fast, 24 cases: Andersen–Lake no-dividend agreement
+within the stated error, exact one-dividend European and American-call quadratures, the
+cash-at-expiry and t -> 0 limits, parity bounds, the convention map) and
+`atx-vol-discrete-div-reference-matrix` (slow, in `ATX_VOL_SLOW_FILTER`, ~3 min). The slow suite
+is a 50-case matrix against the 301-step kernel and its refined comparator, with a step ladder
+and a delta / vega bump study. The findings and the 301-step decision memo are in
+`docs/american-cash-dividend-reference.md`. In short, the 301 default is adequate to about 6 bp
+of IV for chains with at most one in-life ex-date outside the first step. Multi-event
+spot-shift chains are overpriced: on quarterly 1 % chains, -4.1 to -4.4 bp per event at T <= 1,
+-3.2 at T 2 and -2.8 at T 3 (-34 bp at 12 events); the SPY shape gives -1.0 bp per event. How
+the error scales with the cash amount is not identified. Raising the step count is a weak lever
+there (-6 bp still at 2401). A first-step ex-date, by contrast, falls under 1 bp at 1201 steps.
+The refined comparator misses by 2.61 USD on the review-m1 contract, where cash is 64 % of
+spot. The recommendation is event-adaptive handling (a gate, and an adaptive N for first-step
+chains); the splice as the multi-event cause is a hypothesis to test. This change promotes no
+default.
+
+### NEW (opt-in) — one Andersen-Lake exercise classification; exact plateau; typed two-boundary refusal
+
+`api/pricing/american_region.hpp` (Tier-B, outside the umbrella) gains
+`classify_exercise_region` / `AlExerciseClass` (continuation, exercise_plateau,
+european, expiry_limit, zero_vol_limit, unsupported_regime) and
+`andersen_lake_classified`, which returns the price with its class and the solved
+boundary B(T). The scalar uncached, scalar cached and laned AVX2 price sites and the
+warm-started ALO pricer now classify through that one function against the same
+boundary bits (`amer::al_boundary_at_expiry`), so they agree bit for bit; the L3k laned
+site used its own `exp_pd` boundary and disagreed at B and one ulp below it. The ALO
+site is the new `AloRegionPricer` (same header): `AloPricer` and it run one
+implementation over one state type, so `price(sigma, KernelFloor)` with no class output
+is `AloPricer::price(sigma)` bit for bit, and `price(sigma, rule, &cls)` adds the rule and
+the class for the scalar inversion. Under KernelFloor with a class output every site
+returns NaN outside the American arm (the laned site returned its floor there). Under
+`AlExerciseRegion::Intrinsic` a plateau prices exactly K - S / S - K with zero vega.
+The double-continuation regime (put q < r < 0, call r < q < 0) is a typed
+`unsupported_regime` with a NaN price on the classified entry; every other route
+already refused it and is now pinned never to serve a price there.
+
+The L3k bound pin is resolved against an independent reference: the converged
+Andersen-Lake scheme and a binomial lattice put every in-region grid cell at exactly
+the intrinsic, so KernelFloor's excess is the preset's own error — accurate / Fast
+profile 5.0e-7, al_fast_opts 9.6e-7, al_bulk_opts 3.64e-6 (x K max(1, T)^2), pinned at
+their 2-figure round-ups. The provisional 1.2e-6 for al_bulk_opts was aspirational.
+
+**Migration:** none. Every default entry point and the default kernel are
+bit-identical (KernelFloor with no class output forwards to the pre-L3k code; the 9
+default hashes and the AL fingerprint `53c4df68` match). Design note:
+`sprints/2026-10-22-C1-exercise-region-sprint.md`.
+
+### NEW — batch American IV inversion on the internal (σ, q) family (lane K2)
+
+`iv_batch::invert_many` (`src/pricing/american_iv_batch.hpp`, internal) inverts N prices of
+one family with per-lane strike, target, q and σ iterate — a bounded bracketed Newton on the
+fused price + vega with typed per-lane outcomes (converged, low vega, exercise-flat, σ below
+/ above the box, q outside the box, nonconverged, invalid input, unsupported ISA), the
+retained bracket on every exit, and bid / ask lanes anchored to their mid. The scalar path is
+the family map bit for bit; the 4-lane AVX2 kernel agrees to 3.4e-14 scaled price. No
+allocation once the scratch is warm. `atx-vol-quote-bench --inverse-replay
+auto|scalar|avx2` records a run's Premium inverse requests and replays them through it
+(`bench.inverse_replay`). Design: `atx-vol/docs/american-iv-batch.md`.
+
+### FIXED — batch IV inversion typing and AVX2 parity (lane K2 fix round 1)
+
+`iv_batch::invert_many`: a root enclosed by a 2 tol bracket with no usable slope there is
+`InverseStatus::ConvergedNoSlope` (was `Converged`, then refused by the fit without a typed
+reason); a table of an `AlProfile::Fast` family runs the scalar map (the AVX2 kernel is the
+full-precision map; `InverseIsa::Avx2` on it is `UnsupportedIsa`); a q tile that cannot be
+cut refuses its lane typed before any evaluation on both paths; AVX2 lanes within 1e-11 of an
+exercise-rule threshold are re-evaluated on the scalar map, so the AVX2 path classifies the
+exercise boundary as the scalar map does (`InverseBatchWork::boundary_rechecks`). Served
+results unchanged (the fit's native acceptance set is the same; it runs scalar).
+
+### CHANGED — family-native iterates run through the batch seam (opt-in `graded.family_native`)
+
+The native attempt is now one batch lane instead of the 12-price secant / chord loop: its
+outcome is typed (`IvPremiumStats::native_status`), its bracket and vega are kept in
+`IvPremiumMemory::carry` for the quote's bid / ask, a refusal keeps the contract's leg
+memory, and the confirm's slope is the fused vega at the root. Defaults are unchanged. With
+the key ON the served set equals the key-OFF set on SPY, cohort5, dev200 and dev200b (lost 0,
+gained 0); served prices move against the previous native arm by at most 7.1e-12 (SPY),
+6.9e-10 (cohort5), 5.2e-9 (dev200) and 2.3e-8 USD (dev200b), fitted vols by <= 9.4e-9.
+
 ### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
 
 Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,

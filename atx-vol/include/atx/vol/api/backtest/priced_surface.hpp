@@ -230,6 +230,19 @@ public:
   // Lake and return InvalidArgument rather than silently serving another method.
   [[nodiscard]] Result<PricedSurface> with_query_pricing(QueryPricingTier tier) &&;
 
+  // Opt-in exercise-edge gate on the two fast tiers (serve-path lane, 2026-10-16;
+  // the session's SessionServePolicy::exercise_edge_gate): an in-box query not
+  // more than `band` sigma sqrt(T) clear of its correction cache's recorded
+  // exercise edge (CorrectionCache::exercise_edge_distance) is priced cold and
+  // reports QueryPricingRoute::ExerciseEdgeFallback. nullopt (the default) turns
+  // it off. It survives a later with_query_pricing. Rvalue-only, like
+  // with_query_pricing, so no published surface changes route under a reader.
+  // @return InvalidArgument for a negative or non-finite band.
+  [[nodiscard]] Result<PricedSurface> with_exercise_edge_gate(std::optional<double> band) &&;
+  [[nodiscard]] std::optional<double> exercise_edge_gate() const noexcept {
+    return exercise_edge_band_;
+  }
+
   // ── Queries (const; reproduce the session's cold served path) ──────────────
 
   // Every American price/Greek entry point accepts a call-local execution
@@ -580,6 +593,7 @@ private:
   QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
   std::unique_ptr<QueryAccelerator> query_accelerator_{};
   std::uint64_t instance_id_{0};
+  std::optional<double> exercise_edge_band_{}; // with_exercise_edge_gate; nullopt = off
 };
 
 // ── EvalField bitmask operators ──────────────────────────────────────────────

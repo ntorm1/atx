@@ -40,16 +40,14 @@
 // ## Thread-safety
 //
 // A fitted `IVolCurve` / `CurveSurface` is logically immutable after construction;
-// concurrent `w`/`iv` reads are safe. ConvexDense's numerical-wing fallback cache
-// is constructed once and safely published on its first actual fallback.
+// concurrent `w`/`iv` reads are safe. Unidentifiable price-to-IV inversions
+// return NaN; serving never substitutes an unvalidated variance extrapolation.
 // `fit_slice_curve` is a pure function of its inputs.
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -218,21 +216,7 @@ public:
   [[nodiscard]] const ConvexSliceFit &fit() const noexcept { return fit_; }
 
 private:
-  struct FiniteAnchors {
-    std::vector<double> k;
-    std::vector<double> w;
-  };
-
-  [[nodiscard]] const FiniteAnchors *finite_anchors() const noexcept;
-
   ConvexSliceFit fit_;
-  // Finite total-variance anchors used only when price-to-IV inversion becomes
-  // ill-conditioned at a deep intrinsic/zero-price wing. They turn a numerical
-  // inversion boundary into a controlled Lee-slope wing, never a NaN. Ordinary
-  // queries never touch the synchronization state or pay the anchor inversions.
-  mutable std::once_flag finite_anchors_once_{};
-  mutable std::unique_ptr<FiniteAnchors> finite_anchors_owner_{};
-  mutable std::atomic<const FiniteAnchors *> finite_anchors_published_{nullptr};
 };
 
 // eSSVI backbone (3 DoF: theta, phi, rho). Owns an EssviParams slice.
@@ -346,6 +330,12 @@ public:
   }
 
   [[nodiscard]] const SplineVolParams &params() const noexcept { return p_; }
+
+  // Analytic checks of flat-wing derivative jumps and multiple-ceiling
+  // transitions. A smooth density grid cannot see negative point masses at
+  // these joins. Also refuses a cubic segment with a non-positive multiple.
+  // Passing this check alone does not certify smooth-segment density.
+  [[nodiscard]] Status validate_strike_transitions() const;
 
   // Project this served slice onto the calendar cone above a previously admitted
   // total-variance curve `w_prev`, the SplineVol analogue of the Essvi/Svi/C8
