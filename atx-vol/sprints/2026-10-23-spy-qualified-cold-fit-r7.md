@@ -511,3 +511,54 @@ monetary inverse acceptance with unchanged independent floor auditing, and
 QuantLib comparison. Direct monetary proposals may deliberately return slightly
 lower IVs within the approved raw budget; that experiment must not claim strict
 1e-7 IV accuracy, global numerical monotonicity, or Greek accuracy.
+
+
+## Economic inverse candidate: 1.120 seconds, complete service
+
+The next source, `4b9d0e15411aa859818232f6cb7ad8c8c29fb9b1`, measures
+**1.1200148 s** native cold calibration and **1.2711822 s** complete process
+wall time on one fresh process, one worker and P-core 6 with its sibling idle
+(0%). This is the development AVX2 build, not a ThinLTO or 100-trial qualification.
+The exact measured binary passes all thirteen actual-API gates under the explicit
+`raw-spread-price-v1` and `reviewed-feasible-floor-v1` contracts. Counts remain
+33/33 expiries, 12,866/12,866 price-served, 12,851 in original raw boxes,
+12,850 identified IVs and 16 PriceOnly rows. No target-floor failures or
+roundoff-only price passes occur. Maximum cold Reference residual is
+$0.0005012966094284366/share, 50.1296609428% of its original-quote budget.
+The strict 1e-7 IV diagnostic is deliberately not the monetary acceptance gate.
+
+One bounded family evaluation accepts 11,549 of 12,045 monetary proposals before
+strict-IV enclosure work. These proposals preserve the empirical family and
+monotonic-domain premises; the full independent cold price and floor audit remains
+mandatory. Generic/default strict-IV semantics and the three-day family guard
+are unchanged. The measured calendar projection costs 348.762 ms, family build
+202.762 ms, and remaining inverse certification 523.551 ms (inclusive).
+The 302 shortest-expiry Fast candidates still cost 131.681 ms. These buckets,
+not the earlier partially served two-second arm, guide the remaining work.
+
+Exact evidence under `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/`:
+
+- `economic-direct-v1-dev-profile/manifest.json`, SHA256
+  `c2ae714a8fd91e7fe76c58a42c64b7e20640e3c00dde0892369efa008ea8eeda`;
+- `acceptance/integrated-economic-direct-v1-audit/summary-v1.json`;
+- binary SHA256 `bc0bdd6cd6632a030b3737bd770182750550dc751a555f9ea296be8a7198915f`;
+- predictions SHA256 `0ef95f6506611a71eb9639bcdc19f3752376642b2cda78aa5f722e603071d490`;
+- native audit SHA256 `f71d103e8d4872decf1b56d47dfc3bb343a3ab5c5cd4b95b62d63cd8c75e9d6b`.
+
+The separate `spy-joint-feasible-economic-family-always-candidate.json` changes
+only the existing adaptive family selection to `always`. Its complete API audit
+also passes all thirteen gates; prediction comparison changes only 60 IVs on one
+sparse expiry, with every price and status identical. Maximum residual and all
+counts are unchanged. Its receipt is
+`acceptance/integrated-economic-direct-family-always-v1-audit/receipt.json`,
+policy SHA256 `781ddc09f7f26cfbfeb6c32edae1e3591b725a8f8d8d5b85d18eeda00b23f34a`.
+This is an experimental policy pending a quiet timing comparison, not a default
+promotion. It does not bypass the short-expiry family-domain guard.
+
+The family instrumentation has now measured 3,264 tensor nodes (146.1602 ms),
+549 cold validation probes (68.2893 ms), bounded probes (5.475 ms), envelope
+construction (3.7783 ms) and geometry (0.9676 ms) in a separate unchanged-output
+profile. These are diagnostic subspans from that run, not additional costs to
+sum with the newer whole-fit totals. Batched cold probes and sparse-factor
+workspace reuse remain experiments until complete correctness and measured gains
+are established. No subsecond or world-leading claim follows from this result.
