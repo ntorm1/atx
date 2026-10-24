@@ -258,6 +258,22 @@ struct PdeDiagnostics {
   std::vector<PdeCoefficientStep> coefficient_steps; // backward solve order
 };
 
+// Optional research observation after an unchanged scalar Thomas sweep. Spans
+// borrow live state only for the callback; the observer must copy anything kept.
+// No callback, recording or allocation occurs when the observer is null.
+struct PdeThomasObservation {
+  double lo = 0., di = 0., up = 0., bottom = 0., top = 0.;
+  int implicit_step = 0;
+  bool fresh_data = false;
+  std::span<const double> rhs, obstacle, cp, dp, work;
+  std::span<const unsigned char> active;
+};
+
+struct PdeThomasObserver {
+  void (*on_sweep)(const PdeThomasObservation &, void *) = nullptr;
+  void *context = nullptr; // borrowed; caller keeps it alive throughout pde_price
+};
+
 // One PDE solve. Errors: `validate`'s; InvalidArgument for a grid outside
 // [space_base >= 8, time_base >= 1, levels in [0, kMaxLevels), width_sd > 0,
 // rannacher_steps >= 0, base * 2^level <= kMaxGridIntervals on both axes];
@@ -268,7 +284,8 @@ struct PdeDiagnostics {
 // This supported-grid restriction can refuse an otherwise valid model; it never
 // silently switches schemes. Internal if a policy iteration fails to settle.
 [[nodiscard]] Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid,
-                                        PdeDiagnostics *diagnostics = nullptr);
+                                         PdeDiagnostics *diagnostics = nullptr,
+                                         const PdeThomasObserver *observer = nullptr);
 
 // ── Convergence and the uncertainty rule (header block above) ────────────
 

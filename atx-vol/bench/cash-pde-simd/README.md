@@ -27,6 +27,24 @@ checks pass. Runtime red/green receipts are under
 `calendar/cash-thomas-simd-v1/`; the original scalar disassembly is under
 `calendar/cash-pde-simd-inventory-v1/`, both beneath the r7 evidence root.
 
+The next component gate now captures the unchanged reference solver directly.
+An optional caller-owned observer sees read-only spans after each scalar Thomas
+sweep. The test copies the first fresh seed and following Howard solve at expiry,
+then the same two solves after the first interior jump when present. It retains
+196 sweeps per grid across all 50 original cases, or 588 sweeps over three grids.
+Each copied input is replayed through both research kernels; all original
+`cp`/`dp`/solution bits match. Captures are in-process copies reproduced by the
+archived executable and canonical input source, not a fitted runtime fixture.
+
+All 150 complete observed/null solver outputs also agree in price, delta, gamma
+and every existing work/solver field. The default exporter remains byte-identical
+to the pre-observer replay, SHA256
+`d4b5c2e81c8971cd9d37abd601139217ba8e71161eee38c3ada7c1dba60343cc`.
+Seven component tests pass after the observer's runtime red; the complete default
+replay passes separately. Owning observer source, replay test and both existing
+reference/export consumers pass PCH-off checks. This establishes the bounded
+scalar-sweep replay gate; full batched Howard/PDE execution is still absent.
+
 Admission scans consumed values and result validation scans all scratch values;
 these costs must remain in any inclusive kernel measurement until a separately
 validated caller contract removes them. A cash PDE batch must also charge

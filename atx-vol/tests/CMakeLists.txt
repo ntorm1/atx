@@ -31,12 +31,15 @@ if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
     set(CASH_THOMAS_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-pde-simd")
     add_executable(atx-vol-cash-thomas-research-tests
         ${CASH_THOMAS_RESEARCH_DIR}/tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/replay_tests.cpp
         ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
         ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
     set_source_files_properties(${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp
         PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
     target_link_libraries(atx-vol-cash-thomas-research-tests
         PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-cash-thomas-research-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 endif()
 
 # This entry point is also consumable without the engine/backtest test graph.

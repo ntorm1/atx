@@ -470,6 +470,7 @@ struct Operator {
 struct PdeState {
   const Model *model = nullptr; // non-owning; the caller's Model outlives the solve
   PdeDiagnostics *diagnostics = nullptr; // caller-owned optional work census
+  const PdeThomasObserver *observer = nullptr; // borrowed only during this solve
   std::array<std::uint64_t, 3> diagnostic_key{};
   std::size_t diagnostic_max_run = 0;
   bool diagnostic_have_key = false;
@@ -563,6 +564,11 @@ void thomas_solve(PdeState &s, double lo, double di, double up, double bottom, d
   at(s.work, n) = at(s.dp, n);
   for (int i = n - 1; i >= 0; --i) {
     at(s.work, i) = at(s.dp, i) - at(s.cp, i) * at(s.work, i + 1);
+  }
+  if (s.observer != nullptr && s.observer->on_sweep != nullptr) {
+    const PdeThomasObservation observation{lo, di, up, bottom, top, s.implicit_solves,
+        s.fresh_data, s.rhs, s.obstacle, s.cp, s.dp, s.work, s.active};
+    s.observer->on_sweep(observation, s.observer->context);
   }
 }
 
@@ -1049,7 +1055,8 @@ double interp_uniform_cubic(std::span<const double> values, double x0, double h,
 
 // ── Public: the PDE ────────────────────────────────────────────────────────
 
-Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid, PdeDiagnostics *diagnostics) {
+Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid, PdeDiagnostics *diagnostics,
+                            const PdeThomasObserver *observer) {
   if (diagnostics != nullptr) {
     *diagnostics = {};
   }
@@ -1063,6 +1070,7 @@ Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid, PdeDiagnostic
   PdeState s;
   s.model = &m;
   s.diagnostics = diagnostics;
+  s.observer = observer;
   const Result<LogGrid> log_grid = make_log_grid(m, p, grid);
   if (!log_grid) {
     return Err(log_grid.error());
