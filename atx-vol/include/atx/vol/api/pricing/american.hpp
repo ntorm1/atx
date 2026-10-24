@@ -1692,13 +1692,15 @@ struct AmericanGreeks {
 // are American (not European). InvalidArgument on non-positive S/K/T/sigma;
 // propagates any american_price error (e.g. NotImplemented negative-carry corner).
 //
-// The AndersenLake put path exploits the spot-independence of the exercise boundary:
-// the 17 stencils collapse to the 7 unique (sigma,r,T) boundaries. With
+// The AndersenLake put path exploits the spot-independence of the exercise boundary;
+// the call path uses homogeneity of its internal-put boundary. Both collapse the
+// 17 stencils to the 7 unique (sigma,r,T) boundaries. With
 // `warm_start` the 6 bumped boundaries are seeded from the converged base boundary
 // (skipping the dominant cold Barone-Adesi-Whaley re-seed) and reconverge to the
 // same tol — same greeks to ~tol, several-fold faster. `warm_start = false` keeps
-// every boundary cold (the exact FD reference; greeks().price stays bit-identical
-// to fair_value()). Calls and the BAW method always take the cold 17-solve path.
+// every boundary cold; greeks().price stays bit-identical to fair_value(). Call
+// spot-stencil homogeneity can differ from separate cold calls by rounding.
+// The BAW method retains the cold 17-solve path.
 [[nodiscard]] Result<AmericanGreeks>
 american_greeks_fd(double S, double K, double T, double sigma, double r, double q, Side side,
                    AmericanMethod method = AmericanMethod::AndersenLake,
@@ -1717,9 +1719,11 @@ american_greeks_fd(double S, double K, double T, double sigma, double r, double 
 //
 // vs american_greeks_fd: price + delta/gamma/vega/rho/vanna/volga are bit-identical
 // (same boundaries), theta/charm differ (the PDE is the exact continuation-region
-// value, gated close to the FD reference). Puts with genuine early exercise (r>0,
-// non-degenerate) only; calls, the r<=0 European put, the degenerate corners, and
-// any bumped-boundary collapse defer to american_greeks_fd. greeks().price ==
+// value, gated close to the FD reference). Genuine early exercise on either side
+// uses this route (internal-put rate r>0 for puts, q>0 for calls). Nonpositive
+// internal rate, degenerate corners, or a needed bumped-boundary collapse defer
+// to american_greeks_fd. A put's requested rho also falls back when r-hr<=0;
+// a call's r bump changes internal yield instead. greeks().price ==
 // fair_value(). InvalidArgument on non-positive S/K/T/sigma.
 //
 // K4 first-order tier: need_vega/need_rho/need_charm skip the boundary solves the
