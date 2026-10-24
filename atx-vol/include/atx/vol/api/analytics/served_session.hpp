@@ -14,6 +14,9 @@
 // and preset: price and Greeks from one map, the price bit-identical to the session's
 // cold american_price. Each answer says which model answered (AnalyticsModel
 // QuotingRecord / SessionCurve), with the book's statement verbatim on a book answer.
+// requested/supported separately describe Price/Delta/Gamma/Vega/Theta availability;
+// route and model/price statuses do not assert that every Greek is supplied. Cold
+// numerical reasons and book reasons retain their different axis vocabularies.
 //
 // The chain route (serve_chain) feeds chain_tick's ChainTickOutputs: runs of contracts at
 // bound expiries go through ServeBookReader::serve_chain (one version for the whole
@@ -31,6 +34,7 @@
 // each. Cost: a bound query is the book's (allocation-free); an unbound one is the cold
 // FD Greek bundle (several Andersen-Lake solves).
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -76,6 +80,14 @@ struct SessionServedAnswer {
   AnalyticsInputClass input_class = AnalyticsInputClass::Refused;
   AnalyticsStatus status = AnalyticsStatus::Refused;
   AnalyticsDeclaration declaration{};
+  // Availability of this answer's five output axes, separate from its price
+  // certificate/model status. Common bits are Price/Delta/Gamma/Vega/Theta only.
+  GreekFieldMask requested = GreekFieldMask::None;
+  GreekFieldMask supported = GreekFieldMask::None;
+  // Cold FD reasons in AmericanGreeks' nine-axis order. A book answer leaves
+  // these NotRequested and carries its distinct six-axis reasons in book.reason.
+  // Failed cold attempts may carry Nonfinite; no refusal is an accuracy claim.
+  std::array<AmericanGreekReason, 9> cold_reasons{};
 };
 
 struct SessionChainView {
@@ -92,6 +104,11 @@ struct SessionChainStatement {
   ServedChainStatement book{}; // H1's statement (source Book; default otherwise)
   SessionServeSource source = SessionServeSource::Refused;
   AnalyticsInputClass input_class = AnalyticsInputClass::Refused;
+  GreekFieldMask requested = GreekFieldMask::None;
+  GreekFieldMask supported = GreekFieldMask::None;
+  // Same provenance split as SessionServedAnswer; book.greek_reasons retains
+  // the record vocabulary, including Phi, without mapping it onto Vanna.
+  std::array<AmericanGreekReason, 9> cold_reasons{};
 };
 
 class ServedSession {

@@ -903,7 +903,7 @@ TEST(DerivBook, ExcludedLaneCountsNameTheNaNColumn) {
   ASSERT_EQ(f->rows.size(), 3u);
   EXPECT_EQ(f->rows[0].status, PriceStatus::Ok);
   EXPECT_EQ(f->rows[1].status, PriceStatus::Ok);
-  EXPECT_EQ(f->rows[2].status, PriceStatus::Ok);
+  EXPECT_EQ(f->rows[2].status, PriceStatus::GreeksUnavailable);
   EXPECT_TRUE(std::isfinite(f->rows[0].greeks.theta));
   EXPECT_TRUE(std::isfinite(f->rows[1].greeks.theta));
   EXPECT_TRUE(std::isnan(f->rows[2].greeks.theta));
@@ -918,6 +918,79 @@ TEST(DerivBook, ExcludedLaneCountsNameTheNaNColumn) {
   EXPECT_EQ(f->n_theta_excluded, 1u);
   EXPECT_EQ(f->n_charm_excluded, 1u);
   EXPECT_EQ(f->n_vanna_excluded, 0u);
+  EXPECT_EQ(f->n_ok(), 2u);
+  EXPECT_EQ(f->totals.n_ok, 2u);
+  EXPECT_EQ(f->totals.n_priced, 3u);
+  EXPECT_EQ(f->totals.n_greeks_unavailable, 1u);
+  EXPECT_EQ(f->totals.requested, atx::vol::GreekFieldMask::All);
+  EXPECT_TRUE(atx::vol::has_field(f->totals.supported, atx::vol::GreekFieldMask::Price));
+  EXPECT_TRUE(atx::vol::has_field(f->totals.supported, atx::vol::GreekFieldMask::Vega));
+  EXPECT_FALSE(atx::vol::has_field(f->totals.supported, atx::vol::GreekFieldMask::Theta));
+  EXPECT_EQ(f->totals.reasons[3], atx::vol::AmericanGreekReason::UnsupportedAxis);
+  EXPECT_DOUBLE_EQ(f->totals.pv, f->rows[0].pv + f->rows[1].pv + f->rows[2].pv);
+  EXPECT_EQ(f->rows[2].requested, atx::vol::GreekFieldMask::All);
+  EXPECT_EQ(f->rows[2].reasons[3], atx::vol::AmericanGreekReason::UnsupportedAxis);
+  EXPECT_EQ(f->rows[2].reasons[7], atx::vol::AmericanGreekReason::UnsupportedAxis);
+  EXPECT_TRUE(atx::vol::has_field(f->rows[2].supported, atx::vol::GreekFieldMask::Price));
+
+  too_short.qty = 0.0;
+  const DerivPosition zero_book[] = {too_short};
+  const auto zero = price_deriv_book(*ss, zero_book);
+  ASSERT_TRUE(zero.has_value());
+  EXPECT_EQ(zero->rows[0].status, PriceStatus::GreeksUnavailable);
+  EXPECT_TRUE(std::isnan(zero->rows[0].greeks.theta));
+  EXPECT_DOUBLE_EQ(zero->totals.theta, 0.);
+  EXPECT_EQ(zero->totals.supported, atx::vol::GreekFieldMask::All);
+  EXPECT_EQ(zero->totals.n_priced, 1u);
+  EXPECT_EQ(zero->totals.n_ok, 0u);
+}
+
+TEST(DerivBook, RequestedAxesAndPriceCoverageRemainDistinct) {
+  using atx::vol::AmericanGreekReason;
+  using atx::vol::GreekFieldMask;
+  const PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100., 100., .30);
+  const PricedSurface *arr[] = {&ps};
+  const auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+  DerivPosition position{};
+  position.uid = 7;
+  position.contract = var_swap_at(.35);
+  const DerivPosition book[] = {position};
+  DerivGreekBumps narrow{};
+  narrow.second_order = false;
+  const auto partial_request = price_deriv_book(*ss, book, DerivConfig{}, true, narrow);
+  ASSERT_TRUE(partial_request.has_value());
+  EXPECT_EQ(partial_request->rows[0].status, PriceStatus::Ok);
+  EXPECT_EQ(partial_request->totals.n_priced, 1u);
+  EXPECT_EQ(partial_request->totals.n_ok, 1u);
+  EXPECT_EQ(partial_request->totals.n_greeks_unavailable, 0u);
+  EXPECT_FALSE(atx::vol::has_field(partial_request->totals.requested, GreekFieldMask::Vanna));
+  EXPECT_FALSE(atx::vol::has_field(partial_request->totals.supported, GreekFieldMask::Vanna));
+  EXPECT_EQ(partial_request->totals.reasons[5], AmericanGreekReason::NotRequested);
+  EXPECT_TRUE(atx::vol::has_field(partial_request->totals.supported, GreekFieldMask::Gamma));
+  EXPECT_TRUE(atx::vol::has_field(partial_request->totals.supported, GreekFieldMask::Volga));
+  EXPECT_TRUE(std::isnan(partial_request->totals.vanna));
+  EXPECT_TRUE(std::isnan(partial_request->totals.charm));
+  const auto marks = price_deriv_book(*ss, book, DerivConfig{}, false);
+  ASSERT_TRUE(marks.has_value());
+  EXPECT_EQ(marks->totals.requested, GreekFieldMask::Price);
+  EXPECT_EQ(marks->totals.supported, GreekFieldMask::Price);
+  EXPECT_EQ(marks->totals.n_priced, 1u);
+  EXPECT_TRUE(std::isnan(marks->totals.vega));
+  EXPECT_TRUE(std::isnan(marks->totals.abs_vega));
+  EXPECT_EQ(marks->totals.reasons[2], AmericanGreekReason::NotRequested);
+  EXPECT_DOUBLE_EQ(marks->totals.pv, partial_request->totals.pv);
+  EXPECT_EQ(marks->rows[0].supported, GreekFieldMask::Price);
+  EXPECT_EQ(partial_request->rows[0].requested, partial_request->totals.requested);
+  EXPECT_EQ(partial_request->rows[0].reasons[5], AmericanGreekReason::NotRequested);
+  position.uid = 999;
+  const DerivPosition missing_book[] = {position};
+  const auto missing = price_deriv_book(*ss, missing_book);
+  ASSERT_TRUE(missing.has_value());
+  EXPECT_EQ(missing->rows[0].status, PriceStatus::ModelUnavailable);
+  EXPECT_EQ(missing->rows[0].supported, GreekFieldMask::None);
+  EXPECT_EQ(missing->rows[0].requested, GreekFieldMask::All);
+  EXPECT_EQ(missing->totals.n_priced, 0u);
 }
 
 // The NumericError branch of the status mapping: a reserved discrete-correction
@@ -1212,6 +1285,7 @@ TEST(VarSwapMemo, RowsAreBitIdenticalToTheUnmemoizedPerRowPath) {
   ASSERT_EQ(f_memo->rows.size(), book.size());
 
   double ref_pv_sum = 0.0;
+  double stored_pv_sum = 0.0;
   for (std::size_t i = 0; i < book.size(); ++i) {
     const DerivPosition &p = book[i];
     const SurfaceRef ref = ss->find(p.uid);
@@ -1221,7 +1295,11 @@ TEST(VarSwapMemo, RowsAreBitIdenticalToTheUnmemoizedPerRowPath) {
     ASSERT_TRUE(g.has_value()) << "row " << i << ": " << g.error().to_string();
 
     const auto &row = f_memo->rows[i];
-    ASSERT_EQ(row.status, PriceStatus::Ok) << "row " << i;
+    const bool unavailable_time = p.id == too_short.id;
+    ASSERT_EQ(row.status, unavailable_time ? PriceStatus::GreeksUnavailable : PriceStatus::Ok)
+        << "row " << i;
+    if (unavailable_time)
+      EXPECT_EQ(row.reasons[3], atx::vol::AmericanGreekReason::UnsupportedAxis);
     EXPECT_EQ(raw_bits(row.pv), raw_bits(p.qty * g->pv)) << "row " << i << " pv";
     EXPECT_EQ(raw_bits(row.fair_strike_dec), raw_bits(g->quote.fair_strike_dec))
         << "row " << i << " fair_strike_dec";
@@ -1248,11 +1326,17 @@ TEST(VarSwapMemo, RowsAreBitIdenticalToTheUnmemoizedPerRowPath) {
         << "row " << i << " skew_vega";
     EXPECT_EQ(raw_bits(row.greeks.convexity_vega), raw_bits(p.qty * g->convexity_vega))
         << "row " << i << " convexity_vega";
-    ref_pv_sum += p.qty * g->pv;
+    // Force the independent product to the same double rounding as a published
+    // row. A plain sum += qty * pv contracts to FMA on this toolchain and is a
+    // different oracle from a serial sum of already-rounded row values.
+    const volatile double independent_pv = p.qty * g->pv;
+    ref_pv_sum += independent_pv;
+    stored_pv_sum += row.pv;
   }
   // Totals: the SAME serial sum in book order the frame's own accumulate()
   // performs, so this is bit-identical too, not just "close".
   EXPECT_EQ(raw_bits(f_memo->totals.pv), raw_bits(ref_pv_sum));
+  EXPECT_EQ(raw_bits(f_memo->totals.pv), raw_bits(stored_pv_sum));
 }
 
 // P-4 interaction, analytic branch ON: `bumps.method = AnalyticStrip` selects
@@ -1469,24 +1553,68 @@ TEST(DerivBook, CombineTotalsAddsFieldsAndCounts) {
   a.vega = 2.0;
   a.abs_vega = 2.0;
   a.n_ok = 3u;
+  a.n_priced = 3u;
+  a.requested = a.supported = atx::vol::GreekFieldMask::All;
+  a.reasons.fill(atx::vol::AmericanGreekReason::ComputedEstimate);
   PriceTotals b{};
   b.pv = -4.0;
   b.vega = -5.0;
   b.abs_vega = 5.0;
   b.n_ok = 2u;
+  b.n_priced = 2u;
+  b.requested = b.supported = atx::vol::GreekFieldMask::All;
+  b.reasons.fill(atx::vol::AmericanGreekReason::ComputedEstimate);
   const PriceTotals c = combine_totals(a, b);
   EXPECT_DOUBLE_EQ(c.pv, 6.0);
   EXPECT_DOUBLE_EQ(c.vega, -3.0);
   EXPECT_DOUBLE_EQ(c.abs_vega, 7.0);
   EXPECT_EQ(c.n_ok, 5u);
+  EXPECT_EQ(c.n_priced, 5u);
+  EXPECT_EQ(c.requested, atx::vol::GreekFieldMask::All);
+  EXPECT_EQ(c.supported, atx::vol::GreekFieldMask::All);
   // A "not computed" field on either side poisons the combined field: a marks-only
   // block must never silently contribute a 0.0 greek to an option book's risk.
   PriceTotals marks{};
   marks.vega = std::numeric_limits<double>::quiet_NaN();
+  marks.requested = marks.supported = atx::vol::GreekFieldMask::Price;
+  marks.reasons[8] = atx::vol::AmericanGreekReason::ComputedEstimate;
   const PriceTotals d = combine_totals(a, marks);
   EXPECT_TRUE(std::isnan(d.vega));
   EXPECT_DOUBLE_EQ(d.pv, 10.0);
   EXPECT_EQ(d.n_ok, 3u);
+  EXPECT_EQ(d.n_priced, 3u);
+  EXPECT_EQ(d.supported, atx::vol::GreekFieldMask::Price);
+  EXPECT_EQ(d.reasons[2], atx::vol::AmericanGreekReason::UnsupportedAxis);
+}
+
+TEST(DerivBook, CombinedTotalsRefuseOverflowWithoutLosingIndependentFields) {
+  using atx::vol::AmericanGreekReason;
+  using atx::vol::GreekFieldMask;
+  PriceTotals a{}, b{};
+  a.requested = b.requested = a.supported = b.supported = GreekFieldMask::All;
+  a.reasons.fill(AmericanGreekReason::ComputedEstimate);
+  b.reasons.fill(AmericanGreekReason::ComputedEstimate);
+  a.vega = a.abs_vega = b.abs_vega = .6 * std::numeric_limits<double>::max();
+  b.vega = -a.vega;
+  a.pv = b.pv = 2.;
+  a.delta = b.delta = .5;
+  a.n_ok = a.n_priced = std::numeric_limits<std::uint32_t>::max();
+  b.n_ok = b.n_priced = 2u;
+  const auto result = combine_totals(a, b);
+  EXPECT_TRUE(std::isnan(result.vega));
+  EXPECT_TRUE(std::isnan(result.abs_vega));
+  EXPECT_EQ(result.reasons[2], AmericanGreekReason::Nonfinite);
+  EXPECT_FALSE(atx::vol::has_field(result.supported, GreekFieldMask::Vega));
+  EXPECT_TRUE(atx::vol::has_field(result.supported, GreekFieldMask::Price));
+  EXPECT_DOUBLE_EQ(result.pv, 4.);
+  EXPECT_DOUBLE_EQ(result.delta, 1.);
+  EXPECT_EQ(result.n_priced, std::numeric_limits<std::uint32_t>::max());
+  // A finite default aggregate carries no supply evidence and cannot supply
+  // the missing half of a combined price/risk request.
+  const auto unstamped = combine_totals(a, PriceTotals{});
+  EXPECT_EQ(unstamped.supported, GreekFieldMask::None);
+  EXPECT_TRUE(std::isnan(unstamped.pv));
+  EXPECT_TRUE(std::isnan(unstamped.delta));
 }
 
 } // namespace

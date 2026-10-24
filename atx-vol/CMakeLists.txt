@@ -293,6 +293,18 @@ set(ATX_VOL_ANALYTICS_SOURCES
 # historical_var). risk_api_check.cpp compiles every frozen header and stays empty.
 set(ATX_VOL_RISK_SOURCES
     src/risk/risk_api_check.cpp
+    src/risk/risk_types.cpp
+    src/risk/market_state.cpp
+    src/risk/risk_book.cpp
+    src/risk/risk_frame.cpp
+    src/risk/risk_kernel.cpp
+    src/risk/risk_kernel_cold.cpp
+    src/risk/risk_kernel_family.cpp
+    src/risk/pnl_explain.cpp
+    src/risk/risk_stream.cpp
+    src/risk/american_delta_solve.cpp
+    src/risk/strike_coord.cpp
+    src/risk/theo_contract.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES
@@ -1126,6 +1138,10 @@ if(ATX_BUILD_TOOLS)
     if(ATX_VOL_BUILD_GREEK_AUDIT)
         add_executable(atx-vol-greek-audit bench/american-greeks/greek_main.cpp)
         target_link_libraries(atx-vol-greek-audit PRIVATE
+            atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+        add_executable(atx-vol-fd-refinement bench/american-greeks/fd_refinement_main.cpp)
+        target_include_directories(atx-vol-fd-refinement PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(atx-vol-fd-refinement PRIVATE
             atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
     endif()
     add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)

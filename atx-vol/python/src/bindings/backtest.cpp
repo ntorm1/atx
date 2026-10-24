@@ -72,6 +72,12 @@ py::dict solve_ledger_dict(const counters::ledger::Counts &counts) {
 } // namespace
 
 void bind_backtest(py::module_ &m) {
+  py::enum_<PriceStatus>(m, "PriceStatus")
+      .value("OK", PriceStatus::Ok)
+      .value("MODEL_UNAVAILABLE", PriceStatus::ModelUnavailable)
+      .value("NUMERIC_ERROR", PriceStatus::NumericError)
+      .value("INVALID_CONTRACT", PriceStatus::InvalidContract)
+      .value("GREEKS_UNAVAILABLE", PriceStatus::GreeksUnavailable);
   // ── Corpus manifest (the windowed-clock construction path) ──
   py::enum_<CorpusFitStatus>(m, "CorpusFitStatus")
       .value("OK", CorpusFitStatus::Ok)

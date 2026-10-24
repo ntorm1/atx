@@ -95,6 +95,8 @@ SimdRoute american_put_boundary_batch(const double* S, const double* K,
 // volga/vanna gate the sigma+/- solves; rho the r+/- solves; charm the wide speed
 // stencils. A hedge caller ({delta}) thus pays 1 boundary solve instead of 5. Defaults
 // keep the full bundle. Unrequested greeks are left 0 in out_greeks (the caller masks).
+// Availability is per field: a usable price can accompany refused crossing-stencil
+// Greeks (NaN and typed reasons). The route enum does not certify every field.
 SimdRoute american_put_greeks_batch(const double* S, const double* K, const double* T,
                                     const double* sigma, const double* r, const double* q,
                                     std::size_t n, const std::optional<AlOpts>& opts,

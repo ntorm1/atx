@@ -16,6 +16,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_discrete_div_kernel.hpp"
 #include "pricing/american_discrete_div_reference.hpp"
+#include "support/ddiv_matrix_cases.hpp"
 
 // SLOW suite (ATX_VOL_SLOW_FILTER: DiscreteDivReferenceMatrix.*) of lane D0: the
 // data-driven matrix of the independent cash-dividend reference against the
@@ -90,144 +91,17 @@ constexpr double kVegaIdentifiedRel = 1.0e-4;
   return l;
 }
 
-struct Case {
-  std::string id;
-  std::string group;
-  double S = 100.0;
-  double K = 100.0;
-  double T = 1.0;
-  double sigma = 0.25;
-  double r = 0.04;
-  double q = 0.0;
-  Side side = Side::Put;
-  CashProcess process = CashProcess::SpotLiquidator;
-  std::vector<CashDividend> divs;
-};
+using Case = atx::vol::test::ddiv_matrix::InputCase;
 
-[[nodiscard]] Case make(std::string id, std::string group, double S, double K, double T,
-                        double sigma, double r, Side side, std::vector<CashDividend> divs,
-                        CashProcess process = CashProcess::SpotLiquidator) {
-  Case c;
-  c.id = std::move(id);
-  c.group = std::move(group);
-  c.S = S;
-  c.K = K;
-  c.T = T;
-  c.sigma = sigma;
-  c.r = r;
-  c.side = side;
-  c.process = process;
-  c.divs = std::move(divs);
-  return c;
-}
-
-[[nodiscard]] std::vector<CashDividend> quarterly(double first, double amount, double T) {
-  std::vector<CashDividend> out;
-  for (double t = first; t <= T + 1e-12; t += 0.25) {
-    out.push_back({t, amount});
-  }
-  return out;
-}
-
-// The matrix of the lane brief, grouped A-I (doc section 3 explains each group).
 [[nodiscard]] std::vector<Case> matrix() {
-  std::vector<Case> m;
-  constexpr double kSig = 0.25;
-  constexpr double kR = 0.04;
-  // A: ex-date alignment perturbations. T 0.5, one 2.00 at 0.25 = step 150.5 of
-  // the 301 lattice (round-half-even -> 150); +-1 step; +-0.01 step around the
-  // rounding boundary.
-  {
-    const double dt = 0.5 / 301.0;
-    const std::array<std::pair<const char *, double>, 5> taus{
-        {{"-1step", 0.25 - dt}, {"base", 0.25}, {"+1step", 0.25 + dt},
-         {"150.49", 150.49 * dt}, {"150.51", 150.51 * dt}}};
-    int i = 1;
-    for (const auto &[tag, tau] : taus) {
-      m.push_back(make("A" + std::to_string(i) + "p", std::string("A align ") + tag, 100, 100,
-                       0.5, kSig, kR, Side::Put, {{tau, 2.0}}));
-      m.push_back(make("A" + std::to_string(i) + "c", std::string("A align ") + tag, 100, 95,
-                       0.5, kSig, kR, Side::Call, {{tau, 2.0}}));
-      ++i;
-    }
-  }
-  // B: dividend on the first step, on the last step before expiry, on expiry.
-  {
-    const double dt = 1.0 / 301.0;
-    const std::array<std::pair<const char *, double>, 3> taus{
-        {{"first step", 0.7 * dt}, {"last step", 1.0 - 0.4 * dt}, {"on expiry", 1.0}}};
-    int i = 1;
-    for (const auto &[tag, tau] : taus) {
-      m.push_back(make("B" + std::to_string(i) + "p", std::string("B ") + tag, 100, 100, 1.0,
-                       kSig, kR, Side::Put, {{tau, 3.0}}));
-      m.push_back(make("B" + std::to_string(i) + "c", std::string("B ") + tag, 100, 95, 1.0,
-                       kSig, kR, Side::Call, {{tau, 3.0}}));
-      ++i;
-    }
-  }
-  // C: multiple dividends, quarterly 1.00 from 0.10: 2, 4, 8 events.
-  for (const double T : {0.5, 1.0, 2.0}) {
-    const auto divs = quarterly(0.1, 1.0, T);
-    const std::string n = std::to_string(divs.size());
-    m.push_back(make("C" + n + "p", "C " + n + " events", 100, 100, T, kSig, kR, Side::Put, divs));
-    m.push_back(make("C" + n + "c", "C " + n + " events", 100, 95, T, kSig, kR, Side::Call, divs));
-  }
-  // D: LEAPS. T 3 with 12 quarterly 1.00; an SPY-scale long chain (the L3f worst
-  // contract's shape: S 772.98, T 2.182, sigma 0.35, nine quarterly 1.8311).
-  {
-    const auto divs = quarterly(0.1, 1.0, 3.0);
-    m.push_back(make("D12p", "D LEAPS 3y", 100, 100, 3.0, kSig, kR, Side::Put, divs));
-    m.push_back(make("D12c", "D LEAPS 3y", 100, 95, 3.0, kSig, kR, Side::Call, divs));
-    const auto spy = quarterly(0.15, 1.8311, 2.182);
-    m.push_back(make("DSPYp", "D LEAPS SPY", 772.98, 700, 2.182, 0.35, 0.047, Side::Put, spy));
-    m.push_back(make("DSPYc", "D LEAPS SPY", 772.98, 858, 2.182, 0.35, 0.047, Side::Call, spy));
-  }
-  // E: large dividend / spot: 1 %, 5 %, 20 % at mid-life; and the review-m1
-  // contract (dev200: S 6.375, K 5, cash 4.10 = 64 % of spot, 5.9 days out).
-  for (const double D : {1.0, 5.0, 20.0}) {
-    const std::string tag = std::to_string(static_cast<int>(D));
-    m.push_back(make("E" + tag + "p", "E D/S " + tag + "%", 100, 100, 1.0, kSig, kR, Side::Put,
-                     {{0.5, D}}));
-    m.push_back(make("E" + tag + "c", "E D/S " + tag + "%", 100, 95, 1.0, kSig, kR, Side::Call,
-                     {{0.5, D}}));
-  }
-  {
-    const std::vector<CashDividend> m1{{0.016272795852273703, 4.0999999046325684}};
-    m.push_back(make("E64p", "E D/S 64% (review m1)", 6.375, 5.0, 0.34715297818183899, 0.2,
-                     0.046780478209257126, Side::Put, m1));
-    m.push_back(make("E64c", "E D/S 64% (review m1)", 6.375, 5.0, 0.34715297818183899, 0.2,
-                     0.046780478209257126, Side::Call, m1));
-  }
-  // F: exercise immediately before the jump (deep in the money).
-  m.push_back(make("F1c", "F ITM pre-jump", 100, 70, 0.5, kSig, kR, Side::Call, {{0.45, 5.0}}));
-  m.push_back(make("F1p", "F ITM pre-jump", 100, 130, 0.5, kSig, kR, Side::Put, {{0.45, 5.0}}));
-  m.push_back(make("F2c", "F ITM pre-jump", 100, 80, 0.25, kSig, kR, Side::Call, {{0.24, 4.0}}));
-  m.push_back(make("F2p", "F ITM pre-jump", 100, 125, 0.25, kSig, kR, Side::Put, {{0.24, 4.0}}));
-  // G: r = 0.
-  m.push_back(make("G1p", "G r=0", 100, 100, 1.0, kSig, 0.0, Side::Put, {{0.5, 3.0}}));
-  m.push_back(make("G1c", "G r=0", 100, 95, 1.0, kSig, 0.0, Side::Call, {{0.5, 3.0}}));
-  m.push_back(make("G4p", "G r=0", 100, 100, 1.0, kSig, 0.0, Side::Put, quarterly(0.1, 1.0, 1.0)));
-  m.push_back(make("G4c", "G r=0", 100, 95, 1.0, kSig, 0.0, Side::Call, quarterly(0.1, 1.0, 1.0)));
-  // H: the escrowed convention, against the Escrowed* lattices.
-  m.push_back(make("H1p", "H escrowed", 100, 100, 1.0, kSig, kR, Side::Put, {{0.5, 3.0}},
-                   CashProcess::Escrowed));
-  m.push_back(make("H1c", "H escrowed", 100, 95, 1.0, kSig, kR, Side::Call, {{0.5, 3.0}},
-                   CashProcess::Escrowed));
-  m.push_back(make("H4p", "H escrowed", 100, 100, 1.0, kSig, kR, Side::Put,
-                   quarterly(0.1, 1.0, 1.0), CashProcess::Escrowed));
-  m.push_back(make("H4c", "H escrowed", 100, 95, 1.0, kSig, kR, Side::Call,
-                   quarterly(0.1, 1.0, 1.0), CashProcess::Escrowed));
-  // I: cash that can exceed spot — liquidator (the kernel's) vs survivor.
-  for (const CashProcess process : {CashProcess::SpotLiquidator, CashProcess::SpotSurvivor}) {
-    const char *tag = (process == CashProcess::SpotLiquidator) ? "L" : "S";
-    m.push_back(make(std::string("I") + tag + "p",
-                     std::string("I cash>spot ") + atx::vol::ddiv_ref::to_string(process), 10, 8,
-                     0.5, 0.8, 0.03, Side::Put, {{0.25, 6.0}}, process));
-    m.push_back(make(std::string("I") + tag + "c",
-                     std::string("I cash>spot ") + atx::vol::ddiv_ref::to_string(process), 10, 8,
-                     0.5, 0.8, 0.03, Side::Call, {{0.25, 6.0}}, process));
-  }
-  return m;
+  return atx::vol::test::ddiv_matrix::matrix();
+}
+
+TEST(DiscreteDivReferenceManifest, PreservesFrozenOriginalInputFingerprint) {
+  const auto cases = matrix();
+  ASSERT_EQ(cases.size(), 50U);
+  EXPECT_EQ(atx::vol::test::ddiv_matrix::input_fingerprint(cases),
+            12110935955959749584ULL);
 }
 
 [[nodiscard]] Problem problem_of(const Case &c) {

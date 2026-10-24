@@ -87,6 +87,7 @@
 // first pricing call, since that call is what builds the pool and configuration
 // afterwards is refused with AlreadyExists and applies nothing.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -96,6 +97,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/adjusted_greeks.hpp"     // StickyParams
+#include "atx/vol/api/pricing/american.hpp"            // Greek availability metadata
 #include "atx/vol/api/pricing/dividend.hpp"            // DividendEvent, HybridDivParams
 #include "atx/vol/api/backtest/priced_surface.hpp"      // PricedSurface, PricingContext
 #include "atx/vol/api/backtest/priced_surface_view.hpp" // PricedSurfaceView (WS-ZC1 borrowed surfaces)
@@ -174,6 +176,7 @@ enum class PriceStatus : std::uint8_t {
   ModelUnavailable = 1, // no surface registered for the contract's uid
   NumericError = 2,     // pricer/greeks failed, or IV/price non-finite
   InvalidContract = 3,  // K <= 0 or T <= 0 (or non-finite)
+  GreeksUnavailable = 4, // valid price/IV; at least one requested risk field is unavailable
 };
 
 // ── Portfolio (dedups contracts) ─────────────────────────────────────────
@@ -340,6 +343,12 @@ public:
   }
 
   [[nodiscard]] double iv(double K, double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(iv(K, T)); }
+  [[nodiscard]] double iv(double K, double T, TenorInterp interp) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(iv(K, T, interp));
+  }
+  [[nodiscard]] bool moneyness_extrapolated(double K, double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(moneyness_extrapolated(K, T));
+  }
   [[nodiscard]] double total_variance(double K, double T) const noexcept {
     ATX_VOL_SURFACE_REF_FWD(total_variance(K, T));
   }
@@ -520,13 +529,19 @@ enum class PriceFieldMask : std::uint32_t {
 // "No value" sentinel for a column a request did not compute (GR-F1 carry axis).
 inline constexpr double kPriceColumnNaN = std::numeric_limits<double>::quiet_NaN();
 
-// Portfolio-level column sums over the Ok lanes of a price frame.
+// Portfolio-level sums over priced lanes (Ok or GreeksUnavailable). Coverage is
+// explicit: n_priced counts their PV contributions, n_ok the complete bundles.
+// A missing requested risk on any nonzero-weight priced row makes that aggregate
+// NaN/unsupported. Other risk fields and PV survive. Unpriced rows are excluded;
+// n_priced must equal the position count before treating PV as a complete book.
+// Nonfinite aggregate sums are NaN/unsupported. Net and gross Vega share the
+// Vega availability bit: overflow of either makes both unavailable.
 struct PriceTotals {
   double pv{0.0};
   double delta{0.0};
   double gamma{0.0};
   double vega{0.0}; // NET (signed) position-scaled dP/dsigma, per UNIT vol
-  // GROSS vega: Σ|position-scaled dP/dsigma| over the SAME Ok lanes, in the same
+  // GROSS vega: Σ|position-scaled dP/dsigma| over the SAME priced lanes, in the same
   // unit and the same fixed input order as `vega`.
   //
   // C-3 (pipeline-m production review). A vega-neutral book — every dispersion
@@ -556,6 +571,13 @@ struct PriceTotals {
   // genuinely carry-flat book). See PriceFrame::dP_dq.
   double dP_dq{kPriceColumnNaN};
   std::uint32_t n_ok{0};
+  std::uint32_t n_priced{0};
+  std::uint32_t n_greeks_unavailable{0};
+  GreekFieldMask requested{GreekFieldMask::None};
+  GreekFieldMask supported{GreekFieldMask::None};
+  // Mask-bit order Delta..Charm,Price; Price describes the priced-row PV sum.
+  // Availability is not an accuracy qualification.
+  std::array<AmericanGreekReason, 9> reasons{};
 };
 
 // One row per position (input order). PV and all Greeks are position-scaled
@@ -582,6 +604,9 @@ struct PriceFrame {
   std::vector<double> dP_dq;
   std::vector<PriceStatus> status;
   PriceTotals total{};
+  std::vector<GreekFieldMask> requested;
+  std::vector<GreekFieldMask> supported;
+  std::vector<std::array<AmericanGreekReason, 9>> reasons;
 
   [[nodiscard]] std::size_t size() const noexcept { return id.size(); }
 
@@ -767,6 +792,12 @@ struct PriceFrameView {
   std::span<double> charm;
   std::span<PriceStatus> status;
   PriceTotals *total{nullptr};
+  // Optional, independently sized metadata columns. Empty spans are untouched;
+  // present spans must have one entry per position and be disjoint from all
+  // other outputs. Price denotes the per-share mark, Greek fields scaled risk.
+  std::span<GreekFieldMask> requested{};
+  std::span<GreekFieldMask> supported{};
+  std::span<std::array<AmericanGreekReason, 9>> reasons{};
 };
 
 // Reusable scratch for repeated pricing of a FIXED book across many surface

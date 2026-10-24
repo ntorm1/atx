@@ -261,6 +261,20 @@ public:
   // the override path.
   [[nodiscard]] double iv(double K, double T) const noexcept;
 
+  // `iv(K, T)` under an explicit maturity-interpolation mode (additive, risk-engine
+  // sprint 2026-10-24). Same k = ln(K / F(T)), same domain and tenor extrapolation;
+  // `TotalVariance` IS `iv(K, T)` (forwarded, bit-identical); `ShapeBlend` reads the
+  // surface through `CurveSurface::iv(k, T, TenorInterp::ShapeBlend)` (see there).
+  [[nodiscard]] double iv(double K, double T, TenorInterp interp) const noexcept;
+
+  // BEST-EFFORT moneyness provenance: true iff a slice bracketing T (both for an
+  // interior T, the single serving slice otherwise) reports
+  // `IVolCurve::is_extrapolated(k)` at k = ln(K / F(T)) — i.e. the query sits in a
+  // data-free wing of a data-driven curve (SplineVol today). Parametric kinds
+  // (eSSVI / SVI / C8) and the dense/linear kinds never assert it, so `false` means
+  // "no curve said so", not "inside the quoted range". False for an invalid K / T.
+  [[nodiscard]] bool moneyness_extrapolated(double K, double T) const noexcept;
+
   // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / extrapolation
   // semantics as `iv` above.
   [[nodiscard]] double total_variance(double K, double T) const noexcept;
@@ -382,8 +396,13 @@ public:
   // `greeks(K,T,side).value()` (or `greeks_analytic` when `analytic` is set).
   // On an active fast route, `analytic` is deliberately ignored because the
   // cached surrogate supplies a single internally consistent price/Greek jet.
-  // `status` is Ok, or the propagated pricer error (e.g. the negative-carry
-  // Unsupported corner), in which case the numeric fields are NaN.
+  // `status` is Ok only when every requested output is supplied. An unavailable
+  // Greek retains resolved IV, an already supplied price and other computed
+  // axes; use greeks.requested/supported/reasons to consume partial results.
+  // Invalid queries and price-kernel errors retain the historical NaN poison.
+  // Dedicated scalar-axis failures have no per-field numerical reason channel:
+  // their unavailable slot is Nonfinite and status retains the original error.
+  // A supplied dedicated axis is a ComputedEstimate, not an accuracy certificate.
   //
   // Field routing: requesting FirstOrder|SecondOrder runs the Greek bundle; since
   // american_greeks_fd().price IS the fair value (bit-identical), requesting
@@ -394,7 +413,7 @@ public:
   struct FusedResult {
     double iv{0.0};
     double price{0.0};
-    AmericanGreeks greeks{}; // populated when FirstOrder|SecondOrder requested
+    AmericanGreeks greeks{}; // supplied bundle or explicitly requested scalar axes
     Status status{};         // default-constructed == Ok
   };
 

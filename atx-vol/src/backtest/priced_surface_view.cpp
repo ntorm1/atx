@@ -12,6 +12,7 @@
 #include "atx/vol/api/fitting/vol_surface.hpp"   // EssviParams, SviParams, essvi_total_w, svi_total_w
 #include "backtest/laned_greek_run.hpp"      // WS-P1v: the shared laned analytic-Greek batch driver
 #include "backtest/term_carry.hpp"            // interpolate_positive_log, coherent_q_eff
+#include "fitting/shape_blend.hpp"            // detail::shape_blend_* (shared with CurveSurface)
 
 #include "atx/core/error.hpp"
 
@@ -66,9 +67,11 @@ constexpr double kFlatDiscountRelativeTolerance = 1.0e-12;
   return std::isfinite(K) && (K > 0.0) && std::isfinite(T) && (T > 0.0);
 }
 
-void poison(AmericanGreeks &greeks) noexcept {
+void poison(AmericanGreeks &greeks, GreekFieldMask requested) noexcept {
+  greeks = {};
   greeks.delta = greeks.gamma = greeks.vega = greeks.theta = greeks.rho = greeks.vanna =
       greeks.volga = greeks.charm = greeks.price = kNaN;
+  detail::mark_american_greek_fields(greeks, requested, AmericanGreekReason::Nonfinite);
 }
 
 // View instance ids are drawn from a HIGH, disjoint range so they can never
@@ -692,6 +695,30 @@ double PricedSurfaceView::surface_w(double k_log, double T, Bracket resolved) co
   return (1.0 - resolved.upper_weight) * wlo + resolved.upper_weight * whi;
 }
 
+double PricedSurfaceView::surface_w_shape_blend(double k_log, double T,
+                                                Bracket resolved) const noexcept {
+  // Mirrors CurveSurface::w_shape_blend: every single-slice case and every
+  // malformed bracket is surface_w's TotalVariance answer verbatim; the interior
+  // blend runs through the SAME out-of-line detail::shape_blend_* core, so the
+  // view and its owner agree bit-for-bit.
+  if (n_slices_ == 0 || !(T > 0.0) || resolved.lo >= n_slices_ || resolved.hi >= n_slices_ ||
+      resolved.lo > resolved.hi ||
+      !(resolved.upper_weight >= 0.0 && resolved.upper_weight <= 1.0) ||
+      resolved.is_single_slice() || T < col_T_[0]) {
+    return surface_w(k_log, T, resolved);
+  }
+  const detail::ShapeBlendAnchor anchor =
+      detail::shape_blend_anchor(k_log, T, col_T_[resolved.lo], col_T_[resolved.hi],
+                                 resolved.upper_weight, slice_w(resolved.lo, 0.0),
+                                 slice_w(resolved.hi, 0.0));
+  if (!anchor.usable) {
+    return surface_w(k_log, T, resolved);
+  }
+  const double blended = detail::shape_blend_w(anchor, slice_w(resolved.lo, anchor.k_lo),
+                                               slice_w(resolved.hi, anchor.k_hi));
+  return std::isnan(blended) ? surface_w(k_log, T, resolved) : blended;
+}
+
 PricedSurfaceView::ResolvedSurfacePoint
 PricedSurfaceView::resolve_with_carry(double K, double T, ForwardCarry fc) const noexcept {
   return resolve_with_carry_and_bracket(K, T, fc, surface_bracket(T));
@@ -762,6 +789,40 @@ double PricedSurfaceView::iv(double K, double T) const noexcept {
   return p.valid ? p.sigma : kNaN;
 }
 
+double PricedSurfaceView::iv(double K, double T, TenorInterp interp) const noexcept {
+  switch (interp) {
+  case TenorInterp::TotalVariance:
+    return iv(K, T);
+  case TenorInterp::ShapeBlend: {
+    if (!valid_query(K, T) || n_slices_ == 0) {
+      return kNaN;
+    }
+    const double k_log = std::log(K / interp_forward(T).forward);
+    const double w = surface_w_shape_blend(k_log, T, surface_bracket(T));
+    return (w > 0.0 && T > 0.0) ? std::sqrt(w / T) : kNaN; // == CurveSurface::iv
+  }
+  }
+  return kNaN; // out-of-range enumerator value
+}
+
+bool PricedSurfaceView::moneyness_extrapolated(double K, double T) const noexcept {
+  if (!valid_query(K, T) || n_slices_ == 0) {
+    return false;
+  }
+  const double k_log = std::log(K / interp_forward(T).forward);
+  const Bracket bracket = surface_bracket(T);
+  // Only SplineVol overrides IVolCurve::is_extrapolated (its record stores the
+  // data-supported z range); every other kind answers false on the owned path too.
+  const auto slice_says = [this, k_log](std::size_t i) noexcept {
+    if (static_cast<VolCurveKind>(col_kind_[i]) != VolCurveKind::SplineVol) {
+      return false;
+    }
+    const IVolCurve *curve = heavy_curve(i);
+    return curve != nullptr && curve->is_extrapolated(k_log);
+  };
+  return slice_says(bracket.lo) || slice_says(bracket.hi);
+}
+
 double PricedSurfaceView::total_variance(double K, double T) const noexcept {
   const ResolvedSurfacePoint p = resolve(K, T);
   return p.valid ? surface_w(p.k_log, T) : kNaN;
@@ -805,6 +866,8 @@ Result<double> PricedSurfaceView::vega_resolved(const ResolvedSurfacePoint &p, S
   if (!greeks.has_value()) {
     return Err(greeks.error());
   }
+  if (!detail::american_greeks_support(*greeks, GreekFieldMask::Vega))
+    return Err(ErrorCode::Unavailable, "vega stencil");
   return Ok(greeks->vega);
 }
 
@@ -862,10 +925,12 @@ PricedSurfaceView::FusedResult
 PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, EvalField fields,
                                      bool analytic, GreekNeeds needs) const {
   FusedResult r;
+  const GreekFieldMask requested = detail::fused_greek_request(fields, needs);
+  detail::mark_american_greek_fields(r.greeks, requested, AmericanGreekReason::Nonfinite);
   if (!p.valid) {
     r.iv = kNaN;
     r.price = kNaN;
-    poison(r.greeks);
+    poison(r.greeks, requested);
     r.status = Err(ErrorCode::InvalidArgument,
                    "PricedSurfaceView::evaluate: non-finite or non-positive K/T");
     return r;
@@ -884,7 +949,7 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
     if (!g.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
-      poison(r.greeks);
+      poison(r.greeks, requested);
       r.status = Err(g.error());
       return r;
     }
@@ -899,8 +964,7 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
     r.greeks = gg;
     r.price = gg.price;
     if (!detail::requested_greeks_finite(gg, needs)) {
-      r.status = Err(ErrorCode::Internal,
-                     "PricedSurfaceView::evaluate: non-finite price or requested Greek");
+      r.status = Err(ErrorCode::Unavailable, "Greek refused");
     }
     return r;
   }
@@ -909,33 +973,48 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
     if (!fv.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
-      poison(r.greeks);
+      poison(r.greeks, requested);
       r.status = Err(fv.error());
       return r;
     }
     r.price = *fv;
+    r.greeks.price = *fv;
+    detail::mark_american_greek_fields(r.greeks, GreekFieldMask::Price,
+                                      AmericanGreekReason::ComputedEstimate);
+    if (!detail::american_greeks_support(r.greeks, GreekFieldMask::Price)) {
+      r.iv = r.price = kNaN;
+      poison(r.greeks, requested);
+      r.status = Err(ErrorCode::Unavailable, "Price refused");
+      return r;
+    }
   }
   if (has_field(fields, EvalField::Delta)) {
     const Result<double> d = delta_resolved(p, side);
     if (!d.has_value()) {
-      r.iv = kNaN;
-      r.price = kNaN;
-      poison(r.greeks);
       r.status = Err(d.error());
       return r;
     }
     r.greeks.delta = *d;
+    detail::mark_american_greek_fields(r.greeks, GreekFieldMask::Delta,
+                                      AmericanGreekReason::ComputedEstimate);
+    if (!detail::american_greeks_support(r.greeks, GreekFieldMask::Delta)) {
+      r.status = Err(ErrorCode::Unavailable, "Greek refused");
+      return r;
+    }
   }
   if (has_field(fields, EvalField::Vega)) {
     Result<double> vega_result = vega_resolved(p, side);
     if (!vega_result.has_value()) {
-      r.iv = kNaN;
-      r.price = kNaN;
-      poison(r.greeks);
       r.status = Err(vega_result.error());
       return r;
     }
     r.greeks.vega = *vega_result;
+    detail::mark_american_greek_fields(r.greeks, GreekFieldMask::Vega,
+                                      AmericanGreekReason::ComputedEstimate);
+    if (!detail::american_greeks_support(r.greeks, GreekFieldMask::Vega)) {
+      r.status = Err(ErrorCode::Unavailable, "Greek refused");
+      return r;
+    }
   }
   return r;
 }

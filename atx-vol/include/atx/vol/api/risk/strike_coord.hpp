@@ -40,6 +40,7 @@
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // SurfaceRef
 #include "atx/vol/api/core/types.hpp"                // DeltaConvention, Result, Side
 #include "atx/vol/api/core/vol_time.hpp"             // TimeSpec
+#include "atx/vol/api/fitting/vol_curve.hpp"         // TenorInterp
 #include "atx/vol/api/risk/risk_types.hpp"
 
 namespace atx::vol {
@@ -69,14 +70,9 @@ struct StrikeCoord {
   [[nodiscard]] bool operator==(const StrikeCoord &) const = default;
 };
 
-// Maturity interpolation for a query T between two fitted pillars.
-enum class TenorInterp : std::uint8_t {
-  TotalVariance = 0, // linear in total variance at fixed k (CurveSurface::w; the default)
-  ShapeBlend = 1,    // SpiderRock-style vol-multiple blend at common standardized
-                     // moneyness (projection.hpp InterpMode::ShapeBlend, ported to
-                     // PricedSurface::iv(K, T, TenorInterp)); ATM identical to
-                     // TotalVariance, skew shape preserved off-ATM
-};
+// Maturity interpolation for a query T between two fitted pillars: `TenorInterp`
+// (TotalVariance / ShapeBlend) is declared in api/fitting/vol_curve.hpp, beside the
+// CurveSurface overloads that take it, and re-exported by the include above.
 
 // What to do when T (or k) leaves the fitted domain.
 enum class TenorExtrapPolicy : std::uint8_t {
@@ -136,7 +132,9 @@ struct CoordResult {
 //         outside (0,1) / (-1,0) or with the wrong sign for the side; OutOfRange
 //         under TenorExtrapPolicy::Forbid; NotFound when a delta target is unreachable
 //         within the surface's domain; NotImplemented for a convention a route
-//         cannot honour.
+//         cannot honour; Unavailable when the surface has no forward / vol at
+//         (K, T), a delta is not finite there, or the American solve cannot
+//         evaluate / converge.
 [[nodiscard]] Result<CoordResult> convert_strike_coord(const SurfaceRef &surface, double T,
                                                        Side side, const StrikeCoord &from,
                                                        const ProjectionPolicy &policy = {});

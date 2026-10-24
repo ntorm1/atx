@@ -1,0 +1,37 @@
+{
+  "schema": "atx-american-greek-risk-contract-proposal-v1",
+  "status": "proposed engineering contract; not yet validated or enabled",
+  "changes_public_defaults": false,
+  "implied_by_spy_price_budget": false,
+  "unit": "USD per underlying share",
+  "cold_bundle_fields": ["delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm"],
+  "derivative_convention": "ContractSigma; other scalar model parameters held fixed",
+  "clock": "Calendar365 scalar model year fraction; other clock mappings require separate validation",
+  "shock_sets": [
+    {"name": "operational", "spot_fraction": 0.001, "volatility_absolute": 0.001, "rate_absolute": 0.0001, "calendar_seconds": 60},
+    {"name": "stress", "spot_fraction": 0.01, "volatility_absolute": 0.01, "rate_absolute": 0.0025, "calendar_seconds": 3600}
+  ],
+  "calendar_roll_cap_fraction_of_remaining_T": 0.1,
+  "signs": "all plus/minus combinations; calendar roll is forward only",
+  "term_coefficients": {"delta": "dS", "gamma": "0.5*dS^2", "vega": "dsigma", "theta": "dt", "rho": "dr", "vanna": "dS*dsigma", "volga": "0.5*dsigma^2", "charm": "dS*dt"},
+  "per_component_discrepancy_plus_uncertainty_cap_usd": 0.0001,
+  "sum_absolute_component_cap_usd": 0.0005,
+  "reference_uncertainty_fraction_of_component_cap": 0.25,
+  "reference_policy": {
+    "minimum_adjacent_step_levels": 3,
+    "minimum_model_profiles": 2,
+    "require_actual_exercise_evidence": true,
+    "reject_mixed_or_missing_regime_evidence": true,
+    "step_choice": "first eligible adjacent three-step window from coarse to fine; never smallest step or minimum candidate error alone",
+    "maximum_adjacent_drift_ratio": {"central": 0.5, "one_sided": 0.75},
+    "drift_roundoff_allowance_multiplier": 32,
+    "reference_center": "midrange of all admitted estimates in both profiles and three step levels",
+    "uncertainty": "empirical envelope of adjacent-step drift, profile drift and cancellation indicator; not a rigorous bound",
+    "american_promotion_requires_independent_reference_method": true
+  },
+  "reference_sign_rule": "preserve sign when the stabilized reference interval excludes zero and its shock contribution exceeds the reference uncertainty reserve",
+  "unavailable_field_outcome": "explicitly refused or unresolved; never zero and never removed from request denominator",
+  "full_bundle_gate": "all eight named cold fields must pass both shock sets and the absolute-component sum; any additionally requested absent axis prevents a full-request pass",
+  "full_repricing_taylor_residual": "report separately; nonlinearity is not automatically derivative error",
+  "excluded_claims": ["rigorous numerical error bound", "full hedge P&L guarantee", "cash-dividend qualification", "sticky-surface Greeks", "served-map derivatives", "latency qualification"]
+}

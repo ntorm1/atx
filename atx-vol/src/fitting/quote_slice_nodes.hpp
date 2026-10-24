@@ -18,6 +18,7 @@
 
 namespace atx::vol {
 struct IvPremiumPrepared;
+class IvPriceSeedFloorCache;
 }
 
 namespace atx::vol::detail {
@@ -66,10 +67,13 @@ struct VolIdentification {
 // american_iv.hpp as FlatExerciseRegion or LowVega (QuoteSlicePriceOnlyReason).
 // `prepared`, when supplied by publication, borrows a native batch result whose
 // exact input keys are checked before consumption; it is never retained.
+// The optional floor cache belongs to the current publication operation, never the
+// immutable fit. It reuses only exact cold boundaries and is not retained here.
 [[nodiscard]] VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike,
                                               Side side, double price,
                                               QuoteSliceFloorPolicy policy,
-                                              const IvPremiumPrepared *prepared = nullptr);
+                                              const IvPremiumPrepared *prepared = nullptr,
+                                              IvPriceSeedFloorCache *floor_cache = nullptr);
 
 // query_quote_slice's typed answer for certified `price` of (strike, side) - the one
 // classification behind both the query and a served row's labels (lane C0 fix round 1:

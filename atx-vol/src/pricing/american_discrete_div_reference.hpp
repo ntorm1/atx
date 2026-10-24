@@ -14,7 +14,7 @@
 // UNRESOLVED when that uncertainty exceeds the tolerance under test.
 //
 // WHAT THIS IS. Two independent discretisations of the SAME model, each
-// converged with a stated, conservative uncertainty:
+// refined with a stated empirical convergence uncertainty:
 //
 //   A. `pde_reference` — event-aligned finite differences. Uniform grid in the
 //      log of the state variable (central differences); Crank-Nicolson in time
@@ -83,11 +83,13 @@
 //   [p_theory / 2, p_theory + 1] (an order far above the scheme's is a
 //   cancellation between oscillating terms, not convergence):
 //   correction = d2 / (2^min(p, p_theory) - 1),
-//   uncertainty = |correction| (the true residual of the extrapolated value is
-//   bounded by the correction itself whenever the observed order is real; using
-//   the smaller order makes the correction, hence the bound, the larger one).
+//   uncertainty = |correction|; using the smaller order makes this empirical
+//   indicator larger. Three observed levels do not prove an asymptotic expansion
+//   or bound its unobserved remainder, so this is not a rigorous error bound.
 //   Otherwise NOT asymptotic: no correction, uncertainty = max(|d1|, |d2|).
 // A reference's uncertainty is the sum over its axes plus a rounding floor.
+// Retain separate time/space/domain refinements and independent exact controls;
+// agreement of these methods cannot detect defects in their shared jump operator.
 // `reference_price` reports both methods; it states the PDE value with the PDE
 // uncertainty when the two agree (|A - B| <= u_A + u_B) and, when they do not,
 // widens the uncertainty to |A - B| + u_A + u_B and clears `methods_agree`: the
@@ -231,12 +233,59 @@ struct PdeResult {
   int lcp_rounding_ties = 0;
 };
 
+// Optional work census. Reset on entry, including refusals; owned by the caller
+// and borrowed only for this solve. No clocks. A null pointer performs no census
+// traversal/allocation. It does not alter prices, grids, policies or stopping.
+struct PdeCoefficientStep {
+  std::array<std::uint64_t, 3> coefficient_bits{}; // exact lo/di/up
+  std::uint64_t thomas_sweeps = 0;
+  std::uint64_t continuation_rows = 0;
+  std::uint64_t max_run_length = 0;
+};
+
+struct PdeDiagnostics {
+  std::uint64_t thomas_sweeps = 0;
+  std::uint64_t fresh_seed_sweeps = 0;
+  std::uint64_t forward_rows = 0; // rows 1..n, including the right Dirichlet row
+  std::uint64_t continuation_rows = 0;
+  std::uint64_t identity_rows = 0;
+  std::uint64_t continuation_runs = 0;
+  // Hypothetical lazy coefficient rows required across consecutive sweeps with
+  // bit-identical lo/di/up, extending only to the longest free run encountered.
+  // This counts an opportunity; no coefficient cache is used by the solver.
+  std::uint64_t exact_key_coefficient_rows = 0;
+  std::vector<std::uint64_t> continuation_run_lengths; // index = run length
+  std::vector<PdeCoefficientStep> coefficient_steps; // backward solve order
+};
+
+// Optional research observation after an unchanged scalar Thomas sweep. Spans
+// borrow live state only for the callback; the observer must copy anything kept.
+// No callback, recording or allocation occurs when the observer is null.
+struct PdeThomasObservation {
+  double lo = 0., di = 0., up = 0., bottom = 0., top = 0.;
+  int implicit_step = 0;
+  bool fresh_data = false;
+  std::span<const double> rhs, obstacle, cp, dp, work;
+  std::span<const unsigned char> active;
+};
+
+struct PdeThomasObserver {
+  void (*on_sweep)(const PdeThomasObservation &, void *) = nullptr;
+  void *context = nullptr; // borrowed; caller keeps it alive throughout pde_price
+};
+
 // One PDE solve. Errors: `validate`'s; InvalidArgument for a grid outside
 // [space_base >= 8, time_base >= 1, levels in [0, kMaxLevels), width_sd > 0,
 // rannacher_steps >= 0, base * 2^level <= kMaxGridIntervals on both axes];
 // OutOfRange when the domain degenerates (no positive finite spacing, e.g. a
-// sigma that underflows); Internal if a policy iteration fails to settle.
-[[nodiscard]] Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid);
+// sigma that underflows), or the centered operator is nonfinite or has a negative
+// off-diagonal generator coefficient, or an implicit step lacks finite nonpositive
+// off-diagonals and strict diagonal dominance (a sufficient M-matrix condition).
+// This supported-grid restriction can refuse an otherwise valid model; it never
+// silently switches schemes. Internal if a policy iteration fails to settle.
+[[nodiscard]] Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid,
+                                         PdeDiagnostics *diagnostics = nullptr,
+                                         const PdeThomasObserver *observer = nullptr);
 
 // ── Convergence and the uncertainty rule (header block above) ────────────
 
@@ -246,7 +295,7 @@ struct Axis {
   double observed_order = 0.0; // log2(d1 / d2); 0 when undefined
   bool asymptotic = false;
   double correction = 0.0;  // added to values[n - 1]
-  double uncertainty = 0.0; // conservative bound on that axis's residual
+  double uncertainty = 0.0; // empirical residual indicator, not a proved error bound
 };
 
 // The rule above, on any refinement sequence of ratio 2. n < 3 is never

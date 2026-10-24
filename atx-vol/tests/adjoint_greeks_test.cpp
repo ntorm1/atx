@@ -8,14 +8,17 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/pricing/greeks.hpp"  // L5 T3: black76_greeks' own sigma ~ 0 delta
 #include "pricing/adjoint_greeks.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 using atx::vol::american_greeks_fd;
 using atx::vol::andersen_lake;
@@ -72,6 +75,41 @@ TEST(AdjointGreeksEuropean, PriceMatchesBlack76) {
           << "K=" << p.K << " T=" << p.T << " sig=" << p.sigma << " r=" << p.r << " q=" << p.q;
     }
   }
+}
+
+TEST(AdjointGreeksEuropean, AvailabilityIncludesComputedDegenerateZeros) {
+  using namespace atx::vol;
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const auto &[T, sigma] : std::array<std::pair<double, double>, 3>{
+             std::pair{.5, .3}, std::pair{0.0, .3}, std::pair{.5, 0.0}}) {
+      const auto g = european_greeks_adjoint(100, 105, T, sigma, .04, .01, side);
+      EXPECT_EQ(g.requested, GreekFieldMask::All);
+      EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::All));
+    }
+  }
+  const auto invalid = european_greeks_adjoint(100, 100, .5, 0,
+      std::numeric_limits<double>::quiet_NaN(), .01, Side::Put);
+  EXPECT_EQ(invalid.requested, GreekFieldMask::All);
+  EXPECT_EQ(invalid.supported, GreekFieldMask::None);
+  for (const auto reason : invalid.reasons) EXPECT_EQ(reason, AmericanGreekReason::Nonfinite);
+}
+
+TEST(AdjointGreeksAmerican, ClaimedTangentRouteSuppliesExplicitEstimates) {
+  using namespace atx::vol;
+  unsigned claimed = 0;
+  for (const double K : {90.0, 100.0, 110.0}) {
+    for (const double sigma : {.15, .35}) {
+      bool took = false;
+      const auto g = american_greeks_adjoint(100, K, .5, sigma, .05, 0,
+                                             Side::Put, std::nullopt, &took);
+      ASSERT_TRUE(g);
+      if (!took) continue; // The cold fallback has its own producer contract.
+      ++claimed;
+      EXPECT_EQ(g->requested, GreekFieldMask::All);
+      EXPECT_TRUE(detail::american_greeks_support(*g, GreekFieldMask::All));
+    }
+  }
+  EXPECT_GT(claimed, 0u);
 }
 
 // First-order greeks: exact adjoint vs central FD of the independent oracle.

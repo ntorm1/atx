@@ -68,6 +68,7 @@
 // self-oversubscribing. Passing a null executor (the default) keeps the fan
 // serial and touches no global state at all.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -86,10 +87,10 @@ class PricingExecutor; // pricing_executor.hpp (optional cross-lane parallelism)
 
 // ── Per-lane outcome ──────────────────────────────────────────────────────
 //
-// Ok      — a finite price / Greek bundle was produced for this lane.
-// Unsupported — the scalar route returned non-finite (the double-continuation
-//               negative-carry corner andersen_lake reports as NotImplemented, or
-//               an invalid-argument lane); the numeric output is NaN.
+// Ok — the mark and every requested field were supplied as finite values.
+// Unsupported — the mark or at least one requested field was unavailable.
+// A partial Greek result retains its valid price/other supplied fields; inspect
+// the workspace's per-field metadata instead of treating the entire row as NaN.
 enum class LaneStatus : std::uint8_t {
   Ok = 0,
   Unsupported = 1,
@@ -220,8 +221,18 @@ struct PricingKernel {
 // they live here and are read back via lane_status()/lane_route()).
 class PricingWorkspace {
  public:
-  // Size the scratch to hold at least n lanes (idempotent; never shrinks).
+  // Reserve both price and Greek scratch (idempotent; capacities never shrink).
+  // Calling this before a Greek batch avoids metadata allocation in that call.
   void reserve_lanes(std::size_t n) {
+    reserve_price_lanes(n);
+    lane_requested.assign(n, GreekFieldMask::None);
+    lane_supported.assign(n, GreekFieldMask::None);
+    lane_reasons.assign(n, std::array<AmericanGreekReason, 9>{});
+  }
+
+  // Price-only callers do not allocate or initialize Greek metadata. Reusing a
+  // Greek workspace invalidates its old metadata views but retains capacity.
+  void reserve_price_lanes(std::size_t n) {
     if (ps_S.size() < n) {
       ps_S.resize(n);
       ps_K.resize(n);
@@ -234,12 +245,15 @@ class PricingWorkspace {
     }
     lane_status.assign(n, LaneStatus::Ok);
     lane_route.assign(n, simd::SimdRoute::Scalar);
+    lane_requested.clear();
+    lane_supported.clear();
+    lane_reasons.clear();
   }
 
   // Per-lane Greek-path diagnostics after american_greeks_batch (length n).
   //
   // BORROW of this workspace's own diagnostic vectors — the workspace is the
-  // owner. INVALIDATION: `reserve_lanes` `assign`s both vectors on EVERY call
+  // owner. INVALIDATION: either reserve method rewrites diagnostics on EVERY call
   // (not only when it grows the scratch), so it can reallocate and always resets
   // the contents; a batch call that reserves therefore invalidates any span taken
   // before it. Re-call the accessor after each batch rather than caching one, and
@@ -254,45 +268,28 @@ class PricingWorkspace {
   [[nodiscard]] std::span<const simd::SimdRoute> lane_route_view() const noexcept {
     return lane_route;
   }
+  [[nodiscard]] std::span<const GreekFieldMask> lane_requested_view() const noexcept {
+    return lane_requested;
+  }
+  [[nodiscard]] std::span<const GreekFieldMask> lane_supported_view() const noexcept {
+    return lane_supported;
+  }
+  [[nodiscard]] std::span<const std::array<AmericanGreekReason, 9>> lane_reasons_view() const noexcept {
+    return lane_reasons;
+  }
 
   // Internal columns (public so the batch implementation writes them directly).
   std::vector<double> ps_S, ps_K, ps_T, ps_sigma, ps_r, ps_q, ps_price;
   std::vector<std::uint32_t> perm; // pack slot -> original public lane index
   std::vector<LaneStatus> lane_status;
   std::vector<simd::SimdRoute> lane_route;
+  std::vector<GreekFieldMask> lane_requested;
+  std::vector<GreekFieldMask> lane_supported;
+  std::vector<std::array<AmericanGreekReason, 9>> lane_reasons;
 };
 
 // ── Greek field selector (models PriceFieldMask; per-greek granularity) ────
-enum class GreekFieldMask : std::uint32_t {
-  None = 0,
-  Delta = 1u << 0,
-  Gamma = 1u << 1,
-  Vega = 1u << 2,
-  Theta = 1u << 3,
-  Rho = 1u << 4,
-  Vanna = 1u << 5,
-  Volga = 1u << 6,
-  Charm = 1u << 7,
-  Price = 1u << 8,
-  AllGreeks = Delta | Gamma | Vega | Theta | Rho | Vanna | Volga | Charm,
-  All = AllGreeks | Price,
-};
-
-[[nodiscard]] constexpr GreekFieldMask operator|(GreekFieldMask a,
-                                                 GreekFieldMask b) noexcept {
-  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) |
-                                     static_cast<std::uint32_t>(b));
-}
-[[nodiscard]] constexpr GreekFieldMask operator&(GreekFieldMask a,
-                                                 GreekFieldMask b) noexcept {
-  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) &
-                                     static_cast<std::uint32_t>(b));
-}
-[[nodiscard]] constexpr bool has_field(GreekFieldMask set,
-                                       GreekFieldMask bit) noexcept {
-  return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) !=
-         0u;
-}
+// GreekFieldMask is shared with scalar AmericanGreeks in american.hpp.
 
 // ── The batch APIs ────────────────────────────────────────────────────────
 
@@ -328,8 +325,12 @@ enum class GreekFieldMask : std::uint32_t {
 // non-finite lanes to the same-side scalar oracle; ForceScalar reproduces the
 // bit-identical scalar bundle. `fields` also drives the K4 first-order solve-skip
 // (need_vega = Vega|Volga|Vanna, need_rho = Rho, need_charm = Charm). Per-lane
-// status/route land in the workspace (ws.lane_status_view()/lane_route_view()). Returns
-// the number of lanes written, or InvalidArgument on a span-length mismatch.
+// status/route and exact requested/supported masks plus per-field reasons land in
+// the workspace. Partial results preserve supplied columns; status is Unsupported
+// if any requested field is unavailable. An unrequested field never vetoes a
+// requested one; a finite supplied price remains a prerequisite for any lane.
+// Returns the number of lanes written, or InvalidArgument on a span-length
+// mismatch or unknown field-mask bit, before output/workspace writes.
 [[nodiscard]] Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in,
                                                         GreekFieldMask fields,
                                                         simd::GreeksBatchSoA& greeks,

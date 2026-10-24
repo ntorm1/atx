@@ -36,7 +36,9 @@
 //   status byte (equal hashes == bit-identical outputs); identical_to_loop (Scalar /
 //   PerContract: 1 iff bit-identical to the per-contract loop); identical_to_t1
 //   (every route: 1 iff bit-identical to the same route inline); max_abs_<col>
-//   against the loop (LanedAvx2 / Lockstep); st_ok and the non-Ok status counts.
+//   against the loop (LanedAvx2 / Lockstep); st_ok and the non-Ok status counts,
+//   including st_greeks_unavailable. compared_<col> reports the actual finite
+//   supplied-field denominator; a zero denominator has NaN error, not zero.
 //
 // Every number this bench prints on a shared host is UNQUALIFIED.
 
@@ -311,6 +313,13 @@ void fail_row(Outs &o, std::size_t i, ChainRowStatus st) {
          std::isfinite(c.strike[i]) && c.sigma[i] > 0.0 && std::isfinite(c.sigma[i]);
 }
 
+[[nodiscard]] bool supplied(const AmericanGreeks &g, std::size_t field, double value) {
+  const auto bit = static_cast<GreekFieldMask>(std::uint32_t{1} << field);
+  return has_field(g.requested, bit) && has_field(g.supported, bit) && std::isfinite(value) &&
+         (g.reasons[field] == AmericanGreekReason::ComputedEstimate ||
+          g.reasons[field] == AmericanGreekReason::Exercised);
+}
+
 // The naive per-contract loop: one kernel call per contract at the effective carry.
 void loop_greeks(const BatchChain &c, Outs &o, bool price_only) {
   for (std::size_t i = 0; i < c.size(); ++i) {
@@ -334,8 +343,7 @@ void loop_greeks(const BatchChain &c, Outs &o, bool price_only) {
     const Result<AmericanGreeks> g =
         american_greeks_al(c.spot, c.strike[i], c.T[e], c.sigma[i], c.rate[e], q, c.side[i],
                            std::nullopt, /*need_vega=*/true, /*need_rho=*/true, false);
-    if (!g || !std::isfinite(g->price) || !std::isfinite(g->delta) || !std::isfinite(g->gamma) ||
-        !std::isfinite(g->vega) || !std::isfinite(g->theta) || !std::isfinite(g->rho)) {
+    if (!g || !supplied(*g, 8, g->price)) {
       fail_row(o, i, ChainRowStatus::Unpriceable);
       continue;
     }
@@ -345,7 +353,9 @@ void loop_greeks(const BatchChain &c, Outs &o, bool price_only) {
     o.vega[i] = g->vega;
     o.theta[i] = g->theta;
     o.rho[i] = g->rho;
-    o.status[i] = ChainRowStatus::Ok;
+    const bool complete = supplied(*g, 0, g->delta) && supplied(*g, 1, g->gamma) &&
+        supplied(*g, 2, g->vega) && supplied(*g, 3, g->theta) && supplied(*g, 4, g->rho);
+    o.status[i] = complete ? ChainRowStatus::Ok : ChainRowStatus::GreeksUnavailable;
   }
 }
 
@@ -620,11 +630,11 @@ void run_row(benchmark::State &state, const BatchChain &c, Eval ev) {
   const std::uint64_t fp = o.fp();
   state.counters["fp_hi"] = static_cast<double>(fp >> 32);
   state.counters["fp_lo"] = static_cast<double>(fp & 0xFFFFFFFFull);
-  // One slot per ChainRowStatus enumerator. The enum ends at NonMonotoneRegion (L1c);
-  // the static_assert below breaks when one is appended without growing this count,
-  // and the guarded index keeps an unexpected value from writing past the array.
-  constexpr std::size_t kChainRowStatusCount = 7;
-  static_assert(static_cast<std::size_t>(ChainRowStatus::NonMonotoneRegion) + 1 ==
+  // One slot per ChainRowStatus enumerator, including partially supplied Greeks.
+  // The explicit size is pinned to the last handled enumerator; the guarded
+  // index keeps an unexpected value from writing past the array.
+  constexpr std::size_t kChainRowStatusCount = 8;
+  static_assert(static_cast<std::size_t>(ChainRowStatus::GreeksUnavailable) + 1 ==
                     kChainRowStatusCount,
                 "ChainRowStatus changed: resize the bench's status histogram");
   std::array<std::size_t, kChainRowStatusCount> n_st{};
@@ -641,6 +651,7 @@ void run_row(benchmark::State &state, const BatchChain &c, Eval ev) {
   state.counters["st_out_of_band"] = static_cast<double>(n_st[4]);
   state.counters["st_no_convergence"] = static_cast<double>(n_st[5]);
   state.counters["st_non_monotone"] = static_cast<double>(n_st[6]);
+  state.counters["st_greeks_unavailable"] = static_cast<double>(n_st[7]);
   if (ev.loop) {
     return;
   }
@@ -690,13 +701,33 @@ void run_row(benchmark::State &state, const BatchChain &c, Eval ev) {
     state.counters["status_diff_vs_loop"] = static_cast<double>(status_moves);
     return;
   }
-  state.counters["max_abs_price"] = max_abs_ok(o.price, ref.price, o.status, ref.status);
+  // Price and each derivative have independent denominators. A partial row's
+  // supplied fields remain in the comparison; refused values do not shrink the
+  // published chain/status counts above or masquerade as zero errors.
+  const auto compare_field = [&](const char *name, const std::vector<double> &actual,
+                                 const std::vector<double> &expected) {
+    std::size_t compared = 0;
+    double largest = 0.;
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto priced = [](ChainRowStatus status) {
+        return status == ChainRowStatus::Ok || status == ChainRowStatus::GreeksUnavailable;
+      };
+      if (priced(o.status[i]) && priced(ref.status[i]) &&
+          std::isfinite(actual[i]) && std::isfinite(expected[i])) {
+        ++compared;
+        largest = std::max(largest, std::abs(actual[i] - expected[i]));
+      }
+    }
+    state.counters[std::string("compared_") + name] = static_cast<double>(compared);
+    state.counters[std::string("max_abs_") + name] = compared == 0u ? kNaN : largest;
+  };
+  compare_field("price", o.price, ref.price);
   if (ev.kind == Kind::Greeks) {
-    state.counters["max_abs_delta"] = max_abs_ok(o.delta, ref.delta, o.status, ref.status);
-    state.counters["max_abs_gamma"] = max_abs_ok(o.gamma, ref.gamma, o.status, ref.status);
-    state.counters["max_abs_vega"] = max_abs_ok(o.vega, ref.vega, o.status, ref.status);
-    state.counters["max_abs_theta"] = max_abs_ok(o.theta, ref.theta, o.status, ref.status);
-    state.counters["max_abs_rho"] = max_abs_ok(o.rho, ref.rho, o.status, ref.status);
+    compare_field("delta", o.delta, ref.delta);
+    compare_field("gamma", o.gamma, ref.gamma);
+    compare_field("vega", o.vega, ref.vega);
+    compare_field("theta", o.theta, ref.theta);
+    compare_field("rho", o.rho, ref.rho);
   }
 }
 

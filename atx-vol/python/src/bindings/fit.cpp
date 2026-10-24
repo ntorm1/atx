@@ -52,6 +52,7 @@
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "result.hpp"
+#include "greek_metadata.hpp"
 #include "sides.hpp"
 
 namespace py = pybind11;
@@ -103,6 +104,9 @@ py::dict valuation_to_dict(const ChainValuation &v) {
   out["volga"] = greek_column(v.greeks, &AmericanGreeks::volga);
   out["charm"] = greek_column(v.greeks, &AmericanGreeks::charm);
   out["greek_price"] = greek_column(v.greeks, &AmericanGreeks::price);
+  atxvol::python::GreekMetadataColumns metadata(v.greeks.size());
+  for (std::size_t i = 0; i < v.greeks.size(); ++i) metadata.write(i, v.greeks[i]);
+  std::move(metadata).publish(out);
   out["filled"] = py::cast(v.filled);
   out["n_bid_unset"] = v.n_bid_unset;
   out["n_ask_unset"] = v.n_ask_unset;

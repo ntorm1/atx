@@ -6,12 +6,15 @@ precede the executable comparisons. Follow-ups now measure both
 and [official QuantLib fixed-point profiles](quantlib-american-frontier-20261024.md)
 on 252 common-domain and 357 diagnostic contracts, with setup clocks and complete
 failure coverage. Independent general-American accuracy, cash-dividend and Greek
-qualification remain open. The latest complete SPY release candidate takes
-1.0305445 s median across three quiet fresh processes (range 1.0288362–1.0897724 s)
-and passes all thirteen correctness gates with the explicit two-row
-identification review; see
-[current acceptance](spy-cold-acceptance-r7.md). Historical evidence below retains
-its original scope. The experiments do not widen the approved monetary budget.
+qualification remain open. The local-main checkpoint `96cd56db` passes all
+thirteen SPY correctness gates with the explicit two-row identification review.
+Its three fresh ThinLTO fits took 1.1647743,1.0251590 and1.0989175 seconds; a
+subsequent archived-baseline comparison encountered variable system load and
+failed the SMT-idle gate, so no complete-fit speed gain is established. The
+previous geometry/carry release measured1.0411881 seconds median. See
+[current acceptance](spy-cold-acceptance-r7.md) for exact receipts and historical
+comparisons. None qualifies the100-process subsecond goal. The experiments do
+not widen the approved monetary budget.
 
 The highest-value direction for the current subsecond objective is to reduce
 the number of expensive pricing and inversion problems solved during a complete

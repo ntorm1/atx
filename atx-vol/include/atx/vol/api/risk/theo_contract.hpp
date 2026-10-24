@@ -104,18 +104,20 @@ struct ResolvedTheo {
                                                     const TimeSpec &time);
 
 // Resolve ONE template on ONE surface at `valuation_ns`. A market failure (delta
-// unreachable, pricing error, maturity unavailable) is reported in `status` with
-// the fields that could be computed; the Result is an error only for a structural
-// problem (null surface, malformed spec).
+// unreachable, surface unavailable, pricing error, maturity unavailable) is reported
+// in `status`; every non-Ok row follows ONE rule: identity fields, T, forward and
+// flags are kept, every strike-level number (K, k_log, moneyness, deltas, iv, mark,
+// Greeks) is NaN and `fingerprint` is 0. The Result is an error only for a
+// structural problem (null surface, malformed spec or policy).
 [[nodiscard]] Result<ResolvedTheo> resolve_theo(const TheoContract &spec,
                                                 const SurfaceRef &surface,
                                                 std::int64_t valuation_ns,
                                                 const ProjectionPolicy &policy = {});
 
 // Many templates on one surface. `out.size() == specs.size()`; per-row market
-// failures land in `out[i].status`. Rows are grouped by (expiry, side) internally
-// so the delta solves share seeds; the per-row result is independent of batch
-// composition.
+// failures land in `out[i].status`. Rows are resolved independently (fanned over the
+// pricing executor); each row's result is bit-equal to `resolve_theo` and independent
+// of batch composition.
 [[nodiscard]] Status resolve_theo_many(std::span<const TheoContract> specs,
                                        const SurfaceRef &surface, std::int64_t valuation_ns,
                                        const ProjectionPolicy &policy,

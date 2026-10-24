@@ -252,6 +252,26 @@ over `american_implied_vol`, and `PricedSurface.grid` is bit-identical to the
 per-point `iv` / `total_variance` / `fair_value` / `greeks` calls.
 `tests/test_batch.py` pins all four with `tobytes()` / `==` comparisons.
 
+American Greek availability is field-specific. Scalar `AmericanGreeks` exposes
+read-only `requested`, `supported`, and nine `reasons`, using `GreekFieldMask`
+and `AmericanGreekReason`. A supplied price can survive a refused derivative.
+`COMPUTED_ESTIMATE` describes availability from that model; it does not certify
+a derivative error budget. Cached and adjoint numerical admission remains a
+separate open accuracy task.
+
+The American Greek batch, fitted-chain valuation, and priced-surface grid return
+`requested`/`supported` as owning `uint32` arrays and `reasons` as an owning
+`uint8` array of shape `(N, 9)`. Columns follow native mask-bit order: Delta,
+Gamma, Vega, Theta, Rho, Vanna, Volga, Charm, Price. Empty requests preserve the
+`(0, 9)` reason shape. A failed full-bundle status does not erase independently
+supplied values. Grid `<field>_valid` flags require native support as well as a
+finite value. The grid's `greek_price` is the price belonging to this metadata;
+`fair_value` and its status remain the separate price query. A failed Greek
+call supplies no fields and retains its call error alongside `NONFINITE`
+field reasons. `PriceStatus.GREEKS_UNAVAILABLE` is the portfolio vocabulary for
+a priced row with incomplete requested risk; it is distinct from the batch
+status codes.
+
 `american_price_batch` routes on engagement to keep that claim true. The default
 engagement (`method=ANDERSEN_LAKE`, `opts=None`) takes the laned C++ batch; any
 other `method` or an engaged `AlOpts` takes the exact scalar `american_price` per
@@ -674,6 +694,16 @@ exclusion counts gain a trailing axis of length `len(ScenarioExclusion)`.
 `BOOK`), any other T by the surface's cold route (source `SESSION_COLD`, ticked
 `FALLBACK` in a chain). `session.serve(reader, K, T, side, spot, now_ns)` and
 `session.serve_chain(reader, spot, now_ns, strike, expiry, side)` mirror the book's API.
+Scalar answers expose `requested`, `supported` and `cold_reasons`; chain results
+export owning uint32 mask arrays plus uint8 `cold_reasons` `(N,9)` and
+`book_greek_reasons` `(N,6)`. Only Price/Delta/Gamma/Vega/Theta are requested.
+Cold reasons use `AmericanGreekReason`; book reasons use `ServeGreekReason`
+(including Phi, a different axis from Vanna). The inactive reason payload is
+NotRequested. `ServeBookReader.serve_chain` also exports its verbatim `(N,6)`
+`greek_reasons` and owning uint32 `(N,)` `requested`/`supported` masks for the
+same five common axes. A valid price may coexist with refused Greeks: route/model
+statuses such as ESTIMATE or FALLBACK do not imply full Greek availability or
+qualified accuracy. PriceOnly book answers support only Price.
 The session keeps the surface alive and co-owns the book. The `VolaSession` overload and
 the common-model European outputs are not bound yet (see the coverage doc).
 
@@ -737,13 +767,19 @@ Three batch-specific details:
   `ErrorCode.OUT_OF_RANGE`; the Result-returning families retain their exact
   codes.
 - **`american_price_batch` / `american_greeks_batch` carry a distinct two-state
-  regime channel.** Their kernel reports `LaneStatus::Ok | Unsupported`, not an
+  availability channel.** Their kernel reports `LaneStatus::Ok | Unsupported`, not an
   `atx::core::Status`; `Unsupported` maps to the dedicated negative
   `AMERICAN_BATCH_UNSUPPORTED_REGIME`, so it cannot be confused with a genuine
-  `ErrorCode.NOT_IMPLEMENTED`. `implied_vol_batch` and
+  `ErrorCode.NOT_IMPLEMENTED`. For Greeks, this includes a missing requested
+  field even when price and other fields remain supplied; consult the masks and
+  reasons before discarding those values. `implied_vol_batch` and
   `american_implied_vol_batch` carry the true per-lane code, as does
   `american_price_batch` on its non-default `method` / `opts` route (which runs
   the scalar pricer and therefore has real codes to report).
+  The exported constants are `STATUS_OK = -1` and
+  `AMERICAN_BATCH_UNSUPPORTED_REGIME = -2`. The latter corrects a previous
+  binding defect that exported both as `-1`; native statuses and nonnegative
+  error codes are unchanged. Consumers should use the named constants.
 
 Long-running American and batch kernels, `run_backtest`, and the TSV writers all
 release the Python GIL. `AloPricer.price` deliberately does **not**: it mutates

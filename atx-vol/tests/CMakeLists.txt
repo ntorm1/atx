@@ -25,6 +25,46 @@
 # Those lanes get a `FAIL_REGULAR_EXPRESSION` instead — see each one.
 set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 
+# Explicit private research target; no kernel is linked into the production library.
+option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
+if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
+    set(CASH_THOMAS_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-pde-simd")
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/pricing/american_discrete_div_reference.cpp"
+        TARGET_DIRECTORY atx-vol PROPERTIES
+        COMPILE_DEFINITIONS ATX_VOL_CASH_PDE_BATCH_RESEARCH=1)
+    add_executable(atx-vol-cash-thomas-research-tests
+        ${CASH_THOMAS_RESEARCH_DIR}/tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/replay_tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/batch_tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
+    set_source_files_properties(${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp
+        PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+    target_link_libraries(atx-vol-cash-thomas-research-tests
+        PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-cash-thomas-research-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_executable(atx-vol-cash-dspy-refinement ${CASH_THOMAS_RESEARCH_DIR}/refinement.cpp)
+    target_link_libraries(atx-vol-cash-dspy-refinement PRIVATE atx::vol atx::core
+        atx_warnings nlohmann_json::nlohmann_json)
+    target_include_directories(atx-vol-cash-dspy-refinement PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(TARGET atx-vol-bench-clocks)
+        add_executable(atx-vol-cash-pde-batch-research
+            ${CASH_THOMAS_RESEARCH_DIR}/runner.cpp
+            ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
+            ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
+        target_link_libraries(atx-vol-cash-pde-batch-research PRIVATE atx::vol atx::core
+            atx_warnings atx-vol-bench-clocks nlohmann_json::nlohmann_json)
+        target_include_directories(atx-vol-cash-pde-batch-research PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+        target_compile_definitions(atx-vol-cash-pde-batch-research PRIVATE
+            ATX_CASH_BATCH_IPO=$<BOOL:${CMAKE_INTERPROCEDURAL_OPTIMIZATION}>)
+    endif()
+endif()
+
 # This entry point is also consumable without the engine/backtest test graph.
 # Keep a focused executable so numerical and include checks stay inexpensive.
 add_executable(atx-vol-quote-slice-tests
@@ -193,7 +233,7 @@ add_executable(atx-vol-discrete-div-production-tests
     american_discrete_div_production_test.cpp american_discrete_div_production_alloc_test.cpp
     american_discrete_div_production_matrix_test.cpp support/alloc_counter.cpp)
 target_link_libraries(atx-vol-discrete-div-production-tests
-    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main nlohmann_json::nlohmann_json)
 target_include_directories(atx-vol-discrete-div-production-tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME atx-vol-discrete-div-production COMMAND atx-vol-discrete-div-production-tests
@@ -349,6 +389,21 @@ add_test(NAME atx-vol-iv-batch-alloc COMMAND atx-vol-iv-batch-alloc-tests)
 set_tests_properties(atx-vol-iv-batch-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# Risk engine (sprint 2026-10-24): the family kernel's per-state allocation bound
+# (RiskKernel.SecondStateAllocationBounded). support/alloc_counter.cpp replaces global
+# operator new for THIS binary only, so the case lives only here (the rest of the
+# RiskKernel suite is in atx-vol-tests and atx-vol-risk-slice). The "risk/" prefix keeps
+# it inside the lane's anchored -R "^risk/RiskKernel\."; atx-vol-risk-slice depends on
+# it (below the slices include) so building the slice builds it.
+add_executable(atx-vol-risk-alloc-tests risk_kernel_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-risk-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-risk-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(atx-vol-risk-alloc-tests
+    TEST_PREFIX "risk/"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
 # Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
 # arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
@@ -407,6 +462,11 @@ add_executable(atx-vol-tests
     support/cached_artifacts.cpp
     test_paths_test.cpp
     arb_test.cpp
+    risk_book_test.cpp
+    risk_kernel_test.cpp
+    risk_market_state_test.cpp
+    risk_pnl_explain_test.cpp
+    risk_stream_test.cpp
     risk_surface_validation_test.cpp
     surface_v2_qualification_test.cpp
     calib_test.cpp
@@ -502,6 +562,9 @@ add_executable(atx-vol-tests
     pricing_executor_test.cpp
     prepared_portfolio_test.cpp
     priced_surface_test.cpp
+    priced_surface_shape_blend_test.cpp   # risk-engine sprint 2026-10-24, lane B
+    risk_strike_coord_test.cpp
+    risk_theo_contract_test.cpp
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
     scenario_grid_test.cpp
@@ -1213,3 +1276,5 @@ set_tests_properties(AlphaRegistry PROPERTIES
 # Module test slices for lanes (atx-vol-<module>-slice): partitioned from
 # atx-vol-tests' SOURCES, so keep this include LAST. See slices.cmake.
 include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)
+# The risk lane's focused allocation exe rides the risk slice build (see above).
+add_dependencies(atx-vol-risk-slice atx-vol-risk-alloc-tests)
