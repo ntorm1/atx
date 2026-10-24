@@ -19,6 +19,7 @@
 #include <optional>
 #include <ostream>
 #include <random>
+#include <sstream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -93,15 +94,37 @@ struct Snapshot {
   return b;
 }
 
-[[nodiscard]] RiskKernel make_kernel(bool cold, unsigned threads) {
+// Lane A2: FamilyKernelPolicy with the CLI's overrides applied (its defaults otherwise).
+[[nodiscard]] FamilyKernelPolicy family_policy(const RiskBenchArgs &args, unsigned threads) {
+  FamilyKernelPolicy p;
+  p.n_threads = threads;
+  p.n_sigma = args.n_sigma.value_or(p.n_sigma);
+  p.n_sigma_min = args.n_sigma_min.value_or(p.n_sigma_min);
+  p.sigma_box_pad = args.sigma_box_pad.value_or(p.sigma_box_pad);
+  p.sigma_node_spacing = args.sigma_node_spacing.value_or(p.sigma_node_spacing);
+  p.family_economics = args.family_economics.value_or(p.family_economics);
+  p.dynamic_schedule = args.family_dynamic_schedule.value_or(p.dynamic_schedule);
+  return p;
+}
+
+// The report's one-line echo of the effective family policy.
+[[nodiscard]] std::string describe(const FamilyKernelPolicy &p) {
+  std::ostringstream s;
+  s << "n_sigma " << p.n_sigma << ", n_sigma_min " << p.n_sigma_min << ", sigma_box_pad "
+    << p.sigma_box_pad << ", sigma_node_spacing " << p.sigma_node_spacing << ", economics "
+    << (p.family_economics ? "on" : "off") << " (node " << p.family_node_cost_us
+    << " us, cold lane " << p.cold_lane_cost_us << " us), schedule "
+    << (p.dynamic_schedule ? "dynamic" : "static");
+  return s.str();
+}
+
+[[nodiscard]] RiskKernel make_kernel(bool cold, unsigned threads, const RiskBenchArgs &args) {
   if (cold) {
     ColdKernelPolicy p;
     p.n_threads = threads;
     return RiskKernel::cold(p);
   }
-  FamilyKernelPolicy p;
-  p.n_threads = threads;
-  return RiskKernel::family(p);
+  return RiskKernel::family(family_policy(args, threads));
 }
 
 // The main stream plus the optional shadows, all over one book.
@@ -119,14 +142,14 @@ struct Streams {
   opts.n_threads = args.threads;
   const bool main_cold = args.kernel == BenchKernel::Cold;
   Streams s;
-  s.main.emplace(book, make_kernel(main_cold, args.threads), needs, opts);
+  s.main.emplace(book, make_kernel(main_cold, args.threads, args), needs, opts);
   if (args.determinism) {
     ExplainOptions serial = opts;
     serial.n_threads = 1;
-    s.shadow.emplace(book, make_kernel(main_cold, 1), needs, serial);
+    s.shadow.emplace(book, make_kernel(main_cold, 1, args), needs, serial);
   }
   if (args.kernel == BenchKernel::Both) {
-    s.cold.emplace(book, make_kernel(true, args.threads), needs, opts);
+    s.cold.emplace(book, make_kernel(true, args.threads, args), needs, opts);
   }
   return s;
 }
@@ -142,6 +165,7 @@ void fill_frame(StepReport &t, const RiskFrame &f) {
   t.cold_rows = f.counters.cold_rows;
   t.exercised_rows = f.counters.exercised_rows;
   t.refused_rows = f.counters.refused_rows;
+  t.family_nodes = f.counters.family_nodes;
   for (const RiskRoute r : f.route) {
     const auto i = static_cast<std::size_t>(r);
     t.routes[std::min(i, kRouteCount - 1)] += 1;
@@ -333,6 +357,16 @@ void fill_cold(ColdComparison &c, const RiskFrame &m, const RiskFrame &k, const 
   c.max_abs_vanna = max_abs_diff(m.vanna, k.vanna, ok);
   c.max_abs_volga = max_abs_diff(m.volga, k.volga, ok);
   c.max_abs_charm = max_abs_diff(m.charm, k.charm, ok);
+  // Lane A2: the price gate over the family-served rows (relative to the cold price).
+  bool any_family = false;
+  double max_rel = 0.0;
+  for (std::size_t r = 0; r < ok.size(); ++r) {
+    if (ok[r] != 0 && m.route[r] == RiskRoute::Family) {
+      max_rel = std::max(max_rel, std::abs(m.price[r] - k.price[r]) / std::abs(k.price[r]));
+      any_family = true;
+    }
+  }
+  c.max_rel_price_family = any_family ? max_rel : kNaN;
   std::vector<std::uint8_t> legs_ok(std::min(mx.size(), kx.size()));
   for (std::size_t i = 0; i < legs_ok.size(); ++i) {
     legs_ok[i] = (mx.status[i] == RiskLaneStatus::Ok && kx.status[i] == RiskLaneStatus::Ok);
@@ -586,6 +620,9 @@ void log_step(std::ostream &log, const StepReport &t) {
 
 Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &log) {
   RiskBenchReport rep = report_skeleton(args);
+  if (args.kernel != BenchKernel::Cold) {
+    rep.family_policy = describe(family_policy(args, args.threads));
+  }
   ATX_TRY_VOID(prepare_synthetic_store(args, rep, log));
   ATX_TRY(const std::vector<std::string> all,
           list_spiderrock_buckets(args.store_root(), args.date));

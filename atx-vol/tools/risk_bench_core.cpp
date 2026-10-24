@@ -57,13 +57,14 @@ constexpr std::array<const char *, kRouteCount> kRouteNames{
 constexpr std::array<const char *, kFlagCount> kFlagNames{
     "TenorExtrapolated", "MoneynessExtrapolated", "NearExerciseEdge", "MarkMissing",
     "SurfaceMissing",    "OutsideFamilyBox",      "Rolled",           "PivotFromMarks",
-    "VendorParityAvailable", "ColdFallback",      "CarryFromSurface"};
+    "VendorParityAvailable", "ColdFallback",      "CarryFromSurface",
+    "FamilyUneconomic",  "ShortTenor"};
 constexpr std::array<const char *, kRiskLaneStatusCount> kStatusNames{
     "Ok", "ModelUnavailable", "NumericError", "InvalidContract", "Rolled", "Refused"};
 
 static_assert(static_cast<std::size_t>(RiskRoute::Refused) + 1 == kRouteCount,
               "kRouteCount must cover every RiskRoute");
-static_assert(static_cast<std::uint32_t>(RiskFlag::CarryFromSurface) == (1u << (kFlagCount - 1)),
+static_assert(static_cast<std::uint32_t>(RiskFlag::ShortTenor) == (1u << (kFlagCount - 1)),
               "kFlagCount must cover every RiskFlag bit");
 static_assert(static_cast<std::size_t>(RiskLaneStatus::Refused) + 1 == kRiskLaneStatusCount,
               "kStatusNames must cover every RiskLaneStatus");
@@ -177,8 +178,65 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
   return Ok();
 }
 
+// ── Lane A2: family-kernel policy overrides ────────────────────────────────
+
+[[nodiscard]] std::optional<double> parse_finite(std::string_view s) noexcept {
+  double value{};
+  const char *first = s.data();
+  const char *last = first + s.size();
+  const auto [ptr, ec] = std::from_chars(first, last, value);
+  if (s.empty() || ec != std::errc{} || ptr != last || !std::isfinite(value)) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+// One of the on|off / static|dynamic switches: `yes` names the true spelling.
+[[nodiscard]] Status set_switch(ArgCursor &c, std::string_view flag, std::string_view yes,
+                                std::string_view no, std::optional<bool> &out) {
+  const std::optional<std::string_view> v = c.value();
+  if (!v.has_value() || (*v != yes && *v != no)) {
+    return Err(usage_error(std::string{flag} + " must be " + std::string{yes} + "|" +
+                           std::string{no}));
+  }
+  out = *v == yes;
+  return Ok();
+}
+
+// The family-policy flag `flag` into `a`, or nullopt when `flag` is not one of them.
+[[nodiscard]] std::optional<Status> parse_family_flag(ArgCursor &c, std::string_view flag,
+                                                      RiskBenchArgs &a) {
+  if (flag == "--n-sigma" || flag == "--n-sigma-min") {
+    std::uint16_t n{0};
+    if (Status st = set_number(c, flag, n); !st.has_value()) {
+      return st;
+    }
+    (flag == "--n-sigma" ? a.n_sigma : a.n_sigma_min) = n;
+    return Ok();
+  }
+  if (flag == "--sigma-box-pad" || flag == "--sigma-node-spacing") {
+    const std::optional<std::string_view> v = c.value();
+    const std::optional<double> x = v.has_value() ? parse_finite(*v) : std::nullopt;
+    if (!x.has_value()) {
+      return Status{Err(usage_error("bad or missing value for " + std::string{flag}))};
+    }
+    (flag == "--sigma-box-pad" ? a.sigma_box_pad : a.sigma_node_spacing) = *x;
+    return Ok();
+  }
+  if (flag == "--family-economics") {
+    return set_switch(c, flag, "on", "off", a.family_economics);
+  }
+  if (flag == "--family-schedule") {
+    return set_switch(c, flag, "dynamic", "static", a.family_dynamic_schedule);
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] Status parse_one(ArgCursor &c, RiskBenchArgs &a) {
   const std::string_view flag = c.argv[c.i] != nullptr ? c.argv[c.i] : "";
+  if (std::optional<Status> st = parse_family_flag(c, flag, a); st.has_value()) {
+    return *st;
+  }
   for (const BoolFlag &f : kBoolFlags) {
     if (flag == f.name) {
       a.*f.field = true;
@@ -266,6 +324,13 @@ std::string risk_bench_usage() {
          "                       per-leg explain (columns in docs/risk-bench.md)\n"
          "  --dump-steps N       steps written to --dump-legs, the first N; 0 = all (1)\n"
          "  --seed N             book selection seed (1)\n"
+         "  family-kernel policy overrides (FamilyKernelPolicy defaults when absent):\n"
+         "  --n-sigma N          sigma-node ceiling n_sigma\n"
+         "  --n-sigma-min N      adaptive node floor n_sigma_min (= n_sigma: fixed count)\n"
+         "  --sigma-box-pad X    sigma box pad\n"
+         "  --sigma-node-spacing X  adaptive log-sigma node spacing\n"
+         "  --family-economics on|off  route uneconomic groups cold-analytic\n"
+         "  --family-schedule static|dynamic  block fan-out: run_blocks | run_dynamic\n"
          "  --help               this text\n"
          "exit: 0 ok, 1 runtime error, 2 usage error\n";
 }
@@ -1315,7 +1380,7 @@ struct ColdField {
   const char *name;
   double ColdComparison::*field;
 };
-constexpr std::array<ColdField, 11> kColdFields{
+constexpr std::array<ColdField, 12> kColdFields{
     {{"evaluate_seconds", &ColdComparison::evaluate_seconds},
      {"speedup", &ColdComparison::speedup},
      {"max_abs_price", &ColdComparison::max_abs_price},
@@ -1326,7 +1391,8 @@ constexpr std::array<ColdField, 11> kColdFields{
      {"max_abs_vanna", &ColdComparison::max_abs_vanna},
      {"max_abs_volga", &ColdComparison::max_abs_volga},
      {"max_abs_charm", &ColdComparison::max_abs_charm},
-     {"max_abs_pnl_total", &ColdComparison::max_abs_pnl_total}}};
+     {"max_abs_pnl_total", &ColdComparison::max_abs_pnl_total},
+     {"max_rel_price_family", &ColdComparison::max_rel_price_family}}};
 
 [[nodiscard]] Json cold_json(const ColdComparison &c) {
   Json o = obj({{"ran", jbool(c.ran)}, {"n_compared", jnumber(c.n_compared)}});
@@ -1359,6 +1425,7 @@ constexpr std::array<ColdField, 11> kColdFields{
                     {"cold_rows", jnumber(t.cold_rows)},
                     {"exercised_rows", jnumber(t.exercised_rows)},
                     {"refused_rows", jnumber(t.refused_rows)},
+                    {"family_nodes", jnumber(t.family_nodes)},
                     {"routes", named_counts(t.routes, kRouteNames)},
                     {"flags", named_counts(t.flags, kFlagNames)}});
   Json explain = obj({{"n_legs", jnumber(t.n_legs)},
@@ -1417,6 +1484,7 @@ void frame_from(const Fields &f, StepReport &t) {
   t.cold_rows = f.integer<std::uint64_t>("cold_rows");
   t.exercised_rows = f.integer<std::uint64_t>("exercised_rows");
   t.refused_rows = f.integer<std::uint64_t>("refused_rows");
+  t.family_nodes = f.integer<std::uint64_t>("family_nodes");
   read_named_counts(f.object("routes"), kRouteNames, t.routes);
   read_named_counts(f.object("flags"), kFlagNames, t.flags);
 }
@@ -1558,7 +1626,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"requested_underliers", jnumber(r.requested_underliers)},
               {"requested_options", jnumber(r.requested_options)},
               {"requested_shares", jnumber(r.requested_shares)},
-              {"host_threads", jnumber(r.host_threads)}});
+              {"host_threads", jnumber(r.host_threads)},
+              {"family_policy", jstr(r.family_policy)}});
 }
 
 void inputs_from(const Fields &o, RiskBenchReport &r) {
@@ -1577,6 +1646,7 @@ void inputs_from(const Fields &o, RiskBenchReport &r) {
   r.requested_options = o.integer<std::size_t>("requested_options");
   r.requested_shares = o.integer<std::size_t>("requested_shares");
   r.host_threads = o.integer<unsigned>("host_threads");
+  r.family_policy = o.text("family_policy");
 }
 
 void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
@@ -1746,6 +1816,9 @@ std::string report_to_markdown(const RiskBenchReport &r) {
   md += "- kernel " + r.kernel + ", threads " + std::to_string(r.threads) + " (host " +
         std::to_string(r.host_threads) + "), needs_rho " + (r.needs_rho ? "yes" : "no") +
         ", trapezoid " + (r.trapezoid ? "yes" : "no") + ", seed " + std::to_string(r.seed) + "\n";
+  if (!r.family_policy.empty()) {
+    md += "- family policy: " + r.family_policy + "\n";
+  }
   md += "- book: " + std::to_string(r.n_option_legs) + " option legs (" +
         std::to_string(r.n_unique_options) + " unique) + " + std::to_string(r.n_share_legs) +
         " share legs on " + std::to_string(r.n_underliers) + " underliers (shortfall " +

@@ -42,7 +42,7 @@ namespace atx::vol::riskbench {
 
 inline constexpr int kReportSchemaVersion = 1;
 inline constexpr std::size_t kRouteCount = 7; // RiskRoute::None .. RiskRoute::Refused
-inline constexpr std::size_t kFlagCount = 11; // RiskFlag bits 0 .. 10
+inline constexpr std::size_t kFlagCount = 13; // RiskFlag bits 0 .. 12
 inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // ═══ CLI ═════════════════════════════════════════════════════════════════════
@@ -69,6 +69,15 @@ struct RiskBenchArgs {
   std::size_t dump_steps{1};    // --dump-steps N: dump the first N steps (0 = every step)
   std::uint64_t seed{1};
   bool help{false};             // --help / -h
+
+  // ── Lane A2: family-kernel policy overrides (unset = FamilyKernelPolicy's default; the
+  // kernel validates the ranges, so a bad value fails the run, not the parse) ──
+  std::optional<std::uint16_t> n_sigma;        // --n-sigma N: node ceiling
+  std::optional<std::uint16_t> n_sigma_min;    // --n-sigma-min N: adaptive node floor
+  std::optional<double> sigma_box_pad;         // --sigma-box-pad X
+  std::optional<double> sigma_node_spacing;    // --sigma-node-spacing X (log sigma)
+  std::optional<bool> family_economics;        // --family-economics on|off
+  std::optional<bool> family_dynamic_schedule; // --family-schedule static|dynamic
 
   // The store the run reads: the synthetic dir when set, else --store.
   [[nodiscard]] const std::string &store_root() const noexcept {
@@ -131,6 +140,9 @@ struct ColdComparison {
   double max_abs_volga{kNaN};
   double max_abs_charm{kNaN};
   double max_abs_pnl_total{kNaN}; // per leg, legs Ok in both explains
+  // Lane A2: the family-vs-cold price gate, max |dprice| / |cold price| over the rows the
+  // main frame served from a family (NaN when none).
+  double max_rel_price_family{kNaN};
 };
 
 // One explain step (bucket k-1 -> bucket k).
@@ -154,6 +166,7 @@ struct StepReport {
   std::uint64_t cold_rows{0};
   std::uint64_t exercised_rows{0};
   std::uint64_t refused_rows{0};
+  std::uint64_t family_nodes{0}; // lane A2: sigma nodes over the families built
   std::array<std::uint32_t, kRouteCount> routes{}; // per unique option, by RiskRoute
   std::array<std::uint32_t, kFlagCount> flags{};   // unique options with each flag bit
   // Explain counts.
@@ -243,6 +256,7 @@ struct RiskBenchReport {
   std::size_t requested_options{0};
   std::size_t requested_shares{0};
   unsigned host_threads{0};
+  std::string family_policy; // lane A2: the effective FamilyKernelPolicy (engine side)
   // Synthetic store preparation.
   bool synthetic_generated{false};
   double synthetic_seconds{0.0};
