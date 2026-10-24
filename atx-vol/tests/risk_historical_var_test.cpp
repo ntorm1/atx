@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/risk/historical_var.hpp"
 #include "atx/vol/api/risk/market_state.hpp"
 #include "atx/vol/api/risk/pnl_explain.hpp"
@@ -696,6 +697,76 @@ TEST(HistoricalVar, ExcludedLegNeedsAKnownPremiumStrictlyBelowTheFraction) {
   ASSERT_TRUE(sh.has_value()) << sh.error().to_string();
   EXPECT_FALSE(sh->frames[0].admitted);
   EXPECT_FALSE(sh->frames[1].admitted);
+
+  // A KNOWN zero premium is still an exclusion: a zero-quantity share on uid 3 is priced on
+  // pair 1's base state (premium |0 * S_b| = 0) and missing from its shifted state. At the
+  // default fraction 0 it is dropped -- 0 is not strictly below 0 -- and any positive
+  // fraction admits it.
+  HistoricalVarBook zero_book;
+  zero_book.options = book.options;
+  zero_book.shares.push_back(ShareLeg{9002u, 3u, 0.0});
+  const std::vector<HistoricalVarScenario> pair1 = {h.scenarios[1]};
+  const Result<HistoricalVarResult> zero = historical_var(zero_book, pair1, base_config());
+  ASSERT_TRUE(zero.has_value()) << zero.error().to_string();
+  const ExplainTotals &zt = zero->frames[0].totals;
+  EXPECT_EQ(zt.n_ok, 1u);
+  EXPECT_EQ(zt.n_excluded, 1u);
+  EXPECT_EQ(zt.excluded_premium, 0.0);
+  EXPECT_FALSE(zero->frames[0].admitted) << "a known zero premium is not below a zero fraction";
+  HistoricalVarConfig any_fraction = base_config();
+  any_fraction.max_excluded_premium_frac = 1e-12;
+  const Result<HistoricalVarResult> zero_ok = historical_var(zero_book, pair1, any_fraction);
+  ASSERT_TRUE(zero_ok.has_value()) << zero_ok.error().to_string();
+  EXPECT_TRUE(zero_ok->frames[0].admitted);
+}
+
+// A copy of `owned`'s market on the VolTime clock. The synthetic instants (kT0 = 2023-11-14)
+// lie before VolTime's covered window (2024-01-01 .. 2032-12-31), so this clock refuses
+// every expiry a template resolves to.
+struct VolTimeState {
+  MarketStateStorage storage;
+  MarketState state;
+};
+
+[[nodiscard]] std::unique_ptr<VolTimeState> vol_time_copy(const rt::OwnedState &owned) {
+  auto out = std::make_unique<VolTimeState>();
+  std::vector<SurfaceRef> refs;
+  refs.reserve(owned.surfaces.size());
+  for (const PricedSurface &s : owned.surfaces) {
+    refs.emplace_back(&s);
+  }
+  TimeSpec time;
+  time.convention = TimeConvention::VolTime;
+  out->storage = market_state_from_surfaces(owned.state.ts_ns(), time, refs).value();
+  out->state = make_market_state(out->storage).value();
+  return out;
+}
+
+TEST(HistoricalVar, ClockThatRefusesAnExpiryDropsOnlyThatScenario) {
+  // A TimeSpec that refuses one of the book's expiries is a scenario-level refusal: the call
+  // succeeds, that pair is not admitted, the others are. (The kernel reports the refusal as
+  // InvalidArgument, like a structural error; historical_var tells them apart before it runs.)
+  History h;
+  h.add(move_at(0, 0.0, 0.0, 0.0, 0.0));
+  h.add(move_at(1, 0.006, -0.004, 0.003, 0.008));
+  h.add(move_at(2, -0.004, 0.002, -0.001, -0.004));
+  const std::unique_ptr<VolTimeState> refusing = vol_time_copy(*h.states[1]);
+  ASSERT_FALSE(refusing->state.time_to_expiry(rt::expiry_ns(1)).has_value())
+      << "the VolTime clock was expected to refuse a 2024 expiry measured from 2023";
+  const HistoricalVarBook book = reference_book(/*with_shares=*/true);
+  const std::vector<HistoricalVarScenario> scenarios = {
+      {&h.state(0), &h.state(1)}, {&refusing->state, &h.state(2)}, {&h.state(1), &h.state(2)}};
+
+  const Result<HistoricalVarResult> res = historical_var(book, scenarios, base_config());
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->frames.size(), 3u);
+  EXPECT_TRUE(res->frames[0].admitted);
+  EXPECT_FALSE(res->frames[1].admitted);
+  EXPECT_EQ(res->frames[1].n_legs_resolved, book.options.size())
+      << "the templates resolved; only the clock refused the pair";
+  EXPECT_EQ(res->frames[1].totals.n_ok, 0u);
+  EXPECT_TRUE(res->frames[2].admitted);
+  EXPECT_EQ(res->n_admitted, 2u);
 }
 
 TEST(HistoricalVar, ForeignWorkspaceIsAnErrorNotADroppedScenario) {
