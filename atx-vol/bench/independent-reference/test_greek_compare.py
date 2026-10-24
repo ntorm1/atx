@@ -26,6 +26,25 @@ def row():
 
 
 class GreekCompareTests(unittest.TestCase):
+    def test_second_experiment_rows_require_their_declared_finer_configuration(self):
+        sample = row()
+        r = sample["result"]
+        r["nx"] = sample["options"]["nx"] = 8193
+        r["stage_node_updates"] = 1022*8191
+        r["log_spacing"] = dx = r["log_half_width"]/4096
+        r["stencil_spots"] = [50.*math.exp(-dx), 50., 50.*math.exp(dx)]
+        r["stencil_values"] = r["stencil_payoff"] = [100.-s for s in r["stencil_spots"]]
+        verify_row(sample, MODEL, version=2)
+        with self.assertRaises(ValueError):
+            verify_row(sample, MODEL)
+        with self.assertRaises(ValueError):
+            verify_row(row(), MODEL, version=2)
+        for scheme in ("cn", "unknown"):
+            changed = copy.deepcopy(sample)
+            changed["scheme"] = changed["result"]["scheme"] = scheme
+            with self.assertRaises(ValueError):
+                verify_row(changed, MODEL, version=2)
+
     def test_native_sorted_ids_preserve_exact_population_without_duplicates(self):
         self.assertTrue(same_selected_ids(["a", "b"], ["b", "a"]))
         for actual in (["a"], ["a", "a"], ["a", "other"], ["a", "b", "b"]):

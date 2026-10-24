@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-from greek_study import CONFIGS, SCHEMES, digest, summarize_reference
+from greek_study import DECLARATION_V2, digest, study_spec, summarize_reference
 
 
 def require(condition, message):
@@ -25,10 +25,11 @@ def same_selected_ids(actual, expected):
     return len(actual) == len(expected) == len(set(actual)) and set(actual) == set(expected)
 
 
-def verify_row(row, model):
+def verify_row(row, model, *, version=1):
+    schemes, configs = study_spec(version)
     require(row["id"] == model["id"] and row["model"] == model, "exact model join")
-    require(row["scheme"] in SCHEMES and row["label"] in CONFIGS, "fixed scheme/label")
-    nx, nt, domain = CONFIGS[row["label"]]
+    require(row["scheme"] in schemes and row["label"] in configs, "fixed scheme/label")
+    nx, nt, domain = configs[row["label"]]
     require(row["options"] == dict(nx=nx, nt=nt, domain_scale=domain), "outer configuration")
     if row["status"] == "refused":
         require("result" not in row and row["reason"] in
@@ -104,27 +105,42 @@ def read_json(path):
 
 def verify_pilot(directory):
     manifest = read_json(directory/"manifest.json")
-    require(manifest["schema"] == "atx-independent-greek-pilot-v1" and manifest["completed"] is True and
+    versions = {"atx-independent-greek-pilot-v1": 1, "atx-independent-greek-pilot-v2": 2}
+    require(manifest["schema"] in versions, "declared experiment schema")
+    version = versions[manifest["schema"]]
+    schemes, configs = study_spec(version)
+    requested_results = 12*len(schemes)*len(configs)
+    require(manifest["completed"] is True and
             manifest["source_unchanged"] is True, "completed immutable pilot")
     require(all(manifest[k] is False for k in
                 ("accuracy_established", "full_bundle_qualified", "timing_qualified")), "unqualified scope")
     require(re.fullmatch("[0-9a-f]{40}", manifest["source"]), "source commit")
-    require(manifest["requested_results"] == 216 and manifest["input_count"] == 715 and
-            manifest["schemes"] == list(SCHEMES) and
-            manifest["configurations"] == {k: list(v) for k, v in CONFIGS.items()}, "declared population")
+    require(manifest["requested_results"] == requested_results and manifest["input_count"] == 715 and
+            manifest["schemes"] == list(schemes) and
+            manifest["configurations"] == {k: list(v) for k, v in configs.items()}, "declared population")
     required = {"greek_reference.py", "greek_study.py", "pde_reference.py", "greek-plan-v1.md",
                 "test_greek_reference.py", "test_greek_study.py", "corpus-v1.json", "refinement-v1.json",
                 "risk-contract-proposal-v1.json"}
+    if version == 2:
+        require(manifest["declaration_commit"] == DECLARATION_V2, "prospective second declaration")
+        required.update(("greek-plan-v2.md", "test_greek_study_v2.py"))
     hashes = manifest["source_hashes"]
-    require(len(hashes) == len(required) and {Path(p).name for p in hashes} == required, "source denominator")
+    basename = lambda name: Path(name.replace("\\", "/")).name
+    require(len(hashes) == len(required) and {basename(p) for p in hashes} == required, "source denominator")
     root = Path(__file__).resolve().parents[3]
     for name, expected_hash in hashes.items():
-        source = directory/"sources"/Path(name).name
+        source = directory/"sources"/basename(name)
         require(digest(source) == expected_hash, "archived source hash")
         git_name = name.replace("\\", "/")  # Git object paths always use forward slashes.
         committed = subprocess.check_output(["git", "show", manifest["source"]+":"+git_name], cwd=root)
         require(source.read_bytes().replace(b"\r\n", b"\n") == committed.replace(b"\r\n", b"\n"),
                 "archive source matches frozen Git commit")
+    if version == 2:
+        declared_plan = subprocess.check_output(
+            ["git", "show", DECLARATION_V2+":atx-vol/bench/independent-reference/greek-plan-v2.md"],
+            cwd=root)
+        require((directory/"sources/greek-plan-v2.md").read_bytes().replace(b"\r\n", b"\n") ==
+                declared_plan.replace(b"\r\n", b"\n"), "original prospective plan unchanged")
     for name in ("outcomes", "summary"):
         suffix = ".jsonl" if name == "outcomes" else ".json"
         require(digest(directory/(name+suffix)) == manifest[name+"_sha256"], "result hash")
@@ -136,15 +152,16 @@ def verify_pilot(directory):
     require(manifest["uncomputed_ids"] == [c["id"] for c in corpus["cases"] if c["id"] not in selection],
             "all uncomputed contracts retained")
     rows = [json.loads(line) for line in (directory/"outcomes.jsonl").read_text(encoding="utf-8").splitlines()]
-    wanted = {(i, s, label) for i in selection for s in SCHEMES for label in CONFIGS}
-    require(len(rows) == 216 and {(r["id"], r["scheme"], r["label"]) for r in rows} == wanted,
+    wanted = {(i, s, label) for i in selection for s in schemes for label in configs}
+    require(len(rows) == requested_results and {(r["id"], r["scheme"], r["label"]) for r in rows} == wanted,
             "every fixed request exactly once")
     for row in rows:
-        verify_row(row, models[row["id"]])
+        verify_row(row, models[row["id"]], version=version)
     require(manifest["computed"] == sum(r["status"] == "computed" for r in rows) and
             manifest["refused"] == sum(r["status"] == "refused" for r in rows), "status denominator")
     summary = read_json(directory/"summary.json")
-    recomputed = {i: summarize_reference(models[i], [r for r in rows if r["id"] == i]) for i in selection}
+    recomputed = {i: summarize_reference(models[i], [r for r in rows if r["id"] == i], version=version)
+                  for i in selection}
     require(summary["fields"] == recomputed and summary["candidate_comparison_performed"] is False and
             summary["full_bundle_qualified"] is False and summary["other_cold_fields"] ==
             {f: "uncomputed" for f in ("vega", "theta", "rho", "vanna", "volga", "charm")}, "decision reproduction")
