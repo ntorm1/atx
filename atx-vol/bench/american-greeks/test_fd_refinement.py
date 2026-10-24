@@ -18,7 +18,7 @@ def fixture():
                    c['sigma']+d[1]*h[1],c['r']+d[2]*h[2],c['q']]
             s,k,t,v,r,q=model
             samples.append(dict(model=model,price=10+.01*s*s+2*v*v+3*t*t+4*r+5*s*v+6*s*t,
-                                internal_boundary=None,boundary_required=False,exercised=False,evaluated=True))
+                                internal_boundary=50.,boundary_required=True,exercised=False,evaluated=True))
         fields=m.reconstruct(samples,h,False,False)
         entries.append(dict(profile=profile,design=design,scale=scale,options=copy.deepcopy(m.PROFILES[profile]),
             requested_steps=h[:],actual_steps=h[:],rho_forward=False,time_forward=False,
@@ -135,6 +135,27 @@ class RefinementTest(unittest.TestCase):
         self.assertEqual(result['field_requests'],432)
         entry['samples'][4]['evaluated']=True
         with self.assertRaises(ValueError): m.summarize(report,corpus)
+
+    def test_model_requires_boundary_even_when_flag_and_boundary_are_removed(self):
+        report,corpus=fixture()
+        e=report['cases'][0]['evaluations'][0]
+        for sample in e['samples']:
+            sample['boundary_required']=False
+            sample['internal_boundary']=None
+        with self.assertRaises(ValueError): m.summarize(report,corpus)
+
+    def test_boundary_requirement_uses_internal_call_model_and_zero_rate_yield(self):
+        for side,r,q,T,v,required in [
+            ('put',.03,.01,.5,.2,True), ('put',0.,-.01,.5,.2,True),
+            ('call',-.01,0.,.5,.2,True), ('call',.03,0.,.5,.2,False),
+            ('put',-.01,-.02,.5,.2,False), ('put',-.01,.02,.5,.2,False),
+            ('put',.03,.01,1e-12,.2,False), ('put',.03,.01,.5,1e-8,False),
+        ]:
+            sample=dict(model=[100.,100.,T,v,r,q],price=10.,internal_boundary=50. if required else None,
+                        boundary_required=required,exercised=False,evaluated=True)
+            self.assertEqual(m.sample_regime(sample,side),'Continuation')
+            sample['boundary_required']=not required
+            with self.assertRaises(ValueError): m.sample_regime(sample,side)
 
 
 if __name__ == '__main__':

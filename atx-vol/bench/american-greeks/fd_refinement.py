@@ -65,11 +65,15 @@ def reconstruct(samples, h, rho_forward, time_forward):
 def sample_regime(sample, side):
     require(len(sample['model'])==6 and all(finite(x) for x in sample['model']), 'sample model')
     require(all(type(sample[k]) is bool for k in ['boundary_required','exercised','evaluated']), 'sample booleans')
+    S,K,T,sigma,r,q = sample['model']
+    rate,yield_ = (q,r) if side=='call' else (r,q)
+    american = rate>0 or (rate==0 and yield_<0)
+    require(sample['boundary_required'] == (T>1e-12 and sigma>1e-8 and american),
+            'model-derived boundary requirement')
     p,b = sample['price'],sample['internal_boundary']
     require(p is None or finite(p), 'sample price representation')
     require(b is None or finite(b), 'boundary representation')
     valid = finite(p) and (not sample['boundary_required'] or (finite(b) and b>0))
-    S,K = sample['model'][:2]
     intrinsic = K-S if side=='put' else S-K
     exercised = valid and intrinsic>0 and ((finite(b) and (S if side=='put' else K)<=b) or p<=intrinsic)
     require(sample['exercised']==exercised, 'price/boundary exercise evidence')
