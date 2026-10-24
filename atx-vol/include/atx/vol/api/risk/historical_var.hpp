@@ -108,7 +108,8 @@ historical_var(const HistoricalVarBook &book, std::span<const HistoricalVarScena
 // bit-identical to one `historical_var` over the whole history. With no admitted
 // scenario every point has NaN value_at_risk / expected_shortfall, tail_scenarios 0
 // and a zero tail_mean, and reference_pv is NaN. InvalidArgument on a confidence
-// outside (0, 1); never fails on frame contents.
+// outside (0, 1) or on an ADMITTED frame whose pnl_total or pv_base is not finite
+// (historical_var never admits one); frames that are not admitted are never read.
 [[nodiscard]] Result<HistoricalVarResult>
 summarize_historical_var(std::vector<HistoricalVarFrame> frames,
                          std::span<const double> confidences);

@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/backtest/backtest.hpp"                   // MarketSnapshot
@@ -991,6 +993,171 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   pin(var->var.points[0].value_at_risk, 36.078699706862814, "VaR 95");
   pin(var->var.points[0].expected_shortfall, 36.078699706862814, "ES 95");
   EXPECT_NEAR(var->var.frames[0].totals.pv_base, 0.0, 1e-6) << "entry book is vega-flat";
+}
+
+namespace {
+
+// The six-position book of DispersionBookVar_SplitsConfidences, sized off `set`.
+[[nodiscard]] Result<DispersionBook> var_test_book(const SurfaceSet &set,
+                                                   const ProjectedMaturitySpec &maturity) {
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"SPY", 1u, 0.0};
+  universe.names.push_back(DispersionMember{"N0", 2u, 0.4});
+  universe.names.push_back(DispersionMember{"N1", 3u, 0.6});
+  DispersionConfig dispersion;
+  dispersion.target_T = 30.0 / 365.25;
+  dispersion.target_vega = 100.0; // dollars per vol point (E1)
+  dispersion.side = DispersionSide::ShortIndexLongNames;
+  dispersion.multiplier = 100.0;
+  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 2u};
+  dispersion.projected_maturity = maturity;
+  return build_dispersion_book(universe, set, dispersion);
+}
+
+} // namespace
+
+// The bounded form of dispersion_book_var (review D-1): an evaluator that hands the history
+// over in windows overlapping by one snapshot -- the shape dispersion_run_projected_var uses
+// with 16-pair windows -- gives the one-window span form's result BIT FOR BIT; a pair covered
+// twice, a pair left uncovered, or a window past the history is InvalidArgument.
+TEST(ListedDispersionPipeline, DispersionBookVar_WindowsMatchOneSpanAndCoverEveryPairOnce) {
+  const std::vector<PricedSurface> book_surfaces = surfaces(kNow0, 0.0);
+  auto book_set = SurfaceSet::create(pointers(book_surfaces));
+  ASSERT_TRUE(book_set) << (book_set ? std::string{} : book_set.error().to_string());
+  const ProjectedMaturitySpec maturity = ProjectedMaturitySpec::days(30);
+  auto book = var_test_book(*book_set, maturity);
+  ASSERT_TRUE(book) << (book ? std::string{} : book.error().to_string());
+
+  // Seven sessions (six pairs) on a non-monotone spot path.
+  constexpr std::size_t kSessions = 7u;
+  std::vector<std::vector<PricedSurface>> owned;
+  std::vector<SurfaceSet> sets;
+  owned.reserve(kSessions);
+  sets.reserve(kSessions);
+  for (std::size_t d = 0; d < kSessions; ++d) {
+    const std::int64_t now = kNow0 + static_cast<std::int64_t>(d) * kDayNs;
+    owned.push_back(surfaces(now, 6.0 * std::sin(1.3 * static_cast<double>(d))));
+    auto set = SurfaceSet::create(pointers(owned.back()));
+    ASSERT_TRUE(set) << (set ? std::string{} : set.error().to_string());
+    sets.push_back(std::move(*set));
+  }
+  std::vector<DispersionVarSnapshot> snapshots;
+  for (std::size_t d = 0; d < kSessions; ++d) {
+    snapshots.push_back({kNow0 + static_cast<std::int64_t>(d) * kDayNs, &sets[d]});
+  }
+  HistoricalVarConfig cfg;
+  cfg.confidences = {0.8, 0.95};
+  cfg.n_threads = 1;
+  const auto whole = dispersion_book_var(*book, maturity, snapshots, cfg);
+  ASSERT_TRUE(whole) << (whole ? std::string{} : whole.error().to_string());
+  ASSERT_EQ(whole->var.frames.size(), kSessions - 1u);
+
+  // Runs `windows` = {first snapshot, snapshot count} through the bounded form.
+  const std::span<const DispersionVarSnapshot> all(snapshots);
+  const auto run = [&](std::vector<std::pair<std::size_t, std::size_t>> windows) {
+    return dispersion_book_var(
+        *book, maturity, kSessions,
+        [all, windows](const DispersionVarWindow &run_window) -> Status {
+          for (const auto &[first, count] : windows) {
+            if (Status st = run_window(all.subspan(first, count), first); !st.has_value()) {
+              return st;
+            }
+          }
+          return atx::core::Ok();
+        },
+        cfg);
+  };
+
+  // Windows of three snapshots: pairs {0, 1}, {2, 3}, {4, 5}; snapshots 2 and 4 are shared.
+  const auto windowed = run({{0u, 3u}, {2u, 3u}, {4u, 3u}});
+  ASSERT_TRUE(windowed) << (windowed ? std::string{} : windowed.error().to_string());
+  ASSERT_EQ(windowed->var.frames.size(), whole->var.frames.size());
+  for (std::size_t i = 0; i < whole->var.frames.size(); ++i) {
+    const HistoricalVarFrame &a = windowed->var.frames[i];
+    const HistoricalVarFrame &b = whole->var.frames[i];
+    EXPECT_EQ(a.base_ts_ns, b.base_ts_ns) << i;
+    EXPECT_EQ(a.shifted_ts_ns, b.shifted_ts_ns) << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a.totals.pnl_total),
+              std::bit_cast<std::uint64_t>(b.totals.pnl_total))
+        << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a.totals.pv_base),
+              std::bit_cast<std::uint64_t>(b.totals.pv_base))
+        << i;
+    EXPECT_TRUE(a.admitted) << i;
+  }
+  ASSERT_EQ(windowed->legs.size(), whole->legs.size());
+  for (std::size_t k = 0; k < whole->legs.size(); ++k) {
+    EXPECT_EQ(windowed->legs[k].fingerprint, whole->legs[k].fingerprint) << k;
+  }
+  ASSERT_EQ(windowed->var.points.size(), whole->var.points.size());
+  for (std::size_t k = 0; k < whole->var.points.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(windowed->var.points[k].value_at_risk),
+              std::bit_cast<std::uint64_t>(whole->var.points[k].value_at_risk))
+        << k;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(windowed->var.points[k].expected_shortfall),
+              std::bit_cast<std::uint64_t>(whole->var.points[k].expected_shortfall))
+        << k;
+  }
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(windowed->var.reference_pv),
+            std::bit_cast<std::uint64_t>(whole->var.reference_pv));
+  EXPECT_EQ(windowed->prepared_fingerprint, whole->prepared_fingerprint);
+
+  const auto invalid = [](const auto &r) {
+    return !r.has_value() && r.error().code() == ErrorCode::InvalidArgument;
+  };
+  EXPECT_TRUE(invalid(run({{0u, 3u}, {1u, 3u}, {4u, 3u}}))) << "pair 1 covered twice";
+  EXPECT_TRUE(invalid(run({{0u, 3u}, {3u, 4u}}))) << "pair 2 (snapshot 2 -> 3) uncovered";
+  const auto past_end = dispersion_book_var(
+      *book, maturity, kSessions,
+      [all](const DispersionVarWindow &run_window) -> Status {
+        return run_window(all.subspan(5u, 2u), 6u); // labelled one pair past the last
+      },
+      cfg);
+  EXPECT_TRUE(invalid(past_end)) << "window past the end of the history";
+}
+
+// States (listed_dispersion_pipeline.hpp): a surface's own instant must equal its snapshot's;
+// only a surface that carries NO instant (now_ts_ns <= 0) is measured from the snapshot's. One
+// untimed surface in a set must not switch that check off for the set's other surfaces.
+TEST(ListedDispersionPipeline, DispersionBookVar_UntimedSurfaceDoesNotExcuseAMismatchedOne) {
+  const std::vector<PricedSurface> book_surfaces = surfaces(kNow0, 0.0);
+  auto book_set = SurfaceSet::create(pointers(book_surfaces));
+  ASSERT_TRUE(book_set) << (book_set ? std::string{} : book_set.error().to_string());
+  const ProjectedMaturitySpec maturity = ProjectedMaturitySpec::days(30);
+  auto book = var_test_book(*book_set, maturity);
+  ASSERT_TRUE(book) << (book ? std::string{} : book.error().to_string());
+
+  const std::vector<PricedSurface> s0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> s2 = surfaces(kNow2, -5.0);
+  // Session 1: uid 1 carries no instant; uid 2 is stamped one day EARLY; uid 3 is on time.
+  std::vector<PricedSurface> mismatched;
+  mismatched.push_back(make_surface(1u, 505.0, 0));
+  mismatched.push_back(make_surface(2u, 101.5, kNow0));
+  mismatched.push_back(make_surface(3u, 199.0, kNow1));
+  // Control: the same session with uid 2 on time.
+  std::vector<PricedSurface> on_time;
+  on_time.push_back(make_surface(1u, 505.0, 0));
+  on_time.push_back(make_surface(2u, 101.5, kNow1));
+  on_time.push_back(make_surface(3u, 199.0, kNow1));
+  auto set0 = SurfaceSet::create(pointers(s0));
+  auto set2 = SurfaceSet::create(pointers(s2));
+  auto bad1 = SurfaceSet::create(pointers(mismatched));
+  auto good1 = SurfaceSet::create(pointers(on_time));
+  ASSERT_TRUE(set0 && set2 && bad1 && good1);
+  HistoricalVarConfig cfg;
+  cfg.n_threads = 1;
+
+  const std::vector<DispersionVarSnapshot> bad = {
+      {kNow0, &*set0}, {kNow1, &*bad1}, {kNow2, &*set2}};
+  const auto refused = dispersion_book_var(*book, maturity, bad, cfg);
+  ASSERT_FALSE(refused) << "a surface stamped a day early was accepted next to an untimed one";
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+
+  const std::vector<DispersionVarSnapshot> good = {
+      {kNow0, &*set0}, {kNow1, &*good1}, {kNow2, &*set2}};
+  const auto accepted = dispersion_book_var(*book, maturity, good, cfg);
+  ASSERT_TRUE(accepted) << (accepted ? std::string{} : accepted.error().to_string());
+  EXPECT_EQ(accepted->var.frames.size(), 2u);
 }
 
 // ── (h) Mark divergence collector (L10) ───────────────────────────────────────

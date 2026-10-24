@@ -28,6 +28,7 @@
 #include "atx/vol/api/risk/risk_frame.hpp"
 #include "atx/vol/api/risk/risk_kernel.hpp"
 #include "atx/vol/api/risk/theo_contract.hpp"
+#include "risk/historical_var_detail.hpp"
 #include "support/risk_synthetic_market.hpp"
 
 using namespace atx::vol;
@@ -393,6 +394,95 @@ TEST(HistoricalVar, NearestRankQuantilesMatchHandComputation) {
   EXPECT_TRUE(same_bits(again->reference_pv, res->reference_pv));
 }
 
+// Hand-built frames for the quantile half alone: a fixed pv_base, the P&L under test, and a
+// vega tag that tells otherwise tied scenarios apart in the tail attribution.
+[[nodiscard]] HistoricalVarFrame hand_frame(double pnl, double vega_tag, bool admitted = true) {
+  HistoricalVarFrame f;
+  f.totals.pv_base = 100.0;
+  f.totals.pnl_total = pnl;
+  f.totals.pnl_vega = vega_tag;
+  f.totals.n_ok = 1u;
+  f.admitted = admitted;
+  return f;
+}
+
+TEST(HistoricalVar, NearestRankTiesKeepScenarioOrder) {
+  // Losses in scenario order {2, 1, 2, 5, 2}: three scenarios tie at the VaR level. Sorted
+  // ascending with ties in scenario order: B(1) A(2) C(2) E(2) D(5).
+  const std::vector<HistoricalVarFrame> frames = {
+      hand_frame(-2.0, 1.0),   // A
+      hand_frame(-1.0, 0.0),   // B
+      hand_frame(-2.0, 10.0),  // C
+      hand_frame(-5.0, 0.0),   // D
+      hand_frame(-2.0, 100.0), // E
+      hand_frame(-9.0, 0.0, /*admitted=*/false)}; // never in the sample
+  const std::vector<double> confidences = {0.6, 0.4};
+  const Result<HistoricalVarResult> res = summarize_historical_var(frames, confidences);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->n_admitted, 5u);
+
+  // c = 0.6: rank ceil(3) = 3 -> C; the tail is C, E, D (the LATER tied scenarios).
+  const HistoricalVarPoint &p60 = res->points[0];
+  EXPECT_EQ(p60.value_at_risk, 2.0);
+  EXPECT_EQ(p60.tail_scenarios, 3u);
+  EXPECT_EQ(p60.expected_shortfall, 3.0);              // (2 + 2 + 5) / 3
+  EXPECT_DOUBLE_EQ(p60.tail_mean.pnl_vega, 110.0 / 3.0); // C and E, not A
+  // c = 0.4: rank ceil(2) = 2 -> A; the tail is A, C, E, D.
+  const HistoricalVarPoint &p40 = res->points[1];
+  EXPECT_EQ(p40.value_at_risk, 2.0);
+  EXPECT_EQ(p40.tail_scenarios, 4u);
+  EXPECT_EQ(p40.expected_shortfall, 2.75); // (2 + 2 + 2 + 5) / 4
+  EXPECT_DOUBLE_EQ(p40.tail_mean.pnl_vega, 111.0 / 4.0);
+}
+
+TEST(HistoricalVar, NearestRankAtOneScenarioAndConfidenceNearOne) {
+  // n = 1: every confidence picks the only loss, and the tail is that scenario.
+  const std::vector<HistoricalVarFrame> one = {hand_frame(-3.5, 1.0),
+                                               hand_frame(-50.0, 0.0, /*admitted=*/false)};
+  const std::vector<double> any_c = {1e-12, 0.5, 0.99};
+  const Result<HistoricalVarResult> single = summarize_historical_var(one, any_c);
+  ASSERT_TRUE(single.has_value()) << single.error().to_string();
+  ASSERT_EQ(single->n_admitted, 1u);
+  for (const HistoricalVarPoint &p : single->points) {
+    EXPECT_EQ(p.value_at_risk, 3.5) << p.confidence;
+    EXPECT_EQ(p.expected_shortfall, 3.5) << p.confidence;
+    EXPECT_EQ(p.tail_scenarios, 1u) << p.confidence;
+  }
+  // c -> 1 (the largest double below 1): rank ceil(c n) = n, the worst loss alone.
+  const std::vector<HistoricalVarFrame> five = {hand_frame(-2.0, 0.0), hand_frame(-1.0, 0.0),
+                                                hand_frame(-7.0, 0.0), hand_frame(4.0, 0.0),
+                                                hand_frame(-3.0, 0.0)};
+  const std::vector<double> near_one = {std::nextafter(1.0, 0.0)};
+  const Result<HistoricalVarResult> top = summarize_historical_var(five, near_one);
+  ASSERT_TRUE(top.has_value()) << top.error().to_string();
+  EXPECT_EQ(top->points[0].value_at_risk, 7.0);
+  EXPECT_EQ(top->points[0].expected_shortfall, 7.0);
+  EXPECT_EQ(top->points[0].tail_scenarios, 1u);
+}
+
+TEST(HistoricalVar, SummarizeRefusesAnAdmittedNonFiniteFrame) {
+  const std::vector<double> confidences = {0.95};
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const auto invalid = [&](std::vector<HistoricalVarFrame> frames) {
+    const Result<HistoricalVarResult> r = summarize_historical_var(std::move(frames), confidences);
+    return !r.has_value() && r.error().code() == ErrorCode::InvalidArgument;
+  };
+  // A NaN loss has no rank (it would break the sort's ordering); an infinite one, or a
+  // non-finite base value, has no mean.
+  EXPECT_TRUE(invalid({hand_frame(-1.0, 0.0), hand_frame(nan, 0.0), hand_frame(-2.0, 0.0)}));
+  EXPECT_TRUE(invalid({hand_frame(-1.0, 0.0), hand_frame(-inf, 0.0)}));
+  HistoricalVarFrame bad_pv = hand_frame(-1.0, 0.0);
+  bad_pv.totals.pv_base = nan;
+  EXPECT_TRUE(invalid({hand_frame(-2.0, 0.0), bad_pv}));
+  // A frame that is not admitted is not in the sample: its contents are never read.
+  const Result<HistoricalVarResult> ok = summarize_historical_var(
+      {hand_frame(-1.0, 0.0), hand_frame(nan, 0.0, /*admitted=*/false)}, confidences);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_EQ(ok->n_admitted, 1u);
+  EXPECT_EQ(ok->points[0].value_at_risk, 1.0);
+}
+
 TEST(HistoricalVar, TailMeanIsAttributionOfTail) {
   const History h = five_pair_history();
   const HistoricalVarBook book = reference_book(/*with_shares=*/true);
@@ -560,6 +650,92 @@ TEST(HistoricalVar, InvalidArgumentsAreRefused) {
   EXPECT_EQ(empty->n_admitted, 0u);
 }
 
+TEST(HistoricalVar, ExcludedLegNeedsAKnownPremiumStrictlyBelowTheFraction) {
+  // A share leg on uid 3 next to an option template on uid 1. Pair 0: uid 3 is absent from
+  // the BASE state, so the leg's base value -- its premium -- is unknown (explain books it at
+  // premium 0). Pair 1: uid 3 is priced on the base state and absent from the shifted one,
+  // so the leg is excluded with a known premium |qty S_b|.
+  History h;
+  h.add(move_at(0, 0.0, 0.0, 0.0, 0.0), /*n_uids=*/2);
+  h.add(move_at(1, 0.006, -0.004, 0.003, 0.008));
+  h.add(move_at(2, 0.004, -0.002, 0.001, 0.004), /*n_uids=*/2);
+  h.pair(0, 1);
+  h.pair(1, 2);
+  HistoricalVarBook book;
+  book.options.push_back(put_delta_leg(1u, 0.15, -0.25, 10.0));
+  book.shares.push_back(ShareLeg{9001u, 3u, 50.0});
+  const double known_premium = 50.0 * h.state(1).underlier(3u)->spot;
+
+  // Default fraction 0: neither pair is admitted -- a zero premium is not "below 0", and an
+  // unknown one is not zero.
+  const Result<HistoricalVarResult> strict = historical_var(book, h.scenarios, base_config());
+  ASSERT_TRUE(strict.has_value()) << strict.error().to_string();
+  for (std::size_t i = 0; i < 2; ++i) {
+    const ExplainTotals &t = strict->frames[i].totals;
+    EXPECT_EQ(t.n_ok, 1u) << i;
+    EXPECT_EQ(t.n_excluded, 1u) << i;
+    EXPECT_FALSE(strict->frames[i].admitted) << i;
+  }
+  EXPECT_EQ(strict->frames[0].totals.excluded_premium, 0.0) << "unknown, booked at 0";
+  EXPECT_DOUBLE_EQ(strict->frames[1].totals.excluded_premium, known_premium);
+  EXPECT_EQ(strict->n_admitted, 0u);
+
+  // A fraction that covers the known premium admits pair 1 only; one that does not, neither.
+  const double pv_base = std::fabs(strict->frames[1].totals.pv_base);
+  ASSERT_GT(pv_base, 0.0);
+  HistoricalVarConfig covering = base_config();
+  covering.max_excluded_premium_frac = 2.0 * known_premium / pv_base;
+  const Result<HistoricalVarResult> cov = historical_var(book, h.scenarios, covering);
+  ASSERT_TRUE(cov.has_value()) << cov.error().to_string();
+  EXPECT_FALSE(cov->frames[0].admitted) << "an unknown premium is never admitted";
+  EXPECT_TRUE(cov->frames[1].admitted);
+  EXPECT_EQ(cov->n_admitted, 1u);
+  HistoricalVarConfig short_of = base_config();
+  short_of.max_excluded_premium_frac = 0.5 * known_premium / pv_base;
+  const Result<HistoricalVarResult> sh = historical_var(book, h.scenarios, short_of);
+  ASSERT_TRUE(sh.has_value()) << sh.error().to_string();
+  EXPECT_FALSE(sh->frames[0].admitted);
+  EXPECT_FALSE(sh->frames[1].admitted);
+}
+
+TEST(HistoricalVar, ForeignWorkspaceIsAnErrorNotADroppedScenario) {
+  // historical_var re-binds its workspace to every scenario's book (RiskWorkspace::reserve).
+  // If that ever stopped, the kernel would refuse the workspace as bound to another book; that
+  // refusal must fail the call, not drop the scenario as if its clock had refused it.
+  History h;
+  h.add(move_at(0, 0.0, 0.0, 0.0, 0.0));
+  h.add(move_at(1, 0.006, -0.004, 0.003, 0.008));
+  h.pair(0, 1);
+  const std::vector<OptionLeg> all = rt::make_option_legs();
+  ASSERT_GE(all.size(), 2u);
+  const std::vector<OptionLeg> two(all.begin(), all.begin() + 2);
+  const RiskBook book_a = RiskBook::create(all, {}).value();
+  const RiskBook book_b = RiskBook::create(two, {}).value();
+  const PreparedRiskBook prepared_a = PreparedRiskBook::create(book_a).value();
+  const PreparedRiskBook prepared_b = PreparedRiskBook::create(book_b).value();
+  const RiskKernel kernel = RiskKernel::family();
+
+  RiskWorkspace ws;
+  ws.reserve(prepared_a); // bound to book A
+  RiskFrame base;
+  RiskFrame shifted;
+  ExplainResult out;
+  const Result<historical_var_detail::PairOutcome> foreign = historical_var_detail::evaluate_pair(
+      kernel, prepared_b, h.scenarios[0], RiskNeeds{}, ExplainOptions{}, ws, base, shifted, out);
+  ASSERT_FALSE(foreign.has_value()) << "a structural refusal was reported as a refused pair";
+  EXPECT_EQ(foreign.error().code(), ErrorCode::InvalidArgument);
+
+  // Control: re-bound to book B, the same pair is explained.
+  ws.reserve(prepared_b);
+  base.book_logical_id = 0u;
+  shifted.book_logical_id = 0u;
+  const Result<historical_var_detail::PairOutcome> bound = historical_var_detail::evaluate_pair(
+      kernel, prepared_b, h.scenarios[0], RiskNeeds{}, ExplainOptions{}, ws, base, shifted, out);
+  ASSERT_TRUE(bound.has_value()) << bound.error().to_string();
+  EXPECT_EQ(*bound, historical_var_detail::PairOutcome::Explained);
+  EXPECT_EQ(out.total.n_ok, 2u);
+}
+
 // ── Kernels and determinism ──────────────────────────────────────────────────
 
 TEST(HistoricalVar, FamilyAndColdAgreeWithinTolerance) {
@@ -626,6 +802,14 @@ TEST(HistoricalVar, FamilyAndColdAgreeWithinTolerance) {
   for (std::size_t k = 0; k < f->points.size(); ++k) {
     EXPECT_NEAR(f->points[k].value_at_risk, c->points[k].value_at_risk, eps_max) << k;
     EXPECT_NEAR(f->points[k].expected_shortfall, c->points[k].expected_shortfall, eps_max) << k;
+    // The brief's Done criterion, tighter than the derived bound (~2e-6 * reference_pv); it
+    // holds here with orders of magnitude to spare (~1e-10 relative).
+    EXPECT_NEAR(f->points[k].value_at_risk, c->points[k].value_at_risk,
+                kPriceGate * c->reference_pv)
+        << k;
+    EXPECT_NEAR(f->points[k].expected_shortfall, c->points[k].expected_shortfall,
+                kPriceGate * c->reference_pv)
+        << k;
   }
 
   // Non-vacuity: the family route really ran. Family economics (lane A2, on by default)
