@@ -40,7 +40,9 @@
 
 namespace atx::vol::riskbench {
 
-inline constexpr int kReportSchemaVersion = 1;
+// v2 (follow-up 2): inputs.time / inputs.carry_mode and the BucketLoad framework-filter and
+// implied-carry fields; the reader requires every v2 field and refuses v1.
+inline constexpr int kReportSchemaVersion = 2;
 inline constexpr std::size_t kRouteCount = 7; // RiskRoute::None .. RiskRoute::Refused
 inline constexpr std::size_t kFlagCount = 11; // RiskFlag bits 0 .. 10
 inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -69,6 +71,12 @@ struct RiskBenchArgs {
   std::size_t dump_steps{1};    // --dump-steps N: dump the first N steps (0 = every step)
   std::uint64_t seed{1};
   bool help{false};             // --help / -h
+  // ── Follow-up 2 additions (appended) ──
+  // --time voltime|calendar365: the clock every state (and so the kernel) measures T on.
+  // Calendar365 under both stores: VolTime reproduces SpiderRock's `years` only up to the
+  // first NYSE early close (docs/risk-bench.md "Clock"), and the synthetic store's vendor
+  // columns are priced on the calendar clock.
+  TimeConvention time{TimeConvention::Calendar365};
 
   // The store the run reads: the synthetic dir when set, else --store.
   [[nodiscard]] const std::string &store_root() const noexcept {
@@ -82,6 +90,8 @@ struct RiskBenchArgs {
 [[nodiscard]] Result<RiskBenchArgs> parse_risk_bench_args(std::span<const char *const> argv);
 [[nodiscard]] std::string risk_bench_usage();
 [[nodiscard]] const char *to_string(BenchKernel kernel) noexcept;
+// "calendar365" | "voltime" (the --time spelling).
+[[nodiscard]] const char *time_name(TimeConvention time) noexcept;
 
 // ═══ Report ══════════════════════════════════════════════════════════════════
 
@@ -243,6 +253,7 @@ struct RiskBenchReport {
   std::size_t requested_options{0};
   std::size_t requested_shares{0};
   unsigned host_threads{0};
+  std::string time;       // time_name(args.time)
   // Synthetic store preparation.
   bool synthetic_generated{false};
   double synthetic_seconds{0.0};

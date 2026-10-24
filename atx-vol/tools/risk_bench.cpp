@@ -598,6 +598,7 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.store_root = args.store_root();
   spec.date = args.date;
   spec.max_underliers = args.underliers;
+  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
   ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));

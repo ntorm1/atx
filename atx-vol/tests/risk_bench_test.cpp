@@ -156,6 +156,26 @@ TEST(RiskBenchArgs, DumpLegsFlags) {
   EXPECT_NE(rb::risk_bench_usage().find("--dump-steps"), std::string::npos);
 }
 
+// --time: Calendar365 is the default under BOTH stores. VolTime reproduces the vendor's
+// `years` only up to the first NYSE early close (SpiderRockStoreReal.LoadsBucket1000
+// prints the table; docs/risk-bench.md "Clock"), and the synthetic store's vendor columns
+// are priced on the calendar clock.
+TEST(RiskBenchArgs, TimeFlag) {
+  using atx::vol::TimeConvention;
+  EXPECT_EQ(parse({"--store", "s"}).value().time, TimeConvention::Calendar365);
+  EXPECT_EQ(parse({"--synthetic", "s"}).value().time, TimeConvention::Calendar365);
+  EXPECT_EQ(parse({"--store", "s", "--time", "voltime"}).value().time, TimeConvention::VolTime);
+  EXPECT_EQ(parse({"--synthetic", "s", "--time", "voltime"}).value().time,
+            TimeConvention::VolTime);
+  EXPECT_EQ(parse({"--store", "s", "--time", "calendar365"}).value().time,
+            TimeConvention::Calendar365);
+  EXPECT_EQ(parse({"--store", "s", "--time", "vol"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(parse({"--store", "s", "--time"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_STREQ(rb::time_name(TimeConvention::VolTime), "voltime");
+  EXPECT_STREQ(rb::time_name(TimeConvention::Calendar365), "calendar365");
+  EXPECT_NE(rb::risk_bench_usage().find("--time voltime|calendar365"), std::string::npos);
+}
+
 // ── RiskBenchBook ───────────────────────────────────────────────────────────
 
 class RiskBenchBook : public ::testing::Test {
@@ -432,6 +452,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   args.synthetic_dir = "syn-store";
   args.kernel = rb::BenchKernel::Both;
   args.determinism = true;
+  args.time = atx::vol::TimeConvention::VolTime;
   rb::RiskBenchReport r = rb::report_skeleton(args);
   r.synthetic_generated = true;
   r.synthetic_seconds = 14.6;
@@ -503,12 +524,14 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   return r;
 }
 
-TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
+TEST(RiskBenchReport, JsonSchemaV2RoundTrip) {
   const rb::RiskBenchReport r = fabricated_report();
   // NaN-valued fields (never-set parity / cold maxima) must survive as null.
   ASSERT_TRUE(std::isnan(r.steps[0].parity_price.mae));
   const std::string text = rb::report_to_json(r);
-  EXPECT_NE(text.find("\"schema_version\": 1"), std::string::npos);
+  EXPECT_EQ(rb::kReportSchemaVersion, 2);
+  EXPECT_NE(text.find("\"schema_version\": 2"), std::string::npos);
+  EXPECT_NE(text.find("\"time\": \"voltime\""), std::string::npos);
   EXPECT_NE(text.find("\"mae\": null"), std::string::npos);
 
   const auto back = rb::report_from_json(text);
@@ -518,6 +541,7 @@ TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
   EXPECT_EQ(rb::report_to_json(*back), text);
   EXPECT_EQ(back->schema_version, rb::kReportSchemaVersion);
   EXPECT_EQ(back->kernel, "both");
+  EXPECT_EQ(back->time, "voltime");
   EXPECT_TRUE(back->synthetic);
   EXPECT_EQ(back->steps.size(), 2u);
   EXPECT_EQ(back->steps[1].ts_from, r.steps[1].ts_from);
@@ -534,10 +558,11 @@ TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
   EXPECT_DOUBLE_EQ(r.summary.cold_lane_fraction, (2.0 * 76.0) / (2.0 * 9876.0));
   EXPECT_NEAR(r.summary.run_seconds_excl_io, 0.033 + 0.15 + 2 * (0.03 + 0.125), 1e-12);
 
-  // A wrong schema version or a missing field is a ParseError, never a guess.
-  std::string v2 = text;
-  v2.replace(v2.find("\"schema_version\": 1"), 19, "\"schema_version\": 2");
-  EXPECT_EQ(rb::report_from_json(v2).error().code(), ErrorCode::ParseError);
+  // A wrong schema version (a v1 report: it lacks the v2 fields) or a missing field is a
+  // ParseError, never a guess.
+  std::string v1 = text;
+  v1.replace(v1.find("\"schema_version\": 2"), 19, "\"schema_version\": 1");
+  EXPECT_EQ(rb::report_from_json(v1).error().code(), ErrorCode::ParseError);
   std::string missing = text;
   missing.replace(missing.find("\"tool\""), 6, "\"tooX\"");
   EXPECT_EQ(rb::report_from_json(missing).error().code(), ErrorCode::ParseError);

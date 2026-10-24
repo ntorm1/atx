@@ -162,6 +162,13 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
 
 [[nodiscard]] Status parse_choice(ArgCursor &c, std::string_view flag, RiskBenchArgs &a) {
   const std::optional<std::string_view> v = c.value();
+  if (flag == "--time") {
+    if (!v.has_value() || (*v != "voltime" && *v != "calendar365")) {
+      return Err(usage_error("--time must be voltime|calendar365"));
+    }
+    a.time = *v == "voltime" ? TimeConvention::VolTime : TimeConvention::Calendar365;
+    return Ok();
+  }
   if (flag == "--kernel") {
     const std::optional<BenchKernel> k = v.has_value() ? parse_kernel(*v) : std::nullopt;
     if (!k.has_value()) {
@@ -201,7 +208,7 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
   if (flag == "--seed") {
     return set_number(c, flag, a.seed);
   }
-  if (flag == "--kernel" || flag == "--needs") {
+  if (flag == "--kernel" || flag == "--needs" || flag == "--time") {
     return parse_choice(c, flag, a);
   }
   return Err(usage_error("unknown flag: " + std::string{flag}));
@@ -258,6 +265,8 @@ std::string risk_bench_usage() {
          "  --kernel K           family | cold | both (family)\n"
          "  --threads N          kernel / explain fan-out degree, 0 = auto (8)\n"
          "  --needs rho|none     evaluate the rho axis (none)\n"
+         "  --time voltime|calendar365\n"
+         "                       the clock T is measured on (calendar365)\n"
          "  --trapezoid          trapezoid second-order explain terms\n"
          "  --determinism        shadow threads=1 stream; totals must be bit-equal\n"
          "  --out <file>         JSON report (stdout when absent)\n"
@@ -280,6 +289,16 @@ const char *to_string(BenchKernel kernel) noexcept {
     return "both";
   }
   return "family";
+}
+
+const char *time_name(TimeConvention time) noexcept {
+  switch (time) {
+  case TimeConvention::Calendar365:
+    return "calendar365";
+  case TimeConvention::VolTime:
+    return "voltime";
+  }
+  return "calendar365";
 }
 
 const char *to_string(PlaZone zone) noexcept {
@@ -731,6 +750,7 @@ RiskBenchReport report_skeleton(const RiskBenchArgs &args) {
   r.requested_options = args.options;
   r.requested_shares = args.shares;
   r.host_threads = std::thread::hardware_concurrency();
+  r.time = time_name(args.time);
   return r;
 }
 
@@ -1558,7 +1578,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"requested_underliers", jnumber(r.requested_underliers)},
               {"requested_options", jnumber(r.requested_options)},
               {"requested_shares", jnumber(r.requested_shares)},
-              {"host_threads", jnumber(r.host_threads)}});
+              {"host_threads", jnumber(r.host_threads)},
+              {"time", jstr(r.time)}});
 }
 
 void inputs_from(const Fields &o, RiskBenchReport &r) {
@@ -1577,6 +1598,7 @@ void inputs_from(const Fields &o, RiskBenchReport &r) {
   r.requested_options = o.integer<std::size_t>("requested_options");
   r.requested_shares = o.integer<std::size_t>("requested_shares");
   r.host_threads = o.integer<unsigned>("host_threads");
+  r.time = o.text("time");
 }
 
 void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
