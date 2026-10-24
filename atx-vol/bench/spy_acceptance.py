@@ -1121,6 +1121,7 @@ def cold_timing_checks(manifest, directory, receipt, audit_report):
             checks["native_reports_verified"] &= (report_hash == trial.get("report_sha256") and
                 native.get("policy_definition") == audit_report.get("policy_definition") and
                 "acceptance_audit" not in native.get("graded_stats", {}) and
+                "candidate_capture" not in bench and bench.get("timing_qualifying", True) is True and
                 bench.get("reps") == 1 and len(reps) == 1 and rep.get("rep") == 1 and
                 rep.get("deam_memo_entries_at_start") == 0)
             checks["all_cold_under1second"] &= (trial.get("exit_code") == 0 and

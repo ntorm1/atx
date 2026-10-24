@@ -19,6 +19,7 @@
 #include "quote_bench_progress.hpp"
 #include "quote_bench_data.hpp"
 #include "quote_bench_acceptance.hpp"
+#include "quote_bench_candidate_capture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -60,6 +61,7 @@ struct Arguments {
   std::filesystem::path output;
   std::filesystem::path report;
   std::filesystem::path progress;
+  std::filesystem::path candidate_capture;
   std::string curve;
   std::string policy{"auto"};
   std::string model{"quote-slice"};
@@ -131,6 +133,7 @@ Arguments arguments(int argc, char **argv) {
                    "[--cold-reset] [--affinity CPU [--require-pcore]] "
                    "[--inverse-replay auto|scalar|avx2]\n"
                    "[--acceptance-audit] (offline final API proof; not a timing run)\n"
+                   "[--candidate-capture fresh.json] (explicit research build; one-worker offline capture)\n"
                    "Defaults: --policy auto --dividends funding-pv. "
                    "Quality/min-quotes flags require explicit --curve. "
                    "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
@@ -177,6 +180,7 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--output") args.output = value;
     else if (key == "--report") args.report = value;
     else if (key == "--progress") args.progress = value;
+    else if (key == "--candidate-capture") args.candidate_capture = value;
     else if (key == "--curve") args.curve = value;
     else if (key == "--policy") args.policy = value;
     else if (key == "--model") args.model = value;
@@ -196,6 +200,24 @@ Arguments arguments(int argc, char **argv) {
   }
   if (seen.contains("--policy") && seen.contains("--curve")) {
     throw std::runtime_error("--policy and --curve are mutually exclusive");
+  }
+  if (seen.contains("--candidate-capture")) {
+    if (args.candidate_capture.empty() || args.model != "quote-slice" || !args.curve.empty() ||
+        args.reps != 1U || atx_auto_worker_count() != 1U || !args.timing_detail ||
+        !args.cold_reset || args.acceptance_audit || args.deam_audit || args.inverse_replay ||
+        args.report.empty())
+      throw std::runtime_error("candidate capture requires one rep/worker, graded quote-slice, "
+          "timing-detail, cold-reset and report; no other audit/replay");
+    if (!research::iv_candidate_capture_enabled())
+      throw std::runtime_error("candidate capture requires ATX_VOL_CAPTURE_PRICE_CANDIDATES build");
+    for (const auto &path : {args.candidate_capture, args.output, args.report}) {
+      if (std::filesystem::exists(path))
+        throw std::runtime_error("candidate capture requires fresh output paths");
+    }
+    if (same_file(args.candidate_capture, args.input) || same_file(args.candidate_capture, args.output) ||
+        same_file(args.candidate_capture, args.report) ||
+        (args.policy != "auto" && same_file(args.candidate_capture, args.policy)))
+      throw std::runtime_error("candidate capture paths must differ from inputs, policy and outputs");
   }
   if (args.model != "quote-slice" && args.model != "common-markov") {
     throw std::runtime_error("--model must be quote-slice or common-markov");
@@ -2793,12 +2815,13 @@ int main(int argc, char **argv) {
     if (args.affinity) pin_fit_worker(args);
     times.setup_s = bench::seconds_between(main_entry, Clock::now());
     Json provenance = Json::object();
-    if (!args.progress.empty()) {
+    if (!args.progress.empty() || !args.candidate_capture.empty()) {
+      const auto &selected_policy = args.progress.empty() ? args.policy : args.common_policy;
       provenance = {{"input", std::filesystem::weakly_canonical(args.input).string()},
           {"input_sha256", quote_bench::file_sha256(args.input)},
-          {"policy_selection", args.common_policy},
-          {"policy_sha256", args.common_policy == "auto" ? Json(nullptr)
-              : Json(quote_bench::file_sha256(args.common_policy))},
+          {"policy_selection", selected_policy},
+          {"policy_sha256", selected_policy == "auto" ? Json(nullptr)
+              : Json(quote_bench::file_sha256(selected_policy))},
           {"executable_sha256", std::filesystem::exists(argv[0])
               ? Json(quote_bench::file_sha256(argv[0])) : Json(nullptr)},
           {"executable_hash_scope", "argv[0] if directly resolvable; wrapper start receipt "
@@ -2832,8 +2855,24 @@ int main(int argc, char **argv) {
     const auto cpus_before = bench::sample_cpus();
     iv_batch::InverseStream inverse_stream; // lane K2: armed only under --inverse-replay
     if (args.inverse_replay) iv_batch::inverse_stream_arm(&inverse_stream);
+    const auto capture_setup = Clock::now();
+    constexpr std::size_t capture_capacity = 4096;
+    std::vector<research::IvCandidateCaptureRecord> candidate_records;
+    std::vector<research::IvCandidateCacheLifetime> candidate_caches;
+    std::unique_ptr<research::IvCandidateCapture> candidate_capture;
+    if (!args.candidate_capture.empty()) {
+      candidate_records.resize(capture_capacity);
+      candidate_caches.resize(capture_capacity);
+      candidate_capture = std::make_unique<research::IvCandidateCapture>(candidate_records, candidate_caches);
+    }
+    const double capture_setup_s = bench::seconds_between(capture_setup, Clock::now());
     const auto compute_start = Clock::now();
-    const auto predictions = run_reps(args, rows, stats, bench_report);
+    const auto predictions = [&] {
+      if (!candidate_capture) return run_reps(args, rows, stats, bench_report);
+      const research::IvCandidateCaptureScope capture_scope(*candidate_capture);
+      if (!capture_scope.attached()) throw std::runtime_error("Candidate capture scope refused");
+      return run_reps(args, rows, stats, bench_report);
+    }();
     times.compute_s = bench::seconds_between(compute_start, Clock::now());
     iv_batch::inverse_stream_arm(nullptr);
     if (args.inverse_replay) {
@@ -2850,7 +2889,34 @@ int main(int argc, char **argv) {
         bench::affinity_json(args.affinity, args.require_pcore, cpus_before, cpus_after);
     bench_report["build_info"] = bench::build_info_json();
     bench_report["build_info"]["cold_seed_target"] = seed_target_provenance();
+    bench_report["build_info"]["price_candidate_capture"] = {
+        {"cmake_option", "ATX_VOL_CAPTURE_PRICE_CANDIDATES"},
+        {"enabled", research::iv_candidate_capture_enabled()}};
     bench_report["process_identity"] = bench::process_identity_json();
+    if (candidate_capture) {
+      bench_report["timing_qualifying"] = false;
+      Json captured = quote_bench_candidate_capture::report(*candidate_capture, capture_capacity, capture_capacity);
+      captured["input_sha256"] = quote_bench::file_sha256(args.input);
+      if (captured["input_sha256"] != provenance["input_sha256"])
+        throw std::runtime_error("Input changed during candidate capture");
+      captured["policy_sha256"] = args.policy == "auto" ? Json(nullptr)
+          : Json(quote_bench::file_sha256(args.policy));
+      if (captured["policy_sha256"] != provenance["policy_sha256"])
+        throw std::runtime_error("Policy changed during candidate capture");
+      captured["prediction_sha256"] = quote_bench::file_sha256(args.output);
+      captured["executable_sha256"] = provenance["executable_sha256"];
+      captured["build_info"] = bench_report["build_info"];
+      captured["process_identity"] = bench_report["process_identity"];
+      captured["capture_setup_s"] = capture_setup_s;
+      captured["fit_report"] = bench_report;
+      captured["slice_counters"] = stats.graded_stats;
+      quote_bench_candidate_capture::write(args.candidate_capture, captured);
+      bench_report["candidate_capture"] = {{"valid", candidate_capture->valid()},
+          {"attempted_calls", candidate_capture->attempted_calls()},
+          {"path", std::filesystem::absolute(args.candidate_capture).string()},
+          {"sha256", quote_bench::file_sha256(args.candidate_capture)}, {"timing_qualifying", false}};
+      bench_report["timing_qualifying"] = false;
+    }
     stats.bench = std::move(bench_report);
     write_report(std::cout, args, rows.size(), stats);
     if (!args.report.empty()) {
@@ -2860,7 +2926,7 @@ int main(int argc, char **argv) {
       report.close();
       if (!report) throw std::runtime_error("Timing report write failed");
     }
-    return 0;
+    return candidate_capture && !candidate_capture->valid() ? 2 : 0;
   } catch (const std::exception &error) {
     std::cerr << "quote-bench: " << error.what() << '\n';
     return 1;

@@ -608,6 +608,18 @@ class ColdClockOracleTests(unittest.TestCase):
     def test_summary_cannot_hide_native_50second_clock(self):
         self.assertFalse(self.checks(self.timing_fixture(native_cold=50.0))["all_cold_under1second"])
 
+    def test_diagnostic_capture_clock_cannot_be_promoted(self):
+        for marker in ({"candidate_capture": {"valid": True}}, {"timing_qualifying": False}):
+            with self.subTest(marker=marker):
+                manifest = self.timing_fixture()
+                trial = manifest["trials"][0]
+                path = self.directory / trial["report"]
+                native = audit.read_json(path)
+                native["bench"].update(marker)
+                path.write_text(json.dumps(native), encoding="utf-8")
+                trial["report_sha256"] = audit.sha256(path)
+                self.assertFalse(self.checks(manifest)["native_reports_verified"])
+
     def test_duplicate_native_report_or_process_cannot_count_twice(self):
         manifest = self.timing_fixture()
         manifest["trials"][1] = copy.deepcopy(manifest["trials"][0])
