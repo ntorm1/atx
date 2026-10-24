@@ -356,6 +356,8 @@ DeAmQuoteIv &DeAmIvView::carry(std::size_t i) {
   return entry;
 }
 
+void DeAmIvView::prepare_families() { ensure_families(); }
+
 void DeAmIvView::ensure_families() {
   if (cache_.families_decided || confirm_.family == QuoteSliceDeamFamily::Off ||
       kernel() != DeAmKernel::Screen || !premium()) {

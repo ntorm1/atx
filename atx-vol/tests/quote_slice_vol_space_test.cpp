@@ -20,6 +20,7 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <string>
@@ -962,7 +963,7 @@ TEST(QuoteSliceVolSpace, FastCertificationGridMovesServedPricesWithinTheFastBoun
 // A scripted American model: an Accurate inversion returns 0.25 * target, a Fast
 // one 0.25 * target + fast_offset (or fast_result when set); prices bound the
 // identifiable range at [floor_price, cap_price].
-class ScriptedModel final : public DeAmModel {
+class ScriptedModel : public DeAmModel {
 public:
   double fast_offset = 1.0e-9;
   std::optional<double> fast_result{};
@@ -1012,6 +1013,52 @@ public:
   bool has_fast_kernel() const override { return fast_kernel; }
   double black_vega(const QuoteSliceQuote &, double, double) const override { return vega; }
 };
+
+class FamilyOnlyModel final : public ScriptedModel {
+public:
+  mutable int family_calls = 0;
+  mutable DeAmFamilyRequest requested{};
+  double black_iv(const QuoteSliceQuote &, double, double) const override { return 0.25; }
+  std::shared_ptr<const DeAmSigmaFamilies> sigma_families(
+      const DeAmFamilyRequest &request) const override {
+    ++family_calls;
+    requested = request;
+    requested.refused = nullptr; // the diagnostic pointer only borrows the factory call
+    return nullptr;
+  }
+};
+
+TEST(DeAmIvCache, FamilyOnlyPreparationNeverFillsAmericanMidpointsOrBands) {
+  const std::vector<QuoteSliceQuote> quotes{{90.0, Side::Put, 1.0, 1.2, 0.01},
+                                            {110.0, Side::Call, 1.0, 1.2, 0.02}};
+  DeAmIvCache cache;
+  cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+  FamilyOnlyModel model;
+  QuoteSliceDeamDiagnostics work;
+  DeAmConfirmControls controls;
+  controls.family = QuoteSliceDeamFamily::Always;
+  controls.family_q = true;
+  DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Screen, work,
+                 QuoteSliceDeamInversion::Premium, controls);
+  view.prepare_families();
+  ASSERT_EQ(model.family_calls, 1);
+  EXPECT_TRUE(model.requested.sigma_q);
+  EXPECT_EQ(model.requested.q_lo, 0.01);
+  EXPECT_EQ(model.requested.q_hi, 0.02);
+  EXPECT_EQ(model.requested.sigma_lo[0], 0.125);
+  EXPECT_EQ(model.requested.sigma_lo[1], 0.125);
+  EXPECT_GT(model.requested.sigma_hi[0], 0.375);
+  EXPECT_GT(model.requested.sigma_hi[1], 0.375);
+  EXPECT_TRUE(cache.families_decided);
+  EXPECT_FALSE(cache.native_prepared);
+  EXPECT_EQ(model.accurate_calls, 0);
+  EXPECT_EQ(model.fast_calls, 0);
+  EXPECT_EQ(model.price_calls, 0);
+  for (const auto &entry : cache.ivs) EXPECT_EQ(entry.computed, DeAmQuoteIv::kCarry);
+  view.prepare_families();
+  EXPECT_EQ(model.family_calls, 1);
+  EXPECT_EQ(model.accurate_calls, 0);
+}
 
 struct ViewRun {
   Result<double> mid = Err(ErrorCode::Unavailable, "not run");

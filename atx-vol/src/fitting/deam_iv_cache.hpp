@@ -485,6 +485,9 @@ public:
   // The quote's carry and band, computed on first use.
   [[nodiscard]] const DeAmQuoteIv &band(std::size_t i);
   [[nodiscard]] const DeAmIvCache &cache() const noexcept { return cache_; }
+  // Private-pipeline preparation: decide/build the sigma families from raw
+  // Black-76 seeds without filling midpoint, edge or American inverse results.
+  void prepare_families();
 
 private:
   [[nodiscard]] DeAmQuoteIv &carry(std::size_t i);
