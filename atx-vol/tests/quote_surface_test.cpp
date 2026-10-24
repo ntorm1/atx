@@ -1463,8 +1463,7 @@ TEST(QuoteSliceChannel, NativeReimplicationRejectsChangedModelsAndPreservesPrice
   EXPECT_EQ(stage_iv, fallback.result().iv_newton_iters);
   EXPECT_GT(stage_al, 0u);
   EXPECT_EQ(fallback.result().reimply_stage_calls[
-      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)],
-      fallback.result().reimply_search_nonmonotone);
+      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)], 0u);
   RecordProperty("typed_search_al", fallback.result().reimply_stage_al[
       static_cast<unsigned>(timing::ReimplyStage::Search)]);
   RecordProperty("plain_search_al", fallback.result().reimply_stage_al[
@@ -1481,6 +1480,49 @@ TEST(QuoteSliceChannel, NativeReimplicationRejectsChangedModelsAndPreservesPrice
             std::bit_cast<std::uint64_t>(plain.iv_lower));
   EXPECT_EQ(std::bit_cast<std::uint64_t>(typed.iv_upper),
             std::bit_cast<std::uint64_t>(plain.iv_upper));
+}
+
+TEST(QuoteSliceChannel, NonmonotoneRepairClassifiesWithoutRepeatingSearch) {
+  // This historical Search candidate is outside the exercise region but fails
+  // cold-map certification. It must remain PriceOnly/LowVega after classification.
+  QuoteSliceFit fit;
+  fit.market = {100.0, 5.0, 5.0, 0.05, 0.0, 0.0};
+  fit.diagnostics.effective_rate = 0.05;
+  const auto price = andersen_lake(100.0, 140.0, 5.0, 0.2, 0.05, 0.0, Side::Put);
+  ASSERT_TRUE(price);
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  const auto typed = american_implied_vol(*price, 100.0, 140.0, 5.0, 0.05, 0.0,
+                                         Side::Put, opts);
+  ASSERT_EQ(typed.status, IvStatus::NonMonotoneRegion);
+  ASSERT_TRUE(std::isnan(typed.iv));
+  const auto plain = american_implied_vol(*price, 100.0, 140.0, 5.0, 0.05, 0.0, Side::Put);
+  ASSERT_TRUE(plain);
+  const auto boundary = exercise_boundary(140.0, 5.0, *plain, 0.05, 0.0, Side::Put);
+  ASSERT_TRUE(boundary);
+  ASSERT_GT(100.0, *boundary);
+
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder rec;
+  const auto id = [&] {
+    const timing::ChainScope scope(&rec);
+    return detail::reimplied_vol(fit, 140.0, Side::Put, *price,
+                                QuoteSliceFloorPolicy::PriceOnly);
+  }();
+  EXPECT_EQ(id.status, QuoteSliceEvaluationStatus::PriceOnly);
+  EXPECT_EQ(id.reason, QuoteSlicePriceOnlyReason::LowVega);
+  EXPECT_TRUE(std::isnan(id.volatility));
+  EXPECT_TRUE(std::isnan(id.iv_lower));
+  EXPECT_TRUE(std::isnan(id.iv_upper));
+  EXPECT_EQ(rec.result().reimply_search_nonmonotone, 1u);
+  EXPECT_EQ(rec.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Search)], 1u);
+  EXPECT_EQ(rec.result().reimply_stage_calls[
+      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)], 0u);
+  EXPECT_EQ(rec.result().reimply_stage_al[
+      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)], 0u);
+  EXPECT_EQ(rec.result().reimply_stage_iv[
+      static_cast<unsigned>(timing::ReimplyStage::Nonmonotone)], 0u);
 }
 
 TEST(QuoteSurface, NativeCalendarTrialPreservesTheQualifiedInverseAndPublicAnswer) {

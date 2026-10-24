@@ -18,6 +18,7 @@
 #include "pricing/american_family_error.hpp" // K3 envelope + root acceptance
 #include "pricing/american_iv_batch.hpp"  // K2: the family-native lane
 #include "pricing/american_iv_premium.hpp"
+#include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"
@@ -1053,7 +1054,8 @@ namespace {
 // The Search route of the typed entry point (also every Premium fallback). Not
 // noexcept: the inversion allocates; the public entry points contain bad_alloc.
 [[nodiscard]] IvResult search_typed(double price, double S, double K, double T, double r,
-                                    double q, Side side, const IvOpts &opts) {
+                                    double q, Side side, const IvOpts &opts,
+                                    std::optional<double> *rejected_candidate = nullptr) {
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   const Result<double> iv =
       american_implied_vol_impl(price, S, K, T, r, q, side, opts.method, opts.tol, opts.max_iter,
@@ -1065,6 +1067,7 @@ namespace {
       opts.method == AmericanMethod::AndersenLake && !cache_usable(opts.correction, side);
   if (opts.refuse_non_monotone && cold_al &&
       !scalar_answer_certified(price, S, K, T, r, q, side, *iv, opts.al_opts)) {
+    if (rejected_candidate != nullptr) *rejected_candidate = *iv;
     return IvResult{kNaN, IvStatus::NonMonotoneRegion};
   }
   return IvResult{*iv, IvStatus::Ok};
@@ -2848,6 +2851,18 @@ IvResult american_implied_vol(double price, double S, double K, double T, double
     return search_typed(price, S, K, T, r, q, side, opts);
   } catch (const std::bad_alloc &) {
     return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::Unpriceable};
+  }
+}
+
+IvSearchResult american_implied_vol_search(double price, double S, double K, double T,
+                                          double r, double q, Side side,
+                                          const IvOpts &opts) noexcept {
+  try {
+    IvSearchResult result;
+    result.answer = search_typed(price, S, K, T, r, q, side, opts, &result.rejected_candidate);
+    return result;
+  } catch (const std::bad_alloc &) {
+    return {{std::numeric_limits<double>::quiet_NaN(), IvStatus::Unpriceable}, std::nullopt};
   }
 }
 

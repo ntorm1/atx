@@ -30,6 +30,7 @@
 #include "fitting/slice_channel.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the hand-off and the fast path
 #include "pricing/american_iv_premium.hpp"
+#include "pricing/american_iv_search.hpp"
 #include "pricing/american_sigma_q_family.hpp"
 
 namespace atx::vol {
@@ -3713,11 +3714,12 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts, prepared)) {
     return identified(*root);
   }
-  const IvResult answer = [&] {
+  const IvSearchResult search = [&] {
     const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Search);
-    return american_implied_vol(price, fit.market.spot, strike, fit.market.variance_years,
-                                fit.diagnostics.effective_rate, q_effective, side, opts);
+    return american_implied_vol_search(price, fit.market.spot, strike, fit.market.variance_years,
+                                       fit.diagnostics.effective_rate, q_effective, side, opts);
   }();
+  const IvResult &answer = search.answer;
   if (answer.status == IvStatus::Ok && positive(answer.iv)) {
     return at_vol_floor(answer.iv) ? floor_vol(fit, strike, side, price)
                                    : identified(answer.iv);
@@ -3726,11 +3728,9 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   if (auto *const counts = counters::fit_timing::current_counts()) {
     ++counts->reimply_search_nonmonotone;
   }
-  // Refused inside the non-monotone band: the plain root says why.
-  const auto root = [&] {
-    const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::Nonmonotone);
-    return contract_iv(fit, contract, price, query, q_effective);
-  }();
+  // Search already computed the plain candidate before refusing it. Classify that
+  // exact value without repeating the inversion; it remains an unidentified IV.
+  const auto &root = search.rejected_candidate;
   if (!root || !positive(*root)) return unidentified;
   if (at_vol_floor(*root)) return floor_vol(fit, strike, side, price);
   VolIdentification id;

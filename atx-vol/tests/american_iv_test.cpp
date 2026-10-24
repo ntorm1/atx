@@ -27,6 +27,7 @@
 #include "pricing/american_family_error.hpp"
 #include "pricing/american_iv_batch.hpp" // K2: the native lane's typed outcome / flags
 #include "pricing/american_iv_premium.hpp"
+#include "pricing/american_iv_search.hpp"
 #include "atx/vol/api/core/types.hpp"
 
 // American implied-vol inverter coverage.
@@ -1683,7 +1684,40 @@ TEST(AmericanIvNonMonotone, RefusesWrongOkAnswersInsideTheRegion) {
     const IvResult on = typed_iv(p, S, c.K, c.T, c.r, c.q, Side::Put, true);
     EXPECT_EQ(on.status, IvStatus::NonMonotoneRegion) << c.name;
     EXPECT_TRUE(std::isnan(on.iv)) << c.name;
+    IvOpts opts;
+    opts.refuse_non_monotone = true;
+    const auto retained = atx::vol::american_implied_vol_search(
+        p, S, c.K, c.T, c.r, c.q, Side::Put, opts);
+    EXPECT_EQ(retained.answer.status, on.status) << c.name;
+    EXPECT_TRUE(std::isnan(retained.answer.iv)) << c.name;
+    ASSERT_TRUE(retained.rejected_candidate) << c.name;
+    EXPECT_TRUE(same_double(*retained.rejected_candidate, off.iv)) << c.name;
   }
+}
+
+TEST(AmericanIvNonMonotone, SearchRetainsNoCandidateOnSuccessOrError) {
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  for (double price : {cold_al(100.0, 100.0, 1.0, 0.25, 0.05, 0.0, Side::Call),
+                       -1.0, 200.0, std::numeric_limits<double>::quiet_NaN()}) {
+    const auto reference = american_implied_vol(price, 100.0, 100.0, 1.0, 0.05, 0.0,
+                                                Side::Call, opts);
+    const auto retained = atx::vol::american_implied_vol_search(
+        price, 100.0, 100.0, 1.0, 0.05, 0.0, Side::Call, opts);
+    EXPECT_EQ(retained.answer.status, reference.status);
+    EXPECT_TRUE(same_double(retained.answer.iv, reference.iv));
+    EXPECT_FALSE(retained.rejected_candidate);
+  }
+  opts.refuse_non_monotone = false;
+  const double price = zero_vol_value(kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put) + 5e-6;
+  const auto reference = american_implied_vol(price, kNmS, kNmK, kNmT, kNmR, kNmQ,
+                                              Side::Put, opts);
+  ASSERT_EQ(reference.status, IvStatus::Ok);
+  const auto retained = atx::vol::american_implied_vol_search(
+      price, kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put, opts);
+  EXPECT_EQ(retained.answer.status, reference.status);
+  EXPECT_TRUE(same_double(retained.answer.iv, reference.iv));
+  EXPECT_FALSE(retained.rejected_candidate);
 }
 
 // Outside the region the flag changes nothing: a target far above the band on the
