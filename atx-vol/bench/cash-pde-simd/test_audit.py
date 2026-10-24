@@ -9,7 +9,10 @@ def fixture(grid=400, mode='original'):
     native = {'schema': 'cash-pde-batch-cold-v1', 'mode': mode,
               'input_fingerprint': '12110935955959749584', 'requests': 50,
               'successes': 50, 'refusals': 0, 'timed': True, 'inclusive_seconds': .2,
-              'build': {'fast_math': False}, 'ipo': False, 'rows': [],
+              'build': {'fast_math': False, 'cmake_build_type': 'Release',
+                        'build_type': 'release', 'iec559_double': True,
+                        'isa_compiled': 'avx2', 'fma_compiled': True,
+                        'cxx_flags': '/arch:AVX2 /O2 /DNDEBUG'}, 'ipo': True, 'rows': [],
               'affinity': {'requested_cpu': 6, 'pinned': True, 'is_pcore': True,
                            'current_cpu_at_receipt': 6,
                            'busy': {'smt_sibling_pct': [0.], 'system_pct': 4.}}}
@@ -103,6 +106,21 @@ class AuditTests(unittest.TestCase):
         result = audit.verify(a, b)
         self.assertEqual(result['spot44_uncertain'], 1)
         self.assertEqual(result['spot44_pass'], 43)
+
+    def test_nonrelease_nonipo_or_wrong_isa_cannot_qualify_timing(self):
+        a, original = fixture()
+        for mutate in (lambda r: r.update(ipo=False),
+                       lambda r: r['build'].update(cmake_build_type='Debug'),
+                       lambda r: r['build'].update(build_type='debug'),
+                       lambda r: r['build'].update(isa_compiled='scalar'),
+                       lambda r: r['build'].update(fma_compiled=False),
+                       lambda r: r['build'].update(iec559_double=False),
+                       lambda r: r['build'].update(cxx_flags='/O2'),
+                       lambda r: r['build'].pop('cxx_flags')):
+            report = copy.deepcopy(original); mutate(report)
+            # Numerical evidence survives; only performance admission fails.
+            self.assertEqual(audit.verify(a, report)['all50_pass'], 50)
+            self.assertFalse(audit.quiet(report))
 
 
 if __name__ == '__main__':

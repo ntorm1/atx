@@ -113,17 +113,21 @@ The native `--untimed` mode performs the identical work without clocks or load
 sampling. Six invalid CLI controls and all nine untimed route/grid reports pass;
 the independent Python audit pins the original replay hash, joins every raw model
 and event bit, checks original price/policy bits and cross-route Greeks, and
-retains all 150 unique grid/case outcomes. Seven verifier tests cover missing or
+retains all 150 unique grid/case outcomes. Eight verifier tests cover missing or
 changed data, forged bits, unbalanced routes/grids, Greek drift, unknown host
-state and uncertainty. The finest DSPYp remains uncertain. Owning runner PCH-off
-checks pass.
+state, missing ThinLTO/Release/ISA facts and uncertainty. The finest DSPYp remains
+uncertain. Owning runner PCH-off checks pass. Peer review caught that the first
+runner gate could qualify a non-IPO development binary; the retained regression
+fails against frozen `17a6d54f` and passes after this receipt-only correction.
+The original nine untimed reports remain valid and explicitly unqualified.
 
 The PowerShell launcher requires a frozen clean source tree and a new output
 directory. It launches one fresh process per mode/grid/trial, rotates mode order,
 archives the executable and every stdout/stderr/exit code, and joins the native
 kernel process identity to the launcher. It refuses detected build/native jobs
 without killing them; a control verifies that this refusal retains an unlaunched
-receipt. Native timing admission requires CPU6 proven as a P-core, every measured
+receipt. Native timing admission requires a ThinLTO Release AVX2/FMA binary with
+precise IEEE binary64 compile facts, CPU6 proven as a P-core, every measured
 SMT sibling below 5%, whole-system busy below 10%, and no detected jobs before or
 after any run. Missing load/topology is a failed gate. Source/binary hashes must
 remain unchanged. These checks are conservative and specific to the declared

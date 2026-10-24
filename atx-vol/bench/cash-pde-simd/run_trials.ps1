@@ -45,7 +45,7 @@ $manifest = [ordered]@{
   binary = $Binary; binary_sha256 = $binarySha; reference_sha256 = $referenceSha
   trials = $Trials; planned_processes = 9 * $Trials; records = @(); status = 'incomplete'
   timing_qualified = $false
-  declared_gate = 'CPU6 P-core, known SMT siblings each <5%, system busy <10%, no detected build/native jobs before or after any run; all nine route/grid groups and exact outputs required'
+  declared_gate = 'ThinLTO Release AVX2/FMA precise binary, CPU6 P-core, known SMT siblings each <5%, system busy <10%, no detected build/native jobs before or after any run; all nine route/grid groups and exact outputs required'
   order = '400/800/1600 grids; rotate original,batch-scalar,batch-avx2 by trial; fresh process each'
 }
 $reports = @()

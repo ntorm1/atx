@@ -109,14 +109,21 @@ def quiet(report):
     """Conservative declared-host gate; missing topology/load never means idle."""
     try:
         a = report['affinity']
+        build = report['build']
+        flags = {flag.lower() for flag in build['cxx_flags'].split()}
         siblings = a['busy']['smt_sibling_pct']
         system = a['busy']['system_pct']
-        return (report['timed'] and a['requested_cpu'] == 6 and a['pinned'] is True
+        return (report['timed'] and report['ipo'] is True
+                and build['cmake_build_type'] == 'Release' and build['build_type'] == 'release'
+                and build['fast_math'] is False and build['iec559_double'] is True
+                and build['isa_compiled'] == 'avx2' and build['fma_compiled'] is True
+                and {'/o2', '/arch:avx2'} <= flags
+                and a['requested_cpu'] == 6 and a['pinned'] is True
                 and a['is_pcore'] is True and a['current_cpu_at_receipt'] == 6
                 and type(siblings) is list and len(siblings) > 0
                 and all(finite(x) and 0 <= x < 5. for x in siblings)
                 and finite(system) and 0 <= system < 10.)
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, AttributeError):
         return False
 
 
