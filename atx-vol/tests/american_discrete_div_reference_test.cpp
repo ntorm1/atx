@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <span>
@@ -242,6 +244,66 @@ TEST(DiscreteDivReferenceSchedule, LevelsAreExactlyNestedEvenForTinySegments) {
       EXPECT_EQ(fine[j], base[j] << level) << "segment " << j << " level " << level;
     }
   }
+}
+
+TEST(DiscreteDivReferenceDiagnostics, CountsActualSweepsAndPreservesEveryResultField) {
+  const std::vector<CashDividend> dividends{{0.25, 1.0}, {0.75, 2.0}};
+  PdeGrid grid;
+  grid.space_base = 80;
+  grid.time_base = 40;
+  for (const auto side : {Side::Put, Side::Call}) {
+    for (const auto exercise : {ExerciseStyle::American, ExerciseStyle::European}) {
+      const Problem p{.S = 100.0, .K = 105.0, .T = 1.0, .sigma = 0.2,
+                      .r = 0.03, .q = 0.01, .side = side, .exercise = exercise,
+                      .dividends = dividends};
+      const auto original = pde_price(p, grid);
+      atx::vol::ddiv_ref::PdeDiagnostics diagnostic;
+      const auto observed = pde_price(p, grid, &diagnostic);
+      ASSERT_TRUE(original && observed);
+      for (const auto member : {&atx::vol::ddiv_ref::PdeResult::price,
+                                &atx::vol::ddiv_ref::PdeResult::delta,
+                                &atx::vol::ddiv_ref::PdeResult::gamma,
+                                &atx::vol::ddiv_ref::PdeResult::max_policy_time,
+                                &atx::vol::ddiv_ref::PdeResult::max_lcp_violation}) {
+        EXPECT_EQ(std::bit_cast<std::uint64_t>((*observed).*member),
+                  std::bit_cast<std::uint64_t>((*original).*member));
+      }
+      EXPECT_EQ(observed->space_intervals, original->space_intervals);
+      EXPECT_EQ(observed->time_steps, original->time_steps);
+      EXPECT_EQ(observed->max_policy_iterations, original->max_policy_iterations);
+      EXPECT_EQ(observed->lcp_rounding_ties, original->lcp_rounding_ties);
+      EXPECT_GE(diagnostic.thomas_sweeps, static_cast<std::uint64_t>(observed->time_steps));
+      EXPECT_EQ(diagnostic.forward_rows, diagnostic.thomas_sweeps * 80U);
+      EXPECT_EQ(diagnostic.forward_rows, diagnostic.identity_rows + diagnostic.continuation_rows);
+      std::uint64_t runs = 0, rows = 0;
+      for (std::size_t i = 0; i < diagnostic.continuation_run_lengths.size(); ++i) {
+        runs += diagnostic.continuation_run_lengths[i];
+        rows += i * diagnostic.continuation_run_lengths[i];
+      }
+      EXPECT_EQ(runs, diagnostic.continuation_runs);
+      EXPECT_EQ(rows, diagnostic.continuation_rows);
+      EXPECT_GT(rows, 0U);
+      EXPECT_GT(diagnostic.exact_key_coefficient_rows, 0U);
+      EXPECT_LE(diagnostic.exact_key_coefficient_rows, rows);
+      if (exercise == ExerciseStyle::American) {
+        EXPECT_EQ(diagnostic.fresh_seed_sweeps, 3U);
+        EXPECT_LT(diagnostic.exact_key_coefficient_rows, rows);
+      } else {
+        EXPECT_EQ(diagnostic.fresh_seed_sweeps, 0U);
+        EXPECT_EQ(diagnostic.thomas_sweeps, static_cast<std::uint64_t>(observed->time_steps));
+      }
+    }
+  }
+}
+
+TEST(DiscreteDivReferenceDiagnostics, RefusalClearsPriorCensus) {
+  atx::vol::ddiv_ref::PdeDiagnostics diagnostic;
+  diagnostic.thomas_sweeps = 42;
+  diagnostic.continuation_run_lengths = {1, 2};
+  const auto refused = pde_price({}, {}, &diagnostic);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(diagnostic.thomas_sweeps, 0U);
+  EXPECT_TRUE(diagnostic.continuation_run_lengths.empty());
 }
 
 TEST(DiscreteDivReferenceValidate, RefusesMalformedInputsWithTypedErrors) {

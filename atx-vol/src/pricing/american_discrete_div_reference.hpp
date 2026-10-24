@@ -233,6 +233,23 @@ struct PdeResult {
   int lcp_rounding_ties = 0;
 };
 
+// Optional work census. Reset on entry, including refusals; owned by the caller
+// and borrowed only for this solve. No clocks. A null pointer performs no census
+// traversal/allocation. It does not alter prices, grids, policies or stopping.
+struct PdeDiagnostics {
+  std::uint64_t thomas_sweeps = 0;
+  std::uint64_t fresh_seed_sweeps = 0;
+  std::uint64_t forward_rows = 0; // rows 1..n, including the right Dirichlet row
+  std::uint64_t continuation_rows = 0;
+  std::uint64_t identity_rows = 0;
+  std::uint64_t continuation_runs = 0;
+  // Hypothetical lazy coefficient rows required across consecutive sweeps with
+  // bit-identical lo/di/up, extending only to the longest free run encountered.
+  // This counts an opportunity; no coefficient cache is used by the solver.
+  std::uint64_t exact_key_coefficient_rows = 0;
+  std::vector<std::uint64_t> continuation_run_lengths; // index = run length
+};
+
 // One PDE solve. Errors: `validate`'s; InvalidArgument for a grid outside
 // [space_base >= 8, time_base >= 1, levels in [0, kMaxLevels), width_sd > 0,
 // rannacher_steps >= 0, base * 2^level <= kMaxGridIntervals on both axes];
@@ -242,7 +259,8 @@ struct PdeResult {
 // off-diagonals and strict diagonal dominance (a sufficient M-matrix condition).
 // This supported-grid restriction can refuse an otherwise valid model; it never
 // silently switches schemes. Internal if a policy iteration fails to settle.
-[[nodiscard]] Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid);
+[[nodiscard]] Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid,
+                                        PdeDiagnostics *diagnostics = nullptr);
 
 // ── Convergence and the uncertainty rule (header block above) ────────────
 

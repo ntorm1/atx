@@ -423,6 +423,44 @@ No latency, Greek accuracy or production-PDE promotion is claimed. Resolve the
 remaining price uncertainty with independent time/space/domain evidence before
 calling any subsequent faster execution an accuracy-qualified result.
 
+### Actual Thomas work: modest reuse inside one contract
+
+The private reference entry accepts an optional caller-owned `PdeDiagnostics`.
+It resets on entry (including refusal), records no clocks and changes no numerical
+arithmetic. With no diagnostics, there is no extra allocation or policy-mask
+traversal. The armed census separately visits each actual Thomas mask and counts
+forward rows, identity/free rows, complete free-run lengths, fresh-data seeds,
+and hypothetical lazy factor rows under exact bit keys `(lo,di,up)`. It is not a
+coefficient cache and supplies no cached values to the solver.
+
+| Grid | Actual Thomas sweeps | Continuation rows | Coefficient rows if lazily reused | Avoidable repeated coefficients |
+|---|---:|---:|---:|---:|
+| 400 x 200 | 11,703 | 4,096,079 | 3,659,938 | 436,141 (10.65%) |
+| 800 x 400 | 22,977 | 16,067,975 | 14,529,779 | 1,538,196 (9.57%) |
+| 1600 x 800 | 45,688 | 63,867,434 | 57,772,232 | 6,095,202 (9.54%) |
+
+Each grid includes 170 unconstrained fresh-data seed sweeps. Every observed sweep
+has one continuation run; the mean lengths are 350.00, 699.31 and 1,397.90 nodes.
+This is an observation of these cases, not a permissible assumption about arbitrary
+active masks. The complete 1600-grid forward pass visits 73,100,800 rows including
+identity rows. Most implicit steps already settle in one policy solve, so the
+single-contract cache opportunity is limited: at the finest grid it removes about
+4.8% of the two continuation-row divisions, before charging extra table loads,
+key checks or run tracking. It does not remove the RHS/backsolve or jump work.
+Sharing exact coefficients across multiple compatible contracts could offer more,
+but no such occupancy or performance result has been measured.
+
+All 150 original replay fields, including price bits, work diagnostics, routes and
+empirical classifications, are unchanged. The finest DSPYp uncertainty remains.
+Thirty-one reference tests and six manifest/replay tests pass; owning reference
+source and both changed tests compile with PCH disabled. Counter tests cover both
+exercise styles/sides, exact output parity, complete row/histogram accounting and
+reset after refusal. Evidence is `calendar/cash-pde-work-census-v1/`, including
+runtime red/green, full replay, `verify_census.py` and `receipt.json`. The verifier
+compares against the prior frozen replay bit for bit and independently recomputes
+every row/histogram identity. These counts justify a bounded experiment, not a
+claim that the extra cache machinery will be faster.
+
 ## 7. Later methods and promotion boundary
 
 If prepared PDE geometry and batched obstacle work do not win the measured

@@ -467,7 +467,8 @@ TEST(DiscreteDivProductionManifest, MonetaryGateRetainsUncertaintyAndModelDenomi
                             .r = c.r, .q = c.q, .side = c.side,
                             .exercise = ExerciseStyle::American,
                             .process = c.process, .dividends = c.divs};
-  const auto priced = ref::pde_price(problem, grid);
+  ref::PdeDiagnostics diagnostics;
+  const auto priced = ref::pde_price(problem, grid, &diagnostics);
   Json row{{"status", priced ? "priced" : "refused"}, {"price", nullptr},
            {"cash_process", ref::to_string(c.process)},
            {"grid", {{"space_base", grid.space_base}, {"space_level", grid.space_level},
@@ -488,6 +489,20 @@ TEST(DiscreteDivProductionManifest, MonetaryGateRetainsUncertaintyAndModelDenomi
                  {"worst_policy_calendar_time", priced->max_policy_time},
                  {"max_lcp_violation", priced->max_lcp_violation},
                  {"lcp_rounding_ties", priced->lcp_rounding_ties}};
+  Json lengths = Json::array();
+  for (std::size_t i = 0; i < diagnostics.continuation_run_lengths.size(); ++i) {
+    if (diagnostics.continuation_run_lengths[i] != 0) {
+      lengths.push_back({{"length", i}, {"count", diagnostics.continuation_run_lengths[i]}});
+    }
+  }
+  row["work_census"] = {{"thomas_sweeps", diagnostics.thomas_sweeps},
+                        {"fresh_seed_sweeps", diagnostics.fresh_seed_sweeps},
+                        {"forward_rows", diagnostics.forward_rows},
+                        {"continuation_rows", diagnostics.continuation_rows},
+                        {"identity_rows", diagnostics.identity_rows},
+                        {"continuation_runs", diagnostics.continuation_runs},
+                        {"exact_key_coefficient_rows", diagnostics.exact_key_coefficient_rows},
+                        {"continuation_run_lengths", std::move(lengths)}};
   return row;
 }
 
