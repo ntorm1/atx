@@ -42,8 +42,18 @@ are checked by the complete API audit, not assumed equivalent from residuals.
 
 See [full block-factor evidence](qp-block-factor-research-20261024.md) for both
 failed-host timing manifests, numerical deltas, fallback contracts and remaining
-C++ refusal/ISA/build-packaging gates. The [mixed-precision experiment](qp-mixed-precision-research-20261024.md)
+ISA/build-packaging gates. Actual C++ creation/factor/predictor/corrector refusal
+controls and a fresh all-13-gate API audit now pass on the isolated research
+branch; neither supplies a new timing result. The [mixed-precision experiment](qp-mixed-precision-research-20261024.md)
 is not promoted. Ordinary integration remains on the original double backend.
+
+At integrated source `5c659e81`, the full available Python suite passes 801 tests,
+with 245 environment skips and one existing strict expected failure. This includes
+new per-field Greek availability and the corrected Unsupported sentinel (`-2`,
+success remains `-1`). Native surface/served-session propagation is still active.
+The default-off cash PDE driver preserves all 150 original results exactly; its
+inclusive runner has reviewed Release/ThinLTO and host-admission checks, but no
+timing campaign has run. These are correctness advances, not new cold-fit clocks.
 
 ## Frozen workload and denominator
 

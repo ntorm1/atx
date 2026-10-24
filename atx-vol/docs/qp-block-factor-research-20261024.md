@@ -57,10 +57,26 @@ and refusals. Padded block storage is not reported as strict-L nonzeros.
 Original-direction capture refuses an enabled alternative backend so a changed
 answer cannot silently become an original-control fixture.
 
-Before any production promotion, add an injected-refusal C++ test for the actual
-wrapper fallback, production ISA admission/build packaging, dependency/license
-review and complete integrated consumer gates. Current successful-path evidence
-does not replace those requirements.
+Production ISA admission/build packaging, dependency/license review and complete
+integrated consumer gates remain required before promotion. Successful-path
+evidence does not replace those requirements.
+
+Follow-up: call-local C++ injected-refusal controls pass after a runtime RED,
+covering creation/factor/predictor/corrector failures, repeated matrices,
+one-iteration rollback and null profiling. The combined run passes 36 with one
+optional external raw-box skip; full normalized SPY is supplied and preserves
+the prototype fingerprint. Owning PCH-off checks pass.
+
+The frozen follow-up source is `b5f7bd6bff2b083edf1ed5d775f1c9fc6b8ec16d`,
+freshly approved by the calendar reviewer. A newly archived development binary
+`628fe1e344872a6c67e0d2cb3782f1a484f8bc8892ba92d3be3e9ec130cbae37` passes
+all 13 independent actual-API gates and preserves prediction SHA256
+`560da64113e2727373aaa5a08e9a095a10634216d149b569789a4b8d1cba39f0`.
+Verification: `qp-faer-refusal-audit-v1/verification-final-v1.json`, SHA256
+`0b6d09fe2e7a4c0bc3b9429b20229b088d38e199ccce210358d47d957924e75a`.
+The native receipt remains in its `verification-v1.json/` subdirectory because
+the run command treated that output argument as a directory. This closes the
+fallback-control gap only; no replacement timing or deployment claim follows.
 
 ## Complete numerical evidence
 

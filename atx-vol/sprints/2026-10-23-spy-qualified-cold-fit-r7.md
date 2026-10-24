@@ -28,9 +28,13 @@ Subsecond and 100-process release qualification remain open.
 Finalizer floor reuse removes 265 boundary solves with identical predictions.
 FP32 replay is rejected; the full double block-factor prototype passes every API
 correctness gate but remains unqualified for timing and production deployment. Boundary Greek admission passes the complete715
-rerun with all prices unchanged; portfolio and derivative-book availability fixes are reviewed/integrating, while
-backtest/Python propagation and short-time derivative accuracy remain open. Cash guards and exact50-case manifest
-are integrated; three-grid PDE evidence retains43/44 pass plus1uncertain at finest.
+rerun with all prices unchanged; portfolio, derivative-book, backtest and Python
+availability fixes are reviewed and integrated. Full available Python: 801 pass,
+245 environment skips, one existing strict expected failure. Native surface and
+served-session consumers and short-time derivative accuracy remain open. Cash
+guards, exact50-case manifest and default-off full PDE batch driver are integrated;
+all150 original outcomes are bit-identical. Three-grid accuracy evidence retains
+43/44 pass plus1uncertain at finest; inclusive batch timing remains unrun.
 See [current exact-binary evidence](../docs/spy-cold-acceptance-r7.md).
 
 ## Acceptance contract
