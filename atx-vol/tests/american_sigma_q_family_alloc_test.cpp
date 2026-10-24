@@ -17,17 +17,80 @@
 // (review-A0 m5): so is that entry's InvalidArgument refusal (lengths that differ).
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include <gtest/gtest.h>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "pricing/american_sigma_q_family.hpp" // K1: the fused entries (internal)
+#include "pricing/american_greek_fd_audit.hpp"
 #include "support/alloc_counter.hpp"
 
 namespace atx::vol {
 namespace {
+
+TEST(AmericanGreekFdAuditAlloc, SampleObservationAddsNoAllocations) {
+  for (const auto side : {Side::Put, Side::Call}) {
+    detail::AlGreekFdAudit audit;
+    bool ok = false;
+    const auto allocations = testkit::count_allocations([&] {
+      ok = detail::audit_american_greeks_fd(100.,100.,.5,.25,.05,.03,side,
+          detail::AlGreekFdSteps{.1,.001,.0001,.001},audit).has_value();
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(allocations,0u);
+    EXPECT_EQ(audit.sample_attempts,17u);
+    EXPECT_EQ(audit.boundary_cold_solves,7u);
+    EXPECT_EQ(audit.boundary_price_calls,17u);
+  }
+}
+
+TEST(AmericanGreekAdmissionAlloc, PartialColdBundlesAndVegaRefusalAllocateNothing) {
+  for (const auto side : {Side::Put, Side::Call}) {
+    const double S = side == Side::Put ? 772.99 : 811.6395;
+    const double K = side == Side::Put ? 811.6395 : 772.99;
+    const double r = side == Side::Put ? .04496 : .00162193;
+    const double q = side == Side::Put ? .00162193 : .04496;
+    const double T = .0682, sigma = .12;
+    const auto geometry = prepare_al_geometry(T, r, q);
+    ASSERT_TRUE(geometry.prepared());
+    const auto warm = american_greeks_al(S, K, T, sigma, r, q, side);
+    ASSERT_TRUE(warm);
+    std::array<AmericanGreeks, 5> output{};
+    unsigned completed = 0;
+    const auto allocations = testkit::count_allocations([&] {
+      const auto fd = american_greeks_fd(S, K, T, sigma, r, q, side);
+      const auto al = american_greeks_al(S, K, T, sigma, r, q, side);
+      const auto prepared = american_greeks_al(geometry, S, K, sigma, side);
+      if (fd) { output[0] = *fd; ++completed; }
+      if (al) { output[1] = *al; ++completed; }
+      if (prepared) { output[2] = *prepared; ++completed; }
+      for (std::size_t i = 0; i < 2; ++i) {
+        const auto isa = i == 0 ? simd::SimdIsa::ForceScalar : simd::SimdIsa::ForceAvx2;
+        if (side == Side::Put)
+          (void)simd::american_put_greeks_batch(&S, &K, &T, &sigma, &r, &q, 1,
+                                               std::nullopt, &output[3+i], isa);
+        else
+          (void)simd::american_call_greeks_batch(&S, &K, &T, &sigma, &r, &q, 1,
+                                                std::nullopt, &output[3+i], isa);
+      }
+      const auto vega = american_vega_al(S, K, T, sigma, r, q, side);
+      completed += !vega && vega.error().code() == ErrorCode::Unavailable ? 1u : 0u;
+    });
+    EXPECT_EQ(allocations, 0u);
+    EXPECT_EQ(completed, 4u);
+    for (const auto &value : output) {
+      EXPECT_TRUE(has_field(value.supported, GreekFieldMask::Price));
+      EXPECT_TRUE(std::isfinite(value.price));
+      EXPECT_FALSE(has_field(value.supported, GreekFieldMask::Gamma));
+      EXPECT_EQ(value.reasons[1], AmericanGreekReason::StencilCrossing);
+    }
+  }
+}
 
 TEST(AlSigmaFamilyAlloc, GreekValidityDirectDetachedChainAndShockAllocateNothing) {
   constexpr double S = 772.99, T = 0.0682, K = S * 1.05, sigma = 0.12;

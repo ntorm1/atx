@@ -2959,10 +2959,11 @@ Result<QuoteSliceFit> detail::finalize_raw_price_draft(
   {
     const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Certify);
     const auto prepared = prepare_reimplied_targets(fit, targets);
+    IvPriceSeedFloorCache floor_cache;
     for (std::size_t i = 0; i < targets.size(); ++i) {
       const auto &target = targets[i];
       ids.push_back(detail::reimplied_vol(fit, target.strike, target.side, target.price,
-          QuoteSliceFloorPolicy::PriceOnly, prepared_at(prepared, i)));
+          QuoteSliceFloorPolicy::PriceOnly, prepared_at(prepared, i), &floor_cache));
       fit.diagnostics.final_price_identified_nodes +=
           ids.back().status == QuoteSliceEvaluationStatus::Success ? 1u : 0u;
     }
@@ -4104,7 +4105,8 @@ VolIdentification floor_vol(const QuoteSliceFit &fit, double strike, Side side, 
 }
 
 VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
-                                QuoteSliceFloorPolicy policy, const IvPremiumPrepared *prepared) {
+    QuoteSliceFloorPolicy policy, const IvPremiumPrepared *prepared,
+    IvPriceSeedFloorCache *floor_cache) {
   const double q_effective = effective_yield(fit, calendar_yield_at(fit, strike));
   if (policy == QuoteSliceFloorPolicy::PriceOnly && fit.reimply_context && fit.prices) {
     const auto &context = *fit.reimply_context;
@@ -4205,7 +4207,7 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
           if (auto *const c = counters::fit_timing::current_counts()) ++c->reimply_seed_attempts;
           return american_implied_vol_price_seed(price, fit.market.spot, strike,
               fit.market.variance_years, fit.diagnostics.effective_rate, q_effective,
-              side, opts, *budget, lane.sigma);
+              side, opts, *budget, lane.sigma, floor_cache);
         }();
         if (seed) {
           if (auto *const c = counters::fit_timing::current_counts()) ++c->reimply_seed_roots;
@@ -4220,7 +4222,7 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
       IvPriceCandidateStats stats;
       const auto result = american_implied_vol_price_candidate(price, fit.market.spot, strike,
           fit.market.variance_years, fit.diagnostics.effective_rate, q_effective, side, opts, *budget,
-          counts != nullptr ? &stats : nullptr);
+          counts != nullptr ? &stats : nullptr, IvPriceProposalKernel::ScreenThenFast, floor_cache);
       if (counts != nullptr) {
         counts->reimply_proposal_stops += stats.stopped_early ? 1u : 0u;
         counts->reimply_proposal_roots += stats.accepted_early ? 1u : 0u;

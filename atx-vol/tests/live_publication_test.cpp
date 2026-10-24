@@ -908,8 +908,13 @@ TEST(LivePublication, TheServedChainIsTheRecordsAnswerPerContract) {
   ServeBookReader r = book.reader();
   const std::array<std::uint64_t, 2> ids{1, 2};
   ChainColumns c = chain_over(*rec_ladder(), ids);
+  std::vector<GreekFieldMask> requested(c.strike.size(), GreekFieldMask::All);
+  std::vector<GreekFieldMask> supported(c.strike.size(), GreekFieldMask::All);
+  auto out = c.out();
+  out.requested = requested;
+  out.supported = supported;
   const double S = 1.002 * kSpot;
-  ASSERT_TRUE(r.serve_chain(S, 0, c.view(), ServeTier::Ladder, ServeTier::Family, c.out(),
+  ASSERT_TRUE(r.serve_chain(S, 0, c.view(), ServeTier::Ladder, ServeTier::Family, out,
                             c.served)
                   .has_value());
   std::size_t ok = 0;
@@ -919,6 +924,24 @@ TEST(LivePublication, TheServedChainIsTheRecordsAnswerPerContract) {
     q.family_bound = false;
     const auto &rec = c.id[k] == 1 ? rec_ladder() : rec_a();
     const ServeAnswer a = rec->serve(q);
+    constexpr auto fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+        GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+    auto supplied = GreekFieldMask::None;
+    if (std::isfinite(a.price) && (a.status == ServeStatus::Ok ||
+        a.status == ServeStatus::Exercised || a.status == ServeStatus::PriceOnly)) {
+      supplied = GreekFieldMask::Price;
+      if (a.status != ServeStatus::PriceOnly) {
+        constexpr std::array masks{GreekFieldMask::Delta, GreekFieldMask::Gamma,
+                                  GreekFieldMask::Vega, GreekFieldMask::Theta};
+        const std::array values{a.delta, a.gamma, a.vega, a.theta};
+        for (std::size_t i = 0; i < values.size(); ++i) {
+          if (std::isfinite(values[i]) && (a.reason[i] == ServeGreekReason::Served ||
+              a.reason[i] == ServeGreekReason::Exercised)) supplied = supplied | masks[i];
+        }
+      }
+    }
+    EXPECT_EQ(requested[k], fields);
+    EXPECT_EQ(supported[k], supplied);
     EXPECT_EQ(c.served[k].status, a.status) << k;
     EXPECT_EQ(c.served[k].tier, a.tier) << k;
     EXPECT_EQ(c.served[k].sampled, a.sampled) << k;
@@ -940,6 +963,17 @@ TEST(LivePublication, TheServedChainIsTheRecordsAnswerPerContract) {
   }
   EXPECT_GT(ok, c.strike.size() / 2);
   EXPECT_GT(ladder, 20u);
+  const auto allocations = testkit::count_allocations([&] {
+    (void)r.serve_chain(S, 0, c.view(), ServeTier::Ladder, ServeTier::Family, out, c.served);
+  });
+  EXPECT_EQ(allocations, 0u);
+  const auto original_price = c.price[0];
+  out.supported = requested;
+  EXPECT_FALSE(r.serve_chain(S, 0, c.view(), ServeTier::Ladder, ServeTier::Family, out, c.served));
+  EXPECT_EQ(bits(c.price[0]), bits(original_price));
+  out.supported = {reinterpret_cast<GreekFieldMask *>(c.served.data()), c.served.size()};
+  EXPECT_FALSE(r.serve_chain(S, 0, c.view(), ServeTier::Ladder, ServeTier::Family, out, c.served));
+  EXPECT_EQ(bits(c.price[0]), bits(original_price));
   ChainColumns shortc = c;
   shortc.served.pop_back();
   EXPECT_FALSE(r.serve_chain(S, 0, shortc.view(), ServeTier::Ladder, ServeTier::Family,

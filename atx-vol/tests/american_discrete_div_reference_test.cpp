@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp"
@@ -243,6 +246,78 @@ TEST(DiscreteDivReferenceSchedule, LevelsAreExactlyNestedEvenForTinySegments) {
   }
 }
 
+TEST(DiscreteDivReferenceDiagnostics, CountsActualSweepsAndPreservesEveryResultField) {
+  const std::vector<CashDividend> dividends{{0.25, 1.0}, {0.75, 2.0}};
+  PdeGrid grid;
+  grid.space_base = 80;
+  grid.time_base = 40;
+  for (const auto side : {Side::Put, Side::Call}) {
+    for (const auto exercise : {ExerciseStyle::American, ExerciseStyle::European}) {
+      const Problem p{.S = 100.0, .K = 105.0, .T = 1.0, .sigma = 0.2,
+                      .r = 0.03, .q = 0.01, .side = side, .exercise = exercise,
+                      .dividends = dividends};
+      const auto original = pde_price(p, grid);
+      atx::vol::ddiv_ref::PdeDiagnostics diagnostic;
+      const auto observed = pde_price(p, grid, &diagnostic);
+      ASSERT_TRUE(original && observed);
+      for (const auto member : {&atx::vol::ddiv_ref::PdeResult::price,
+                                &atx::vol::ddiv_ref::PdeResult::delta,
+                                &atx::vol::ddiv_ref::PdeResult::gamma,
+                                &atx::vol::ddiv_ref::PdeResult::max_policy_time,
+                                &atx::vol::ddiv_ref::PdeResult::max_lcp_violation}) {
+        EXPECT_EQ(std::bit_cast<std::uint64_t>((*observed).*member),
+                  std::bit_cast<std::uint64_t>((*original).*member));
+      }
+      EXPECT_EQ(observed->space_intervals, original->space_intervals);
+      EXPECT_EQ(observed->time_steps, original->time_steps);
+      EXPECT_EQ(observed->max_policy_iterations, original->max_policy_iterations);
+      EXPECT_EQ(observed->lcp_rounding_ties, original->lcp_rounding_ties);
+      EXPECT_EQ(diagnostic.coefficient_steps.size(),
+                static_cast<std::size_t>(observed->time_steps));
+      std::uint64_t step_sweeps = 0, step_rows = 0;
+      for (const auto &step : diagnostic.coefficient_steps) {
+        step_sweeps += step.thomas_sweeps;
+        step_rows += step.continuation_rows;
+        EXPECT_GT(step.max_run_length, 0U);
+      }
+      EXPECT_EQ(step_sweeps, diagnostic.thomas_sweeps);
+      EXPECT_EQ(step_rows, diagnostic.continuation_rows);
+      EXPECT_GE(diagnostic.thomas_sweeps, static_cast<std::uint64_t>(observed->time_steps));
+      EXPECT_EQ(diagnostic.forward_rows, diagnostic.thomas_sweeps * 80U);
+      EXPECT_EQ(diagnostic.forward_rows, diagnostic.identity_rows + diagnostic.continuation_rows);
+      std::uint64_t runs = 0, rows = 0;
+      for (std::size_t i = 0; i < diagnostic.continuation_run_lengths.size(); ++i) {
+        runs += diagnostic.continuation_run_lengths[i];
+        rows += i * diagnostic.continuation_run_lengths[i];
+      }
+      EXPECT_EQ(runs, diagnostic.continuation_runs);
+      EXPECT_EQ(rows, diagnostic.continuation_rows);
+      EXPECT_GT(rows, 0U);
+      EXPECT_GT(diagnostic.exact_key_coefficient_rows, 0U);
+      EXPECT_LE(diagnostic.exact_key_coefficient_rows, rows);
+      if (exercise == ExerciseStyle::American) {
+        EXPECT_EQ(diagnostic.fresh_seed_sweeps, 3U);
+        EXPECT_LT(diagnostic.exact_key_coefficient_rows, rows);
+      } else {
+        EXPECT_EQ(diagnostic.fresh_seed_sweeps, 0U);
+        EXPECT_EQ(diagnostic.thomas_sweeps, static_cast<std::uint64_t>(observed->time_steps));
+      }
+    }
+  }
+}
+
+TEST(DiscreteDivReferenceDiagnostics, RefusalClearsPriorCensus) {
+  atx::vol::ddiv_ref::PdeDiagnostics diagnostic;
+  diagnostic.thomas_sweeps = 42;
+  diagnostic.continuation_run_lengths = {1, 2};
+  diagnostic.coefficient_steps.emplace_back();
+  const auto refused = pde_price({}, {}, &diagnostic);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(diagnostic.thomas_sweeps, 0U);
+  EXPECT_TRUE(diagnostic.continuation_run_lengths.empty());
+  EXPECT_TRUE(diagnostic.coefficient_steps.empty());
+}
+
 TEST(DiscreteDivReferenceValidate, RefusesMalformedInputsWithTypedErrors) {
   const std::vector<CashDividend> none;
   const std::vector<CashDividend> negative{{0.5, -1.0}};
@@ -286,6 +361,56 @@ TEST(DiscreteDivReferenceValidate, RefusesMalformedInputsWithTypedErrors) {
   PdeGrid grid;
   grid.space_base = 4;
   EXPECT_FALSE(pde_price(ok, grid).has_value());
+}
+
+TEST(DiscreteDivReferenceValidate, RefusesDriftDominatedCenteredStencils) {
+  const std::vector<CashDividend> none;
+  for (const auto rates : {std::array{.10, .0}, std::array{.0, .10}}) {
+    const Problem p = make(100, 200, 1, .005, rates[0], rates[1], Side::Put,
+                           ExerciseStyle::American, none);
+    ASSERT_TRUE(validate(p)); // valid model; this particular grid cannot price it
+    const auto result = pde_price(p, PdeGrid{});
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code(), ErrorCode::OutOfRange);
+    EXPECT_NE(result.error().to_string().find("centered stencil"), std::string::npos);
+  }
+  // A small volatility alone is not a refusal: the centered drift can be admissible.
+  const Problem admitted = make(100, 100, 1, .005, 0, 0, Side::Put,
+                                ExerciseStyle::American, none);
+  const auto price = pde_price(admitted, PdeGrid{});
+  ASSERT_TRUE(price);
+  EXPECT_TRUE(std::isfinite(price->price));
+}
+
+TEST(DiscreteDivReferenceValidate, RefusesNonfiniteCenteredOperatorFromFiniteInputs) {
+  const std::vector<CashDividend> none;
+  const double large = std::numeric_limits<double>::max();
+  const Problem p = make(100, 100, 1, .2, large, -large, Side::Put,
+                         ExerciseStyle::American, none);
+  ASSERT_TRUE(validate(p));
+  const auto result = pde_price(p, PdeGrid{});
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::OutOfRange);
+  EXPECT_NE(result.error().to_string().find("centered stencil"), std::string::npos);
+}
+
+TEST(DiscreteDivReferenceValidate, RefusesUnsupportedNegativeRateImplicitRows) {
+  const std::vector<CashDividend> none;
+  // Near-zero log drift gives nonnegative centered off-diagonals. A sufficiently
+  // negative discount rate still destroys diagonal dominance of later theta rows.
+  const Problem p = make(100, 100, 1, .2, -300, -300.02, Side::Put,
+                         ExerciseStyle::American, none);
+  ASSERT_TRUE(validate(p));
+  const auto refused = pde_price(p, PdeGrid{});
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::OutOfRange);
+  EXPECT_NE(refused.error().to_string().find("implicit rows"), std::string::npos);
+  const Problem admitted = make(100, 100, 1, .2, -.02, -.04, Side::Put,
+                                ExerciseStyle::American, none);
+  const auto price = pde_price(admitted, PdeGrid{});
+  ASSERT_TRUE(price);
+  EXPECT_TRUE(std::isfinite(price->price));
+  EXPECT_GE(price->price, 0);
 }
 
 // Review m3: every grid count reaches an int through a cast or a shift. Inputs that
@@ -345,6 +470,22 @@ TEST(DiscreteDivReferenceAxis, RecoversAKnownOrderAndBoundsTheResidual) {
   const double extrapolated = v[3] + axis.correction;
   EXPECT_LE(std::abs(extrapolated - 1.0), axis.uncertainty) << "the bound must hold";
   EXPECT_LT(std::abs(extrapolated - 1.0), std::abs(v[3] - 1.0) / 10.0);
+}
+
+TEST(DiscreteDivReferenceAxis, ObservedOrderIsNotAGenericErrorBound) {
+  const auto sequence = [](double h) {
+    const double h2 = h * h;
+    return h2 + 100.0 * (h2 - 1.0) * (h2 - .25) * (h2 - .0625);
+  };
+  const std::array<double, 3> values{sequence(1), sequence(.5), sequence(.25)};
+  const Axis axis = richardson_axis(values, 2);
+  ASSERT_TRUE(axis.asymptotic); // the implemented empirical observed-order test
+  EXPECT_DOUBLE_EQ(axis.observed_order, 2);
+  const double extrapolated = values.back() + axis.correction;
+  EXPECT_DOUBLE_EQ(extrapolated, 0);
+  EXPECT_DOUBLE_EQ(axis.uncertainty, .0625);
+  EXPECT_DOUBLE_EQ(sequence(0), -1.5625);
+  EXPECT_GT(std::abs(extrapolated - sequence(0)), axis.uncertainty);
 }
 
 TEST(DiscreteDivReferenceAxis, OscillationIsNotAsymptoticAndGetsTheEnvelope) {

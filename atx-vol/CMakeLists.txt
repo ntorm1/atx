@@ -1139,6 +1139,10 @@ if(ATX_BUILD_TOOLS)
         add_executable(atx-vol-greek-audit bench/american-greeks/greek_main.cpp)
         target_link_libraries(atx-vol-greek-audit PRIVATE
             atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+        add_executable(atx-vol-fd-refinement bench/american-greeks/fd_refinement_main.cpp)
+        target_include_directories(atx-vol-fd-refinement PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(atx-vol-fd-refinement PRIVATE
+            atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
     endif()
     add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)
     target_link_libraries(atx-vol-iv-comparator PRIVATE atx-vol-bench-clocks atx::vol

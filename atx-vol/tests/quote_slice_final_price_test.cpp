@@ -242,6 +242,49 @@ TEST(QuoteSliceFinalPrice, WideFamilyBoundsUsePreparedColdProofBeforeStrictNativ
   }
 }
 
+TEST(QuoteSliceFinalPrice, OrdinaryCandidatesShareExactFloorWithinFinalization) {
+  const QuoteSliceMarket market{100, .5, .5, .04, .01, 0};
+  const auto quotes = final_price_quotes(market);
+  const auto config = final_price_config(false); // no prepared native/family route
+  auto draft = projected_draft(market, quotes, config);
+  std::vector<double> expected;
+  namespace led = counters::ledger;
+  std::uint64_t unshared_solves = 0;
+  IvOpts opts;
+  opts.tol = config.iv_tolerance;
+  opts.max_iter = config.max_iv_iterations;
+  opts.al_opts = draft.prepared.al_opts;
+  opts.refuse_non_monotone = true;
+  for (const auto &node : draft.nodes) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const double target = side == Side::Call ? node.call : node.put;
+      const auto before = led::this_thread(led::Solve::AlBoundarySolves);
+      const auto sigma = american_implied_vol_price_candidate(target, market.spot,
+          node.strike, market.variance_years, market.rate, market.continuous_yield,
+          side, opts, .001);
+      unshared_solves += led::this_thread(led::Solve::AlBoundarySolves) - before;
+      ASSERT_TRUE(sigma);
+      expected.push_back(*sigma);
+    }
+  }
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder publication;
+  auto fit = [&] {
+    const timing::ChainScope scope(&publication);
+    return detail::finalize_raw_price_draft(std::move(draft), config);
+  }();
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto stage = static_cast<std::size_t>(timing::ReimplyStage::PriceCandidate);
+  EXPECT_EQ(publication.result().reimply_stage_calls[stage], expected.size());
+  EXPECT_LT(publication.result().reimply_stage_al[stage], unshared_solves);
+  ASSERT_EQ(fit->rows.size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(fit->rows[i].evaluation_status, QuoteSliceEvaluationStatus::Success);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(fit->rows[i].fitted_iv),
+              std::bit_cast<std::uint64_t>(expected[i]));
+  }
+}
+
 TEST(QuoteSliceFinalPrice, RejectsUnprojectedCorruptOrReconfiguredDrafts) {
   const QuoteSliceMarket market{100, 0.5, 0.5, 0, 0, 0};
   const auto quotes = final_price_quotes(market);

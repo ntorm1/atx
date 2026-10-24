@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -10,6 +11,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#if defined(ATX_VOL_CASH_PDE_BATCH_RESEARCH)
+#include "../../bench/cash-pde-simd/batch.hpp"
+#endif
 
 // The independent cash-dividend reference (contract, model, uncertainty rule and
 // the two methods: the header). This file states each load-bearing choice again at
@@ -468,6 +473,11 @@ struct Operator {
 // Per-call PDE state: the value curve and the tridiagonal scratch.
 struct PdeState {
   const Model *model = nullptr; // non-owning; the caller's Model outlives the solve
+  PdeDiagnostics *diagnostics = nullptr; // caller-owned optional work census
+  const PdeThomasObserver *observer = nullptr; // borrowed only during this solve
+  std::array<std::uint64_t, 3> diagnostic_key{};
+  std::size_t diagnostic_max_run = 0;
+  bool diagnostic_have_key = false;
   LogGrid grid;
   Operator op;
   std::vector<double> v;       // values at the current time level
@@ -490,11 +500,53 @@ struct PdeState {
   }
 };
 
+// Separate optional traversal: the numerical sweep has no per-row diagnostic
+// branch. Identity rows reset a hypothetical continuation-run factor recurrence.
+void record_thomas_sweep(PdeState &s, double lo, double di, double up) {
+  if (s.diagnostics == nullptr) {
+    return;
+  }
+  auto &d = *s.diagnostics;
+  ++d.thomas_sweeps;
+  auto &step = d.coefficient_steps.back(); // theta_step records before every solve
+  ++step.thomas_sweeps;
+  d.forward_rows += static_cast<std::uint64_t>(s.grid.n);
+  const std::array key{std::bit_cast<std::uint64_t>(lo), std::bit_cast<std::uint64_t>(di),
+                       std::bit_cast<std::uint64_t>(up)};
+  if (!s.diagnostic_have_key || key != s.diagnostic_key) {
+    s.diagnostic_key = key;
+    s.diagnostic_have_key = true;
+    s.diagnostic_max_run = 0;
+  }
+  std::size_t run = 0;
+  for (int i = 1; i <= s.grid.n; ++i) {
+    const bool identity = i == s.grid.n || s.active[static_cast<std::size_t>(i)] != 0U;
+    if (!identity) {
+      ++d.continuation_rows;
+      ++step.continuation_rows;
+      ++run;
+      continue;
+    }
+    ++d.identity_rows;
+    if (run != 0) {
+      ++d.continuation_runs;
+      ++d.continuation_run_lengths[run];
+      step.max_run_length = std::max(step.max_run_length, static_cast<std::uint64_t>(run));
+      if (run > s.diagnostic_max_run) {
+        d.exact_key_coefficient_rows += run - s.diagnostic_max_run;
+        s.diagnostic_max_run = run;
+      }
+      run = 0;
+    }
+  }
+}
+
 // Thomas sweep over rows (lo, di, up | rhs): interior rows the implicit operator or
 // (0, 1, 0 | obstacle) where `active`, rows 0 and n the Dirichlet values. Every row
 // is diagonally dominant (an M-matrix row or an identity row), so the sweep is
 // stable without pivoting.
 void thomas_solve(PdeState &s, double lo, double di, double up, double bottom, double top) {
+  record_thomas_sweep(s, lo, di, up);
   const int n = s.grid.n;
   const auto at = [](std::vector<double> &vec, int i) -> double & {
     return vec[static_cast<std::size_t>(i)];
@@ -516,6 +568,11 @@ void thomas_solve(PdeState &s, double lo, double di, double up, double bottom, d
   at(s.work, n) = at(s.dp, n);
   for (int i = n - 1; i >= 0; --i) {
     at(s.work, i) = at(s.dp, i) - at(s.cp, i) * at(s.work, i + 1);
+  }
+  if (s.observer != nullptr && s.observer->on_sweep != nullptr) {
+    const PdeThomasObservation observation{lo, di, up, bottom, top, s.implicit_solves,
+        s.fresh_data, s.rhs, s.obstacle, s.cp, s.dp, s.work, s.active};
+    s.observer->on_sweep(observation, s.observer->context);
   }
 }
 
@@ -555,6 +612,9 @@ Status solve_lcp(PdeState &s, const Rows &rows, int seg, double t_new) {
   }
   const std::vector<double> *guess = &s.v;
   if (s.fresh_data) {
+    if (s.diagnostics != nullptr) {
+      ++s.diagnostics->fresh_seed_sweeps;
+    }
     thomas_solve(s, lo, di, up, rows.bottom, rows.top);
     guess = &s.work;
     s.fresh_data = false;
@@ -638,6 +698,22 @@ Status theta_step(PdeState &s, double dt, double theta, int seg, double t_new) {
   }
   const Rows rows{-theta * dt * s.op.a, 1.0 - theta * dt * s.op.b, -theta * dt * s.op.c,
                   m.far_low(seg, t_new, s.state_at(0)), m.far_high(seg, t_new, s.state_at(n))};
+  // Nonnegative generator off-diagonals alone do not admit arbitrary negative
+  // rates/time steps. Require this actual rounded implicit matrix to have finite
+  // nonpositive off-diagonals and strictly dominant positive diagonals. Identity
+  // obstacle/boundary rows preserve this sufficient M-matrix condition.
+  if (!std::isfinite(rows.lo) || !std::isfinite(rows.di) || !std::isfinite(rows.up) ||
+      rows.lo > 0.0 || rows.up > 0.0 ||
+      !(rows.di > std::abs(rows.lo) + std::abs(rows.up))) {
+    return Err(ErrorCode::OutOfRange,
+               "discrete-dividend reference PDE: implicit rows outside supported "
+               "M-matrix domain");
+  }
+  if (s.diagnostics != nullptr) {
+    s.diagnostics->coefficient_steps.push_back(
+        {{std::bit_cast<std::uint64_t>(rows.lo), std::bit_cast<std::uint64_t>(rows.di),
+          std::bit_cast<std::uint64_t>(rows.up)}, 0, 0, 0});
+  }
   ++s.implicit_solves;
   if (!m.american) {
     thomas_solve(s, rows.lo, rows.di, rows.up, rows.bottom, rows.top);
@@ -983,7 +1059,11 @@ double interp_uniform_cubic(std::span<const double> values, double x0, double h,
 
 // ── Public: the PDE ────────────────────────────────────────────────────────
 
-Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid) {
+Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid, PdeDiagnostics *diagnostics,
+                            const PdeThomasObserver *observer) {
+  if (diagnostics != nullptr) {
+    *diagnostics = {};
+  }
   if (Status st = validate(p); !st) {
     return Err(st.error());
   }
@@ -993,13 +1073,27 @@ Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid) {
   const Model m = make_model(p);
   PdeState s;
   s.model = &m;
+  s.diagnostics = diagnostics;
+  s.observer = observer;
   const Result<LogGrid> log_grid = make_log_grid(m, p, grid);
   if (!log_grid) {
     return Err(log_grid.error());
   }
   s.grid = *log_grid;
   s.op = make_operator(p.sigma, p.r, p.q, s.grid.h);
+  // Centered drift is monotone only when both off-diagonal generator entries
+  // are nonnegative. Valid model inputs can violate this on the requested grid;
+  // refuse before allocating state or entering Howard, without changing schemes.
+  if (!std::isfinite(s.op.a) || !std::isfinite(s.op.b) || !std::isfinite(s.op.c) ||
+      s.op.a < 0.0 || s.op.c < 0.0) {
+    return Err(ErrorCode::OutOfRange,
+               "discrete-dividend reference PDE: centered stencil is nonfinite "
+               "or nonmonotone");
+  }
   const std::size_t nodes = static_cast<std::size_t>(s.grid.n) + 1U;
+  if (diagnostics != nullptr) {
+    diagnostics->continuation_run_lengths.resize(nodes, 0);
+  }
   s.v.resize(nodes);
   s.rhs.assign(nodes, 0.0);
   s.obstacle.assign(nodes, 0.0);
@@ -1196,5 +1290,9 @@ Result<Reference> reference_price(const Problem &p, const ReferenceOpts &opts) {
                                       : gap + pde->uncertainty + lattice->uncertainty;
   return Ok(out);
 }
+
+#if defined(ATX_VOL_CASH_PDE_BATCH_RESEARCH)
+#include "../../bench/cash-pde-simd/batch_impl.inc"
+#endif
 
 } // namespace atx::vol::ddiv_ref

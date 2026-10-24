@@ -1176,6 +1176,145 @@ TEST(PricedSurface, EvaluateDedicatedDeltaAndVegaMatchScalarReferencesExactly) {
   }
 }
 
+TEST(PricedSurfaceGreekAvailability, SelectiveRequestsDoNotClaimUnrequestedZeros) {
+  const auto owned = make_essvi(917, 3);
+  auto archive = SurfaceArchiveV2::open(build_tenor_view_archive(owned, "selective"));
+  ASSERT_TRUE(archive.has_value());
+  auto mapped = archive->map_symbol("selective");
+  ASSERT_TRUE(mapped.has_value());
+  const auto check = [&](const auto &s) {
+    for (const EF fields : {EF::Iv, EF::Price, EF::Delta, EF::Vega, EF::Price | EF::Delta}) {
+      const auto result = s.evaluate(100., .29, Side::Call, fields, false);
+      ASSERT_TRUE(result.status.has_value());
+      GreekFieldMask requested = GreekFieldMask::None;
+      if (has_field(fields, EF::Price)) requested = requested | GreekFieldMask::Price;
+      if (has_field(fields, EF::Delta)) requested = requested | GreekFieldMask::Delta;
+      if (has_field(fields, EF::Vega)) requested = requested | GreekFieldMask::Vega;
+      EXPECT_EQ(result.greeks.requested, requested);
+      EXPECT_EQ(result.greeks.supported, requested);
+      EXPECT_EQ(result.greeks.reasons[1], AmericanGreekReason::NotRequested);
+      if (has_field(fields, EF::Price)) EXPECT_EQ(result.greeks.price, result.price);
+    }
+    const auto bad = s.evaluate(-1., .29, Side::Call, EF::Price | EF::Vega, false);
+    ASSERT_FALSE(bad.status.has_value());
+    EXPECT_EQ(bad.greeks.requested, GreekFieldMask::Price | GreekFieldMask::Vega);
+    EXPECT_EQ(bad.greeks.supported, GreekFieldMask::None);
+    EXPECT_EQ(bad.greeks.reasons[2], AmericanGreekReason::Nonfinite);
+    EXPECT_EQ(bad.greeks.reasons[0], AmericanGreekReason::NotRequested);
+  };
+  check(owned);
+  check(*mapped);
+}
+
+TEST(PricedSurfaceGreekAvailability, PartialRefusalPreservesPriceAcrossOwnedAndMappedRoutes) {
+  constexpr double T = .0682, sigma = .12;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const bool put = side == Side::Put;
+    const double S = put ? 772.99 : 811.6395;
+    const double K = put ? 811.6395 : 772.99;
+    const double r = put ? .04496 : .00162193;
+    const double q = put ? .00162193 : .04496;
+    const double F = S * std::exp((r - q) * T);
+    EssviParams params{};
+    params.T = T; params.F = F; params.theta = sigma * sigma * T;
+    params.phi = params.rho = 0.;
+    params.psi = params.p = params.lambda = .5;
+    CurveSurface curves;
+    curves.push(std::make_unique<EssviCurve>(params, std::exp(-r * T)));
+    auto pricing = make_pricing(918, S, r);
+    pricing.al_opts = al_fast_profile(std::nullopt);
+    pricing.al_opts.profile = AlProfile::Reference;
+    auto owned = PricedSurface::create(std::move(curves), {{T, F, 0., q, 100u, 0u}}, pricing);
+    ASSERT_TRUE(owned.has_value());
+    auto archive = SurfaceArchiveV2::open(build_tenor_view_archive(*owned, "cross"));
+    ASSERT_TRUE(archive.has_value());
+    auto mapped = archive->map_symbol("cross");
+    ASSERT_TRUE(mapped.has_value());
+    const auto check = [&](const auto &s) {
+      const auto price = s.fair_value(K, T, side);
+      const auto delta = s.delta(K, T, side);
+      const auto vega = s.vega(K, T, side);
+      ASSERT_TRUE(price.has_value() && delta.has_value());
+      ASSERT_FALSE(vega.has_value());
+      const auto selected = s.evaluate(K, T, side, EF::Price | EF::Delta | EF::Vega, true);
+      ASSERT_FALSE(selected.status.has_value());
+      EXPECT_EQ(selected.status.error().code(), vega.error().code());
+      EXPECT_EQ(selected.iv, s.iv(K, T));
+      EXPECT_EQ(selected.price, *price);
+      EXPECT_EQ(selected.greeks.price, *price);
+      EXPECT_EQ(selected.greeks.delta, *delta);
+      EXPECT_TRUE(std::isnan(selected.greeks.vega));
+      EXPECT_EQ(selected.greeks.requested,
+                GreekFieldMask::Price | GreekFieldMask::Delta | GreekFieldMask::Vega);
+      EXPECT_EQ(selected.greeks.supported, GreekFieldMask::Price | GreekFieldMask::Delta);
+      // The bare-double dedicated route supplies no per-field numerical reason.
+      EXPECT_EQ(selected.greeks.reasons[2], AmericanGreekReason::Nonfinite);
+      EXPECT_EQ(selected.greeks.reasons[1], AmericanGreekReason::NotRequested);
+      for (const bool analytic : {false, true}) {
+        const auto full = s.evaluate(K, T, side, EF::FirstOrder, analytic);
+        ASSERT_FALSE(full.status.has_value());
+        EXPECT_EQ(full.status.error().code(), ErrorCode::Unavailable);
+        EXPECT_TRUE(std::isfinite(full.price));
+        EXPECT_EQ(full.greeks.reasons[1], AmericanGreekReason::StencilCrossing);
+      }
+      const std::array<double, 1> strikes{K}, tenors{T};
+      const std::array<Side, 1> sides{side};
+      std::array<double, 1> prices{}, deltas{}, vegas{}, ivs{};
+      std::array<Status, 1> statuses{};
+      ASSERT_TRUE(s.evaluate_batch(strikes, tenors, sides, EF::Price | EF::Delta | EF::Vega,
+          true, PricedSurface::EvaluationSoA{{}, prices, {}, statuses, deltas, vegas}));
+      EXPECT_EQ(prices[0], *price);
+      EXPECT_EQ(deltas[0], *delta);
+      EXPECT_TRUE(std::isnan(vegas[0]));
+      ASSERT_FALSE(statuses[0].has_value());
+      std::array<AmericanGreeks, 1> greeks{};
+      ASSERT_TRUE(s.evaluate_batch(strikes, tenors, sides, EF::FirstOrder, true,
+          PricedSurface::EvaluationSoA{ivs, prices, greeks, statuses, {}, {}}));
+      ASSERT_FALSE(statuses[0].has_value());
+      EXPECT_EQ(statuses[0].error().code(), ErrorCode::Unavailable);
+      EXPECT_TRUE(std::isfinite(prices[0]));
+      EXPECT_EQ(greeks[0].reasons[1], AmericanGreekReason::StencilCrossing);
+      EXPECT_FALSE(s.full_greek_seed(K, T, side, true).has_value());
+    };
+    check(*owned);
+    check(*mapped);
+  }
+}
+
+TEST(PricedSurfaceGreekAvailability, BawFdVegaRefusalIsNotSuccessfulNaN) {
+  constexpr double S = 100., K = 116.5837, T = .25, sigma = .2, r = .04, q = .01;
+  const double F = S * std::exp((r - q) * T);
+  EssviParams params{};
+  params.T = T; params.F = F; params.theta = sigma * sigma * T;
+  params.phi = params.rho = 0.;
+  params.psi = params.p = params.lambda = .5;
+  CurveSurface curves;
+  curves.push(std::make_unique<EssviCurve>(params, std::exp(-r * T)));
+  auto pricing = make_pricing(919, S, r);
+  pricing.method = AmericanMethod::Baw;
+  auto owned = PricedSurface::create(std::move(curves), {{T, F, 0., q, 100u, 0u}}, pricing);
+  ASSERT_TRUE(owned.has_value());
+  auto archive = SurfaceArchiveV2::open(build_tenor_view_archive(*owned, "baw"));
+  ASSERT_TRUE(archive.has_value());
+  auto mapped = archive->map_symbol("baw");
+  ASSERT_TRUE(mapped.has_value());
+  const auto check = [&](const auto &s) {
+    const auto full = s.greeks(K, T, Side::Put);
+    ASSERT_TRUE(full.has_value());
+    ASSERT_TRUE(std::isfinite(full->price));
+    ASSERT_EQ(full->reasons[2], AmericanGreekReason::StencilCrossing);
+    const auto vega = s.vega(K, T, Side::Put);
+    ASSERT_FALSE(vega.has_value());
+    EXPECT_EQ(vega.error().code(), ErrorCode::Unavailable);
+    const auto selected = s.evaluate(K, T, Side::Put, EF::Price | EF::Vega, false);
+    ASSERT_FALSE(selected.status.has_value());
+    EXPECT_TRUE(std::isfinite(selected.price));
+    EXPECT_EQ(selected.greeks.supported, GreekFieldMask::Price);
+  };
+  check(*owned);
+  check(*mapped);
+}
+
 TEST(PricedSurface, EvaluateBatchSelectiveSoAWritesOnlyRequestedColumns) {
   const PricedSurface s = make_essvi_varycarry(1);
   const std::vector<double> strikes{88.0, 96.0, 104.0, 116.0};

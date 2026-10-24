@@ -49,12 +49,16 @@
 // total never quietly absorbs a position nobody could price. `price_deriv_book`
 // itself returns an error only for a structurally impossible request; an empty
 // book is valid and yields an empty frame with zeroed totals.
+// A valid PV with an unavailable requested shared risk instead reports
+// GreeksUnavailable. Its PV and independent risks still contribute; coverage is
+// explicit in n_priced, n_ok and n_greeks_unavailable. n_priced must equal the
+// input position count before interpreting PV as complete book coverage.
 //
 // TWO CONDITIONS REPORT `InvalidContract` WITHOUT THE CONTRACT ITSELF BEING AT
 // FAULT, deliberately: a non-finite `DerivPosition::qty` (rejected here, at the
 // boundary, before it can scale a good mark into a NaN on an otherwise-Ok lane),
 // and a surface whose `pricing().S` is not > 0 (the greek path's bump validator
-// rejects that as InvalidArgument). `PriceStatus` is a shared four-value
+// rejects that as InvalidArgument). `PriceStatus` is a shared
 // vocabulary the option pipeline also switches on, so widening it for two
 // lane-input faults would hand every existing consumer a new case to handle;
 // `InvalidContract` — "this lane's inputs are malformed" — is the honest fit.
@@ -90,6 +94,7 @@
 // functions of their inputs, safe to call concurrently from any number of
 // threads (the underlying surfaces are concurrent-const-safe).
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -116,7 +121,9 @@ struct DerivPosition {
 
 // One priced position (input order preserved). `pv` and every `greeks` field
 // are qty-scaled; `fair_strike_dec` and `greeks.quote` are per-contract and
-// unscaled. On any non-Ok status every numeric field is NaN.
+// unscaled. GreeksUnavailable retains the finite PV and independent risk fields;
+// other non-Ok statuses have no numeric result. Availability covers only the
+// nine shared PriceTotals axes, not the extra carry/smile diagnostics.
 struct DerivPriceRow {
   std::uint64_t id{0};
   std::uint32_t uid{0};
@@ -128,6 +135,9 @@ struct DerivPriceRow {
   // caller needs to reproduce or audit the mark.
   DerivGreeks greeks{};
   PriceStatus status{PriceStatus::Ok};
+  GreekFieldMask requested{GreekFieldMask::None};
+  GreekFieldMask supported{GreekFieldMask::None};
+  std::array<AmericanGreekReason, 9> reasons{}; // Delta..Charm,Price; no accuracy claim
 };
 
 // A uid -> certified wing-band resolver (FIT-C7 / Task C-6). A caller who
@@ -140,25 +150,20 @@ struct DerivPriceRow {
 // caller that does not (yet) supply one.
 using WingBandResolver = std::function<std::optional<double>(std::uint32_t uid)>;
 
-// Rows in input order plus the column sums over the Ok rows.
+// Rows in input order plus column sums over Ok and GreeksUnavailable rows.
 struct DerivPriceFrame {
   std::vector<DerivPriceRow> rows;
   PriceTotals totals{};
-  // GK-C9b. `totals.{theta,vanna,charm}` are NaN-poisoned by design the moment
-  // ANY Ok row's own column is NaN (theta/charm: a contract too short to roll
-  // past `bumps.time_years`; vanna/charm: additionally `second_order == false`)
-  // -- that poisoning is unchanged. What was missing was a count: a NaN total
-  // used to be a dead end with no way to tell "1 excluded lane" from "every
-  // lane excluded". These name how many Ok rows were excluded from each
-  // column, so the desk theta going NaN comes with a reason attached instead
-  // of silence. 0 when `greeks` was false (nothing was attempted, not "nothing
-  // excluded") or when every Ok lane's column was finite.
+  // Counts of priced rows with nonfinite columns, including unrequested axes
+  // (second_order=false disables Vanna/Charm). Zero when greeks=false. Requested
+  // missing axes refuse their aggregates; exactly zero quantities contribute
+  // exact zero while retaining the row refusal and these diagnostic counts.
   std::uint32_t n_theta_excluded{0};
   std::uint32_t n_vanna_excluded{0};
   std::uint32_t n_charm_excluded{0};
 
   // Task F-7 term-bucket vega: `contract.maturity_t` -> the sum of that
-  // tenor's qty-scaled `greeks.vega` over the Ok rows, i.e. `totals.vega`
+  // tenor's qty-scaled `greeks.vega` over the priced rows, i.e. `totals.vega`
   // split by expiry. A vol desk hedges a term STRUCTURE, and a single net vega
   // hides the commonest real exposure -- long front, short back, flat overall.
   //
@@ -169,9 +174,9 @@ struct DerivPriceFrame {
   // buckets (1M / 3M / 6M) round before building the book, or re-bucket this
   // map -- deliberately no rounding policy here, which would have to guess.
   //
-  // Same NaN discipline as `totals.vega`: an Ok lane whose own vega is NaN
-  // poisons ITS bucket only, leaving the other tenors readable. A row that did
-  // not price at all contributes nothing (it is not an Ok row). EMPTY when
+  // A nonzero-weight priced lane whose vega is NaN poisons ITS bucket only,
+  // leaving other tenors readable; zero quantities contribute exact zero.
+  // A row that did not price at all contributes nothing. EMPTY when
   // `price_deriv_book`'s `greeks` argument was false -- no vega was computed,
   // and an empty ladder says that, where a map of zeros would read as a
   // genuinely vega-flat book.
@@ -180,7 +185,7 @@ struct DerivPriceFrame {
   // vegas `totals.vega` already sums.
   std::map<double, double> vega_by_tenor;
 
-  // Number of rows that priced. Equals `totals.n_ok` by construction; counted
+  // Number of complete requested bundles. Equals `totals.n_ok`; counted
   // from `rows` so the frame stays self-describing if it is ever rebuilt or
   // filtered by a caller.
   [[nodiscard]] std::size_t n_ok() const noexcept;
@@ -257,7 +262,12 @@ price_deriv_book(const SurfaceSet &surfaces, std::span<const DerivPosition> book
 // column, the combined column is "not computed" too. Silently treating a
 // marks-only block's NaN vega as 0 would report the option book's vega as the
 // desk's, which is exactly the false-zero this convention exists to prevent.
-// `n_ok` adds (saturating at UINT32_MAX rather than wrapping).
+// Requests are unioned; a field is supported only when BOTH inputs supply it.
+// Missing input requests therefore refuse the combined field even on an empty
+// marks-only block, preserving the existing NaN propagation contract. Net/gross
+// Vega share availability. All coverage counts add with UINT32_MAX saturation;
+// n_ok counts bundles complete for their original input requests. Use the
+// combined supported mask to establish availability of the combined request.
 [[nodiscard]] PriceTotals combine_totals(const PriceTotals &a, const PriceTotals &b) noexcept;
 
 } // namespace atx::vol

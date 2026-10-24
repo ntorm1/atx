@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "backtest/step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
+#include "backtest/price_totals_availability.hpp"
 
 #include "atx/core/error.hpp"
 #include "atx/vol/api/analytics/deriv_pnl.hpp" // Task F-8: the swap lane's P&L explain
@@ -2014,17 +2015,16 @@ private:
   double pending_{0.0};
 };
 
-// Book greeks + the count of positions the pricer could not value on THIS
-// snapshot's date. `total`'s `gross_*` sum only the Ok lanes; `n_unpriced`
-// = n_pos - PriceTotals::n_ok is the number EXCLUDED from that sum (surface
-// absent, degenerate contract, or numeric failure). `first_unpriced_uid` names
-// the first such position (input order) for the Error-policy diagnostic; 0 when
-// none. This is a single-date snapshot count — distinct from a STEP's
-// completeness (which needs base AND shifted); see BacktestResult.
+// Snapshot risk coverage. n_unpriced counts incomplete requested row bundles,
+// including partial priced rows whose PV remains in total. Aggregate support
+// is checked separately: summation can overflow with no incomplete rows.
+// The first incomplete row's uid/status supports a truthful Error diagnostic.
+// This is distinct from a STEP's completeness, which needs base AND shifted.
 struct BookGreeks {
   PriceTotals total{};
   std::uint32_t n_unpriced{0};
   std::uint32_t first_unpriced_uid{0};
+  PriceStatus first_unpriced_status{PriceStatus::Ok};
 };
 
 [[nodiscard]] BookGreeks summarize_price_frame(const PriceFrame &frame) {
@@ -2037,6 +2037,7 @@ struct BookGreeks {
     for (std::size_t i = 0; i < frame.size(); ++i) {
       if (frame.status[i] != PriceStatus::Ok) {
         result.first_unpriced_uid = frame.uid[i];
+        result.first_unpriced_status = frame.status[i];
         break;
       }
     }
@@ -2161,6 +2162,7 @@ struct MarkCarryContext {
     for (std::size_t i = 0; i < frame->size(); ++i) {
       if (frame->status[i] != PriceStatus::Ok) {
         result.first_unpriced_uid = frame->uid[i];
+        result.first_unpriced_status = frame->status[i];
         break;
       }
     }
@@ -2660,15 +2662,28 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
          " held lot(s) have no surface this step (first uid=" + std::to_string(first_uid) + ")";
 }
 
-// The Error-policy message for a recorded row whose book greeks could not value
-// `n_unpriced` held lots on `date`. Distinct wording from the step message: this
+// The Error-policy message for a recorded row whose book cannot supply requested
+// risk for its incomplete held lots. Distinct wording from the step message: this
 // is a single-date snapshot (book_greeks), so it names the date rather than "this
 // step". Non-empty precondition: callers only build this when n_unpriced > 0.
-[[nodiscard]] std::string unpriced_greeks_error_message(std::uint32_t n_unpriced,
-                                                        std::uint32_t first_uid,
+[[nodiscard]] std::string unpriced_greeks_error_message(const BookGreeks &risk,
                                                         const std::string &date) {
-  return "run_backtest: " + std::to_string(n_unpriced) + " held lot(s) have no surface on " + date +
-         " (first uid=" + std::to_string(first_uid) + ")";
+  const char *cause = risk.first_unpriced_status == PriceStatus::ModelUnavailable
+      ? " held lot(s) have no surface on " : " held lot(s) lack requested risk on ";
+  return "run_backtest: " + std::to_string(risk.n_unpriced) + cause + date +
+         " (first uid=" + std::to_string(risk.first_unpriced_uid) + ")";
+}
+
+[[nodiscard]] Status check_book_risk(const BookGreeks &risk, UnpricedLotPolicy policy,
+                                      const std::string &date) {
+  if (policy != UnpricedLotPolicy::Error) return Ok();
+  if (risk.n_unpriced > 0)
+    return Err(ErrorCode::NotFound, unpriced_greeks_error_message(risk, date));
+  if (!detail::price_totals_support_request(risk.total))
+    return Err(ErrorCode::Unavailable, "run_backtest: requested aggregate risk unavailable on " +
+        date + " (priced=" + std::to_string(risk.total.n_priced) +
+        ", complete=" + std::to_string(risk.total.n_ok) + ")");
+  return Ok();
 }
 
 // Task B2 (backtest-lakehouse sprint): Reg-T margin required for the CURRENT
@@ -3878,10 +3893,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     if (!g) {
       return Err(g.error());
     }
-    if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
-      return Err(ErrorCode::NotFound,
-                 unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
-    }
+    ATX_TRY_VOID(check_book_risk(*g, cfg.unpriced, refs[0].date));
     // Task B2: Reg-T margin requirement for the inception book, against the
     // same base snapshot book_greeks just priced. Available capital is 0.0 --
     // this overload has no cash ledger at all; see `MarginBreachPolicy`.
@@ -4004,10 +4016,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       if (!g) {
         return Err(g.error());
       }
-      if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
-        return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
-                                            g->n_unpriced, g->first_unpriced_uid, refs[i].date));
-      }
+      ATX_TRY_VOID(check_book_risk(*g, cfg.unpriced, refs[i].date));
       row_greeks = *g;
     }
 
@@ -4784,10 +4793,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // its entries): under the Error policy an unpriced held lot here aborts, exactly
     // as a later row would. The strategy never opens a lot in an absent name, so this
     // is 0 for a normally-opened basket and never fires on an empty book.
-    if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
-      return Err(ErrorCode::NotFound,
-                 unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
-    }
+    ATX_TRY_VOID(check_book_risk(*g, cfg.unpriced, refs[0].date));
     const double g_delta = g->total.delta + hedge_ledger.sum();
     // Opening fills are the first economic event of the run. execute() already
     // deducted their friction from cash; stamp the same loss into row-0 PnL/NAV
@@ -5188,14 +5194,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       if (!g) {
         return Err(g.error());
       }
-      // The step-level Error guard above already fired for i>=1 whenever a held lot
-      // is unpriced across this step (book_greeks under-counts only when this row's
-      // surface is absent, which also breaks the step's pnl_explain), so this check
-      // is a consistent belt-and-braces here; it is the sole guard only at inception.
-      if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
-        return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
-                                            g->n_unpriced, g->first_unpriced_uid, refs[i].date));
-      }
+      // Snapshot risk can be incomplete despite a valid mark or step P&L.
+      // Check its requested fields and aggregate support independently.
+      ATX_TRY_VOID(check_book_risk(*g, cfg.unpriced, refs[i].date));
       const double g_delta = g->total.delta + hedge_ledger.sum();
       // Task B2: same margin computation as inception, against this row's base.
       const double margin_req = book_margin_required(*base, book.lots, cfg.price.query_execution);

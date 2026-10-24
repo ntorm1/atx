@@ -1185,6 +1185,74 @@ TEST(Backtest, PrefetchWindowIsGatedByTheFlagAndNeverThrashesThePrivateCache) {
   }
 }
 
+TEST(BacktestGreekAvailability, AggregateOverflowFailsEvenWhenEveryRowIsComplete) {
+  const fs::path dir = fresh_dir("greek-aggregate-overflow");
+  const auto surface = make_surface(kUid, 100., 100., kBaseNow);
+  const auto expiry = kBaseNow + 55 * kDayNs;
+  const double T = static_cast<double>(expiry - kBaseNow) / kNsPerYear;
+  const auto probe = surface.greeks(100., T, Side::Call, QueryExecution::Configured);
+  ASSERT_TRUE(probe.has_value());
+  ASSERT_GT(probe->vega, 0.);
+  const double qty = (.1 * std::numeric_limits<double>::max()) / probe->vega;
+  PortfolioState book;
+  for (std::uint64_t i = 1; i <= 12u; ++i)
+    book.lots.push_back({i, {kUid, 100., 0., Side::Call}, qty, 1., expiry, 0u, 0.});
+  const auto path = write_one(dir, "2026-08-01", "SPX", surface);
+  const auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value());
+  RunConfig report;
+  report.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  const auto visible = run_backtest(*clock, book, report);
+  ASSERT_TRUE(visible.has_value()) << visible.error().to_string();
+  ASSERT_EQ(visible->size(), 1u);
+  EXPECT_EQ(visible->n_unpriced_greeks[0], 0.); // no fabricated excluded rows
+  EXPECT_TRUE(std::isnan(visible->gross_vega[0]));
+  const auto guarded = run_backtest(*clock, book, RunConfig{});
+  ASSERT_FALSE(guarded.has_value());
+  EXPECT_EQ(guarded.error().code(), ErrorCode::Unavailable);
+  EXPECT_NE(guarded.error().message().find("aggregate risk"), std::string::npos);
+}
+
+TEST(BacktestGreekAvailability, PartialRiskErrorDoesNotClaimTheSurfaceIsMissing) {
+  constexpr double spot = 772.99, strike = 811.6395, tenor = .0682;
+  constexpr double rate = .04496, yield = .00162193, sigma = .12;
+  const auto expiry = kBaseNow + static_cast<std::int64_t>(tenor * kNsPerYear);
+  const double T = static_cast<double>(expiry - kBaseNow) / kNsPerYear;
+  const double forward = spot * std::exp((rate - yield) * T);
+  EssviParams params{};
+  params.T = T;
+  params.F = forward;
+  params.theta = sigma * sigma * T;
+  params.phi = params.rho = 0.;
+  params.psi = params.p = params.lambda = .5;
+  CurveSurface curves;
+  curves.push(std::make_unique<EssviCurve>(params, std::exp(-rate * T)));
+  PricingContext pricing;
+  pricing.S = spot;
+  pricing.r = rate;
+  pricing.now_ts_ns = kBaseNow;
+  pricing.uid = kUid;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_profile(std::nullopt);
+  pricing.al_opts.profile = AlProfile::Reference;
+  const auto surface = PricedSurface::create(std::move(curves),
+      {SliceContext{T, forward, 0., yield, 100u, 1u}}, pricing);
+  ASSERT_TRUE(surface.has_value());
+  const auto probe = surface->greeks(strike, T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(probe.has_value());
+  ASSERT_TRUE(std::isfinite(probe->price));
+  ASSERT_EQ(probe->reasons[1], AmericanGreekReason::StencilCrossing);
+  const auto path = write_one(fresh_dir("greek-partial-risk"), "2026-08-01", "SPX", *surface);
+  const auto clock = Clock::from_manifest(make_manifest({{"2026-08-01", path}}, "SPX"));
+  ASSERT_TRUE(clock.has_value());
+  PortfolioState book;
+  book.lots.push_back({1u, {kUid, strike, 0., Side::Put}, 1., 100., expiry, 0u, 0.});
+  const auto guarded = run_backtest(*clock, book, RunConfig{});
+  ASSERT_FALSE(guarded.has_value());
+  EXPECT_NE(guarded.error().message().find("requested risk"), std::string::npos);
+  EXPECT_EQ(guarded.error().message().find("no surface"), std::string::npos);
+}
+
 TEST(Backtest, FixedBookDuplicateLotIdsFailBeforeArchiveLoadOrPricing) {
   const fs::path dir = fresh_dir("fixed-book-duplicate-id");
   const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);

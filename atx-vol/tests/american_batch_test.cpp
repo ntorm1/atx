@@ -17,9 +17,12 @@
 #include "atx/vol/api/pricing/american_batch.hpp"
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/correction.hpp"
+#include "pricing/american_greek_availability.hpp"
 #include "fitting/counters.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <barrier>
 #include <cmath>
@@ -1727,6 +1730,110 @@ TEST(AmericanGreeksBatch, UnsupportedLaneReportsStatus) {
   EXPECT_TRUE(std::isnan(px[0]));
 }
 
+TEST(AmericanGreeksBatch, AvailabilityPreservesPriceAndUsesExactFieldMask) {
+  Book b;
+  b.push(100, 100, .5, .3, .04, .01, Side::Put);
+  b.push(772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put);
+  b.push(-100, 100, .5, .3, .04, .01, Side::Call);
+  std::vector<double> px(b.size()), gamma(b.size());
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  out.gamma = gamma.data();
+  PricingWorkspace ws;
+  for (const bool analytic : {false, true}) {
+    for (const auto isa : {simd::SimdIsa::ForceScalar, simd::SimdIsa::ForceAvx2}) {
+      PricingKernel kernel;
+      kernel.analytic_greeks = analytic;
+      kernel.isa = isa;
+      ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws));
+      ASSERT_EQ(ws.lane_requested_view().size(), b.size());
+      ASSERT_EQ(ws.lane_supported_view().size(), b.size());
+      ASSERT_EQ(ws.lane_reasons_view().size(), b.size());
+      EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Ok);
+      EXPECT_EQ(ws.lane_status_view()[1], LaneStatus::Unsupported);
+      EXPECT_EQ(ws.lane_status_view()[2], LaneStatus::Unsupported);
+      EXPECT_TRUE(std::isfinite(px[1]));
+      EXPECT_TRUE(std::isnan(gamma[1]));
+      EXPECT_TRUE(has_field(ws.lane_supported_view()[1], GreekFieldMask::Price));
+      EXPECT_FALSE(has_field(ws.lane_supported_view()[1], GreekFieldMask::Gamma));
+      EXPECT_EQ(ws.lane_reasons_view()[1][1], AmericanGreekReason::StencilCrossing);
+      const double retained_price = px[1];
+
+      constexpr auto fields = GreekFieldMask::Price;
+      std::fill(gamma.begin(), gamma.end(), 123.0);
+      ASSERT_TRUE(american_greeks_batch(b.view(), fields, out, kernel, ws));
+      EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Ok);
+      EXPECT_EQ(ws.lane_status_view()[1], LaneStatus::Ok);
+      EXPECT_EQ(ws.lane_status_view()[2], LaneStatus::Unsupported);
+      EXPECT_EQ(px[1], retained_price);
+      for (std::size_t i = 0; i < b.size(); ++i) {
+        EXPECT_EQ(ws.lane_requested_view()[i], fields);
+        EXPECT_EQ(ws.lane_supported_view()[i], i == 2 ? GreekFieldMask::None : fields);
+        EXPECT_EQ(ws.lane_reasons_view()[i][8], i == 2 ? AmericanGreekReason::Nonfinite
+                                                    : AmericanGreekReason::ComputedEstimate);
+        EXPECT_EQ(ws.lane_reasons_view()[i][1], AmericanGreekReason::NotRequested);
+        EXPECT_EQ(gamma[i], 123.0);
+      }
+    }
+  }
+}
+
+TEST(AmericanGreeksBatch, UnknownFieldMaskRefusesBeforeWrites) {
+  const Book b = make_american_greeks_book();
+  std::vector<double> px(b.size(), 123.0);
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  PricingKernel kernel;
+  PricingWorkspace ws;
+  const auto bad = static_cast<GreekFieldMask>(1u << 31);
+  const auto result = american_greeks_batch(b.view(), bad, out, kernel, ws);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_TRUE(ws.lane_status_view().empty());
+  for (const double value : px) EXPECT_EQ(value, 123.0);
+}
+
+TEST(AmericanGreeksBatch, DeepExerciseSuppliesExactGammaDespiteTinySpotDenominator) {
+  Book b;
+  b.push(1e-160, 100., .05, .9, .043, .02, Side::Put);
+  std::array<double, 1> price{}, gamma{};
+  simd::GreeksBatchSoA out;
+  out.price = price.data();
+  out.gamma = gamma.data();
+  PricingWorkspace workspace;
+  for (bool analytic : {false, true}) {
+    PricingKernel kernel;
+    kernel.analytic_greeks = analytic;
+    kernel.isa = simd::SimdIsa::ForceScalar;
+    ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::Price | GreekFieldMask::Gamma,
+                                    out, kernel, workspace));
+    EXPECT_EQ(workspace.lane_status_view()[0], LaneStatus::Ok);
+    EXPECT_EQ(gamma[0], 0.0);
+    EXPECT_EQ(price[0], 100.0);
+    EXPECT_EQ(workspace.lane_reasons_view()[0][1], AmericanGreekReason::Exercised);
+  }
+}
+
+TEST(AmericanGreeksBatch, PriceOnlyBatchDoesNotAllocateGreekMetadata) {
+  const Book b = make_american_greeks_book();
+  PricingKernel kernel;
+  PricingWorkspace ws;
+  PriceBatchOutput out;
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws));
+  EXPECT_EQ(ws.lane_requested.capacity(), 0u);
+  EXPECT_EQ(ws.lane_supported.capacity(), 0u);
+  EXPECT_EQ(ws.lane_reasons.capacity(), 0u);
+
+  ws.reserve_lanes(b.size());
+  const auto retained_capacity = ws.lane_reasons.capacity();
+  ASSERT_GT(retained_capacity, 0u);
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws));
+  EXPECT_TRUE(ws.lane_requested_view().empty());
+  EXPECT_TRUE(ws.lane_supported_view().empty());
+  EXPECT_TRUE(ws.lane_reasons_view().empty());
+  EXPECT_EQ(ws.lane_reasons.capacity(), retained_capacity);
+}
+
 TEST(AmericanGreeksBatch, EmptyIsNoOp) {
   AmericanBatchInput in;
   simd::GreeksBatchSoA out;
@@ -1750,17 +1857,17 @@ TEST(AmericanGreeksBatch, EmptyIsNoOp) {
 // (python/src/bindings/pricing.cpp, called with GreekFieldMask::All — every Greek
 // requested and, pre-fix, none guarded), so the sprint changed its exposure.
 //
-// Trigger is G1's: at S = 1e-160 the FD gamma denominator hS*hS = (1e-3*S)^2
-// underflows to 0.0 while the mark stays finite, so gamma = 0/0 = NaN on a
-// SUCCESSFUL bundle. Both sides are driven in ONE call.
-constexpr double kI3TinyS = 1.0e-160;
-
+// The former tiny-spot denominator trigger now supplies exact exercise Greeks.
+// Use the independently frozen crossing and its McDonald-Schroder call pair.
 TEST(AmericanGreeksBatch, I3_OkStampGuardsTheRequestedGreekSetOnBothSides) {
   // Kernel-level precondition, asserted for BOTH sides: a SUCCESSFUL differenced
   // bundle with a finite mark and a non-finite gamma.
   for (const Side sd : {Side::Put, Side::Call}) {
-    const auto probe =
-        american_greeks_fd(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, sd);
+    const double S = sd == Side::Put ? 772.99 : 811.6395;
+    const double K = sd == Side::Put ? 811.6395 : 772.99;
+    const double r = sd == Side::Put ? .04496 : .00162193;
+    const double q = sd == Side::Put ? .00162193 : .04496;
+    const auto probe = american_greeks_fd(S, K, .0682, .12, r, q, sd);
     ASSERT_TRUE(probe.has_value()) << "side " << static_cast<int>(sd);
     EXPECT_TRUE(std::isfinite(probe->price)) << "side " << static_cast<int>(sd);
     EXPECT_FALSE(std::isfinite(probe->gamma)) << "side " << static_cast<int>(sd);
@@ -1768,8 +1875,8 @@ TEST(AmericanGreeksBatch, I3_OkStampGuardsTheRequestedGreekSetOnBothSides) {
 
   // Identical inputs modulo `side`, in the SAME call — the asymmetry's own shape.
   Book b;
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  b.push(772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put);
+  b.push(811.6395, 772.99, .0682, .12, .00162193, .04496, Side::Call);
   const std::size_t n = b.size();
   std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0);
   simd::GreeksBatchSoA out;
@@ -1801,8 +1908,8 @@ TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
     GTEST_SKIP() << "analytic laned put route needs an AVX2 host";
   }
   Book b;
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  b.push(772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put);
+  b.push(811.6395, 772.99, .0682, .12, .00162193, .04496, Side::Call);
   const std::size_t n = b.size();
   std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0), th(n, 0.0);
   simd::GreeksBatchSoA out;
@@ -1818,16 +1925,15 @@ TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
                   .has_value());
 
   EXPECT_EQ(ws.lane_status_view()[0], ws.lane_status_view()[1])
-      << "analytic put (laned) and call (scalar) stamps disagree on the same input";
+      << "analytic put and call-dual stamps disagree on the fixed crossing";
   for (std::size_t i = 0; i < n; ++i) {
-    if (ws.lane_status_view()[i] != LaneStatus::Ok) {
-      continue;
-    }
-    // An Ok lane's REQUESTED columns are finite — the whole point of the stamp.
+    EXPECT_EQ(ws.lane_status_view()[i], LaneStatus::Unsupported);
+    EXPECT_EQ(ws.lane_reasons_view()[i][1], AmericanGreekReason::StencilCrossing);
+    // Every requested refusal remains in the denominator, with usable price.
     EXPECT_TRUE(std::isfinite(px[i])) << "lane " << i << " price";
-    EXPECT_TRUE(std::isfinite(dl[i])) << "lane " << i << " delta";
-    EXPECT_TRUE(std::isfinite(gm[i])) << "lane " << i << " gamma";
-    EXPECT_TRUE(std::isfinite(th[i])) << "lane " << i << " theta";
+    EXPECT_TRUE(std::isnan(dl[i])) << "lane " << i << " delta";
+    EXPECT_TRUE(std::isnan(gm[i])) << "lane " << i << " gamma";
+    EXPECT_TRUE(std::isnan(th[i])) << "lane " << i << " theta";
   }
 }
 
@@ -1973,6 +2079,136 @@ TEST(AmericanBatchErrorModel, EveryEntryCarriesTheLaneCountItWrote) {
   const Result<std::size_t> none = american_price_batch(empty, empty_out, kernel, ws);
   ASSERT_TRUE(none.has_value());
   EXPECT_EQ(*none, 0u);
+}
+
+TEST(AmericanGreekAvailability, PreservesPublicMaskOrdinals) {
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Delta), 1u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Gamma), 2u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Vega), 4u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Theta), 8u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Rho), 16u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Vanna), 32u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Volga), 64u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Charm), 128u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Price), 256u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::All), 511u);
+}
+
+TEST(AmericanGreekAvailability, FiniteDefaultZerosSupplyNoFields) {
+  const AmericanGreeks g;
+  EXPECT_EQ(g.delta, 0.0);
+  EXPECT_EQ(g.price, 0.0);
+  EXPECT_EQ(g.requested, GreekFieldMask::None);
+  EXPECT_EQ(g.supported, GreekFieldMask::None);
+  for (const auto reason : g.reasons) EXPECT_EQ(reason, AmericanGreekReason::NotRequested);
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Delta));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Price));
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::None));
+}
+
+TEST(AmericanGreekAvailability, ExplicitZeroAndPartialRefusalPreservePrice) {
+  AmericanGreeks g;
+  g.price = 10.0;
+  g.delta = -1.0;
+  g.theta = 8.8;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Theta, AmericanGreekReason::ComputedEstimate);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Gamma));
+  detail::mark_american_greek_fields(g, GreekFieldMask::Theta,
+                                    AmericanGreekReason::StencilCrossing);
+  EXPECT_TRUE(std::isnan(g.theta));
+  EXPECT_EQ(g.price, 10.0);
+  EXPECT_EQ(g.delta, -1.0);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Price | GreekFieldMask::Delta));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Theta));
+  EXPECT_TRUE(has_field(g.requested, GreekFieldMask::Theta));
+  EXPECT_EQ(g.reasons[3], AmericanGreekReason::StencilCrossing);
+  EXPECT_EQ(g.reasons[8], AmericanGreekReason::ComputedEstimate);
+}
+
+TEST(AmericanGreekAvailability, NonfiniteAndContradictoryMetadataCannotPass) {
+  AmericanGreeks g;
+  g.vega = std::numeric_limits<double>::infinity();
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vega,
+                                    AmericanGreekReason::ComputedEstimate);
+  EXPECT_EQ(g.reasons[2], AmericanGreekReason::Nonfinite);
+  EXPECT_TRUE(std::isnan(g.vega));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  // Finite data with a forged support bit is insufficient without a supplied reason.
+  g.vega = 0.0;
+  g.supported = GreekFieldMask::Vega;
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vega,
+                                    AmericanGreekReason::Exercised);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  g.vega = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  EXPECT_FALSE(detail::american_greeks_support(g, static_cast<GreekFieldMask>(1u << 15)));
+}
+
+TEST(AmericanGreekAvailability, NarrowingNeverPromotesUnrequestedZeros) {
+  AmericanGreeks g;
+  detail::mark_american_greek_fields(g, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
+  detail::mark_american_greek_fields(g, GreekFieldMask::Theta,
+                                    AmericanGreekReason::StencilCrossing);
+  const auto delta_price = GreekFieldMask::Delta | GreekFieldMask::Price;
+  detail::narrow_american_greek_request(g, delta_price);
+  EXPECT_EQ(g.requested, delta_price);
+  EXPECT_EQ(g.supported, delta_price);
+  EXPECT_EQ(g.reasons[3], AmericanGreekReason::NotRequested);
+  EXPECT_TRUE(detail::american_greeks_support(g, delta_price));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Rho));
+  EXPECT_EQ(g.rho, 0.0); // Legacy numeric normalization is not a supplied value.
+  detail::narrow_american_greek_request(g, delta_price | GreekFieldMask::Rho);
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Rho));
+  EXPECT_EQ(g.reasons[4], AmericanGreekReason::UnsupportedAxis);
+  EXPECT_TRUE(std::isnan(g.rho));
+}
+
+TEST(AmericanGreekAvailability, SolveNeedsMapOnlyToActuallyRequestedGroups) {
+  const auto base = GreekFieldMask::Price | GreekFieldMask::Delta |
+                    GreekFieldMask::Gamma | GreekFieldMask::Theta;
+  EXPECT_EQ(detail::american_greek_request(false, false, false), base);
+  EXPECT_EQ(detail::american_greek_request(true, false, false), base |
+            GreekFieldMask::Vega | GreekFieldMask::Vanna | GreekFieldMask::Volga);
+  EXPECT_EQ(detail::american_greek_request(false, true, false), base | GreekFieldMask::Rho);
+  EXPECT_EQ(detail::american_greek_request(false, false, true), base | GreekFieldMask::Charm);
+  EXPECT_EQ(detail::american_greek_request(true, true, true), GreekFieldMask::All);
+}
+
+TEST(AmericanGreekAvailability, CachedGraphSuppliesExplicitEstimates) {
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto g = american_greeks(100, 105, .5, .3, .04, .01, side, nullptr);
+    ASSERT_TRUE(g);
+    EXPECT_EQ(g->requested, GreekFieldMask::All);
+    EXPECT_TRUE(detail::american_greeks_support(*g, GreekFieldMask::All));
+    for (const auto reason : g->reasons) EXPECT_EQ(reason, AmericanGreekReason::ComputedEstimate);
+    // This overload's documented null-cache route is the European graph;
+    // american_price_cached(nullptr) instead falls back to cold American pricing.
+    EXPECT_TRUE(std::isfinite(g->price));
+  }
+}
+
+TEST(AmericanGreekAvailability, PopulatedCacheAndBlendSupplyExplicitEstimates) {
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto lower = CorrectionCache::build(8, 6, 6, .04, .01,
+        -.3, .3, .1, 1.0, .1, .6, side);
+    const auto upper = CorrectionCache::build(8, 6, 6, .05, .02,
+        -.3, .3, .1, 1.0, .1, .6, side);
+    ASSERT_TRUE(lower);
+    ASSERT_TRUE(upper);
+    const CorrectionBlend blend{&*lower, &*upper, .5};
+    const auto single = american_greeks(100, 105, .5, .3, .045, .015, side, &*lower);
+    const auto blended = american_greeks(100, 105, .5, .3, .045, .015, side, blend);
+    ASSERT_TRUE(single);
+    ASSERT_TRUE(blended);
+    for (const AmericanGreeks *g : {&*single, &*blended}) {
+      EXPECT_EQ(g->requested, GreekFieldMask::All);
+      EXPECT_TRUE(detail::american_greeks_support(*g, GreekFieldMask::All));
+      for (const auto reason : g->reasons) EXPECT_EQ(reason, AmericanGreekReason::ComputedEstimate);
+    }
+  }
 }
 
 } // namespace

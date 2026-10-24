@@ -1687,6 +1687,48 @@ struct AmericanPriceVega {
 // same fused Clenshaw traversal, with no off-point finite-difference stencil.
 //
 // theta uses the calendar-time convention: ∂P/∂t = -∂P/∂T.
+// Shared scalar/batch field order. These values retain the original
+// american_batch.hpp ordinals; Price is independent of Greek availability.
+enum class GreekFieldMask : std::uint32_t {
+  None = 0,
+  Delta = 1u << 0,
+  Gamma = 1u << 1,
+  Vega = 1u << 2,
+  Theta = 1u << 3,
+  Rho = 1u << 4,
+  Vanna = 1u << 5,
+  Volga = 1u << 6,
+  Charm = 1u << 7,
+  Price = 1u << 8,
+  AllGreeks = Delta | Gamma | Vega | Theta | Rho | Vanna | Volga | Charm,
+  All = AllGreeks | Price,
+};
+
+[[nodiscard]] constexpr GreekFieldMask operator|(GreekFieldMask a,
+                                                GreekFieldMask b) noexcept {
+  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) |
+                                     static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr GreekFieldMask operator&(GreekFieldMask a,
+                                                GreekFieldMask b) noexcept {
+  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) &
+                                     static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr bool has_field(GreekFieldMask set, GreekFieldMask bit) noexcept {
+  return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) != 0u;
+}
+
+// Availability is not an accuracy certificate. ComputedEstimate identifies a
+// value supplied by the producing model, with no derivative error budget implied.
+enum class AmericanGreekReason : std::uint8_t {
+  NotRequested = 0,
+  ComputedEstimate = 1,
+  Exercised = 2,
+  UnsupportedAxis = 3,
+  StencilCrossing = 4,
+  Nonfinite = 5,
+};
+
 struct AmericanGreeks {
   double delta = 0.0;
   double gamma = 0.0;
@@ -1697,6 +1739,14 @@ struct AmericanGreeks {
   double volga = 0.0;
   double charm = 0.0;
   double price = 0.0;
+
+  // Default/untouched zeros supply nothing. A partial bundle can retain a valid
+  // price while individual requested Greeks are unavailable (NaN, with reason).
+  // reasons follows mask-bit order: delta, gamma, vega, theta, rho, vanna,
+  // volga, charm, price. Continuous-carry phi belongs to CarryGreeks separately.
+  GreekFieldMask requested = GreekFieldMask::None;
+  GreekFieldMask supported = GreekFieldMask::None;
+  std::array<AmericanGreekReason, 9> reasons{};
 
   [[nodiscard]] bool operator==(const AmericanGreeks &) const = default;
 };
@@ -1735,6 +1785,13 @@ struct AmericanGreeks {
 // every boundary cold; greeks().price stays bit-identical to fair_value(). Call
 // spot-stencil homogeneity can differ from separate cold calls by rounding.
 // The BAW method retains the cold 17-solve path.
+// Each requested field includes the center in its exercise-regime evidence.
+// Solved exercise boundaries and active price clamps identify exercised samples;
+// homogeneous exercise supplies exact payoff derivatives, while mixed regimes
+// refuse only the affected field (StencilCrossing, NaN). Missing/nonfinite evidence
+// refuses that field. Price remains independently available. Continuation values
+// are ComputedEstimate, not an accuracy certificate: fixed-step truncation and
+// reference convergence still require separate validation.
 [[nodiscard]] Result<AmericanGreeks>
 american_greeks_fd(double S, double K, double T, double sigma, double r, double q, Side side,
                    AmericanMethod method = AmericanMethod::AndersenLake,
@@ -1747,13 +1804,18 @@ american_greeks_fd(double S, double K, double T, double sigma, double r, double 
 // frozen-boundary/envelope shortcut is NOT valid for the AL premium decomposition);
 // theta/charm come from the continuation-region Black-Scholes PDE
 // (theta = rV - (r-q)S*delta - 0.5*sigma^2*S^2*gamma; charm = d theta/dS), which
-// DROPS the two time-bumped solves and is more accurate (no time-bump truncation).
+// drops the two time-bumped solves. These are numerical PDE estimates, not a
+// guarantee of greater accuracy than a separately refined time stencil.
 // A pure function of the inputs, so bit-reproducible across a surface-archive
 // round-trip.
 //
-// vs american_greeks_fd: price + delta/gamma/vega/rho/vanna/volga are bit-identical
-// (same boundaries), theta/charm differ (the PDE is the exact continuation-region
-// value, gated close to the FD reference). Genuine early exercise on either side
+// The price and shared admitted FD stencils retain their original arithmetic.
+// Theta/charm use the PDE and therefore differ from time-differenced estimates.
+// Per-field regime admission follows american_greeks_fd; theta needs the center
+// and S+/-h samples, charm also needs S+/-2h. A crossing refuses the affected field
+// while preserving price, including the prepared and SIMD routes. Uniform
+// continuation is necessary admission evidence, not a Greek accuracy bound.
+// Genuine early exercise on either side
 // uses this route (internal-put rate r>0 for puts, q>0 for calls). Nonpositive
 // internal rate, degenerate corners, or a needed bumped-boundary collapse defer
 // to american_greeks_fd. A put's requested rho also falls back when r-hr<=0;
@@ -1765,8 +1827,8 @@ american_greeks_fd(double S, double K, double T, double sigma, double r, double 
 // vega/volga/vanna gate the sigma+/- solves; rho the r+/- solves; charm the wide speed
 // stencils. A hedge caller ({delta}) does ONE boundary solve (1 BoundarySolves ledger
 // count) instead of five; unrequested greeks are left 0. Defaults keep the full 5-solve
-// bundle, so every existing call site is byte-unchanged. The columns a reduced request
-// returns are BIT-IDENTICAL to the full-bundle run (same base boundary + stencils).
+// bundle. A reduced request retains the same admitted values and reasons as the
+// full bundle (same base boundary + stencils); unrequested metadata supplies nothing.
 [[nodiscard]] Result<AmericanGreeks>
 american_greeks_al(double S, double K, double T, double sigma, double r, double q, Side side,
                    const std::optional<AlOpts> &opts = std::nullopt, bool need_vega = true,
@@ -1823,23 +1885,19 @@ american_greeks_al(double S, double K, double T, double sigma, double r, double 
                                    Side side, const CorrectionBlend &correction) noexcept;
 
 // ─────────────────────────────────────────────────────────────────────────
-// C1.7 (additive-only; see FILE-OWNERSHIP RULE in the 07-09 sprint doc) — a
-// vega-ONLY entry point for `PricedSurface::vega`, bit-identical to
-// `american_greeks_al(...).vega` on every input where the AL bundle takes its
-// native analytic route (and to `american_greeks_fd(...).vega` on every input
-// where the bundle falls back to FD), at 0-2 boundary solves instead of the
-// bundle's 5 (see american_greeks_al's cost comment above). `american_vega`
-// (just above) is NOT reusable here: it is the Black-76-plus-correction-cache
-// hot-path vega built for the IV inverter's 0.0-sentinel contract, a
-// DIFFERENT numerical procedure (no AL boundary re-solve at all) from the
-// bundle's re-solved-boundary finite difference, and it returns a plain
-// double with a load-bearing 0-on-degenerate sentinel rather than a `Result`
-// with delta()'s InvalidArgument contract. See american.cpp for the
-// boundary-re-solve mirror of american_greeks_al's vega branch.
+// Vega-only endpoint estimate: two sigma-bumped AL boundary solves, without
+// the bundle's center boundary. Continuation endpoints retain the same centered
+// difference arithmetic as the bundle; two exercised endpoints supply zero.
+// Mixed regimes or missing/nonfinite endpoint evidence return Unavailable.
+// This endpoint-only admission is deliberately distinct from the bundle's
+// center-inclusive evidence, so universal bundle parity is not promised.
+// Native-route refusal guards retain the FD fallback, whose Vega availability
+// is checked before extraction. No derivative error bound is implied.
+// `american_vega` above remains the separate cached 0-on-degenerate inverter API.
 //
 // @return InvalidArgument on non-positive S/K/T/sigma (delta()'s error
-//         contract, NOT american_vega's 0.0 sentinel); otherwise the vega,
-//         bit-identical to greeks_analytic(...).vega for the same inputs.
+//         contract, NOT american_vega's 0.0 sentinel); Unavailable when the
+//         endpoint stencil or fallback Vega is refused; propagates pricing errors.
 [[nodiscard]] Result<double> american_vega_al(double S, double K, double T, double sigma, double r,
                                               double q, Side side,
                                               const std::optional<AlOpts> &opts = std::nullopt);

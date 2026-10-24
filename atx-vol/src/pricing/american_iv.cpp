@@ -2926,11 +2926,12 @@ std::optional<double> IvPriceSeedFloorCache::price(double S, double K, double T,
       !std::isfinite(K) || !std::isfinite(T) || !std::isfinite(r) || !std::isfinite(q) ||
       (side != Side::Call && side != Side::Put)) return std::nullopt;
   const double anchor = side == Side::Call ? S : K;
+  auto &state = states_[side == Side::Call ? 0u : 1u];
   try {
-    if (state_ && same_bits(state_->anchor, anchor) && same_bits(state_->T, T) &&
-        same_bits(state_->r, r) && same_bits(state_->q, q) && state_->side == side &&
-        same_opts(state_->opts, opts)) {
-      const double value = state_->handle->price_from_boundary(S, K);
+    if (state && same_bits(state->anchor, anchor) && same_bits(state->T, T) &&
+        same_bits(state->r, r) && same_bits(state->q, q) && state->side == side &&
+        same_opts(state->opts, opts)) {
+      const double value = state->handle->price_from_boundary(S, K);
       if (std::isfinite(value)) {
         ++hits_;
         return value;
@@ -2949,7 +2950,7 @@ std::optional<double> IvPriceSeedFloorCache::price(double S, double K, double T,
     if (!next->handle->solve(kIvMin)) return std::nullopt;
     const double value = next->handle->price_from_boundary(S, K);
     if (!std::isfinite(value)) return std::nullopt;
-    state_ = std::move(next);
+    state = std::move(next);
     ++preparations_;
     return value;
   } catch (const std::bad_alloc &) {
@@ -3013,7 +3014,7 @@ std::optional<double> american_implied_vol_price_seed(
 std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
-    IvPriceProposalKernel proposal_kernel) noexcept {
+    IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache) noexcept {
   if (stats != nullptr) *stats = {};
   if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
       opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
@@ -3031,7 +3032,7 @@ std::optional<double> american_implied_vol_price_candidate(
       if (stats != nullptr) stats->screen_stopped_early = proposal.stopped;
       if (candidate && *candidate > kIvMin && std::isfinite(*candidate)) {
         if (const auto answer = american_implied_vol_price_seed(price, S, K, T, r, q, side,
-                                                               opts, max_price_error, *candidate)) {
+                opts, max_price_error, *candidate, floor_cache)) {
           if (stats != nullptr) stats->screen_accepted = true;
           return answer;
         }
@@ -3052,7 +3053,7 @@ std::optional<double> american_implied_vol_price_candidate(
     if (stats != nullptr) stats->stopped_early = proposal.stopped;
     if (early && *early > kIvMin && std::isfinite(*early)) {
       if (const auto answer = american_implied_vol_price_seed(price, S, K, T, r, q, side,
-                                                             opts, max_price_error, *early)) {
+              opts, max_price_error, *early, floor_cache)) {
         if (stats != nullptr) stats->accepted_early = proposal.stopped;
         return answer;
       }
@@ -3063,7 +3064,7 @@ std::optional<double> american_implied_vol_price_candidate(
     if (candidate.status != IvStatus::Ok || !(candidate.iv > kIvMin) ||
         !std::isfinite(candidate.iv)) return std::nullopt;
     return american_implied_vol_price_seed(price, S, K, T, r, q, side, opts,
-                                            max_price_error, candidate.iv);
+                                            max_price_error, candidate.iv, floor_cache);
   } catch (const std::bad_alloc &) {
     return std::nullopt;
   }

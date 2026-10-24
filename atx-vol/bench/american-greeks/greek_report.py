@@ -107,7 +107,9 @@ def validate_levels(levels, case):
 
 
 def validate_report(report, corpus):
-    require(report['schema'] == 'atx-american-greek-native-v1', 'schema')
+    require(report['schema'] in ['atx-american-greek-native-v1',
+                                 'atx-american-greek-native-v2'], 'schema')
+    typed_cold = report['schema'] == 'atx-american-greek-native-v2'
     require(report['derivative_tolerances'] is None and corpus['derivative_tolerances'] is None, 'no Greek budget')
     require(report['reference_independent_method'] is False and report['continuous_carry_only'] is True, 'scope')
     require(report['requested_fields'] == FIELDS and report['convention'] == corpus['convention'], 'convention')
@@ -141,6 +143,8 @@ def validate_report(report, corpus):
             require((engine['price_status'] == 'success' and finite(engine['price'])) or
                     (engine['price_status'] == 'refused' and engine['price'] is None), 'price evidence')
             require(set(engine['fields']) == set(FIELDS), 'field denominator')
+            if typed_cold and name.startswith('cold'):
+                validate_cold_metadata(engine)
             for field, entry in engine['fields'].items():
                 require(entry['requested'] is True and type(entry['supported']) is bool and
                         type(entry['reason']) is str and bool(entry['reason']), 'field metadata')
@@ -149,7 +153,7 @@ def validate_report(report, corpus):
                 require(not entry['supported'] or engine['price_status'] == 'success', 'refused price supports field')
                 if name.startswith('sigma'):
                     require(entry['supported'] == (entry['reason'] in ['Served', 'Exercised']), 'typed support')
-                else:
+                elif not typed_cold:
                     require(entry['supported'] == (entry['reason'] == 'ApiValueUnqualified'), 'cold support')
             if name.startswith('sigma'):
                 box = dict(anchor=c['K'] if c['side'] == 'put' else c['S'],
@@ -168,6 +172,36 @@ def validate_report(report, corpus):
         for field in ['vanna', 'volga', 'charm']:
             require(row['engines']['sigma_q_family']['fields'][field]['reason'] == 'NotInApi', 'tensor field unsupported')
     require(seen == set(ids), 'missing selected case')
+
+
+def validate_cold_metadata(engine):
+    result = engine['native_result_success']
+    requested, supported = engine['native_requested_mask'], engine['native_supported_mask']
+    reasons = engine['native_reasons']
+    require(type(result) is bool and type(requested) is int and type(supported) is int,
+            'native cold metadata types')
+    require(requested == (511 if result else 0) and 0 <= supported <= 511 and
+            (supported & ~requested) == 0, 'native cold requested/support masks')
+    allowed = ['NotRequested', 'ComputedEstimate', 'Exercised', 'UnsupportedAxis',
+               'StencilCrossing', 'Nonfinite']
+    require(type(reasons) is list and len(reasons) == 9 and
+            all(type(r) is str and r in allowed for r in reasons), 'native cold reasons')
+    for i, reason in enumerate(reasons):
+        require(not result or reason != 'NotRequested', 'requested cold field lacks reason')
+        require(bool(supported & (1 << i)) == (reason in ['ComputedEstimate', 'Exercised']),
+                'native cold support/reason contradiction')
+        require(result or reason == 'NotRequested', 'refused result supplied native reason')
+    require((engine['price_status'] == 'success') == bool(supported & (1 << 8)),
+            'native cold price availability')
+    for field, index in zip(FIELDS, [0, 1, 2, 3, 4, None, 5, 6, 7]):
+        entry = engine['fields'][field]
+        if index is None:
+            require(entry['supported'] is False and entry['value'] is None and
+                    entry['reason'] == 'NotInApi', 'cold phi is outside AmericanGreeks')
+            continue
+        require(entry['supported'] == bool(supported & (1 << index)) and
+                entry['reason'] == (reasons[index] if result else 'ApiRefused'),
+                'native cold field availability')
 
 
 def stability(series24, series32, field):

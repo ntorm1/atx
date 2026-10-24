@@ -1,0 +1,163 @@
+# Private four-lane Thomas research kernel
+
+This target is default-off and links neither kernel into the production library.
+Its private PDE batch driver is compiled inside the reference TU only when the
+research option is enabled; it calls a borrowed kernel callback. No production
+entry point dispatches to the driver. There is no speed or cash-price
+qualification. The scalar control and AVX2 kernel own no state: callers own one
+interleaved pack and provide a lane mask. Invalid input lanes leave scratch
+unchanged; a nonfinite arithmetic result refuses the affected lane and leaves
+partial scratch that must not be published.
+
+The frozen `vol-rel` reference object's Thomas sweep uses fused negative
+multiply-add for both forward numerators and the backsolve, with two separate
+divisions. The research kernel preserves those operations explicitly. The scalar
+control uses `std::fma` and separate divisions. This matches the observed release
+arithmetic; it does not establish parity with every compiler profile.
+
+```powershell
+./scripts/atx-build.ps1 configure -Preset vol-rel -DATX_VOL_BUILD_CASH_THOMAS_RESEARCH=ON
+./scripts/atx-build.ps1 build atx-vol-cash-thomas-research-tests -Preset vol-rel -Jobs 3
+./build-vol-rel/bin/atx-vol-cash-thomas-research-tests.exe
+```
+
+The six initial tests cover 320 grid-size/policy/lane-mask combinations, every
+`cp`/`dp`/solution bit, noncontiguous and empty masks, signed-zero boundaries,
+unused poisoned operands, independent invalid lanes, nonfinite arithmetic and
+malformed shapes. All six pass after a failing stub. Owning three-TU PCH-off
+checks pass. Runtime red/green receipts are under
+`calendar/cash-thomas-simd-v1/`; the original scalar disassembly is under
+`calendar/cash-pde-simd-inventory-v1/`, both beneath the r7 evidence root.
+
+The next component gate now captures the unchanged reference solver directly.
+An optional caller-owned observer sees read-only spans after each scalar Thomas
+sweep. The test copies the first fresh seed and following Howard solve at expiry,
+then the same two solves after the first interior jump when present. It retains
+196 sweeps per grid across all 50 original cases, or 588 sweeps over three grids.
+Each copied input is replayed through both research kernels; all original
+`cp`/`dp`/solution bits match. Captures are in-process copies reproduced by the
+archived executable and canonical input source, not a fitted runtime fixture.
+
+All 150 complete observed/null solver outputs also agree in price, delta, gamma
+and every existing work/solver field. The default exporter remains byte-identical
+to the pre-observer replay, SHA256
+`d4b5c2e81c8971cd9d37abd601139217ba8e71161eee38c3ada7c1dba60343cc`.
+Seven component tests pass after the observer's runtime red; the complete default
+replay passes separately. Owning observer source, replay test and both existing
+reference/export consumers pass PCH-off checks. This establishes the bounded
+scalar-sweep replay gate.
+
+The next private component executes complete PDE solves. It groups equal
+canonical event-time bits, maturity bits, exercise style and space/time schedules
+in original input order, then splits each calendar class into at most four lanes.
+No strike, volatility, cash amount or coefficient is rounded or quantized. It
+reuses the reference TU's original model, setup, terminal payoff and scalar jump
+helpers. All working curves stay interleaved between jumps; each jump gathers a
+lane into owned scratch and scatters it back. The original jump's allocations
+remain. Howard's policies, convergence checks and typed refusals are independent
+per lane. A completed lane swaps only its own values and retires from the current
+step; a refused lane never rejoins. The immutable calendar remains valid when its
+first lane refuses. There is no hidden scalar retry.
+
+All 150 complete results match the original scalar solver in every binary64
+field and every integer work/result field, through both scalar and AVX2 callbacks.
+The optional per-lane census also matches every coefficient bit, Thomas sweep,
+continuation-run count and length. Generic controls cover independent callback
+refusal, invalid inputs, unsupported implicit rows at negative rates, anchor
+refusal, mixed cash models, European exercise, canonical event coalescing and a
+one-ulp event-time difference that must remain a separate group. Fourteen total
+kernel/capture/driver tests pass. The initial driver stub fails its five controls;
+the retained first red exposed a missing size guard in the test, corrected before
+the subsequent safe red run. No production behavior was changed to make a test
+pass.
+
+The original 17 calendar classes require 21 actual four-lane bundles. Native work
+agrees with the earlier input-only scheduling inventory:
+
+| Grid | Vector sweeps | Useful lane-sweeps | Tail slots | Retired slots |
+|---|---:|---:|---:|---:|
+| 400 x 200 | 5,543 | 11,703 | 8,506 | 1,963 |
+| 800 x 400 | 10,965 | 22,977 | 16,700 | 4,183 |
+| 1600 x 800 | 21,953 | 45,688 | 33,290 | 8,834 |
+
+Each row satisfies `4 * vector_sweeps = useful + tail + retired`. These are work
+counts, not latency results. Evidence is retained in
+`calendar/cash-pde-batch-driver-v1/`. The all-case accuracy frontier is unchanged:
+43/44 spot-liquidator cases pass the finest-grid comparison and DSPYp remains
+uncertain. The six other-model cases remain separate.
+
+Owning reference and batch-test translation units pass PCH-off checks. The
+default export remains byte-identical to the frozen pre-driver replay above.
+
+Admission scans consumed values and result validation scans all scratch values;
+these costs must remain in any inclusive kernel measurement until a separately
+validated caller contract removes them. A cash PDE batch must also charge
+setup, grouping, allocation, layout conversion, jumps, masked Howard iterations
+and result publication. See the
+[bounded design](../../docs/cash-pde-simd-design-20261024.md).
+
+## Inclusive runner
+
+`atx-vol-cash-pde-batch-research` is a separate executable using the same library
+and both callbacks. One invocation runs exactly one declared grid and one of
+`original`, `batch-scalar`, `batch-avx2`, with all 50 original requests. Its timer
+starts before request adaptation/validation and ends after group/model/grid
+preparation, allocation/layout, all theta/Howard/Thomas steps, jumps, result
+copies and temporary/workspace destruction. The immutable raw fixture and final
+JSON encoding are outside the interval. There is no warmup or shared workspace
+between calls. Retained published result copies are report output, not temporary
+solver storage. No diagnostic census is enabled during this call; kernel
+admission and finite-result scans remain fully charged.
+
+The native `--untimed` mode performs the identical work without clocks or load
+sampling. Six invalid CLI controls and all nine untimed route/grid reports pass;
+the independent Python audit pins the original replay hash, joins every raw model
+and event bit, checks original price/policy bits and cross-route Greeks, and
+retains all 150 unique grid/case outcomes. Eight verifier tests cover missing or
+changed data, forged bits, unbalanced routes/grids, Greek drift, unknown host
+state, missing ThinLTO/Release/ISA facts and uncertainty. The finest DSPYp remains
+uncertain. Owning runner PCH-off checks pass. Peer review caught that the first
+runner gate could qualify a non-IPO development binary; the retained regression
+fails against frozen `17a6d54f` and passes after this receipt-only correction.
+The original nine untimed reports remain valid and explicitly unqualified.
+
+The PowerShell launcher requires a frozen clean source tree and a new output
+directory. It launches one fresh process per mode/grid/trial, rotates mode order,
+archives the executable and every stdout/stderr/exit code, and joins the native
+kernel process identity to the launcher. It refuses detected build/native jobs
+without killing them; a control verifies that this refusal retains an unlaunched
+receipt. Native timing admission requires a ThinLTO Release AVX2/FMA binary with
+precise IEEE binary64 compile facts, CPU6 proven as a P-core, every measured
+SMT sibling below 5%, whole-system busy below 10%, and no detected jobs before or
+after any run. Missing load/topology is a failed gate. Source/binary hashes must
+remain unchanged. These checks are conservative and specific to the declared
+host; passing only the numerical audit never qualifies a time.
+Both initial and final source-cleanliness checks fail closed on a nonzero git
+exit code. The launcher regression reproduces the old failure to detect an
+unreadable status, then checks the corrected refusal before creating output or
+launching native work. Retained refusal strings, like published result copies,
+survive the measured scope for report encoding; qualified runs require zero
+refusals. Follow-up evidence is `calendar/cash-pde-batch-runner-v3b/`; the earlier
+`v3/` retains a test-mock scope error that was corrected before these controls.
+
+```powershell
+./scripts/atx-build.ps1 build atx-vol-cash-pde-batch-research -Preset vol-rel -Jobs 2
+python atx-vol/bench/cash-pde-simd/test_audit.py
+python atx-vol/bench/cash-pde-simd/native_test.py <binary> <frozen-replay.json> <new-dir>
+# Only after an independently coordinated quiet host and a reviewed binary:
+powershell -NoProfile -File atx-vol/bench/cash-pde-simd/run_trials.ps1 -Binary <binary> -Reference <frozen-replay.json> -SourceRoot <frozen-worktree> -OutDir <new-dir> -Trials 3
+```
+
+The runner is prepared and validated with clocks disabled. No performance
+campaign has been run. Untimed qualification evidence is under
+`calendar/cash-pde-batch-runner-v1/` in the r7 cache.
+
+## Separate fixed accuracy diagnosis
+
+`atx-vol-cash-dspy-refinement` is a clocks-disabled scalar PDE experiment for
+DSPYp and DSPYc, retaining the entire original input manifest. Its six fixed
+nested grid pairs were declared in `be0551a8` before execution. It is separate
+from the inclusive timing runner and does not alter that runner's three grids.
+See `docs/cash-dspyp-reference-study-20261024.md` for all twelve outcomes, actual
+work tradeoffs and the proposed independent cash-jump integration reference.
+Neither selected refinement success nor this tool promotes the full cash matrix.

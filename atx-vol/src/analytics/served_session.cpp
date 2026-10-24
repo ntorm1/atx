@@ -1,6 +1,6 @@
 // A curve session served through the live book (lane A1, r6 2026-10-23):
-// api/analytics/served_session.hpp is the contract. Only public APIs are used: VolaSession /
-// PricedSurface queries for the cold route, ServeBook / ServeBookReader for the book.
+// api/analytics/served_session.hpp is the contract. Model/pricing access uses public APIs:
+// VolaSession / PricedSurface for the cold route, ServeBook / ServeBookReader for the book.
 #include "atx/vol/api/analytics/served_session.hpp"
 
 #include <algorithm>
@@ -17,6 +17,8 @@
 
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/fitting/session.hpp"
+#include "pricing/american_greek_availability.hpp"
+#include "pricing/chain_tick_availability.hpp"
 
 namespace atx::vol {
 
@@ -27,8 +29,37 @@ namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr std::uint64_t kUnbound = std::numeric_limits<std::uint64_t>::max();
+constexpr auto kSessionFields = GreekFieldMask::Price | GreekFieldMask::Delta |
+    GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
 
 [[nodiscard]] bool finite_positive(double x) noexcept { return std::isfinite(x) && x > 0.0; }
+
+[[nodiscard]] bool valid_contract(double K, double T, Side side, double spot,
+                                 std::int64_t now_ns) noexcept {
+  return finite_positive(K) && finite_positive(T) && finite_positive(spot) && now_ns > 0 &&
+         (side == Side::Call || side == Side::Put);
+}
+
+// Common output bits only. Record reasons keep their own vocabulary and axis
+// order; no numerical-stencil conclusion is inferred from an edge-band refusal.
+[[nodiscard]] GreekFieldMask book_support(AnalyticsInputClass input_class, double price,
+    const std::array<double, 4> &values, const ServeGreekReasons &reasons) noexcept {
+  if (!std::isfinite(price) || input_class == AnalyticsInputClass::Refused)
+    return GreekFieldMask::None;
+  auto fields = GreekFieldMask::Price;
+  if (input_class == AnalyticsInputClass::PriceOnly) return fields;
+  constexpr std::array<ServeGreek, 4> axes{
+      ServeGreek::Delta, ServeGreek::Gamma, ServeGreek::Vega, ServeGreek::Theta};
+  constexpr std::array<GreekFieldMask, 4> bits{
+      GreekFieldMask::Delta, GreekFieldMask::Gamma, GreekFieldMask::Vega, GreekFieldMask::Theta};
+  for (std::size_t i = 0; i < axes.size(); ++i) {
+    const auto reason = reasons[static_cast<std::size_t>(axes[i])];
+    if (std::isfinite(values[i]) &&
+        (reason == ServeGreekReason::Served || reason == ServeGreekReason::Exercised))
+      fields = fields | bits[i];
+  }
+  return fields;
+}
 
 [[nodiscard]] bool same_expiry(double a, double b) noexcept {
   return std::abs(a - b) <= kSessionBookTRelTol * std::max(1.0, std::abs(a));
@@ -115,24 +146,41 @@ std::optional<std::uint64_t> ServedSession::bound_expiry(double T) const noexcep
 SessionServedAnswer ServedSession::cold(double K, double T, Side side, double spot,
                                         std::int64_t now_ns) const {
   SessionServedAnswer out;
+  out.requested = kSessionFields;
+  if (!valid_contract(K, T, side, spot, now_ns)) {
+    out.status = AnalyticsStatus::InvalidArgument;
+    return out;
+  }
   out.declaration.model = AnalyticsModel::SessionCurve;
   out.declaration.convention = HedgeConvention::StickyStrike;
   out.declaration.clock.now_ns = now_ns;
   out.declaration.clock.tau = T;
+  AmericanGreeks supplied{};
+  detail::mark_american_greek_fields(supplied, kSessionFields, AmericanGreekReason::Nonfinite);
+  out.cold_reasons = supplied.reasons;
   const CurveRead c = read_curve(surface_, K, T);
   const Result<double> price =
       american_price(spot, K, T, c.sigma, c.rate, c.yield, side, cold_.method, cold_.opts);
-  if (!price) return out;
+  if (!price || !std::isfinite(*price)) return out;
   const Result<AmericanGreeks> g =
       american_greeks_fd(spot, K, T, c.sigma, c.rate, c.yield, side, cold_.method, cold_.opts);
   out.price = *price;
   if (g) {
+    supplied = *g;
+    detail::narrow_american_greek_request(supplied, kSessionFields);
     out.delta = g->delta;
     out.gamma = g->gamma;
     out.vega = g->vega;
     out.theta = g->theta;
     out.declaration.price_map_delta = std::abs(g->price - *price);
   }
+  // Price is supplied independently by the declared price map even when the FD
+  // bundle fails. Its own finite value, not an unused default slot, backs this bit.
+  supplied.price = *price;
+  detail::mark_american_greek_fields(supplied, GreekFieldMask::Price,
+                                   AmericanGreekReason::ComputedEstimate);
+  out.supported = supplied.supported;
+  out.cold_reasons = supplied.reasons;
   out.source = SessionServeSource::SessionCold;
   // A curve fit's cold route carries no error statement: an estimate, never certified.
   out.input_class = AnalyticsInputClass::Estimate;
@@ -142,8 +190,9 @@ SessionServedAnswer ServedSession::cold(double K, double T, Side side, double sp
 
 SessionServedAnswer ServedSession::serve(ServeBookReader &reader, double K, double T, Side side,
                                          double spot, std::int64_t now_ns) const {
-  if (!finite_positive(K) || !finite_positive(T) || !finite_positive(spot) || now_ns <= 0) {
+  if (!valid_contract(K, T, side, spot, now_ns)) {
     SessionServedAnswer bad;
+    bad.requested = kSessionFields;
     bad.status = AnalyticsStatus::InvalidArgument;
     return bad;
   }
@@ -159,14 +208,18 @@ SessionServedAnswer ServedSession::serve(ServeBookReader &reader, double K, doub
   q.now_ns = now_ns;
   q.family_bound = true;
   SessionServedAnswer out;
+  out.requested = kSessionFields;
   out.book = reader.serve(*id, q);
   out.price = out.book.price;
   out.delta = out.book.delta;
   out.gamma = out.book.gamma;
   out.vega = out.book.vega;
   out.theta = out.book.theta;
-  out.source = std::isnan(out.price) ? SessionServeSource::Refused : SessionServeSource::Book;
   out.input_class = classify_served_answer(out.book);
+  out.source = out.input_class == AnalyticsInputClass::Refused ? SessionServeSource::Refused
+                                                             : SessionServeSource::Book;
+  out.supported = book_support(out.input_class, out.price,
+      {out.delta, out.gamma, out.vega, out.theta}, out.book.reason);
   switch (out.input_class) {
   case AnalyticsInputClass::Certified: out.status = AnalyticsStatus::Ok; break;
   case AnalyticsInputClass::Estimate: out.status = AnalyticsStatus::Estimate; break;
@@ -203,7 +256,10 @@ Status ServedSession::serve_chain(ServeBookReader &reader, double spot, std::int
                                   std::span<std::uint64_t> expiry_scratch) const {
   const std::size_t n = chain.size();
   if (!chain.consistent() || !out.consistent() || out.size() != n || statements.size() != n ||
-      expiry_scratch.size() != n || !finite_positive(spot) || now_ns <= 0) {
+      expiry_scratch.size() != n || !finite_positive(spot) || now_ns <= 0 ||
+      detail::tick_metadata_aliases(out, {std::as_bytes(chain.strike),
+          std::as_bytes(chain.expiry), std::as_bytes(chain.side),
+          std::as_bytes(statements), std::as_bytes(expiry_scratch)})) {
     return Err(ErrorCode::InvalidArgument, "ServedSession::serve_chain: lengths, spot or clock");
   }
   for (std::size_t k = 0; k < n; ++k) {
@@ -226,22 +282,34 @@ Status ServedSession::serve_chain(ServeBookReader &reader, double spot, std::int
         out.gamma[k] = a.gamma;
         out.vega[k] = a.vega;
         out.theta[k] = a.theta;
-        out.status[k] = std::isnan(a.price) ? TickStatus::Unpriceable : TickStatus::Fallback;
+        out.status[k] = std::isfinite(a.price) ? TickStatus::Fallback : TickStatus::Unpriceable;
         st.source = a.source;
         st.input_class = a.input_class;
+        st.requested = a.requested;
+        st.supported = a.supported;
+        st.cold_reasons = a.cold_reasons;
+        detail::write_tick_metadata(out, k, st.supported);
         continue;
       }
       const ServedChainView one{expiry_scratch.subspan(k, 1), chain.strike.subspan(k, 1),
                                 chain.side.subspan(k, 1)};
       const ChainTickOutputs o{out.price.subspan(k, 1), out.delta.subspan(k, 1),
                                out.gamma.subspan(k, 1), out.vega.subspan(k, 1),
-                               out.theta.subspan(k, 1), out.status.subspan(k, 1)};
+                               out.theta.subspan(k, 1), out.status.subspan(k, 1),
+                               out.requested.empty() ? std::span<GreekFieldMask>{}
+                                                     : out.requested.subspan(k, 1),
+                               out.supported.empty() ? std::span<GreekFieldMask>{}
+                                                     : out.supported.subspan(k, 1)};
       const Status served = reader.serve_chain(spot, now_ns, one, ServeTier::Ladder,
                                                ServeTier::Family, o,
                                                std::span<ServedChainStatement>(&st.book, 1));
       if (!served) return Err(served.error());
-      st.source = std::isnan(out.price[k]) ? SessionServeSource::Refused : SessionServeSource::Book;
       st.input_class = classify_served_statement(st.book, out.price[k]);
+      st.source = st.input_class == AnalyticsInputClass::Refused ? SessionServeSource::Refused
+                                                               : SessionServeSource::Book;
+      st.requested = kSessionFields;
+      st.supported = book_support(st.input_class, out.price[k],
+          {out.delta[k], out.gamma[k], out.vega[k], out.theta[k]}, st.book.greek_reasons);
       const std::uint64_t v = reader.pinned().number;
       if (version && *version != v) consistent = false;
       version = v;

@@ -180,6 +180,12 @@ fs::path umbrella_path() { return fs::path{ATX_VOL_UMBRELLA_HPP}; }
 TEST(VolUmbrella, PublicSurfaceIsReachableAndConsistent) {
   using namespace atx::vol;
 
+  // Availability is part of the scalar public result, without a batch-only include.
+  const AmericanGreeks greeks;
+  EXPECT_EQ(greeks.requested, GreekFieldMask::None);
+  EXPECT_EQ(greeks.supported, GreekFieldMask::None);
+  EXPECT_EQ(greeks.reasons[8], AmericanGreekReason::NotRequested);
+
   // Core vocabulary (types.hpp) — including the de-duplicated PricingRoute.
   EXPECT_EQ(static_cast<int>(Side::Call), 0);
   EXPECT_EQ(static_cast<int>(PricingRoute::B76AlCache), 1);

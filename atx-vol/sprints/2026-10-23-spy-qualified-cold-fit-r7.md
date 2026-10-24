@@ -2,6 +2,48 @@
 
 Status: implementation in progress; no qualified sub-second result.
 
+Current integration checkpoint, 2026-10-24: local `C:/atx` main contains
+`96cd56db`, with all pre-existing files preserved. New Greek/cash components are
+integrating in pool-3; later pending-merge statements are historical.
+
+The last ordinary-backend control passing its sibling gate takes **1.3226988, 1.4265373 and
+1.4471122 seconds; median 1.4265373**. All three fresh processes use one worker
+on P-core 6 and pass the sibling-activity gate. Archived binary `6afb2de0` includes
+the finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
+12,866/12,866 eligible rows, 99.88341365% raw containment, 12,850 identified IVs
+and 16 truthful PriceOnly results. Maximum cold Reference residual remains
+$0.000501296609/share under `min($0.001, 1% of original spread)`.
+
+The full double block-factor prototype also passes all 13 correctness gates.
+Its two timing sets are 1.1301671/1.3739241/1.1918033 seconds and
+1.6014335/1.2003743/1.1195960 seconds, respectively. The first set has one
+sibling-activity failure and the second has three; neither qualifies a speedup.
+All runs and denominators remain recorded. No candidate run is below one second.
+
+The earlier 1.3944879-second ordinary-backend median, historical main median
+1.0989175 and earlier 1.03-second sets remain evidence of their own runs.
+They are not replacements for the latest clock or proof of a source regression.
+Subsecond and 100-process release qualification remain open.
+Whole-host qualification correction: that ordinary control recorded 27.4-28.7%
+system activity, so passing its sibling gate did not establish a quiet host.
+A newer six-run paired original/block experiment retained all results and failed
+the declared system-load gate on every run (18.6-38.2%); three also failed the
+sibling gate. Its medians, 1.2948967/1.2080157 seconds, cannot qualify a speedup.
+The independent Windows aggregate-accounting cross-check agrees with the native
+measurement. See `qp-paired-clock-v1/` and the block-factor research report.
+
+Finalizer floor reuse removes 265 boundary solves with identical predictions.
+FP32 replay is rejected; the full double block-factor prototype passes every API
+correctness gate but remains unqualified for timing and production deployment. Boundary Greek admission passes the complete715
+rerun with all prices unchanged; portfolio, derivative-book, backtest and Python
+availability fixes are reviewed and integrated. Full available Python: 801 pass,
+245 environment skips, one existing strict expected failure. Native surface and
+served-session consumers and short-time derivative accuracy remain open. Cash
+guards, exact50-case manifest and default-off full PDE batch driver are integrated;
+all150 original outcomes are bit-identical. Three-grid accuracy evidence retains
+43/44 pass plus1uncertain at finest; inclusive batch timing remains unrun.
+See [current exact-binary evidence](../docs/spy-cold-acceptance-r7.md).
+
 ## Acceptance contract
 
 One build and one policy must simultaneously deliver a fresh-process SPY cold fit on
@@ -778,3 +820,47 @@ Local main has not yet been advanced at the time of this entry. Unrelated main
 worktree changes must remain intact. Default policy promotion,100-process
 subsecond qualification, full archive persistence and broad Greek/cash/frontier
 qualification remain open.
+
+
+## Local-main merge completed and current release clocks
+
+The authorized local-main merge completed at `96cd56db9ad034ee6868e3e5a8babb81ac8cb82c`.
+Main's bindings/storage history is retained through `725e36a7`; the only source
+integration fix is the independently reviewed Python `ProjectedPrice` enum in
+`a1ca7d14`. Storage3/3 gates pass; Python passes787 tests with245 environment
+skips and1 existing strict xfail. The first Python run found two stale CRLF
+fixture copies, restored to exact committed bytes; no golden or test source
+was changed. Before/after manifests prove identical SHA256 values for all52,031
+pre-existing modified/untracked files totaling2,120,057,056 bytes. Root CMake,
+editor settings and untracked work remain intact. Development continues in pool3.
+
+The combined development and ThinLTO executables pass all13 actual-API gates,
+with identical predictions `e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`.
+Their archived hashes are respectively
+`5c121cd1ed9408fa3814f5a785d7e22092b2d751714b168b989411fd9669e5c7` and
+`9e3f384cafc622539c5e58694634cc9be45094947d16d1af65cca61a3b855fc1`.
+Audits: `acceptance/main-merge-{v1,lto-v1}-audit/verification-reviewed-v3.json`.
+
+Three fresh-process ThinLTO one-worker/Pcore6 fits took **1.1647743,1.0251590,
+1.0989175s**, median **1.0989175s**; all exceeded one second. SMT sibling shares
+were2.609%,0%,0%, within the5% gate. Manifest
+`main-merge-v1-lto-profile/manifest.json` SHA256
+`88be793e4f3b711dcff33cccbbb3e904bf57118f1b4da13ce1696feafe167c81`.
+A current-host rerun of archived baseline `1eb11005...` took1.4172-1.5288s with
+23.7-28.1% system activity. A subsequent interleaved comparison recorded
+baseline1.1479/candidate1.2117s, then stopped with exit4 on the next baseline's
+5.747% SMT activity (34.6% system). These controls are retained under
+`main-merge-baseline-rerun-v1` and `main-floor-interleaved-v1-*`; they establish
+neither a speedup nor an algorithmic regression. Historical baseline source is
+`a0af95ab`; source-root is intentionally absent in the archived-binary reruns.
+
+Attribution is consistent with the removed work: the best current trial replaces
+roughly120ms of native confirmation plus later price checks with65.392ms of
+cold seed proof. Calendar381.625ms and family226.121ms were higher than the
+preceding low-load measurements; these stage clocks are not an isolated A/B
+proof. The next reviewed component `a180260f`, integrated as`c721422d`, shares
+exact floors across remaining ordinary candidates and removes265 more boundary
+solves with unchanged predicted bytes in its component replay. Integrated
+verification and qualified latency remain pending. The latency target and
+complete correctness contract are unchanged;100-process qualification remains
+open, and no worldwide ranking or default-policy promotion is asserted.
