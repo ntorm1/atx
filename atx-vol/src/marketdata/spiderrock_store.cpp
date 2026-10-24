@@ -1211,15 +1211,15 @@ struct StateBuild {
   const SpiderRockBucket &b = sb.b;
   ExpiryCarry c;
   c.expiry_ns = b.expiry_ns[run.front()];
-  // D4 wants the PRESENT value: ddivPv when the column exists (an all-NULL expiry falls
-  // back to ddiv), else ddiv.
-  const double pv_ddiv = or_else(median_of(b.ddiv, run, sb.scratch), 0.0);
-  c.pv_divs =
-      b.ddiv_pv.empty() ? pv_ddiv : or_else(median_of(b.ddiv_pv, run, sb.scratch), pv_ddiv);
+  // D4 wants the PRESENT value: ddivPv when the column exists and the expiry has a finite
+  // cell, else ddiv. The spread is measured on the column the expiry actually used.
+  const double pv_median = b.ddiv_pv.empty() ? kNaN : median_of(b.ddiv_pv, run, sb.scratch);
+  const bool use_pv = std::isfinite(pv_median);
+  c.pv_divs = use_pv ? pv_median : or_else(median_of(b.ddiv, run, sb.scratch), 0.0);
   c.rate = or_else(median_of(b.rate, run, sb.scratch), u.flat_rate);
   c.q = or_else(median_of(b.sdiv, run, sb.scratch), u.flat_q);
-  sb.rep.max_ddiv_spread = std::max(sb.rep.max_ddiv_spread,
-                                    finite_spread(b.ddiv_pv.empty() ? b.ddiv : b.ddiv_pv, run));
+  sb.rep.max_ddiv_spread =
+      std::max(sb.rep.max_ddiv_spread, finite_spread(use_pv ? b.ddiv_pv : b.ddiv, run));
   return c;
 }
 

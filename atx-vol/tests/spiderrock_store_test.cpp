@@ -1348,10 +1348,14 @@ TEST(BucketState, DividendApproximationReported) {
   EXPECT_TRUE(std::isnan(atx::vol::spiderrock_q_eff(100.0, 100.0, 0.04, 0.01, T)));
 
   // With the ddivPv column, pv_divs is ITS median per expiry (D4 wants a PRESENT value;
-  // ddiv is the undiscounted amount) and the spread is measured on it; an expiry whose
-  // ddivPv cells are all NULL falls back to the ddiv median.
+  // ddiv is the undiscounted amount); an expiry whose ddivPv cells are all NULL (uid 2,
+  // given a nonzero ddiv {0.30, 0.40} here) falls back to the ddiv median. The spread is
+  // measured on the column each expiry used: uid 2's ddiv spread 0.10 beats uid 1's
+  // ddivPv spread 0.03.
   SpiderRockBucket pv = hand_bucket();
   pv.ddiv_pv = {0.58, 0.48, 0.50, 0.49, 0.47, kNaN, kNaN, 0.0};
+  pv.ddiv[5] = 0.30;
+  pv.ddiv[6] = 0.40;
   BucketStateReport pv_report;
   const auto st_pv = atx::vol::market_state_from_bucket(pv, TimeSpec{}, &pv_report);
   ASSERT_TRUE(st_pv.has_value()) << st_pv.error().to_string();
@@ -1360,8 +1364,8 @@ TEST(BucketState, DividendApproximationReported) {
   ASSERT_EQ(tc_pv.size(), 2u);
   EXPECT_EQ(tc_pv[0].pv_divs, (0.48 + 0.49) / 2.0); // median of {0.48, 0.50, 0.49, 0.47}
   EXPECT_EQ(tc_pv[1].pv_divs, 0.58);
-  EXPECT_EQ(st_pv->term_carries[1][0].pv_divs, 0.0); // all-NULL ddivPv -> ddiv median 0
-  EXPECT_NEAR(pv_report.max_ddiv_spread, 0.03, 1e-12);
+  EXPECT_EQ(st_pv->term_carries[1][0].pv_divs, (0.30 + 0.40) / 2.0); // ddiv fallback
+  EXPECT_NEAR(pv_report.max_ddiv_spread, 0.10, 1e-12);
   SpiderRockBucket bad = pv;
   bad.ddiv_pv.pop_back();
   EXPECT_EQ(atx::vol::market_state_from_bucket(bad, TimeSpec{}).error().code(),
@@ -1383,21 +1387,26 @@ using atx::vol::SpiderRockExpiryForward;
 
 // One uid (spot 100, rate 0.04, published sdiv 0.01 and ddiv 1.0) and one expiry whose
 // vendor OTM call prices are European Black at the KNOWN forward `F` (a basis the
-// published tuple does not give), vendor `years` = the Calendar365 T of the bucket.
-// Calls at strikes 100, 105, ... (`n_calls` of them, a mild skew in srVol), plus rows the
-// implied carry must ignore: an ITM call (K < spot) and a put, both priced at a wrong
-// forward, and an OTM call without a bid.
+// published tuple does not give) on the vendor clock `vendor_T` (default: the Calendar365
+// T of the bucket), which is also the rows' `years`. Calls at strikes 100, 105, ...
+// (`n_calls` of them, a mild skew in srVol), plus rows the implied carry must ignore: an
+// ITM call (K < spot) and a put, both priced at a wrong forward, and an OTM call without
+// a bid.
 struct ImpliedFixture {
   SpiderRockBucket bucket;
-  double T{0.0};
+  double T{0.0};        // Calendar365 T of the expiry from the bucket instant
+  double vendor_T{0.0}; // the clock the vendor prices (and `years`) are on
 };
 
-[[nodiscard]] ImpliedFixture implied_bucket(double F, std::size_t n_calls) {
+[[nodiscard]] ImpliedFixture implied_bucket(double F, std::size_t n_calls,
+                                            std::string_view expiry_date = "2027-01-15",
+                                            double vendor_T = kNaN) {
   ImpliedFixture fx;
   SpiderRockBucket &b = fx.bucket;
   b.ts_ns = atx::vol::spiderrock_bucket_instant_ns("2026-10-14", "1000").value();
-  const std::int64_t expiry = atx::vol::expiry_instant_ns("2027-01-15");
+  const std::int64_t expiry = atx::vol::expiry_instant_ns(expiry_date);
   fx.T = atx::vol::time_to_expiry_years(b.ts_ns, expiry, TimeSpec{}).value();
+  fx.vendor_T = std::isnan(vendor_T) ? fx.T : vendor_T;
   constexpr double kRate = 0.04;
   auto add = [&](Side side, double K, double sigma, double price, double bid) {
     b.uid.push_back(1);
@@ -1414,20 +1423,21 @@ struct ImpliedFixture {
     b.vendor_gamma.push_back(0.0);
     b.vendor_vega.push_back(0.0);
     b.vendor_theta.push_back(0.0);
-    b.vendor_T.push_back(fx.T);
+    b.vendor_T.push_back(fx.vendor_T);
     b.bid.push_back(bid);
     b.ask.push_back(price * 1.05 + 0.01);
   };
+  const double Tv = fx.vendor_T;
   const double wrong = 0.9 * F; // the forward the ignored rows are priced at
-  add(Side::Call, 95.0, 0.27, black_call(wrong, 95.0, fx.T, 0.27, kRate), 1.0); // ITM
-  add(Side::Put, 100.0, 0.26, black_call(wrong, 100.0, fx.T, 0.26, kRate), 1.0);
+  add(Side::Call, 95.0, 0.27, black_call(wrong, 95.0, Tv, 0.27, kRate), 1.0); // ITM
+  add(Side::Put, 100.0, 0.26, black_call(wrong, 100.0, Tv, 0.26, kRate), 1.0);
   for (std::size_t i = 0; i < n_calls; ++i) {
     const double K = 100.0 + 5.0 * static_cast<double>(i);
     const double sigma = 0.25 - 0.004 * static_cast<double>(i);
-    const double price = black_call(F, K, fx.T, sigma, kRate);
+    const double price = black_call(F, K, Tv, sigma, kRate);
     add(Side::Call, K, sigma, price, 0.95 * price);
   }
-  add(Side::Call, 200.0, 0.3, black_call(wrong, 200.0, fx.T, 0.3, kRate), 0.0); // no bid
+  add(Side::Call, 200.0, 0.3, black_call(wrong, 200.0, Tv, 0.3, kRate), 0.0); // no bid
   b.carry_mode = SpiderRockCarryMode::ImpliedFromCalls;
   return fx;
 }
@@ -1481,6 +1491,81 @@ TEST(BucketState, ImpliedCarryReproducesVendorForward) {
   ASSERT_EQ(pub_forwards.size(), 1u);
   EXPECT_EQ(pub_forwards[0].mode, SpiderRockCarryMode::Published);
   EXPECT_EQ(pub_forwards[0].n_calls, 0u) << "Published mode inverts nothing";
+}
+
+// The inversion runs on the vendor's `years`; the row's q is on the STATE's clock, so the
+// engine's spot e^{(rate - q) T_state} reproduces the implied F whatever the two clocks
+// are: (a) a VolTime state over Calendar365 vendor years, (b) a Calendar365 state over
+// vendor years two days longer.
+TEST(BucketState, ImpliedCarryUsesTheStateClock) {
+  constexpr double kF = 101.5;
+  const TimeSpec vol_time{atx::vol::TimeConvention::VolTime};
+  struct Case {
+    const char *name;
+    ImpliedFixture fx;
+    TimeSpec time;
+  };
+  const ImpliedFixture cal = implied_bucket(kF, 5);
+  const Case cases[] = {
+      {"VolTime state, Calendar365 years", cal, vol_time},
+      {"Calendar365 state, years + 2 d", implied_bucket(kF, 5, "2027-01-15", cal.T + 2.0 / 365.25),
+       TimeSpec{}},
+  };
+  for (const Case &k : cases) {
+    const SpiderRockBucket &b = k.fx.bucket;
+    const double T_state =
+        atx::vol::time_to_expiry_years(b.ts_ns, b.expiry_ns.front(), k.time).value();
+    ASSERT_GT(std::fabs(T_state - k.fx.vendor_T), 0.25 / 365.25) << k.name; // > 6 h
+    BucketStateReport report;
+    std::vector<SpiderRockExpiryForward> forwards;
+    const auto st = atx::vol::market_state_from_bucket(b, k.time, &report, &forwards);
+    ASSERT_TRUE(st.has_value()) << k.name << ": " << st.error().to_string();
+    ASSERT_EQ(forwards.size(), 1u) << k.name;
+    EXPECT_EQ(forwards[0].mode, SpiderRockCarryMode::ImpliedFromCalls) << k.name;
+    const atx::vol::ExpiryCarry &c = st->term_carries[0][0];
+    const double spot = st->underliers[0].spot;
+    const double engine_F = spot * std::exp((c.rate - c.q) * T_state);
+    EXPECT_NEAR(engine_F / forwards[0].implied_forward - 1.0, 0.0, 1e-12) << k.name;
+    EXPECT_NEAR(engine_F / kF - 1.0, 0.0, 1e-9) << k.name;
+    // On the vendor clock the same q would NOT give F: the clock is the state's.
+    EXPECT_GT(std::fabs(spot * std::exp((c.rate - c.q) * k.fx.vendor_T) / kF - 1.0), 1e-6)
+        << k.name;
+  }
+}
+
+// An accepted implied forward still falls back to the Published row when the state's
+// clock has no positive T for the expiry: (a) VolTime refuses an expiry beyond its
+// calendar (2033), (b) an expiry before the bucket instant (vendor years kept positive).
+TEST(BucketState, ImpliedCarryFallsBackWhenTheStateClockRefuses) {
+  constexpr double kF = 101.5;
+  struct Case {
+    const char *name;
+    ImpliedFixture fx;
+    TimeSpec time;
+  };
+  const Case cases[] = {
+      {"beyond the VolTime calendar", implied_bucket(kF, 5, "2033-01-21"),
+       TimeSpec{atx::vol::TimeConvention::VolTime}},
+      {"expiry before the bucket", implied_bucket(kF, 5, "2026-10-09", 0.1), TimeSpec{}},
+  };
+  for (const Case &k : cases) {
+    const SpiderRockBucket &b = k.fx.bucket;
+    const auto T_state = atx::vol::time_to_expiry_years(b.ts_ns, b.expiry_ns.front(), k.time);
+    ASSERT_TRUE(!T_state.has_value() || *T_state <= 0.0) << k.name;
+    BucketStateReport report;
+    std::vector<SpiderRockExpiryForward> forwards;
+    const auto st = atx::vol::market_state_from_bucket(b, k.time, &report, &forwards);
+    ASSERT_TRUE(st.has_value()) << k.name << ": " << st.error().to_string();
+    ASSERT_EQ(forwards.size(), 1u) << k.name;
+    EXPECT_EQ(forwards[0].mode, SpiderRockCarryMode::Published) << k.name;
+    EXPECT_EQ(forwards[0].n_calls, 5u) << k.name;
+    EXPECT_NEAR(forwards[0].implied_forward / kF - 1.0, 0.0, 1e-9) << k.name << ": solved";
+    EXPECT_TRUE(std::isnan(forwards[0].published_forward)) << k.name;
+    EXPECT_EQ(st->term_carries[0][0].pv_divs, 1.0) << k.name; // the Published (D4) row
+    EXPECT_EQ(st->term_carries[0][0].q, 0.01) << k.name;
+    EXPECT_EQ(report.n_expiries_implied, 0u) << k.name;
+    EXPECT_EQ(report.n_expiries_published, 1u) << k.name;
+  }
 }
 
 TEST(BucketState, ImpliedCarryFallsBackWhenCallsAreFew) {
