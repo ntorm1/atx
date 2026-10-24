@@ -102,6 +102,50 @@ TEST(FitArchiveRecords, UnpersistedRepricingBudgetIsRefusedAndBothWritersRollBac
   }
 }
 
+TEST(FitArchiveRecords, UnpersistedSupportAndFinalPriceMetadataRefuseWithoutPartialWrites) {
+  for (const unsigned field : {0u, 1u, 2u, 3u}) {
+    SCOPED_TRACE(field);
+    auto surface = testkit::synthetic_surface();
+    ASSERT_GT(surface.slices.size(), 1u);
+    auto &fit = surface.slices[1].fit;
+    ASSERT_TRUE(fit.prices.has_value());
+    ASSERT_FALSE(fit.rows.empty());
+    const auto original_status = fit.rows.front().quote_status;
+    if (field == 0u) fit.withheld_nodes.assign(fit.prices->nodes().size(), 3u);
+    if (field == 1u) fit.diagnostics.final_price_observations = 1u;
+    if (field == 2u) fit.diagnostics.final_price_identified_nodes = 1u;
+    if (field == 3u) fit.rows.front().quote_status = QuoteSliceQuoteStatus::ProjectedPrice;
+    FitArchiveWriter standalone;
+    FitArchiveWriter grouped;
+    const auto one = standalone.add_fit({"SPY", kSnapshot, 20800, 0, &fit});
+    const auto many = grouped.add_surface({"SPY", kSnapshot, surface.slices,
+                                          surface.expiry_days, surface.config, {}, "", ""});
+    ASSERT_FALSE(one);
+    ASSERT_FALSE(many);
+    EXPECT_EQ(one.error().status, ArchiveStatus::UnsupportedRecordVersion);
+    EXPECT_EQ(many.error().status, ArchiveStatus::UnsupportedRecordVersion);
+    EXPECT_EQ(one.error().section, static_cast<std::uint32_t>(Type::FitRecords));
+    EXPECT_EQ(standalone.fit_count(), 0u);
+    EXPECT_EQ(grouped.fit_count(), 0u);
+    EXPECT_EQ(grouped.surface_count(), 0u);
+    fit.withheld_nodes.clear();
+    fit.diagnostics.final_price_observations = 0u;
+    fit.diagnostics.final_price_identified_nodes = 0u;
+    fit.rows.front().quote_status = original_status;
+    ASSERT_TRUE(standalone.add_fit({"SPY", kSnapshot, 20800, 0, &fit}));
+    ASSERT_TRUE(grouped.add_surface({"SPY", kSnapshot, surface.slices,
+                                     surface.expiry_days, surface.config, {}, "", ""}));
+    const auto one_image = standalone.finish();
+    const auto many_image = grouped.finish();
+    ASSERT_TRUE(one_image && many_image);
+    const auto one_read = FitArchive::open_copy(*one_image, FitArchiveVerify::Paranoid);
+    const auto many_read = FitArchive::open_copy(*many_image, FitArchiveVerify::Paranoid);
+    ASSERT_TRUE(one_read && many_read);
+    EXPECT_EQ(one_read->fits().size(), 1u);
+    EXPECT_EQ(many_read->fits().size(), surface.slices.size());
+  }
+}
+
 std::array<std::uint8_t, 32> digest() {
   std::array<std::uint8_t, 32> d{};
   for (std::size_t i = 0; i < d.size(); ++i) d[i] = static_cast<std::uint8_t>(0xd7 ^ i);

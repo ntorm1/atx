@@ -7,7 +7,7 @@
 //
 // What is stored, per record type:
 //   * a QuoteSurfaceSlice (graded admission) or a standalone QuoteSliceFit:
-//     every field, including the polymorphic curve (all six VolCurveKinds), the
+//     supported persisted fields, including the polymorphic curve (all six VolCurveKinds), the
 //     certified AmericanPriceSlice nodes and bounds, row provenance, repair
 //     records, carry resolution and dividends;
 //   * a cross-expiry quote surface: QuoteSurfaceConfig, a caller policy digest,
@@ -17,6 +17,12 @@
 //     ChainSpotLadder::build, whose own state is not readable);
 //   * an AmericanMarkovSpec (the deterministic input of compile_american_markov)
 //     plus an optional fit summary.
+//
+// Runtime policies/provenance absent from this record version refuse with
+// UnsupportedRecordVersion: terminal-floor recovery, economic repricing budgets,
+// any nonempty withheld-node mask, and final-price projection rows/diagnostics.
+// Both fit and surface additions roll back completely on that refusal. Legacy
+// full-support archives retain their original empty-mask semantics.
 //
 // Adapters, not library changes: nothing here touches fitting / pricing
 // internals. Where a type is not trivially serialisable (curves, price slices,
