@@ -13,6 +13,8 @@ struct SemigroupWork { std::size_t completed_steps = 0, grid_nodes = 0; };
 // cutoff, reference price or unchanged-function shortcut. stock must be an exact
 // grid anchor. The caller-owned Budget includes construction of the input PWL;
 // work resets on entry and both diagnostics retain partial work on refusal.
+// A bounded owned grid copy permits a saved span into the consumed input. Its
+// size is work.grid_nodes; setup storage is separate from constructed PWL knots.
 [[nodiscard]] Result<double> repeat_expectation(StockPwl value,
     std::span<const double> grid, double stock, double dt, std::size_t steps,
     double sigma, double rate, double yield, Budget &, SemigroupWork &);

@@ -26,18 +26,21 @@ Result<double> repeat_expectation(StockPwl value, std::span<const double> grid,
     return Err(ErrorCode::InvalidArgument, "semigroup stock anchor");
   work.grid_nodes = grid.size();
   try {
+    // grid may borrow value.knots(): the first value replacement destroys that
+    // storage. Own a bounded copy before any mutation, including for this alias.
+    const std::vector<double> stable_grid(grid.begin(), grid.end());
     std::vector<double> values;
-    values.reserve(grid.size());
+    values.reserve(stable_grid.size());
     for (std::size_t step = 0; step < steps; ++step) {
       values.clear();
-      for (const double x : grid) {
+      for (const double x : stable_grid) {
         const auto result = expectation(value, x, dt, sigma, rate, yield, budget);
         if (!result) return Err(result.error());
         values.push_back(*result);
       }
       const double slope = value.right_slope()*std::exp(-yield*dt);
       if (!std::isfinite(slope)) return Err(ErrorCode::OutOfRange, "semigroup tail");
-      auto result = StockPwl::create(grid, values, slope, budget);
+      auto result = StockPwl::create(stable_grid, values, slope, budget);
       if (!result) return Err(result.error());
       value = std::move(*result);
       ++work.completed_steps;

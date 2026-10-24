@@ -191,4 +191,25 @@ TEST(CashGaussianFollowup, MalformedSemigroupAndFiniteOverflowNeverPublishPartia
     EXPECT_EQ(work.completed_steps, 0u);
   }
 }
+TEST(CashGaussianFollowup, GridMayAliasConsumedInitialValueAcrossMultipleSteps) {
+  const std::array<double, 4> grid{0., 50., 100., 150.}, values{100., 50., 0., 0.};
+  cg::Budget baseline_budget, alias_budget;
+  auto baseline_value = cg::StockPwl::create(grid, values, 0., baseline_budget);
+  auto alias_value = cg::StockPwl::create(grid, values, 0., alias_budget);
+  ASSERT_TRUE(baseline_value && alias_value);
+  const auto borrowed_grid = alias_value->knots();
+  cg::SemigroupWork baseline_work, alias_work;
+  const auto baseline = cg::repeat_expectation(std::move(*baseline_value), grid,
+      100., .25, 3, .2, .04, 0., baseline_budget, baseline_work);
+  const auto aliased = cg::repeat_expectation(std::move(*alias_value), borrowed_grid,
+      100., .25, 3, .2, .04, 0., alias_budget, alias_work);
+  ASSERT_TRUE(baseline);
+  ASSERT_TRUE(aliased);
+  EXPECT_DOUBLE_EQ(*aliased, *baseline);
+  EXPECT_EQ(alias_work.completed_steps, baseline_work.completed_steps);
+  EXPECT_EQ(alias_work.grid_nodes, baseline_work.grid_nodes);
+  EXPECT_EQ(alias_budget.created_knots, baseline_budget.created_knots);
+  EXPECT_EQ(alias_budget.interval_evaluations, baseline_budget.interval_evaluations);
+  EXPECT_EQ(alias_budget.expectations, baseline_budget.expectations);
+}
 } // namespace

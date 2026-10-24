@@ -176,3 +176,12 @@ work identities, independent European values, partial resource failures and
 finite/tail/owner observer parity. Three owning source checks pass with PCH off.
 These controls precede the new 18-outcome numerical run; neither the prior 32
 prices nor their accuracy classifications are replaced.
+
+Peer review found that the consumed input could itself own the borrowed grid.
+The repeated driver now takes a bounded owned grid copy before replacing any
+PWL, and the alias/disjoint-grid regression checks equal values and work. The
+ordinary allocator left freed bytes readable in the retained pre-fix test, so
+that run passed and is **not** described as runtime-red evidence. The ownership
+defect is established by source lifetime analysis; no ASan result is claimed.
+`grid_nodes` also states the size of this setup copy, separately from constructed
+PWL-knot counts. No follow-up pilot result was produced before this correction.
