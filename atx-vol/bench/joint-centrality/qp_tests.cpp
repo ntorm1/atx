@@ -240,6 +240,22 @@ TEST(JointHomogeneousControl, NonfiniteMatrixAndResidualRefuseBeforeFactoring) {
   }
 }
 
+TEST(JointHomogeneousControl, FiniteMatrixOverflowRefusesWithoutPublishingAnyDirection) {
+  HomogeneousFixture f;
+  f.a[0] = 1e200; // Finite input; A^T diag(z/s) A cannot be represented in binary64.
+  const auto before = f;
+  EXPECT_FALSE(solve_joint_homogeneous_control(f.input(), f.output(), f.work));
+  EXPECT_EQ(f.work.factors, 1u); // Assembly refusal is an attempted numerical factor call.
+  EXPECT_LE(f.work.directions, 1u);
+  expect_same_bits(f.dx, before.dx);
+  expect_same_bits(f.ds, before.ds);
+  expect_same_bits(f.dz, before.dz);
+  expect_same_bits(f.a, before.a);
+  expect_same_bits(f.s, before.s);
+  expect_same_bits(f.z, before.z);
+  expect_same_bits(f.rc, before.rc);
+}
+
 constexpr AmericanPriceBounds kQpCarry{100., 1., 1., 98., 100.};
 
 struct CrossingQpFixture {
