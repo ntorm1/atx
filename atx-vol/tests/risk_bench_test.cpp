@@ -470,6 +470,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   bl.dropped_non_american = 114149;
   bl.dropped_nonstandard_root = 31329;
   bl.dropped_forward_framework = 4736;
+  bl.pv_divs_from_ddiv_pv = true;
   bl.rows_null_vendor = 12;
   bl.n_uids = 100;
   bl.max_ddiv_spread = 0.125;
@@ -552,6 +553,7 @@ TEST(RiskBenchReport, JsonSchemaV2RoundTrip) {
   EXPECT_EQ(back->steps[0].parity_delta.mae, 1e-7);
   EXPECT_EQ(back->bucket_loads[0].dropped_nonstandard_root, 31329);
   EXPECT_EQ(back->bucket_loads[0].dropped_forward_framework, 4736);
+  EXPECT_TRUE(back->bucket_loads[0].pv_divs_from_ddiv_pv);
   EXPECT_TRUE(back->summary.determinism_bit_equal);
   EXPECT_EQ(back->summary.cold_speedup_p50, 100.0);
 

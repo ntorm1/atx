@@ -1543,7 +1543,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"n_marks", jnumber(b.n_marks)},
               {"n_uids_with_divs", jnumber(b.n_uids_with_divs)},
               {"max_ddiv_spread", num(b.max_ddiv_spread)},
-              {"dropped_forward_framework", jnumber(b.dropped_forward_framework)}});
+              {"dropped_forward_framework", jnumber(b.dropped_forward_framework)},
+              {"pv_divs_from_ddiv_pv", jbool(b.pv_divs_from_ddiv_pv)}});
 }
 
 [[nodiscard]] BucketLoad bucket_load_from(const Fields &o) {
@@ -1562,6 +1563,7 @@ void explain_from(const Fields &e, StepReport &t) {
   b.n_uids_with_divs = o.integer<std::size_t>("n_uids_with_divs");
   b.max_ddiv_spread = o.num("max_ddiv_spread");
   b.dropped_forward_framework = o.integer<std::int64_t>("dropped_forward_framework");
+  b.pv_divs_from_ddiv_pv = o.boolean("pv_divs_from_ddiv_pv");
   return b;
 }
 

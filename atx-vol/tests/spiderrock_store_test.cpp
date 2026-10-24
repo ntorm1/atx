@@ -38,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/core/vol_time.hpp"
@@ -116,6 +117,11 @@ struct Row {
   std::string ex_type = "American";
   std::string root;
   std::string framework = "Spot";
+  // Optional vendor numerics, also written only with licensed_extras.
+  double ddiv_pv = 0.0;
+  double syn_spot = 100.0;
+  double years_c = 0.1;
+  bool null_ddiv_pv = false;
 };
 
 struct NumField {
@@ -218,6 +224,21 @@ void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool lar
     ASSERT_TRUE(b.Finish(&arr).ok());
     fields.push_back(arrow::field("atmVol", arrow::float64()));
     arrays.push_back(std::move(arr));
+  }
+  if (licensed_extras) { // the licensed drop's optional numerics
+    const std::pair<const char *, double Row::*> extras[] = {
+        {"ddivPv", &Row::ddiv_pv}, {"synSpot", &Row::syn_spot}, {"yearsC", &Row::years_c}};
+    for (const auto &[name, field] : extras) {
+      arrow::DoubleBuilder b;
+      for (const Row &r : rows) {
+        const bool null_cell = field == &Row::ddiv_pv && r.null_ddiv_pv;
+        ASSERT_TRUE((null_cell ? b.AppendNull() : b.Append(r.*field)).ok());
+      }
+      std::shared_ptr<arrow::Array> arr;
+      ASSERT_TRUE(b.Finish(&arr).ok());
+      fields.push_back(arrow::field(name, arrow::float64()));
+      arrays.push_back(std::move(arr));
+    }
   }
   if (nested_lead) { // a 2-leaf struct column FIRST: arrow field index != parquet leaf
     std::vector<std::shared_ptr<arrow::Array>> kids;
@@ -616,6 +637,60 @@ TEST(SpiderRockStore, SpotFrameworkOnlyDropsForwardRows) {
   EXPECT_EQ(d->dropped_forward_framework, 0);
 }
 
+// ddivPv / synSpot / yearsC are OPTIONAL: one value per row when any file of the
+// partition has the column (NaN for a NULL / -99 cell and for the rows of a file without
+// it), EMPTY when none has it.
+TEST(SpiderRockStore, ReadsOptionalVendorColumns) {
+  std::vector<Row> rows(3);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rows[i].strike = 100.0 + static_cast<double>(i);
+    rows[i].ddiv_pv = 0.5 + 0.1 * static_cast<double>(i);
+    rows[i].syn_spot = 100.25;
+    rows[i].years_c = 0.1 - 0.01 * static_cast<double>(i);
+  }
+  rows[1].null_ddiv_pv = true;
+  rows[2].syn_spot = -99.0; // vendor sentinel
+  const fs::path root = fresh_dir("optional");
+  const fs::path with = bucket_dir(root, "2026-10-14", "1000");
+  write_partition(with, rows, /*large=*/false, /*licensed_extras=*/true);
+  write_partition(bucket_dir(root, "2026-10-14", "1030"), rows, /*large=*/false,
+                  /*licensed_extras=*/false);
+  // A second file in bucket 1000 WITHOUT the columns (sorted after data.parquet).
+  std::vector<Row> later(1);
+  later[0].strike = 120.0;
+  const fs::path tmp = fresh_dir("optional-tmp");
+  write_partition(tmp, later, /*large=*/false, /*licensed_extras=*/false);
+  ASSERT_FALSE(HasFatalFailure());
+  std::error_code ec;
+  fs::copy_file(tmp / "data.parquet", with / "data_1.parquet", ec);
+  ASSERT_FALSE(ec) << ec.message();
+
+  UnderlierTable table;
+  const SpiderRockStoreSpec spec = spec_for(root, "2026-10-14");
+  const auto b = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_EQ(b->size(), 4u);
+  ASSERT_EQ(b->ddiv_pv.size(), 4u);
+  ASSERT_EQ(b->syn_spot.size(), 4u);
+  ASSERT_EQ(b->vendor_years_c.size(), 4u);
+  EXPECT_EQ(b->strike, (std::vector<double>{100.0, 101.0, 102.0, 120.0}));
+  EXPECT_EQ(b->ddiv_pv[0], 0.5);
+  EXPECT_TRUE(std::isnan(b->ddiv_pv[1])); // NULL
+  EXPECT_EQ(b->ddiv_pv[2], 0.7);
+  EXPECT_TRUE(std::isnan(b->ddiv_pv[3])); // file without the column
+  EXPECT_EQ(b->syn_spot[0], 100.25);
+  EXPECT_TRUE(std::isnan(b->syn_spot[2])); // -99 sentinel
+  EXPECT_EQ(b->vendor_years_c[2], 0.08);
+  EXPECT_EQ(b->rows_null_vendor, 0) << "optional columns are not vendor-null accounting";
+
+  const auto plain = atx::vol::load_spiderrock_bucket(spec, "1030", table);
+  ASSERT_TRUE(plain.has_value()) << plain.error().to_string();
+  EXPECT_EQ(plain->size(), 3u);
+  EXPECT_TRUE(plain->ddiv_pv.empty());
+  EXPECT_TRUE(plain->syn_spot.empty());
+  EXPECT_TRUE(plain->vendor_years_c.empty());
+}
+
 // Row-group pruning and the projected read address parquet LEAF columns by the arrow
 // field index, which holds only for a flat schema: a nested column is refused loudly
 // (with and without the top-N statistics path), never pruned silently.
@@ -822,7 +897,15 @@ TEST(SpiderRockStoreReal, LoadsBucket1000) {
   const TimeSpec vol_time{atx::vol::TimeConvention::VolTime};
   const ClockGaps vt = print_clock_gaps(*top, vol_time, top->vendor_T, "VolTime-years");
   (void)print_clock_gaps(*top, TimeSpec{}, top->vendor_T, "Cal365-years");
+  // Cross-check against the vendor's `yearsC` (equal to `years` except 0 on the
+  // same-day expiry on this drop).
+  ASSERT_EQ(top->vendor_years_c.size(), top->size()) << "the licensed drop has yearsC";
+  (void)print_clock_gaps(*top, vol_time, top->vendor_years_c, "VolTime-yearsC");
+  (void)print_clock_gaps(*top, TimeSpec{}, top->vendor_years_c, "Cal365-yearsC");
   print_expiry_clock_gaps(*top);
+  EXPECT_TRUE(report.pv_divs_from_ddiv_pv) << "the licensed drop has ddivPv";
+  ASSERT_EQ(top->ddiv_pv.size(), top->size());
+  ASSERT_EQ(top->syn_spot.size(), top->size());
   for (std::size_t k = 0; k + 1 < kTenorBuckets; ++k) {
     EXPECT_LE(vt.median_by[k], 0.05) << "VolTime vs years, tenor " << kTenorNames[k];
   }
@@ -1181,6 +1264,7 @@ TEST(BucketState, DividendApproximationReported) {
   BucketStateReport report;
   const auto st = atx::vol::market_state_from_bucket(hand_bucket(), TimeSpec{}, &report);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_FALSE(report.pv_divs_from_ddiv_pv) << "no ddivPv column: pv_divs from ddiv";
   EXPECT_EQ(report.n_uids_with_divs, 1u);
   EXPECT_EQ(report.n_expiry_rows, 3u); // uid 1: e1, e2; uid 2: e1
   // uid 1, e1: ddiv over {0.50, 0.52, 0.51, 0.51} -> spread 0.02, median 0.51.
@@ -1206,6 +1290,26 @@ TEST(BucketState, DividendApproximationReported) {
   const double F = (100.0 - 0.51) * std::exp((0.04 - 0.01) * T);
   EXPECT_NEAR(100.0 * std::exp((0.04 - qe) * T), F, 1e-12);
   EXPECT_TRUE(std::isnan(atx::vol::spiderrock_q_eff(100.0, 100.0, 0.04, 0.01, T)));
+
+  // With the ddivPv column, pv_divs is ITS median per expiry (D4 wants a PRESENT value;
+  // ddiv is the undiscounted amount) and the spread is measured on it; an expiry whose
+  // ddivPv cells are all NULL falls back to the ddiv median.
+  SpiderRockBucket pv = hand_bucket();
+  pv.ddiv_pv = {0.58, 0.48, 0.50, 0.49, 0.47, kNaN, kNaN, 0.0};
+  BucketStateReport pv_report;
+  const auto st_pv = atx::vol::market_state_from_bucket(pv, TimeSpec{}, &pv_report);
+  ASSERT_TRUE(st_pv.has_value()) << st_pv.error().to_string();
+  EXPECT_TRUE(pv_report.pv_divs_from_ddiv_pv);
+  const auto &tc_pv = st_pv->term_carries[0];
+  ASSERT_EQ(tc_pv.size(), 2u);
+  EXPECT_EQ(tc_pv[0].pv_divs, (0.48 + 0.49) / 2.0); // median of {0.48, 0.50, 0.49, 0.47}
+  EXPECT_EQ(tc_pv[1].pv_divs, 0.58);
+  EXPECT_EQ(st_pv->term_carries[1][0].pv_divs, 0.0); // all-NULL ddivPv -> ddiv median 0
+  EXPECT_NEAR(pv_report.max_ddiv_spread, 0.03, 1e-12);
+  SpiderRockBucket bad = pv;
+  bad.ddiv_pv.pop_back();
+  EXPECT_EQ(atx::vol::market_state_from_bucket(bad, TimeSpec{}).error().code(),
+            ErrorCode::InvalidArgument);
 }
 
 } // namespace

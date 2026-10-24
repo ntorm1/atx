@@ -18,13 +18,14 @@
 //            MEDIAN over its rows in the bucket, and the per-row value is kept)
 //   rate   = row rate (continuous), one per uid (median over rows)
 //   q      = sdiv as a continuous yield (median over rows of the uid)
-//   ddiv   = PV of cash dividends to expiry, PER ROW. SpiderRock publishes ONE
-//            (rate, sdiv, ddiv) tuple per EXPIRY, so the state carries one
-//            ExpiryCarry{expiry_ns, pv_divs, rate, q} per (uid, expiry) from the
-//            medians over that expiry's rows (design D4 revised): the forward
-//            F = (S - pv_divs) e^{(r - q) T} reproduces the vendor's forward basis
-//            per expiry; `cash_divs` stays EMPTY. The remaining gap to the vendor's
-//            discrete-dividend lattice is visible through vendor_price.
+//   ddiv   = cash dividends to expiry, PER ROW; ddivPv (optional column) is their
+//            PRESENT value, which D4 wants: pv_divs uses ddivPv when the column exists,
+//            else ddiv. SpiderRock publishes ONE (rate, sdiv, ddiv) tuple per EXPIRY,
+//            so the state carries one ExpiryCarry{expiry_ns, pv_divs, rate, q} per
+//            (uid, expiry) from the medians over that expiry's rows (design D4
+//            revised, the `Published` carry mode): the forward
+//            F = (S - pv_divs) e^{(r - q) T}; `cash_divs` stays EMPTY. The remaining gap
+//            to the vendor's discrete-dividend lattice is visible through vendor_price.
 //   expiry = okey_yr/mn/dy at 16:00 ET (PM settlement) via expiry_instant_ns
 //   years  = SpiderRock's hybrid vol-time year fraction: kept as `vendor_T`
 //   sigma  = srVol (decimal). bidIV / askIV / error -99 sentinels are NULL in the
@@ -154,6 +155,14 @@ struct SpiderRockBucket {
   // including a NULL framework, on rows that passed the exType filter), counted before
   // underlier admission; part of the identity above.
   std::int64_t dropped_forward_framework{0};
+  // OPTIONAL vendor columns of the licensed drop: EMPTY when no file of the partition
+  // has the column, else one value per row (NaN for a NULL / -99 cell and for the rows
+  // of a file without the column). Not counted in rows_null_vendor.
+  std::vector<double> ddiv_pv;        // ddivPv: PRESENT value of the discrete dividends
+                                      // to expiry (ddiv is the undiscounted amount)
+  std::vector<double> syn_spot;       // synSpot: the vendor's synthetic (put-call) spot
+  std::vector<double> vendor_years_c; // yearsC (2026-10-14: equals `years` except 0 on
+                                      // the same-day expiry)
 };
 
 // Vendor-unit scales (see "Vendor Greek UNITS" above): ve = vega * kSpiderRockVegaScale,
@@ -207,6 +216,12 @@ struct BucketStateReport {
   double max_ddiv_spread{0.0};        // max over (uid, expiry) of max(ddiv) - min(ddiv)
   std::size_t n_duplicate_marks{0};   // exact duplicate (expiry, side, strike) rows dropped
   std::size_t n_rows_bad_sigma{0};    // rows with a non-finite / non-positive sigma skipped
+  // ── Lane C follow-up 2 additions (appended) ──
+  // Where a Published ExpiryCarry row's pv_divs came from: true = the median of the
+  // bucket's `ddiv_pv` (the column is present; an expiry whose ddivPv cells are all NULL
+  // falls back to the ddiv median), false = the median of `ddiv` (no ddivPv column).
+  // `max_ddiv_spread` is measured on the same source column.
+  bool pv_divs_from_ddiv_pv{false};
 };
 [[nodiscard]] Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                                   const TimeSpec &time,

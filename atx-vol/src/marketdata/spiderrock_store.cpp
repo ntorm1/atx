@@ -152,6 +152,14 @@ constexpr double kSdivSentinelCeiling = -9.98;
 enum IntCol : std::size_t { kYr = 0, kMn, kDy, kNumIntCols };
 constexpr std::array<std::string_view, kNumIntCols> kIntNames{"okey_yr", "okey_mn", "okey_dy"};
 
+// OPTIONAL Float64 columns (the licensed drop has them; the synthetic and the older
+// oracle store do not): read when present, a NULL / -99 cell carried as NaN, never a
+// reason to drop a row. The bucket's vector stays EMPTY when no file has the column.
+enum OptCol : std::size_t { kOptDdivPv = 0, kOptSynSpot, kOptYearsC, kNumOptCols };
+constexpr std::array<std::string_view, kNumOptCols> kOptNames{"ddivPv", "synSpot", "yearsC"};
+constexpr std::array<std::vector<double> SpiderRockBucket::*, kNumOptCols> kOptFields{
+    &SpiderRockBucket::ddiv_pv, &SpiderRockBucket::syn_spot, &SpiderRockBucket::vendor_years_c};
+
 // Row filters read from OPTIONAL columns: the licensed intraday drop's exercise
 // style (absent from the synthetic and the older oracle store, where every row is
 // American), its price framework (a Forward-framework row carries a per-expiry forward
@@ -174,6 +182,7 @@ struct ColumnIndex {
   int ex_type{-1};       // >= 0 only when the column exists AND american_only is set
   int okey_tk{-1};       // >= 0 only when the column exists AND standard_roots_only is set
   int prc_framework{-1}; // >= 0 only when the column exists AND spot_framework_only is set
+  std::array<int, kNumOptCols> opt{-1, -1, -1}; // >= 0 when the optional column exists
   std::vector<int> all;  // projection, flat schema: arrow field index == parquet column
 };
 
@@ -209,6 +218,9 @@ struct ColumnIndex {
   ix.ex_type = optional(filters.american_only, kExTypeName);
   ix.okey_tk = optional(filters.standard_roots_only, kOptionRootName);
   ix.prc_framework = optional(filters.spot_framework_only, kPrcFrameworkName);
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    ix.opt[c] = optional(true, kOptNames[c]);
+  }
   return Ok(std::move(ix));
 }
 
@@ -531,6 +543,7 @@ struct GroupArrays {
   FilterArrays filters{}; // optional exType / okey_tk / prcFramework
   std::array<const arrow::Array *, kNumIntCols> ints{};
   std::array<const arrow::DoubleArray *, kNumCols> nums{};
+  std::array<const arrow::DoubleArray *, kNumOptCols> opt{}; // null = column absent
 };
 
 [[nodiscard]] Error bad_type(std::string_view name, const char *want, const std::string &file) {
@@ -586,6 +599,17 @@ struct GroupArrays {
     // SAFETY: type id checked to DOUBLE immediately above.
     a.nums[c] = static_cast<const arrow::DoubleArray *>(arr);
   }
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    if (f.cols.opt[c] < 0) {
+      continue;
+    }
+    ATX_TRY(const arrow::Array *arr, single_chunk(*a.table, kOptNames[c], f.path));
+    if (arr->type_id() != arrow::Type::DOUBLE) {
+      return Err(bad_type(kOptNames[c], "Float64", f.path));
+    }
+    // SAFETY: type id checked to DOUBLE immediately above.
+    a.opt[c] = static_cast<const arrow::DoubleArray *>(arr);
+  }
   return Ok(std::move(a));
 }
 
@@ -609,6 +633,7 @@ struct Decoder {
   std::string last_tk{};
   std::uint32_t last_local{0};
   bool have_last{false};
+  std::array<bool, kNumOptCols> opt_seen{}; // some file of the partition has the column
 };
 
 [[nodiscard]] std::int64_t expiry_of(std::int64_t yr, std::int64_t mn, std::int64_t dy,
@@ -688,6 +713,13 @@ void append_row(const GroupArrays &a, std::int64_t i, std::uint32_t local, doubl
   o.bid.push_back(num(kBid));
   o.ask.push_back(num(kAsk));
   o.rows_null_vendor += null_vendor ? 1 : 0;
+  // Every row gets a cell in every optional vector (NaN when this file lacks the
+  // column); finalize_bucket clears a vector no file had.
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    const arrow::DoubleArray *col = a.opt[c];
+    const bool cell = col != nullptr && !col->IsNull(i) && col->Value(i) != kSentinel;
+    (o.*kOptFields[c]).push_back(cell ? col->Value(i) : kNaN);
+  }
 }
 
 [[nodiscard]] RowVerdict decode_row(const GroupArrays &a, std::int64_t i, Decoder &d) {
@@ -761,6 +793,9 @@ void count_verdict(RowVerdict v, SpiderRockBucket &o) noexcept {
     const std::unique_ptr<parquet::RowGroupMetaData> rg = f.meta->RowGroup(g);
     const std::int64_t n_rows = rg->num_rows();
     o.rows_read += n_rows;
+    for (std::size_t c = 0; c < kNumOptCols; ++c) {
+      d.opt_seen[c] = d.opt_seen[c] || f.cols.opt[c] >= 0;
+    }
     if (!group_may_hold(*rg, f.cols.tk, d.admitted)) {
       o.rows_not_selected += n_rows; // provably no admitted ticker in this group
       continue;
@@ -838,6 +873,14 @@ void finalize_bucket(Decoder &d, UnderlierTable &table) {
   gather(o.ddiv, perm);
   gather(o.bid, perm);
   gather(o.ask, perm);
+  for (std::size_t c = 0; c < kNumOptCols; ++c) {
+    std::vector<double> &v = o.*kOptFields[c];
+    if (d.opt_seen[c]) {
+      gather(v, perm);
+    } else {
+      std::vector<double>{}.swap(v); // no file has the column: EMPTY, not all-NaN
+    }
+  }
 }
 
 } // namespace
@@ -977,7 +1020,8 @@ namespace {
                     b.side.size() == n && b.uprc.size() == n && b.rate.size() == n &&
                     b.sdiv.size() == n && b.ddiv.size() == n;
   const bool vendor = (b.vendor_price.empty() || b.vendor_price.size() == n) &&
-                      (b.vendor_delta.empty() || b.vendor_delta.size() == n);
+                      (b.vendor_delta.empty() || b.vendor_delta.size() == n) &&
+                      (b.ddiv_pv.empty() || b.ddiv_pv.size() == n);
   if (!core || !vendor) {
     return Err(ErrorCode::InvalidArgument,
                "market_state_from_bucket: bucket columns have inconsistent lengths");
@@ -1000,10 +1044,14 @@ namespace {
     const std::span<const std::size_t> run = rows.subspan(lo, hi - lo);
     ExpiryCarry c;
     c.expiry_ns = b.expiry_ns[rows[lo]];
-    c.pv_divs = or_else(median_of(b.ddiv, run, scratch), 0.0);
+    // D4 wants the PRESENT value: ddivPv when the column exists (an all-NULL expiry
+    // falls back to ddiv), else ddiv.
+    const double pv_ddiv = or_else(median_of(b.ddiv, run, scratch), 0.0);
+    c.pv_divs = b.ddiv_pv.empty() ? pv_ddiv : or_else(median_of(b.ddiv_pv, run, scratch), pv_ddiv);
     c.rate = or_else(median_of(b.rate, run, scratch), u.flat_rate);
     c.q = or_else(median_of(b.sdiv, run, scratch), u.flat_q);
-    rep.max_ddiv_spread = std::max(rep.max_ddiv_spread, finite_spread(b.ddiv, run));
+    rep.max_ddiv_spread = std::max(
+        rep.max_ddiv_spread, finite_spread(b.ddiv_pv.empty() ? b.ddiv : b.ddiv_pv, run));
     out.push_back(c);
     lo = hi;
   }
@@ -1084,6 +1132,7 @@ Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &buck
   s.ts_ns = bucket.ts_ns;
   s.time = time;
   BucketStateReport rep;
+  rep.pv_divs_from_ddiv_pv = !bucket.ddiv_pv.empty();
   std::vector<double> scratch;
   const std::span<const std::size_t> all{order};
   for (std::size_t lo = 0; lo < all.size();) {

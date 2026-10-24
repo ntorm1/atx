@@ -234,6 +234,7 @@ struct BucketLoad {
   double max_ddiv_spread{0.0};
   // ── Follow-up 2 additions (appended; schema v2) ──
   std::int64_t dropped_forward_framework{0};
+  bool pv_divs_from_ddiv_pv{false}; // BucketStateReport::pv_divs_from_ddiv_pv
 };
 
 struct RiskBenchReport {
