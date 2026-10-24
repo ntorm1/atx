@@ -448,3 +448,22 @@ surface Greek against the archive-backed route; that unrelated rounding mismatch
 was replaced with an exact same-archive control, retaining strict comparison.
 The prelink-controls receipt is explicitly not the final rebuilt-binary gate.
 No new Greek accuracy or latency claim is made.
+
+
+Conditional component scenarios now derive the required Greek fields after
+resolving each component's own spot/volatility shocks. A nonzero spot shock
+requires Delta/Gamma, volatility requires Vega/Volga, time requires Theta,
+rate requires Rho, and active cross terms require Vanna or Charm. Missing active
+supply returns Unavailable; finite unstamped zeros are not risk evidence.
+Nonfinite inactive operands are replaced with zero before the unchanged public
+Taylor kernel, preventing NaN times zero from poisoning a supported result.
+Finite operands and the kernel's operation order remain unchanged. Price is not
+a Taylor input. Exact zero positions or zero shocks contribute exact zero.
+
+The actual consumer regression is runtime RED for default-zero acceptance and
+unrelated-NaN rejection, then covers resolved component shocks that differ from
+the index shock, missing Vanna despite both pure axes being supplied, valid
+cross PnL, and zero identities. Ten focused strategy/quant integration tests
+and two owning PCH-off objects pass (repair-iv/greek-conditional-*). This private
+helper changes no public result layout or Greek accuracy contract; scenario-grid
+Exact eligibility and per-cell availability remain the next component.

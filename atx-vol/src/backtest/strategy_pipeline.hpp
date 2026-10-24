@@ -230,6 +230,9 @@ struct ConditionalComponentScenarioResult {
 
 // Apply the same second-order Taylor kernel used by scenario_grid to supplied
 // per-share Greeks, but with a heterogeneous shock per component uid.
+// Each resolved component shock requires only the derivatives with nonzero
+// Taylor coefficients. Missing requested sensitivities return Unavailable;
+// inactive axes may be absent. Exact zero weights/shocks contribute zero.
 [[nodiscard]] Result<ConditionalComponentScenarioResult>
 conditional_component_scenario_pnl(std::span<const ScenarioRiskInput> positions,
                                    const ConditionalComponentScenario &scenario);

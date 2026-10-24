@@ -254,6 +254,64 @@ TEST(StrategyPipelineScenario,
   EXPECT_FALSE(conditional_component_scenario_pnl(inputs, scenario));
 }
 
+TEST(StrategyPipelineScenarioAvailability, RequiresOnlyActualComponentShockFields) {
+  ScenarioRiskInput input{Position{1u, {2u, 100., .25, Side::Call}, 1., 100.}, 100., {}};
+  ConditionalComponentScenario scenario;
+  scenario.index_uid = 1u;
+  scenario.index_spot_pct = .01;
+  scenario.index_vol_bump = .02;
+  scenario.components = {ComponentShockModel{2u, 1., 0., 0., 0.}};
+  // Component volatility does not move even though the index volatility does.
+  const auto unknown = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  EXPECT_FALSE(unknown);
+  if (!unknown)
+    EXPECT_EQ(unknown.error().code(), ErrorCode::Unavailable);
+  auto &g = input.greeks_per_share;
+  g.delta = .5;
+  g.gamma = .01;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Delta | GreekFieldMask::Gamma,
+                                     AmericanGreekReason::ComputedEstimate);
+  g.price = g.vega = g.theta = g.rho = g.vanna = g.volga = g.charm =
+      std::numeric_limits<double>::quiet_NaN();
+  const auto supplied = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(supplied);
+  EXPECT_DOUBLE_EQ(supplied->total_pnl, 50.5);
+  ASSERT_EQ(supplied->by_uid.size(), 1u);
+  EXPECT_DOUBLE_EQ(supplied->by_uid[0].pnl, 50.5);
+  scenario.components[0].residual_vol_bump = .01;
+  const auto missing_vol = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  EXPECT_FALSE(missing_vol);
+  if (!missing_vol)
+    EXPECT_EQ(missing_vol.error().code(), ErrorCode::Unavailable);
+  g.vega = 2.;
+  g.volga = 4.;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vega | GreekFieldMask::Volga,
+                                     AmericanGreekReason::ComputedEstimate);
+  const auto missing_cross = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  EXPECT_FALSE(missing_cross); // both pure axes do not supply their Vanna cross term
+  if (!missing_cross)
+    EXPECT_EQ(missing_cross.error().code(), ErrorCode::Unavailable);
+  g.vanna = .25;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vanna,
+                                     AmericanGreekReason::ComputedEstimate);
+  scenario.components[0].residual_vol_bump = .125;
+  const auto cross = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(cross);
+  EXPECT_NEAR(cross->total_pnl, 81.75, 1e-12);
+  input.greeks_per_share = {};
+  input.position.qty = 0.;
+  const auto zero_weight = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(zero_weight);
+  EXPECT_DOUBLE_EQ(zero_weight->total_pnl, 0.);
+  input.position.qty = 1.;
+  input.greeks_per_share = {};
+  scenario.index_spot_pct = scenario.index_vol_bump = 0.;
+  scenario.components[0].residual_vol_bump = 0.;
+  const auto zero_shock = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(zero_shock);
+  EXPECT_DOUBLE_EQ(zero_shock->total_pnl, 0.);
+}
+
 TEST(StrategyPipelineIntent, GeneratesVersionedResearchOnlyTargetMinusCurrentDeltasInStableOrder) {
   const std::vector<NamedPosition> target = {
       named_position("C", 30u, 3u, 2.0),
