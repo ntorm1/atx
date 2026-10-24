@@ -86,3 +86,35 @@ Evidence: `acceptance/cold-greek-admission-red.xml`,
 `acceptance/cold-greek-metadata-green.xml`, and
 `acceptance/cold-greek-metadata-hygiene.log`. The separate numerical-admission
 regressions in the RED receipt are intentionally not claimed fixed here.
+
+The shared surface/portfolio caller gate now requires supplied-field metadata as
+well as finite numbers. Its existing solve-need groups are unchanged. Normalizing
+an unrequested NaN to its legacy numeric zero also removes availability metadata;
+request expansion never turns that zero into a supplied field.
+
+The public American Greek batch uses the exact output mask instead of requiring
+every field in an internal solve group. A price-only request can therefore succeed
+when gamma is unavailable; a full request retains the price but reports
+`Unsupported`. Requested and supported masks and nine reasons are available through
+the workspace's three new `lane_*_view` accessors, with the same borrow/invalidation
+rules as its status and route views. Unknown mask bits fail before any output or
+workspace write. A supplied finite mark remains a prerequisite for a successful
+lane, including requests that do not write a price column.
+
+`reserve_lanes` preallocates the Greek metadata for repeated Greek batches. The
+price-only batch uses `reserve_price_lanes`, which allocates no Greek metadata and
+invalidates any old Greek views while retaining their capacity. No pricing options,
+stencils, or numerical acceptance conditions change in this caller component.
+Portfolio partial-result aggregation and Python propagation remain separate work.
+
+The shared-gate regressions failed at runtime on untouched/default zeros and
+normalization that retained stale availability. Missing batch metadata first
+failed to compile; a separate runtime regression caught allocating Greek metadata
+on price-only batches. With the wrapper metadata prerequisite applied, 29 focused
+pricing/batch/gate tests pass. Another 50 surface/portfolio/seed checks pass with
+one counter-dependent skip. All six owning PCH-off objects pass. Receipts are
+`repair-iv/greek-{gate-red,batch-interface-red,workspace-red,consumer-*}`. The
+finite-price/nonfinite-gamma test uses the existing tiny-spot fixture on unchanged
+numerical arithmetic; the subsequent exercise-admission component must replace
+that fixture with a genuine stencil refusal when it supplies exact exercised
+derivatives. The partial-result contract itself is unchanged by that migration.

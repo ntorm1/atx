@@ -22,6 +22,7 @@
 #include "fitting/counters.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <barrier>
 #include <cmath>
@@ -1727,6 +1728,89 @@ TEST(AmericanGreeksBatch, UnsupportedLaneReportsStatus) {
           .has_value());
   EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Unsupported);
   EXPECT_TRUE(std::isnan(px[0]));
+}
+
+TEST(AmericanGreeksBatch, AvailabilityPreservesPriceAndUsesExactFieldMask) {
+  Book b;
+  b.push(100, 100, .5, .3, .04, .01, Side::Put);
+  b.push(1.0e-160, 100, .05, .9, .043, .02, Side::Put);
+  b.push(-100, 100, .5, .3, .04, .01, Side::Call);
+  std::vector<double> px(b.size()), gamma(b.size());
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  out.gamma = gamma.data();
+  PricingWorkspace ws;
+  for (const bool analytic : {false, true}) {
+    for (const auto isa : {simd::SimdIsa::ForceScalar, simd::SimdIsa::ForceAvx2}) {
+      PricingKernel kernel;
+      kernel.analytic_greeks = analytic;
+      kernel.isa = isa;
+      ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws));
+      ASSERT_EQ(ws.lane_requested_view().size(), b.size());
+      ASSERT_EQ(ws.lane_supported_view().size(), b.size());
+      ASSERT_EQ(ws.lane_reasons_view().size(), b.size());
+      EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Ok);
+      EXPECT_EQ(ws.lane_status_view()[1], LaneStatus::Unsupported);
+      EXPECT_EQ(ws.lane_status_view()[2], LaneStatus::Unsupported);
+      EXPECT_TRUE(std::isfinite(px[1]));
+      EXPECT_TRUE(std::isnan(gamma[1]));
+      EXPECT_TRUE(has_field(ws.lane_supported_view()[1], GreekFieldMask::Price));
+      EXPECT_FALSE(has_field(ws.lane_supported_view()[1], GreekFieldMask::Gamma));
+      EXPECT_EQ(ws.lane_reasons_view()[1][1], AmericanGreekReason::Nonfinite);
+      const double retained_price = px[1];
+
+      constexpr auto fields = GreekFieldMask::Price;
+      std::fill(gamma.begin(), gamma.end(), 123.0);
+      ASSERT_TRUE(american_greeks_batch(b.view(), fields, out, kernel, ws));
+      EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Ok);
+      EXPECT_EQ(ws.lane_status_view()[1], LaneStatus::Ok);
+      EXPECT_EQ(ws.lane_status_view()[2], LaneStatus::Unsupported);
+      EXPECT_EQ(px[1], retained_price);
+      for (std::size_t i = 0; i < b.size(); ++i) {
+        EXPECT_EQ(ws.lane_requested_view()[i], fields);
+        EXPECT_EQ(ws.lane_supported_view()[i], i == 2 ? GreekFieldMask::None : fields);
+        EXPECT_EQ(ws.lane_reasons_view()[i][8], i == 2 ? AmericanGreekReason::Nonfinite
+                                                    : AmericanGreekReason::ComputedEstimate);
+        EXPECT_EQ(ws.lane_reasons_view()[i][1], AmericanGreekReason::NotRequested);
+        EXPECT_EQ(gamma[i], 123.0);
+      }
+    }
+  }
+}
+
+TEST(AmericanGreeksBatch, UnknownFieldMaskRefusesBeforeWrites) {
+  const Book b = make_american_greeks_book();
+  std::vector<double> px(b.size(), 123.0);
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  PricingKernel kernel;
+  PricingWorkspace ws;
+  const auto bad = static_cast<GreekFieldMask>(1u << 31);
+  const auto result = american_greeks_batch(b.view(), bad, out, kernel, ws);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_TRUE(ws.lane_status_view().empty());
+  for (const double value : px) EXPECT_EQ(value, 123.0);
+}
+
+TEST(AmericanGreeksBatch, PriceOnlyBatchDoesNotAllocateGreekMetadata) {
+  const Book b = make_american_greeks_book();
+  PricingKernel kernel;
+  PricingWorkspace ws;
+  PriceBatchOutput out;
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws));
+  EXPECT_EQ(ws.lane_requested.capacity(), 0u);
+  EXPECT_EQ(ws.lane_supported.capacity(), 0u);
+  EXPECT_EQ(ws.lane_reasons.capacity(), 0u);
+
+  ws.reserve_lanes(b.size());
+  const auto retained_capacity = ws.lane_reasons.capacity();
+  ASSERT_GT(retained_capacity, 0u);
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws));
+  EXPECT_TRUE(ws.lane_requested_view().empty());
+  EXPECT_TRUE(ws.lane_supported_view().empty());
+  EXPECT_TRUE(ws.lane_reasons_view().empty());
+  EXPECT_EQ(ws.lane_reasons.capacity(), retained_capacity);
 }
 
 TEST(AmericanGreeksBatch, EmptyIsNoOp) {
