@@ -633,6 +633,26 @@ Json cold_reset() {
           {"not_reset", std::move(not_reset)}};
 }
 
+double cpu_busy_percent(const CpuSample &before, const CpuSample &after,
+                        std::optional<std::size_t> cpu) noexcept {
+  const std::size_t size = before.busy.size();
+  if (size == 0 || before.total.size() != size || after.busy.size() != size ||
+      after.total.size() != size || (cpu && *cpu >= size)) return kNaN;
+  std::uint64_t busy = 0, total = 0;
+  const std::size_t first = cpu.value_or(0), last = cpu ? *cpu + 1U : size;
+  for (std::size_t i = first; i < last; ++i) {
+    if (before.busy[i] > before.total[i] || after.busy[i] > after.total[i] ||
+        after.busy[i] < before.busy[i] || after.total[i] <= before.total[i]) return kNaN;
+    const std::uint64_t db = after.busy[i] - before.busy[i];
+    const std::uint64_t dt = after.total[i] - before.total[i];
+    if (db > dt || db > std::numeric_limits<std::uint64_t>::max() - busy ||
+        dt > std::numeric_limits<std::uint64_t>::max() - total) return kNaN;
+    busy += db;
+    total += dt;
+  }
+  return 100.0 * static_cast<double>(busy) / static_cast<double>(total);
+}
+
 #if defined(_WIN32)
 namespace {
 
@@ -723,12 +743,12 @@ struct Core {
   return begin == std::string::npos ? std::string{} : out.substr(begin);
 }
 
-[[nodiscard]] double busy_pct(const CpuSample &before, const CpuSample &after, std::size_t cpu) {
-  if (cpu >= before.busy.size() || cpu >= after.busy.size()) return kNaN;
-  const std::uint64_t total = saturating_minus(after.total[cpu], before.total[cpu]);
-  if (total == 0U) return kNaN;
-  return 100.0 * static_cast<double>(saturating_minus(after.busy[cpu], before.busy[cpu])) /
-         static_cast<double>(total);
+[[nodiscard]] Json cpu_sample_json(const CpuSample &sample) {
+  // Decimal strings retain all 64 counter bits in JSON consumers using doubles.
+  Json busy = Json::array(), total = Json::array();
+  for (const auto ticks : sample.busy) busy.push_back(std::to_string(ticks));
+  for (const auto ticks : sample.total) total.push_back(std::to_string(ticks));
+  return {{"busy_100ns", std::move(busy)}, {"total_100ns", std::move(total)}};
 }
 
 [[nodiscard]] Json power_json(std::optional<unsigned> cpu) {
@@ -781,21 +801,29 @@ CpuSample sample_cpus() {
   CpuSample out;
   const auto query = ntdll_export<NtQuerySystemInformationFn>("NtQuerySystemInformation");
   if (query == nullptr) return out;
-  const unsigned logical = std::max(1U, std::thread::hardware_concurrency());
+  const unsigned logical = std::thread::hardware_concurrency();
+  if (logical == 0 || logical > std::numeric_limits<ULONG>::max() /
+                                  sizeof(ProcessorPerformance)) return out;
   std::vector<ProcessorPerformance> perf(logical);
   ULONG returned = 0;
   const auto bytes = static_cast<ULONG>(perf.size() * sizeof(ProcessorPerformance));
-  if (query(kSystemProcessorPerformanceInformation, perf.data(), bytes, &returned) < 0) {
+  if (query(kSystemProcessorPerformanceInformation, perf.data(), bytes, &returned) < 0 ||
+      returned != bytes) {
     return out;
   }
-  const std::size_t n =
-      std::min<std::size_t>(perf.size(), returned / sizeof(ProcessorPerformance));
-  for (std::size_t i = 0; i < n; ++i) {
+  out.busy.reserve(perf.size());
+  out.total.reserve(perf.size());
+  for (std::size_t i = 0; i < perf.size(); ++i) {
+    if (perf[i].idle.QuadPart < 0 || perf[i].kernel.QuadPart < 0 ||
+        perf[i].user.QuadPart < 0) return {};
     const auto idle = static_cast<std::uint64_t>(perf[i].idle.QuadPart);
-    const auto total = static_cast<std::uint64_t>(perf[i].kernel.QuadPart) +
-                       static_cast<std::uint64_t>(perf[i].user.QuadPart);
+    const auto kernel = static_cast<std::uint64_t>(perf[i].kernel.QuadPart);
+    const auto user = static_cast<std::uint64_t>(perf[i].user.QuadPart);
+    // Both nonnegative signed inputs fit in int64, so their uint64 sum cannot wrap.
+    if (idle > kernel) return {};
+    const std::uint64_t total = kernel + user;
     out.total.push_back(total);
-    out.busy.push_back(saturating_minus(total, idle));
+    out.busy.push_back(total - idle);
   }
   return out;
 }
@@ -859,7 +887,7 @@ Json affinity_json(std::optional<unsigned> requested, bool require_pcore,
   out["efficiency_class"] = nullptr;
   out["is_pcore"] = nullptr;
   for (const Core &core : cores) {
-    if (((core.mask >> subject) & 1U) == 0U) continue;
+    if (subject >= 64U || ((core.mask >> subject) & 1U) == 0U) continue;
     out["efficiency_class"] = core.efficiency_class;
     out["is_pcore"] = core.efficiency_class == max_class;
     out["core_mask"] = hex_mask(core.mask);
@@ -880,24 +908,19 @@ Json affinity_json(std::optional<unsigned> requested, bool require_pcore,
     out["thread_affinity_mask"] = hex_mask(thread_affinity.Mask);
   }
   Json busy = {{"source", "NtQuerySystemInformation per-CPU kernel+user-idle, best effort"},
-               {"subject_cpu_pct", finite_or_null(busy_pct(before, after, subject))}};
+               {"interval_policy", "strict-per-cpu-v1"},
+               {"before", cpu_sample_json(before)}, {"after", cpu_sample_json(after)},
+               {"subject_cpu_pct", finite_or_null(cpu_busy_percent(before, after, subject))}};
   Json sibling_pct = Json::array();
-  bool sibling_idle = true;
+  bool sibling_idle = out["is_pcore"].is_boolean();
   for (const auto &s : siblings) {
-    const double pct = busy_pct(before, after, s.get<std::size_t>());
+    const double pct = cpu_busy_percent(before, after, s.get<std::size_t>());
     sibling_pct.push_back(finite_or_null(pct));
     sibling_idle = sibling_idle && std::isfinite(pct) && pct < 5.0;
   }
   busy["smt_sibling_pct"] = sibling_pct;
   busy["smt_sibling_idle_below_5pct"] = sibling_idle;
-  double system_busy = 0.0;
-  double system_total = 0.0;
-  for (std::size_t i = 0; i < before.busy.size() && i < after.busy.size(); ++i) {
-    system_busy += static_cast<double>(saturating_minus(after.busy[i], before.busy[i]));
-    system_total += static_cast<double>(saturating_minus(after.total[i], before.total[i]));
-  }
-  busy["system_pct"] =
-      system_total > 0.0 ? Json(100.0 * system_busy / system_total) : Json(nullptr);
+  busy["system_pct"] = finite_or_null(cpu_busy_percent(before, after));
   out["busy"] = std::move(busy);
   out["fit_workers"] = fit_workers_json();
   out["nested_pools"] = {{"surface_expiry_fanout", atx_auto_worker_count()},

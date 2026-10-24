@@ -301,3 +301,29 @@ summary carries the embedded build info.
 | published_bytes, peak_memory, allocations_hot, version_race_failures | not measured by B0 |
 | commands, exit_codes, artifact_manifest | runner `command_template`, `exit_codes`, `trials[]` with report sha256 |
 | reviewer_sha, decision | review / gate records |
+
+## 10. CPU interval validity (2026-10-24)
+
+New receipts identify `busy.interval_policy = strict-per-cpu-v1` and retain the
+before/after per-CPU busy and total counters as decimal strings in 100-ns units.
+This preserves all integer bits for independent replay. The Windows sampler
+rejects incomplete native records, negative signed counters and idle time above
+kernel time; kernel includes idle. An unavailable sample stays empty.
+
+A CPU percentage requires equal nonempty vector shapes, busy no greater than
+total in each snapshot, nondecreasing busy, strictly increasing total, and a busy
+delta no greater than the total delta. Invalid intervals produce JSON `null`,
+never a clamped zero. A system percentage requires every per-CPU interval to pass
+and checked integer delta sums not to overflow. A valid subject percentage can
+coexist with an unavailable system percentage when another CPU is invalid.
+Unknown topology cannot establish an idle SMT sibling, and an out-of-range
+subject cannot alias a valid core through a mask shift.
+
+The two retained runtime regressions show the old defect: a busy counter of
+50 then 49 with increasing total was published as 0%, and a peer whose busy
+delta exceeded its total delta still produced a system percentage. Seven new
+controls cover these cases, shape mismatches, exact large-counter arithmetic,
+aggregate overflow and raw receipt retention; the full owning executable passes
+20 tests. This does not retrospectively repair archived measurements without raw
+counters. Earlier contaminated runs retain their original unqualified status;
+new quiet-host admission still requires both actual sibling and whole-host gates.
