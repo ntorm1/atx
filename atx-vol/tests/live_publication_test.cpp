@@ -12,12 +12,14 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -30,6 +32,7 @@
 #include "atx/vol/api/fitting/slice_serve_record.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "fitting/serve_book_detail.hpp"
 #include "support/alloc_counter.hpp"
 
 namespace atx::vol {
@@ -344,6 +347,331 @@ TEST(LivePublication, AFailedRebuildLeavesTheOldVersionLive) {
   EXPECT_EQ(r.serve(1, req(100.0, Side::Call, kSpot, ServeTier::Ladder, ServeTier::Family))
                 .status,
             ServeStatus::Ok);
+}
+
+// Real worker interleavings, no sleeps: main mutates only after the callback has
+// entered. Opening is idempotent and the guard prevents failed assertions from
+// leaving a joining book/thread blocked on the test barrier.
+struct BuildBarrier {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool entered = false;
+  bool released = false;
+  void arrive() {
+    std::unique_lock lock(mutex);
+    entered = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return released; });
+  }
+  bool wait() {
+    std::unique_lock lock(mutex);
+    return cv.wait_for(lock, std::chrono::seconds(5), [&] { return entered; });
+  }
+  void open() {
+    std::lock_guard lock(mutex);
+    released = true;
+    cv.notify_all();
+  }
+};
+
+struct OpenBuildBarrier {
+  BuildBarrier &barrier;
+  ~OpenBuildBarrier() { barrier.open(); }
+};
+
+TEST(LivePublication, RunningRebuildCannotOverwriteNewerExpiryPublication) {
+  const auto old = rec_a(), newer = rec_b();
+  BuildBarrier barrier;
+  ServeBook book({}, [&](const ServeRebuildRequest &q) {
+    barrier.arrive();
+    return std::optional<ServeBookEntry>{entry(q.expiry_id, old, 100)};
+  });
+  OpenBuildBarrier release{barrier};
+  ASSERT_TRUE(book.publish_expiry(entry(7, old, 1)));
+  ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+  ASSERT_TRUE(barrier.wait());
+  ASSERT_TRUE(book.publish_expiry(entry(7, newer, 200)));
+  const auto version = book.version();
+  barrier.open();
+  ASSERT_TRUE(book.wait_idle(std::chrono::seconds(5)));
+  ASSERT_NE(book.current()->find(7), nullptr);
+  EXPECT_EQ(book.current()->find(7)->tag, 200u);
+  EXPECT_EQ(book.version(), version);
+  EXPECT_EQ(book.counters().rebuild_superseded, 1u);
+  EXPECT_EQ(book.counters().rebuilt, 0u);
+  EXPECT_EQ(book.counters().rebuild_failed, 0u);
+}
+
+TEST(LivePublication, RunningRebuildCannotResurrectRetiredOrReaddedExpiry) {
+  const auto old = rec_a();
+  for (const bool readd : {false, true}) {
+    BuildBarrier barrier;
+    ServeBook book({}, [&](const ServeRebuildRequest &q) {
+      barrier.arrive();
+      return std::optional<ServeBookEntry>{entry(q.expiry_id, old, 100)};
+    });
+    OpenBuildBarrier release{barrier};
+    ASSERT_TRUE(book.publish_expiry(entry(7, old, 1)));
+    ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+    ASSERT_TRUE(barrier.wait());
+    auto tx = book.transaction();
+    tx.retire(7);
+    ASSERT_TRUE(tx.commit());
+    if (readd) ASSERT_TRUE(book.publish_expiry(entry(7, old, 1))); // same bytes, new input
+    const auto version = book.version();
+    barrier.open();
+    ASSERT_TRUE(book.wait_idle(std::chrono::seconds(5)));
+    const auto current = book.current();
+    if (readd) {
+      ASSERT_NE(current->find(7), nullptr);
+      EXPECT_EQ(current->find(7)->tag, 1u);
+    } else {
+      EXPECT_EQ(current->find(7), nullptr);
+    }
+    EXPECT_EQ(book.version(), version);
+    EXPECT_EQ(book.counters().rebuild_superseded, 1u);
+  }
+}
+
+TEST(LivePublication, MissingRebuildIsInvalidatedByRetirementAndWholeBookReplacement) {
+  const auto record = rec_a();
+  for (const bool replace : {false, true}) {
+    BuildBarrier barrier;
+    ServeBook book({}, [&](const ServeRebuildRequest &q) {
+      barrier.arrive();
+      return std::optional<ServeBookEntry>{entry(q.expiry_id, record, 100)};
+    });
+    OpenBuildBarrier release{barrier};
+    ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+    ASSERT_TRUE(barrier.wait());
+    auto tx = book.transaction();
+    if (replace) tx.retire_all();
+    else tx.retire(7); // a tombstone is needed even when no entry has ever existed
+    ASSERT_TRUE(tx.commit());
+    barrier.open();
+    ASSERT_TRUE(book.wait_idle(std::chrono::seconds(5)));
+    EXPECT_EQ(book.current()->find(7), nullptr);
+    EXPECT_EQ(book.counters().rebuild_superseded, 1u);
+  }
+}
+
+TEST(LivePublication, UnrelatedExpiryPublicationDoesNotInvalidateRunningRebuild) {
+  const auto record = rec_a();
+  BuildBarrier barrier;
+  ServeBook book({}, [&](const ServeRebuildRequest &q) {
+    barrier.arrive();
+    return std::optional<ServeBookEntry>{entry(q.expiry_id, record, 100)};
+  });
+  OpenBuildBarrier release{barrier};
+  ASSERT_TRUE(book.publish_expiry(entry(7, record, 1)));
+  ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+  ASSERT_TRUE(barrier.wait());
+  ASSERT_TRUE(book.publish_expiry(entry(8, record, 200)));
+  barrier.open();
+  ASSERT_TRUE(book.wait_idle(std::chrono::seconds(5)));
+  const auto current = book.current();
+  ASSERT_NE(current->find(7), nullptr);
+  ASSERT_NE(current->find(8), nullptr);
+  EXPECT_EQ(current->find(7)->tag, 100u);
+  EXPECT_EQ(current->find(8)->tag, 200u);
+  EXPECT_EQ(book.counters().rebuilt, 1u);
+  EXPECT_EQ(book.counters().rebuild_superseded, 0u);
+}
+
+TEST(LivePublication, NewerCoalescedRequestSurvivesAFullQueueAndRunsOnce) {
+  const auto record = rec_a();
+  for (const bool republish : {false, true}) {
+    BuildBarrier barrier;
+    std::atomic<unsigned> calls{0};
+    ServeBookPolicy policy;
+    policy.queue_capacity = 1;
+    ServeBook book(policy, [&](const ServeRebuildRequest &q) {
+      const unsigned n = ++calls;
+      if (n == 1) barrier.arrive();
+      return std::optional<ServeBookEntry>{entry(q.expiry_id, record, n == 1 ? 100 : 300)};
+    });
+    OpenBuildBarrier release{barrier};
+    ASSERT_TRUE(book.publish_expiry(entry(7, record, 1)));
+    ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+    ASSERT_TRUE(barrier.wait());
+    ASSERT_EQ(book.request_rebuild(8), ServeEnqueue::Queued); // ring full
+    if (republish) ASSERT_TRUE(book.publish_expiry(entry(7, record, 200)));
+    EXPECT_EQ(book.request_rebuild(7), ServeEnqueue::Deduplicated);
+    EXPECT_EQ(book.request_rebuild(7), ServeEnqueue::Deduplicated);
+    barrier.open();
+    ASSERT_TRUE(book.wait_idle(std::chrono::seconds(5)));
+    const auto current = book.current();
+    ASSERT_NE(current->find(7), nullptr);
+    EXPECT_EQ(current->find(7)->tag, 300u);
+    EXPECT_EQ(calls, 3u); // first, one latest follow-up, other expiry
+    EXPECT_EQ(book.counters().rebuild_superseded, 1u);
+    EXPECT_EQ(book.counters().rebuild_followups, 1u);
+    EXPECT_EQ(book.counters().rebuilt, 2u);
+  }
+}
+
+TEST(LivePublication, QueuedRebuildUsesLatestRequestedGenerationOrDiscardsTheOldOne) {
+  const auto record = rec_a();
+  for (const bool refresh : {false, true}) {
+    std::uint64_t seen_generation = 0;
+    ServeBook book(inline_policy(), [&](const ServeRebuildRequest &q) {
+      seen_generation = q.generation;
+      return std::optional<ServeBookEntry>{entry(q.expiry_id, record, 300)};
+    });
+    ASSERT_TRUE(book.publish_expiry(entry(7, record, 100)));
+    const auto old_generation = book.version();
+    ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+    ASSERT_TRUE(book.publish_expiry(entry(7, record, 200)));
+    const auto new_generation = book.version();
+    if (refresh) EXPECT_EQ(book.request_rebuild(7), ServeEnqueue::Deduplicated);
+    ASSERT_EQ(book.run_pending(1), 1u);
+    EXPECT_EQ(seen_generation, refresh ? new_generation : old_generation);
+    ASSERT_NE(book.current()->find(7), nullptr);
+    EXPECT_EQ(book.current()->find(7)->tag, refresh ? 300u : 200u);
+    EXPECT_EQ(book.counters().rebuild_superseded, refresh ? 0u : 1u);
+  }
+}
+
+TEST(LivePublication, SameGenerationReaderBurstDoesNotScheduleAnotherRebuildOrAllocate) {
+  ServeRecordPolicy aging = no_ladders();
+  aging.max_age_ns = 1000;
+  const auto old = record_of(fit_a(), aging);
+  const auto fresh = rec_a();
+  ASSERT_NE(old, nullptr);
+  BuildBarrier barrier;
+  std::atomic<unsigned> calls{0};
+  ServeBook book({}, [&](const ServeRebuildRequest &q) {
+    ++calls;
+    barrier.arrive();
+    return std::optional<ServeBookEntry>{entry(q.expiry_id, fresh, 200)};
+  });
+  OpenBuildBarrier release{barrier};
+  ASSERT_TRUE(book.publish_expiry(entry(7, old, 100)));
+  auto reader = book.reader();
+  const auto query = req(100.0, Side::Call, kSpot, ServeTier::Ladder, ServeTier::Family,
+                         old->version().as_of_ns + 5000);
+  EXPECT_EQ(reader.serve(7, query).status, ServeStatus::Stale);
+  ASSERT_TRUE(barrier.wait());
+  unsigned stale = 0;
+  const auto allocations = testkit::count_allocations([&] {
+    for (unsigned i = 0; i < 20; ++i) {
+      stale += reader.serve(7, query).status == ServeStatus::Stale ? 1u : 0u;
+    }
+  });
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_EQ(stale, 20u);
+  barrier.open();
+  ASSERT_TRUE(book.wait_idle(std::chrono::seconds(5)));
+  EXPECT_EQ(calls, 1u);
+  EXPECT_EQ(book.counters().rebuild_followups, 0u);
+  EXPECT_EQ(book.counters().rebuilt, 1u);
+}
+
+TEST(LivePublication, RunPendingLimitIncludesFollowupsAfterAFailedCallback) {
+  const auto record = rec_a();
+  unsigned calls = 0;
+  ServeBook *owner = nullptr;
+  ServeBook book(inline_policy(), [&](const ServeRebuildRequest &q)
+      -> std::optional<ServeBookEntry> {
+    if (++calls == 1) {
+      EXPECT_EQ(owner->request_rebuild(q.expiry_id), ServeEnqueue::Deduplicated);
+      throw std::runtime_error("old input failed while a newer request was retained");
+    }
+    return entry(q.expiry_id, record, 300);
+  });
+  owner = &book;
+  ASSERT_EQ(book.request_rebuild(7), ServeEnqueue::Queued);
+  EXPECT_EQ(book.run_pending(1), 1u);
+  EXPECT_EQ(calls, 1u);
+  EXPECT_EQ(book.counters().queue_depth, 1u);
+  EXPECT_FALSE(book.wait_idle(std::chrono::milliseconds(0)));
+  EXPECT_EQ(book.run_pending(1), 1u);
+  EXPECT_EQ(calls, 2u);
+  EXPECT_TRUE(book.wait_idle(std::chrono::milliseconds(0)));
+  EXPECT_EQ(book.counters().rebuild_failed, 1u);
+  EXPECT_EQ(book.counters().rebuild_followups, 1u);
+  ASSERT_NE(book.current()->find(7), nullptr);
+  EXPECT_EQ(book.current()->find(7)->tag, 300u);
+}
+
+TEST(LivePublication, TwoPhaseBuildCannotOverwriteNewerPublicationOrRetirement) {
+  const auto newer = rec_b();
+  const auto &fit = fit_a();
+  for (const unsigned action : {0u, 1u, 2u, 3u}) {
+    ServeBook book(inline_policy());
+    BuildBarrier barrier;
+    std::optional<Result<ServeBuildStage>> result;
+    std::jthread builder([&] {
+      result = detail::serve_build_observed(book, entry(7, nullptr, 100), fit,
+          serve_record_policy_tick(), true, [&] { barrier.arrive(); });
+    });
+    OpenBuildBarrier release{barrier};
+    ASSERT_TRUE(barrier.wait());
+    const auto first_version = book.version();
+    if (action == 0) {
+      ASSERT_TRUE(book.publish_expiry(entry(7, newer, 200)));
+    } else if (action == 1 || action == 3) {
+      auto tx = book.transaction();
+      tx.retire(7);
+      ASSERT_TRUE(tx.commit());
+      if (action == 3) ASSERT_TRUE(book.publish_expiry(entry(7, newer, 200)));
+    } else {
+      ASSERT_TRUE(book.publish_expiry(entry(8, newer, 200)));
+    }
+    barrier.open();
+    builder.join();
+    ASSERT_TRUE(result.has_value());
+    if (action == 2) {
+      ASSERT_TRUE(result->has_value());
+      EXPECT_EQ((*result)->first_version, first_version);
+      EXPECT_EQ((*result)->final_version, first_version + 2);
+      ASSERT_NE(book.current()->find(8), nullptr);
+      EXPECT_EQ(book.current()->find(8)->tag, 200u);
+    } else {
+      ASSERT_FALSE(result->has_value());
+      EXPECT_EQ(result->error().code(), ErrorCode::Unavailable);
+      EXPECT_EQ(book.version(), first_version + (action == 3 ? 2 : 1));
+      if (action == 0 || action == 3) {
+        ASSERT_NE(book.current()->find(7), nullptr);
+        EXPECT_EQ(book.current()->find(7)->tag, 200u);
+      } else {
+        EXPECT_EQ(book.current()->find(7), nullptr);
+      }
+    }
+  }
+}
+
+TEST(LivePublication, TwoPhaseBuildHonorsAcceptedOwnerIntentButNotAFullQueueRefusal) {
+  const auto newer = rec_b();
+  const auto &fit = fit_a();
+  for (const bool full : {false, true}) {
+    ServeBook book(inline_policy(1), [&](const ServeRebuildRequest &q) {
+      return std::optional<ServeBookEntry>{entry(q.expiry_id, newer, 300)};
+    });
+    if (full) ASSERT_EQ(book.request_rebuild(8), ServeEnqueue::Queued);
+    BuildBarrier barrier;
+    std::optional<Result<ServeBuildStage>> result;
+    std::jthread builder([&] {
+      result = detail::serve_build_observed(book, entry(7, nullptr, 100), fit,
+          serve_record_policy_tick(), true, [&] { barrier.arrive(); });
+    });
+    OpenBuildBarrier release{barrier};
+    ASSERT_TRUE(barrier.wait());
+    const auto first = book.version();
+    EXPECT_EQ(book.request_rebuild(7), full ? ServeEnqueue::Full : ServeEnqueue::Queued);
+    barrier.open();
+    builder.join();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->has_value(), full);
+    if (!full) {
+      ASSERT_FALSE(result->has_value());
+      EXPECT_EQ(result->error().code(), ErrorCode::Unavailable);
+    }
+    EXPECT_EQ(book.version(), first + (full ? 1 : 0));
+    EXPECT_EQ(book.run_pending(1), 1u);
+    ASSERT_NE(book.current()->find(7), nullptr);
+    EXPECT_EQ(book.current()->find(7)->tag, full ? 100u : 300u);
+  }
 }
 
 // ── Typed responses ──────────────────────────────────────────────────────────────────────

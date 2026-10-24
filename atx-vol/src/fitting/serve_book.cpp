@@ -10,10 +10,12 @@
 #include <condition_variable>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <stop_token>
 #include <thread>
 #include <utility>
 
+#include "fitting/serve_book_detail.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // build_serve_record_on (the stage's phase 2)
 
 namespace atx::vol {
@@ -93,6 +95,15 @@ struct ServeBook::State {
   std::atomic<std::uint64_t> number{0};
   std::mutex publish_mutex;
   std::vector<VersionPtr> graveyard;
+  struct Generation {
+    std::uint64_t expiry_id;
+    std::uint64_t value;
+    std::uint64_t input_revision = 0;
+  };
+  // Includes tombstones for absent/retired expiries. A whole-book replacement
+  // advances clear_generation, invalidating even requests for never-present IDs.
+  std::vector<Generation> generations; // sorted by expiry_id, publish_mutex
+  std::uint64_t clear_generation = 0;
 
   // The rebuild queue: a ring of queue_capacity requests and the expiries being rebuilt,
   // both guarded by queue_mutex (the ring never reallocates).
@@ -102,7 +113,14 @@ struct ServeBook::State {
   std::vector<ServeRebuildRequest> ring;
   std::size_t head = 0;
   std::size_t size = 0;
-  std::vector<std::uint64_t> inflight;
+  struct Inflight {
+    ServeRebuildRequest active;
+    std::optional<ServeRebuildRequest> next;
+    bool running = true;
+  };
+  // One follow-up slot per active expiry survives even when the ring is full.
+  // Completed slots with a follow-up are popped before the ring, without growing it.
+  std::vector<Inflight> inflight;
   bool stopping = false;
   std::vector<std::jthread> workers; // joined by ~ServeBook, before the state can go
 
@@ -114,6 +132,8 @@ struct ServeBook::State {
   std::atomic<std::uint64_t> rejected{0};
   std::atomic<std::uint64_t> rebuilt{0};
   std::atomic<std::uint64_t> rebuild_failed{0};
+  std::atomic<std::uint64_t> rebuild_superseded{0};
+  std::atomic<std::uint64_t> rebuild_followups{0};
   std::atomic<std::int64_t> queue_age_max{0};
   std::atomic<std::int64_t> rebuild_max{0};
   std::atomic<std::int64_t> queue_age_sum{0};
@@ -134,18 +154,67 @@ struct ServeBook::State {
     graveyard.resize(keep);
   }
 
+  // Caller holds publish_mutex. No allocation on request/read paths.
+  [[nodiscard]] Generation token(std::uint64_t id) const noexcept {
+    const auto at = std::lower_bound(generations.begin(), generations.end(), id,
+        [](const Generation &g, std::uint64_t key) { return g.expiry_id < key; });
+    return at != generations.end() && at->expiry_id == id
+        ? *at : Generation{id, clear_generation, 0};
+  }
+
+  // Explicit owner intent is an input change even without a published record.
+  // Only this owner path may allocate a new token; reader enqueue never does.
+  [[nodiscard]] std::uint64_t advance_input(std::uint64_t id) {
+    const auto at = std::lower_bound(generations.begin(), generations.end(), id,
+        [](const Generation &g, std::uint64_t key) { return g.expiry_id < key; });
+    if (at == generations.end() || at->expiry_id != id) {
+      generations.insert(at, Generation{id, clear_generation, 1});
+      return 1;
+    }
+    if (at->input_revision == std::numeric_limits<std::uint64_t>::max()) {
+      throw std::overflow_error("serve book: input revision exhausted");
+    }
+    return ++at->input_revision;
+  }
+
   // One version from the current one and `ops` (applied in order), swapped in. Strong
   // guarantee: everything that can throw happens before the store.
-  [[nodiscard]] std::uint64_t commit(std::span<const Op> ops, bool replace) {
+  // A conditional commit returns zero if superseded, without publishing a version.
+  [[nodiscard]] std::uint64_t commit(std::span<const Op> ops, bool replace,
+      const ServeRebuildRequest *expected = nullptr) {
     std::vector<VersionPtr> dead;
     std::uint64_t committed = 0;
     {
       std::lock_guard<std::mutex> lock(publish_mutex);
+      if (expected != nullptr) {
+        // Owner requests advance input_revision under this same lock. Comparing
+        // both token halves and publishing are indivisible with newer intent.
+        const auto current_token = token(expected->expiry_id);
+        if (current_token.value != expected->generation ||
+            current_token.input_revision != expected->input_revision) return 0;
+      }
       VersionPtr base = current.load(std::memory_order_acquire);
+      if (base->number == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("serve book: generation exhausted");
+      }
       auto next = std::make_shared<ServeBookVersion>();
+      next->number = base->number + 1;
+      std::vector<Generation> next_generations;
+      if (!replace) next_generations = generations;
       if (!replace) next->entries = base->entries;
       std::vector<ServeBookEntry> &e = next->entries;
       for (const Op &op : ops) {
+        if (!replace) {
+          const auto token = std::lower_bound(next_generations.begin(), next_generations.end(),
+              op.entry.expiry_id,
+              [](const Generation &g, std::uint64_t id) { return g.expiry_id < id; });
+          if (token != next_generations.end() && token->expiry_id == op.entry.expiry_id) {
+            token->value = next->number;
+            token->input_revision = 0;
+          } else {
+            next_generations.insert(token, Generation{op.entry.expiry_id, next->number});
+          }
+        }
         const auto at = std::lower_bound(
             e.begin(), e.end(), op.entry.expiry_id,
             [](const ServeBookEntry &x, std::uint64_t id) noexcept { return x.expiry_id < id; });
@@ -158,11 +227,12 @@ struct ServeBook::State {
           e.insert(at, op.entry);
         }
       }
-      next->number = base->number + 1;
       next->published_steady_ns = steady_ns();
       graveyard.reserve(graveyard.size() + 1);
       dead.reserve(graveyard.size() + 1);
       committed = next->number;
+      generations.swap(next_generations);
+      if (replace) clear_generation = committed;
       current.store(VersionPtr(std::move(next)), std::memory_order_release);
       number.store(committed, std::memory_order_release);
       graveyard.push_back(std::move(base));
@@ -173,30 +243,51 @@ struct ServeBook::State {
     return committed; // `dead` is freed here: on the publisher, outside the lock
   }
 
-  // A rebuild request for `id`; allocates nothing. Deduplicated against the queued AND the
-  // running requests (an expiry is rebuilt once per staleness). `check_moved`: refuse
+  // A reader rebuild request for `id` allocates nothing. Same-token reader requests
+  // deduplicate. A new generation or explicit owner intent replaces queued work or
+  // records one follow-up for running work. `check_moved`: refuse
   // (Moved) when the book published past `pinned`, so the reader answers from that.
   [[nodiscard]] Enq enqueue(std::uint64_t id, ServeRebuildReason reason, std::uint64_t pinned,
-                            bool check_moved) {
+                            bool check_moved, bool owner_request = false) {
     if (!rebuild) return Enq::NoRebuild;
     {
+      std::lock_guard<std::mutex> published_lock(publish_mutex);
       std::lock_guard<std::mutex> lock(queue_mutex);
       if (stopping) return Enq::NoRebuild;
-      bool known = false;
-      for (std::size_t i = 0; i < size && !known; ++i) {
-        known = ring[(head + i) % ring.size()].expiry_id == id;
-      }
-      for (std::size_t i = 0; i < inflight.size() && !known; ++i) known = inflight[i] == id;
-      if (known) {
+      if (check_moved && pinned != number.load(std::memory_order_acquire)) return Enq::Moved;
+      const auto current_token = token(id);
+      ServeRebuildRequest fresh{id, reason, steady_ns(), current_token.value,
+                                 current_token.input_revision};
+      const auto owner_intent = [&] {
+        if (owner_request) fresh.input_revision = advance_input(id);
+      };
+      const auto changed = [&](const ServeRebuildRequest &old) {
+        return old.generation != fresh.generation || old.input_revision != fresh.input_revision;
+      };
+      for (std::size_t i = 0; i < size; ++i) {
+        auto &queued = ring[(head + i) % ring.size()];
+        if (queued.expiry_id != id) continue;
+        owner_intent();
+        if (changed(queued)) queued = fresh;
         deduplicated.fetch_add(1, std::memory_order_relaxed);
         return Enq::Deduplicated;
       }
-      if (check_moved && pinned != number.load(std::memory_order_acquire)) return Enq::Moved;
+      for (auto &active : inflight) {
+        if (active.active.expiry_id != id) continue;
+        owner_intent();
+        if (changed(active.active)) {
+          if (active.running) active.next = fresh;
+          else active.active = fresh;
+        }
+        deduplicated.fetch_add(1, std::memory_order_relaxed);
+        return Enq::Deduplicated;
+      }
       if (size == ring.size()) {
         rejected.fetch_add(1, std::memory_order_relaxed);
         return Enq::Full;
       }
-      ring[(head + size) % ring.size()] = ServeRebuildRequest{id, reason, steady_ns()};
+      owner_intent(); // a refused/full request must not invalidate existing work
+      ring[(head + size) % ring.size()] = fresh;
       ++size;
       enqueued.fetch_add(1, std::memory_order_relaxed);
     }
@@ -204,12 +295,24 @@ struct ServeBook::State {
     return Enq::Queued;
   }
 
-  // Caller holds queue_mutex and size > 0.
+  // Caller holds queue_mutex.
+  [[nodiscard]] bool pending() const noexcept {
+    return size > 0 || std::any_of(inflight.begin(), inflight.end(),
+                                   [](const Inflight &x) { return !x.running; });
+  }
+
+  // Caller holds queue_mutex and pending() is true.
   [[nodiscard]] ServeRebuildRequest pop_locked() {
+    for (auto &active : inflight) {
+      if (!active.running) {
+        active.running = true;
+        return active.active;
+      }
+    }
     const ServeRebuildRequest q = ring[head];
+    inflight.push_back(Inflight{q, std::nullopt, true});
     head = (head + 1) % ring.size();
     --size;
-    inflight.push_back(q.expiry_id);
     return q;
   }
 
@@ -221,13 +324,14 @@ struct ServeBook::State {
     raise_max(queue_age_max, age);
     queue_age_sum.fetch_add(age, std::memory_order_relaxed);
     bool ok = false;
+    bool superseded = false;
     try {
       std::optional<ServeBookEntry> e = rebuild(q);
       if (e && e->record) {
         e->expiry_id = q.expiry_id;
         const std::array<Op, 1> op{Op{false, std::move(*e)}};
-        (void)commit(op, false);
-        ok = true;
+        ok = commit(op, false, &q) != 0;
+        superseded = !ok;
       }
     } catch (...) {
       ok = false;
@@ -237,14 +341,29 @@ struct ServeBook::State {
       raise_max(rebuild_max, done);
       rebuild_sum.fetch_add(done, std::memory_order_relaxed);
       rebuilt.fetch_add(1, std::memory_order_relaxed);
+    } else if (superseded) {
+      rebuild_superseded.fetch_add(1, std::memory_order_relaxed);
     } else {
       rebuild_failed.fetch_add(1, std::memory_order_relaxed);
     }
     {
       std::lock_guard<std::mutex> lock(queue_mutex);
-      const auto at = std::find(inflight.begin(), inflight.end(), q.expiry_id);
-      if (at != inflight.end()) inflight.erase(at);
+      const auto at = std::find_if(inflight.begin(), inflight.end(), [&](const Inflight &x) {
+        return x.active.expiry_id == q.expiry_id;
+      });
+      if (at != inflight.end()) {
+        if (at->next && !stopping) {
+          at->active = *at->next;
+          at->next.reset();
+          at->running = false;
+          enqueued.fetch_add(1, std::memory_order_relaxed);
+          rebuild_followups.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          inflight.erase(at);
+        }
+      }
     }
+    queue_cv.notify_one();
     idle_cv.notify_all();
   }
 
@@ -253,7 +372,7 @@ struct ServeBook::State {
       ServeRebuildRequest q;
       {
         std::unique_lock<std::mutex> lock(queue_mutex);
-        if (!queue_cv.wait(lock, stop, [this] { return size > 0 || stopping; })) return;
+        if (!queue_cv.wait(lock, stop, [this] { return pending() || stopping; })) return;
         if (stopping) return;
         q = pop_locked();
       }
@@ -389,7 +508,7 @@ ServeBookReader ServeBook::reader() const { return ServeBookReader(state_); }
 const ServeBookPolicy &ServeBook::policy() const noexcept { return state_->policy; }
 
 ServeEnqueue ServeBook::request_rebuild(std::uint64_t expiry_id, ServeRebuildReason reason) {
-  switch (state_->enqueue(expiry_id, reason, 0, false)) {
+  switch (state_->enqueue(expiry_id, reason, 0, false, true)) {
   case Enq::Queued:
     return ServeEnqueue::Queued;
   case Enq::Deduplicated:
@@ -410,7 +529,7 @@ std::size_t ServeBook::run_pending(std::size_t max) {
     ServeRebuildRequest q;
     {
       std::lock_guard<std::mutex> lock(s.queue_mutex);
-      if (s.size == 0) break;
+      if (!s.pending()) break;
       q = s.pop_locked();
     }
     s.run(q);
@@ -452,9 +571,13 @@ ServeBookCounters ServeBook::counters() const {
   c.rejected = s.rejected.load();
   c.rebuilt = s.rebuilt.load();
   c.rebuild_failed = s.rebuild_failed.load();
+  c.rebuild_superseded = s.rebuild_superseded.load();
+  c.rebuild_followups = s.rebuild_followups.load();
   {
     std::lock_guard<std::mutex> lock(s.queue_mutex);
     c.queue_depth = s.size;
+    c.queue_depth += static_cast<std::uint64_t>(std::count_if(s.inflight.begin(), s.inflight.end(),
+        [](const State::Inflight &x) { return !x.running || x.next.has_value(); }));
   }
   c.queue_age_max_ns = s.queue_age_max.load();
   c.rebuild_max_ns = s.rebuild_max.load();
@@ -512,8 +635,11 @@ Answer ServeBookReader::answer(std::uint64_t expiry_id, const Request &request, 
       }
     }
     if (!queue) return a;
-    const Enq q = state_->enqueue(expiry_id, reason, version_->number, !pinned && attempt == 0);
-    if (q == Enq::Moved) continue; // a newer version exists: answer from it
+    const Enq q = state_->enqueue(expiry_id, reason, version_->number, true);
+    if (q == Enq::Moved) {
+      if (!pinned && attempt == 0) continue; // one refresh; a chain keeps its pinned version
+      return a; // never enqueue stale reader intent against a newer input token
+    }
     if (q == Enq::Full && a.route == ServeRoute::Rebuild) a.status = ServeStatus::BudgetExhausted;
     return a;
   }
@@ -577,10 +703,35 @@ Status ServeBookReader::serve_chain(double spot, std::int64_t now_ns,
 
 // ── The serve_build stage ────────────────────────────────────────────────────────────────
 
+struct detail::ServeBookAccess {
+  static ServeRebuildRequest capture(const ServeBook &book, std::uint64_t id) {
+    auto &state = *book.state_;
+    std::lock_guard lock(state.publish_mutex);
+    const auto token = state.token(id);
+    return ServeRebuildRequest{id, ServeRebuildReason::Requested, steady_ns(),
+                               token.value, token.input_revision};
+  }
+  static Result<std::uint64_t> publish(ServeBook &book, ServeBookEntry entry,
+                                      const ServeRebuildRequest &expected) {
+    const std::array<ServeBookTransaction::Op, 1> ops{
+        ServeBookTransaction::Op{false, std::move(entry)}};
+    const auto version = book.state_->commit(ops, false, &expected);
+    if (version == 0) return Err(ErrorCode::Unavailable, "serve build: superseded expiry input");
+    return Ok(version);
+  }
+};
+
 Result<ServeBuildStage> serve_build(ServeBook &book, const ServeBookEntry &key,
                                     const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
                                     bool two_phase) {
+  return detail::serve_build_observed(book, key, fit, policy, two_phase, {});
+}
+
+Result<ServeBuildStage> detail::serve_build_observed(ServeBook &book, const ServeBookEntry &key,
+    const QuoteSliceFit &fit, const ServeRecordPolicy &policy, bool two_phase,
+    const std::function<void()> &after_first) {
   const auto t0 = Clock::now();
+  ServeRebuildRequest expected = detail::ServeBookAccess::capture(book, key.expiry_id);
   ServeBuildStage out;
   ServeBookEntry e = key;
   std::shared_ptr<const SliceServeRecord> first;
@@ -591,16 +742,19 @@ Result<ServeBuildStage> serve_build(ServeBook &book, const ServeBookEntry &key,
     if (!r1) return Err(r1.error());
     first = *r1;
     e.record = first;
-    const Result<std::uint64_t> v1 = book.publish_expiry(e);
+    const Result<std::uint64_t> v1 = detail::ServeBookAccess::publish(book, e, expected);
     if (!v1) return Err(v1.error());
     out.first_version = *v1;
+    expected.generation = *v1;
+    expected.input_revision = 0;
     out.first_usable_us = us_since(t0);
+    if (after_first) after_first();
   }
   Result<std::shared_ptr<const SliceServeRecord>> r2 =
       first ? detail::build_serve_record_on(fit, policy, *first) : build_serve_record(fit, policy);
   if (!r2) return Err(r2.error()); // phase 1, when published, stays live
   e.record = *r2;
-  const Result<std::uint64_t> v2 = book.publish_expiry(e);
+  const Result<std::uint64_t> v2 = detail::ServeBookAccess::publish(book, e, expected);
   if (!v2) return Err(v2.error());
   out.final_version = *v2;
   out.total_us = us_since(t0);

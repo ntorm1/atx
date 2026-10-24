@@ -50,9 +50,12 @@
 // ## Async rebuild queue
 //
 // A bounded ring (ServeBookPolicy::queue_capacity, allocated once) of rebuild requests,
-// one per expiry at a time (a request for an expiry already queued is deduplicated).
+// one per expiry at a time. Same-token reader requests deduplicate; newer input
+// replaces queued intent or retains one follow-up beside an in-flight request.
 // ServeBookPolicy::build_workers std::jthread workers (never the pricing pool) pop them,
-// call the owner's ServeRebuildFn and publish what it returns; build_workers = 0 leaves
+// call the owner's ServeRebuildFn and conditionally publish what it returns;
+// replacement/retirement or a newer owner request discards stale work. Unrelated
+// expiry publication does not invalidate it. build_workers = 0 leaves
 // the queue to run_pending() on the owner's thread. A rebuild that throws or returns
 // nothing publishes nothing (the old version stays live) and is counted.
 //
@@ -106,6 +109,8 @@ struct ServeRebuildRequest {
   std::uint64_t expiry_id = 0;
   ServeRebuildReason reason = ServeRebuildReason::Requested;
   std::int64_t enqueued_steady_ns = 0;
+  std::uint64_t generation = 0; // book-owned publication/tombstone generation
+  std::uint64_t input_revision = 0; // explicit owner requests within that generation
 };
 
 // The owner's rebuild: the entry to publish for the request (record, instants, tag), or
@@ -132,17 +137,22 @@ struct ServeBookCounters {
   std::uint64_t rejected = 0;        // ... refused: the queue was full (BudgetExhausted)
   std::uint64_t rebuilt = 0;         // rebuilds published
   std::uint64_t rebuild_failed = 0;  // rebuilds that threw or returned nothing
-  std::uint64_t queue_depth = 0;     // requests waiting (now)
+  std::uint64_t queue_depth = 0;     // ring plus retained follow-ups waiting (now)
   std::int64_t queue_age_max_ns = 0; // enqueue -> a worker took it
   std::int64_t rebuild_max_ns = 0;   // enqueue -> published
   std::int64_t queue_age_sum_ns = 0;
   std::int64_t rebuild_sum_ns = 0;
+  std::uint64_t rebuild_superseded = 0; // completed work discarded after newer input/publication
+  std::uint64_t rebuild_followups = 0;  // coalesced newer requests scheduled after running work
 };
 
 enum class ServeEnqueue : std::uint8_t { Queued = 0, Deduplicated = 1, Full = 2, NoRebuild = 3 };
 
 class ServeBook;
 class ServeBookReader;
+namespace detail {
+struct ServeBookAccess;
+}
 
 // Collects puts and retirements; commit() publishes them as ONE new version applied to
 // the version current at commit. Destroyed without commit(): nothing is published.
@@ -192,6 +202,10 @@ public:
   [[nodiscard]] ServeBookReader reader() const;
   [[nodiscard]] const ServeBookPolicy &policy() const noexcept;
 
+  // Explicit owner intent: accepted requests advance the expiry's input revision,
+  // even when deduplicated into existing work. A running older build is discarded
+  // and one latest follow-up is retained. May allocate a new expiry token; reader
+  // requests remain allocation-free. Full/NoRebuild does not invalidate old work.
   [[nodiscard]] ServeEnqueue
   request_rebuild(std::uint64_t expiry_id,
                   ServeRebuildReason reason = ServeRebuildReason::Requested);
@@ -207,6 +221,7 @@ public:
 
 private:
   friend class ServeBookTransaction;
+  friend struct detail::ServeBookAccess;
   std::shared_ptr<State> state_;
 };
 
@@ -286,6 +301,11 @@ private:
 // (its serve_handoff when it carries one) and publishes it under `key` (expiry_id,
 // instants, tag; key.record is ignored). Two-phase by default: first the record without
 // ladders (tiers 1-2, the first usable bundle), then the laddered one replacing it.
+// Both publications are conditional on the expiry's captured input token; phase 2
+// expects phase 1. A replacement, retirement or accepted owner rebuild request
+// supersedes the build (Unavailable), preserving current state. An unrelated
+// expiry change does not invalidate it. A failed phase 2 leaves phase 1 only if
+// no newer owner publication has replaced/retired it.
 struct ServeBuildStage {
   std::uint64_t first_version = 0; // the version that first served the expiry
   std::uint64_t final_version = 0; // the version holding the final record

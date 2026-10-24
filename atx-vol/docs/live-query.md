@@ -16,10 +16,10 @@ fit_quote_slice / fit_quote_surface
                                                          (fit clock: two family prices / side)
 serve_build stage (after the fit clock closes; quote-bench: graded.serve_records)
   phase 1: build_serve_record(fit, ladders = false)     tiers 1-2: the first usable bundle
-           -> ServeBook::publish_expiry                 version N
+           -> conditional expiry publication              version N
   phase 2: detail::build_serve_record_on(fit, policy, phase-1 record)
                                                          the same families, + ladders (tier 0)
-           -> ServeBook::publish_expiry                 version N + 1
+           -> conditional on phase-1 input token           later version, if still current
 readers (one ServeBookReader per thread)
   serve / implied_vol / serve_chain                     tiers 0-1 (the primary tier cap)
   misses -> typed route; Stale / Missing / Invalidated -> async rebuild queue
@@ -124,13 +124,43 @@ Unsupported risk stays NaN with a typed reason, never zero
 
 ### The async rebuild queue
 
-A ring of `queue_capacity` requests allocated at construction. A request for an expiry that
-is queued or being rebuilt is deduplicated; a request from a reader whose pinned version is
-already older than the book's is not queued at all (the reader re-answers from the newer
-version). `build_workers` `std::jthread`s (never the pricing pool) pop requests, call the
-owner's `ServeRebuildFn`, and publish what it returns; `build_workers = 0` leaves the queue to
-`run_pending()`. A rebuild that throws or returns nothing publishes nothing (counted). The
-counters report queue depth, queue age and rebuild completion (max and sum).
+A ring of `queue_capacity` requests is allocated at construction. Each request captures
+an expiry-specific token: publication generation and explicit owner input revision.
+Publication and retirement advance that expiry's generation, including a tombstone for an
+absent expiry. Whole-book replacement advances a clear generation covering every ID and
+reclaims older tombstones. Publication of an unrelated expiry leaves the token unchanged.
+
+The worker calls the owner's `ServeRebuildFn` outside all book locks. It publishes only
+when the captured token still matches under the publication lock. A stale completion is
+discarded and counted as `rebuild_superseded`, with no new book version. Throws or empty
+results remain `rebuild_failed`. Thus old work cannot overwrite a newer publication or
+resurrect a retirement, even when the same record/tag was removed and re-added.
+
+Repeated reader requests at the same token deduplicate without allocation. An explicit
+`request_rebuild` signals fresh owner input and advances its revision, even if coalesced.
+Queued work is replaced by the newest request; running work retains one latest follow-up.
+That slot survives a full ring and is consumed before ring entries after the current
+callback finishes. `run_pending(max)` still limits actual callbacks; `queue_depth` includes
+retained follow-ups and `rebuild_followups` counts those scheduled after running work.
+Only the explicit owner request may allocate a previously unseen token. A Full/NoRebuild
+refusal does not invalidate current work.
+
+Lock order is publication then queue whenever both are required. Reader refusals take
+these locks to capture a consistent token; successful reads keep the existing
+book-counter check. A stale pinned reader never queues against newer input: ordinary
+queries retry once from a fresh version; chains keep their single pinned answer without
+enqueueing it. Workers and `run_pending()` release the queue lock before calling user code.
+
+`serve_build` uses the same conditional publication for its first record and second-phase
+ladders. Phase 2 expects the token created by phase 1. Intervening publication, retirement
+or accepted owner rebuild intent returns `Unavailable` and preserves newer state; an
+unrelated expiry publication does not prevent completion. Its private observation seam
+lets tests pause after phase 1 while another thread publishes or retires, without sleeps.
+
+Deterministic worker-barrier regressions cover replacement, retirement/re-add, unknown-ID
+tombstones, whole-book replacement, unrelated-expiry publication, full-ring coalescing,
+queued refresh, reader burst allocation/deduplication, failed-callback follow-ups and
+two-phase publication. These are lifecycle correctness checks, not latency qualification.
 
 ## 3. Clocks (B0)
 
