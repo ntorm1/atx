@@ -308,3 +308,32 @@ tensor: the ladder count is bounded by 2 × nodes.
   never a source.
 - **Chain path.** The tier-1 chain is about 1.5 ms per 300 contracts. The tick-rate chain
   is tier 0.
+
+## Withheld support: merge finding R1 (2026-10-24)
+
+A record owns the fit's `withheld_nodes` mask. Exact node sides and either adjacent
+open interpolation segment refuse on that side with `OutOfDomain` / `Refit`, no
+price, no IV and no pricing evaluation. The other side and the adjacent unmasked
+nodes remain supported. The rule precedes every record price/IV tier, including
+Cold requests and moved spots; the private contract-inspection seam also refuses.
+PriceOnly remains a separate, valid price-serving classification.
+
+An empty mask means full support. A nonempty mask with a different node count or
+bits other than call/put causes `InvalidArgument` during construction. The mask
+is copied, included in `fit_sha256`, and counted in `bytes().nodes`. Destroying or
+mutating the source fit cannot widen the record's support. Reads reuse the node
+binary search and allocate nothing.
+
+Five regressions failed on the reviewed economic baseline and passed after this
+fix. They cover both sides, both gaps, neighboring nodes, next-representable
+strikes, domain endpoints, moved spots, every tier, implied volatility, owned
+lifetime, digest side bits, malformed masks, and book/chain refusal propagation.
+All 67 focused serving tests pass, including the existing allocation/concurrency
+tests; the new restricted record and chain tests also allocate zero times.
+PCH-off checks cover the owning implementation and both changed test sources.
+Receipts are `acceptance/r1-red.xml`, `r1-serving-final.xml` and
+`r1-final-hygiene.log` under the `spy-qualified-r7-20261023` evidence root.
+
+This closes the in-memory serving-record bypass. Persisting or rejecting restricted
+fits in archives is the separate R3 requirement; this change does not implement
+archive support. Historical latency numbers above were not requalified here.

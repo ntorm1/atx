@@ -107,7 +107,7 @@ build_serve_record_on(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
 // H1's fast-path audit: the Newton distance of a volatility to the accurate kernel's root):
 // the fit's spot, the variance clock, the effective rate, the contract's yield (the node's at
 // a node, the record's carry between nodes) and the fit's kernel options. nullopt outside
-// the record's strike domain.
+// the strike domain and at withheld node sides or their adjacent open gaps.
 struct ServeRecordContract {
   double spot = 0.0;
   double tau = 0.0;

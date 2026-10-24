@@ -295,6 +295,7 @@ static_assert(kServeEdgeBand == kAlFamilyGreekEdgeBand, "the record's band is A0
 struct SliceServeRecord::Impl {
   ServeRecordPolicy policy{};
   std::vector<ServedNode> nodes;
+  std::vector<std::uint8_t> withheld_nodes; // owned C2 support; empty means full support
   std::vector<std::int32_t> ladder_of; // 2 per node (call, put): index into ladders, -1 none
   std::vector<NodeLadder> ladders;
   std::shared_ptr<const DeAmSigmaFamilies> families;
@@ -334,14 +335,12 @@ struct SliceServeRecord::Impl {
     const std::int32_t at = ladder_of[2 * node + side_slot(side)];
     return at < 0 ? nullptr : &ladders[static_cast<std::size_t>(at)];
   }
-  // The node index whose strike equals `strike` exactly, or nodes.size().
-  [[nodiscard]] std::size_t node_at(double strike) const noexcept {
+  // The first node at or above `strike`, or nodes.size(). Also brackets support gaps.
+  [[nodiscard]] std::size_t right_of(double strike) const noexcept {
     const auto it = std::lower_bound(
         nodes.begin(), nodes.end(), strike,
         [](const ServedNode &n, double value) { return n.strike < value; });
-    return (it != nodes.end() && it->strike == strike)
-               ? static_cast<std::size_t>(it - nodes.begin())
-               : nodes.size();
+    return static_cast<std::size_t>(it - nodes.begin());
   }
 };
 
@@ -945,6 +944,8 @@ template <class E> [[nodiscard]] std::uint8_t byte_of(E e) noexcept {
   for (const std::uint8_t m : fit.moved_nodes) d.add(m);
   d.add_size(fit.price_only_nodes.size());
   for (const std::uint8_t m : fit.price_only_nodes) d.add(m);
+  d.add_size(fit.withheld_nodes.size());
+  for (const std::uint8_t m : fit.withheld_nodes) d.add(m);
   d.add(byte_of(fit.curve->kind()));
   d.add(fit.curve->T());
   d.add(fit.curve->F());
@@ -1075,6 +1076,7 @@ void copy_basics(Impl &impl, const QuoteSliceFit &fit, const ServeRecordPolicy &
   impl.fast_opts = al_fast_profile(fit.al_opts);
   impl.curve = std::shared_ptr<const IVolCurve>(fit.curve->clone());
   impl.prices = fit.prices;
+  impl.withheld_nodes = fit.withheld_nodes;
   impl.ladder_of.assign(2 * fit.prices->nodes().size(), -1);
   impl.support.tau = impl.tau;
   impl.support.tau_min_family = kAlSigmaFamilyMinTau;
@@ -1241,7 +1243,7 @@ void finish_support(Impl &impl) {
 // EVERY geometry of the holder - the sigma family's and both (sigma, q) sides', each
 // allocated by construction whether or not a side was built (review-H0A m4).
 void measure_bytes(Impl &impl) {
-  impl.bytes.nodes = impl.nodes.size() * sizeof(ServedNode);
+  impl.bytes.nodes = impl.nodes.size() * sizeof(ServedNode) + impl.withheld_nodes.size();
   impl.bytes.ladders = impl.ladders.size() * sizeof(NodeLadder) +
                        impl.ladder_of.size() * sizeof(std::int32_t);
   impl.bytes.fixed = sizeof(Impl) + sizeof(SliceServeRecord);
@@ -1288,6 +1290,12 @@ build_record(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
       fit.prices->nodes().empty()) {
     return Err(ErrorCode::Unavailable, "serve record: the fit has no certified price slice");
   }
+  if ((!fit.withheld_nodes.empty() &&
+       fit.withheld_nodes.size() != fit.prices->nodes().size()) ||
+      std::any_of(fit.withheld_nodes.begin(), fit.withheld_nodes.end(),
+                  [](std::uint8_t bits) { return bits > 3u; })) {
+    return Err(ErrorCode::InvalidArgument, "serve record: malformed withheld support mask");
+  }
   if (supplied && holder_mismatched(*supplied, fit)) {
     return Err(ErrorCode::InvalidArgument,
                "serve record: the supplied families were built for another expiry");
@@ -1322,6 +1330,7 @@ struct Contract {
   Side side = Side::Call;
   double spot = 0.0;
   bool at_fit = false;
+  bool supported = false;
   std::size_t node = 0; // impl.nodes.size(): between nodes
   const ServedNodeSide *served = nullptr;
   double sigma = kNaN; // the sticky-strike volatility
@@ -1334,7 +1343,17 @@ struct Contract {
   c.side = side;
   c.spot = spot;
   c.at_fit = spot == impl.spot;
-  c.node = impl.node_at(strike);
+  const std::size_t right = impl.right_of(strike);
+  const bool is_node = right < impl.nodes.size() && impl.nodes[right].strike == strike;
+  c.node = is_node ? right : impl.nodes.size();
+  if (right == impl.nodes.size() || (!is_node && right == 0u)) return c;
+  if (!impl.withheld_nodes.empty()) {
+    if (impl.withheld_nodes.size() != impl.nodes.size()) return c;
+    const unsigned bit = side == Side::Call ? 1u : 2u;
+    if ((impl.withheld_nodes[right] & bit) != 0u ||
+        (!is_node && (impl.withheld_nodes[right - 1u] & bit) != 0u)) return c;
+  }
+  c.supported = true;
   if (c.node < impl.nodes.size()) {
     c.served = side == Side::Call ? &impl.nodes[c.node].call : &impl.nodes[c.node].put;
     c.sigma = serves_sigma(*c.served) ? c.served->sigma : kNaN;
@@ -1806,15 +1825,19 @@ ServeAnswer SliceServeRecord::serve(const ServeRequest &request) const {
     refuse(a, stale, stale_route, mask);
     return a;
   }
-  if (impl.dated_cash) {
-    refuse(a, ServeStatus::TierUnavailable, ServeRoute::ColdPath, mask);
-    return a;
-  }
   if (!(request.strike >= impl.strike_lo && request.strike <= impl.strike_hi)) {
     refuse(a, ServeStatus::OutOfDomain, ServeRoute::Refit, mask);
     return a;
   }
   const Contract c = resolve(impl, request.strike, request.side, request.spot);
+  if (!c.supported) {
+    refuse(a, ServeStatus::OutOfDomain, ServeRoute::Refit, mask);
+    return a;
+  }
+  if (impl.dated_cash) {
+    refuse(a, ServeStatus::TierUnavailable, ServeRoute::ColdPath, mask);
+    return a;
+  }
   if (c.served != nullptr && c.served->status == QuoteSliceEvaluationStatus::PriceOnly) {
     refuse(a, ServeStatus::PriceOnly, c.at_fit ? ServeRoute::None : ServeRoute::Refit, mask);
     a.price_only_reason = c.served->reason; // C0's reason and interval travel with the answer
@@ -1869,14 +1892,19 @@ ServeIvAnswer SliceServeRecord::implied_vol(const ServeIvRequest &request) const
     return a;
   }
   if (!fresh(impl, request.now_ns, a.age_ns, a.status, a.route)) return a;
-  // A Cold request is a route, never a solve inside the record (review-H0A m5).
-  if (request.tier == ServeTier::Cold || impl.dated_cash) return a; // TierUnavailable
   if (!(request.strike >= impl.strike_lo && request.strike <= impl.strike_hi)) {
     a.status = ServeStatus::OutOfDomain;
     a.route = ServeRoute::Refit;
     return a;
   }
   const Contract c = resolve(impl, request.strike, request.side, request.spot);
+  if (!c.supported) {
+    a.status = ServeStatus::OutOfDomain;
+    a.route = ServeRoute::Refit;
+    return a;
+  }
+  // A Cold request is a route, never a solve inside the record (review-H0A m5).
+  if (request.tier == ServeTier::Cold || impl.dated_cash) return a; // TierUnavailable
   // The L1c gate in front of every inversion (american_iv.hpp al_non_monotone_gate).
   const double zero_vol = zero_vol_american(c.spot, c.strike, impl.tau, impl.rate, c.q, c.side);
   if (!(request.target_price - zero_vol > al_non_monotone_gate(c.strike, impl.tau, impl.al_opts))) {
@@ -2145,6 +2173,7 @@ std::optional<ServeRecordContract> serve_record_contract(const SliceServeRecord 
     return std::nullopt;
   }
   const Contract c = resolve(impl, strike, side, impl.spot);
+  if (!c.supported) return std::nullopt;
   return ServeRecordContract{impl.spot, impl.tau, impl.rate, c.q, impl.al_opts};
 }
 

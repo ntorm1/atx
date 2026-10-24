@@ -495,6 +495,64 @@ struct ChainColumns {
   [[nodiscard]] ChainTickOutputs out() { return {price, delta, gamma, vega, theta, tick}; }
 };
 
+TEST(LivePublication, WithheldSupportRefusesBookIvAndChainWithoutFallbackPrices) {
+  QuoteSliceFit fit = fit_value(0.0);
+  const auto nodes = fit.prices->nodes();
+  const std::size_t i = nodes.size() / 2;
+  fit.withheld_nodes.assign(nodes.size(), 0u);
+  fit.withheld_nodes[i] = 2u;
+  const auto record = record_of(fit, no_ladders());
+  ASSERT_NE(record, nullptr);
+  ServeBook book(inline_policy());
+  ASSERT_TRUE(book.publish_expiry(entry(7, record)).has_value());
+  auto reader = book.reader();
+  ChainColumns chain(6);
+  for (const double strike : {nodes[i].strike,
+                             (nodes[i - 1].strike + nodes[i].strike) / 2.0,
+                             (nodes[i].strike + nodes[i + 1].strike) / 2.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      chain.id.push_back(7);
+      chain.strike.push_back(strike);
+      chain.side.push_back(side);
+    }
+    const auto answer = reader.serve(7, req(strike, Side::Put, kSpot,
+                                           ServeTier::Ladder, ServeTier::Certified));
+    EXPECT_EQ(answer.status, ServeStatus::OutOfDomain);
+    EXPECT_EQ(answer.route, ServeRoute::Refit);
+    EXPECT_TRUE(std::isnan(answer.price));
+    ServeIvRequest iv;
+    iv.strike = strike;
+    iv.side = Side::Put;
+    iv.spot = kSpot;
+    iv.target_price = 4.0;
+    const auto identified = reader.implied_vol(7, iv);
+    EXPECT_EQ(identified.status, ServeStatus::OutOfDomain);
+    EXPECT_EQ(identified.route, ServeRoute::Refit);
+    EXPECT_TRUE(std::isnan(identified.sigma));
+  }
+  for (const double spot : {kSpot, 1.002 * kSpot}) {
+    Status status;
+    const auto allocations = testkit::count_allocations([&] {
+      status = reader.serve_chain(spot, 0, chain.view(), ServeTier::Ladder,
+                                 ServeTier::Family, chain.out(), chain.served);
+    });
+    ASSERT_TRUE(status.has_value());
+    EXPECT_EQ(allocations, 0u);
+    for (std::size_t k = 0; k < chain.strike.size(); ++k) {
+      if (chain.side[k] == Side::Put) {
+        EXPECT_EQ(chain.served[k].status, ServeStatus::OutOfDomain);
+        EXPECT_EQ(chain.served[k].route, ServeRoute::Refit);
+        EXPECT_EQ(chain.tick[k], TickStatus::Unpriceable);
+        EXPECT_TRUE(std::isnan(chain.price[k]));
+      } else {
+        EXPECT_EQ(chain.served[k].status, ServeStatus::Ok);
+        EXPECT_TRUE(std::isfinite(chain.price[k]));
+      }
+    }
+  }
+  EXPECT_EQ(book.counters().enqueued, 0u);
+}
+
 // Every node strike and a between-node strike of each expiry in `ids`, both sides.
 ChainColumns chain_over(const SliceServeRecord &record, std::span<const std::uint64_t> ids) {
   std::size_t n = 0;

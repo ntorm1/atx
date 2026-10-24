@@ -1403,6 +1403,155 @@ TEST(SliceServeRecord, AFitWithoutACertifiedSliceIsUnavailable) {
   EXPECT_EQ(built.error().code(), ErrorCode::Unavailable);
 }
 
+TEST(SliceServeRecord, WithheldSupportRefusesEveryTierAndBothAdjacentSegments) {
+  for (const Side withheld : {Side::Call, Side::Put}) {
+    QuoteSliceFit fit = fit_chain(0.25, 2.0e-4);
+    const auto nodes = fit.prices->nodes();
+    const std::size_t i = nodes.size() / 2;
+    ASSERT_GT(i, 1u);
+    ASSERT_LT(i + 2, nodes.size());
+    fit.withheld_nodes.assign(nodes.size(), 0u);
+    fit.withheld_nodes[i] = withheld == Side::Call ? 1u : 2u;
+    const auto built = build_serve_record(fit);
+    ASSERT_TRUE(built.has_value());
+    const auto &record = **built;
+    for (const double strike : {nodes[i].strike,
+                               std::nextafter(nodes[i].strike, nodes[i - 1].strike),
+                               std::nextafter(nodes[i].strike, nodes[i + 1].strike),
+                               (nodes[i - 1].strike + nodes[i].strike) / 2.0,
+                               (nodes[i].strike + nodes[i + 1].strike) / 2.0}) {
+      const auto query = query_quote_slice(fit, strike, withheld);
+      ASSERT_TRUE(query.has_value());
+      ASSERT_EQ(query->status, QuoteSliceEvaluationStatus::MarketDistanceFailure);
+      EXPECT_FALSE(detail::serve_record_contract(record, strike, withheld).has_value());
+      for (const double spot : {kSpot, 1.002 * kSpot}) {
+        for (const ServeTier tier : {ServeTier::Ladder, ServeTier::Family,
+                                    ServeTier::Certified, ServeTier::Cold}) {
+          const auto price = record.serve(at(strike, withheld, spot, tier, tier));
+          EXPECT_EQ(price.status, ServeStatus::OutOfDomain);
+          EXPECT_EQ(price.route, ServeRoute::Refit);
+          EXPECT_TRUE(std::isnan(price.price));
+          EXPECT_TRUE(std::isnan(price.sigma));
+          EXPECT_EQ(price.price_source, ServePriceSource::None);
+          const auto iv = record.implied_vol(iv_at(strike, withheld, spot, 4.0, tier, tier));
+          EXPECT_EQ(iv.status, ServeStatus::OutOfDomain);
+          EXPECT_EQ(iv.route, ServeRoute::Refit);
+          EXPECT_TRUE(std::isnan(iv.sigma));
+          EXPECT_EQ(iv.evaluations, 0u);
+        }
+      }
+      const Side other = withheld == Side::Call ? Side::Put : Side::Call;
+      const auto unaffected = record.serve(at(strike, other, kSpot,
+                                               ServeTier::Certified, ServeTier::Certified));
+      EXPECT_TRUE(answered(unaffected.status));
+      EXPECT_TRUE(std::isfinite(unaffected.price));
+    }
+    // The neighboring nodes belong to support; only their adjoining open gaps refuse.
+    for (const double strike : {nodes[i - 1].strike, nodes[i + 1].strike,
+                               (nodes[i - 2].strike + nodes[i - 1].strike) / 2.0,
+                               (nodes[i + 1].strike + nodes[i + 2].strike) / 2.0}) {
+      const auto answer = record.serve(at(strike, withheld, kSpot,
+                                           ServeTier::Certified, ServeTier::Certified));
+      EXPECT_TRUE(answered(answer.status));
+      EXPECT_TRUE(std::isfinite(answer.price));
+    }
+  }
+}
+
+TEST(SliceServeRecord, WithheldEndpointSupportIsOwnedAndVersioned) {
+  QuoteSliceFit fit = fit_chain(0.25, 2.0e-4);
+  const auto nodes = fit.prices->nodes();
+  ServeRecordPolicy policy;
+  policy.families = ServeFamilyMode::None;
+  policy.ladders = false;
+  const auto full = build_serve_record(fit, policy);
+  ASSERT_TRUE(full.has_value());
+  fit.withheld_nodes.assign(nodes.size(), 0u);
+  fit.withheld_nodes.front() = 1u;
+  fit.withheld_nodes.back() = 2u;
+  const auto restricted = build_serve_record(fit, policy);
+  ASSERT_TRUE(restricted.has_value());
+  EXPECT_NE((*full)->version().fit_sha256, (*restricted)->version().fit_sha256);
+  EXPECT_EQ((*full)->version().input_sha256, (*restricted)->version().input_sha256);
+  EXPECT_EQ((*full)->version().policy_sha256, (*restricted)->version().policy_sha256);
+  EXPECT_EQ((*restricted)->bytes().nodes - (*full)->bytes().nodes, nodes.size());
+  const auto repeated = build_serve_record(fit, policy);
+  ASSERT_TRUE(repeated.has_value());
+  EXPECT_EQ((*restricted)->version().fit_sha256, (*repeated)->version().fit_sha256);
+  fit.withheld_nodes.front() = 2u;
+  fit.withheld_nodes.back() = 1u;
+  const auto switched = build_serve_record(fit, policy);
+  ASSERT_TRUE(switched.has_value());
+  EXPECT_NE((*restricted)->version().fit_sha256, (*switched)->version().fit_sha256);
+  const double first = nodes.front().strike;
+  const double last = nodes.back().strike;
+  const double left_gap = (nodes[0].strike + nodes[1].strike) / 2.0;
+  const double right_gap = (nodes[nodes.size() - 2].strike + last) / 2.0;
+  fit.withheld_nodes.clear();
+  fit.prices.reset();
+  fit.curve.reset();
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const double strike : {side == Side::Call ? first : last,
+                               side == Side::Call ? left_gap : right_gap}) {
+      const auto answer = (*restricted)->serve(at(strike, side, kSpot,
+                                                   ServeTier::Certified, ServeTier::Certified));
+      EXPECT_EQ(answer.status, ServeStatus::OutOfDomain);
+      EXPECT_TRUE(std::isnan(answer.price));
+      const Side other = side == Side::Call ? Side::Put : Side::Call;
+      EXPECT_TRUE(std::isfinite((*restricted)->serve(at(strike, other, kSpot,
+          ServeTier::Certified, ServeTier::Certified)).price));
+      EXPECT_TRUE(std::isfinite((*full)->serve(at(strike, side, kSpot,
+          ServeTier::Certified, ServeTier::Certified)).price));
+    }
+  }
+}
+
+TEST(SliceServeRecord, MalformedWithheldMasksCannotBuildARecord) {
+  QuoteSliceFit fit = fit_chain(0.25, 2.0e-4);
+  const std::size_t count = fit.prices->nodes().size();
+  ServeRecordPolicy policy;
+  policy.families = ServeFamilyMode::None;
+  policy.ladders = false;
+  for (const std::size_t size : {count - 1, count + 1}) {
+    fit.withheld_nodes.assign(size, 0u);
+    const auto result = build_serve_record(fit, policy);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  }
+  fit.withheld_nodes.assign(count, 0u);
+  fit.withheld_nodes[count / 2] = 4u;
+  EXPECT_FALSE(build_serve_record(fit, policy).has_value());
+  fit.withheld_nodes.clear();
+  EXPECT_TRUE(build_serve_record(fit, policy).has_value());
+  fit.withheld_nodes.assign(count, 0u);
+  EXPECT_TRUE(build_serve_record(fit, policy).has_value());
+}
+
+TEST(SliceServeRecordAlloc, WithheldSupportReadsAllocateNothing) {
+  QuoteSliceFit fit = fit_chain(0.25, 2.0e-4);
+  const auto nodes = fit.prices->nodes();
+  const std::size_t i = nodes.size() / 2;
+  fit.withheld_nodes.assign(nodes.size(), 0u);
+  fit.withheld_nodes[i] = 3u;
+  const auto built = build_serve_record(fit);
+  ASSERT_TRUE(built.has_value());
+  std::size_t refused = 0;
+  const std::uint64_t allocations = testkit::count_allocations([&] {
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double strike : {nodes[i].strike, (nodes[i - 1].strike + nodes[i].strike) / 2.0}) {
+        const auto price = (*built)->serve(at(strike, side, kSpot,
+                                               ServeTier::Ladder, ServeTier::Certified));
+        const auto iv = (*built)->implied_vol(iv_at(strike, side, kSpot, 4.0,
+                                                     ServeTier::Ladder, ServeTier::Certified));
+        refused += price.status == ServeStatus::OutOfDomain ? 1u : 0u;
+        refused += iv.status == ServeStatus::OutOfDomain ? 1u : 0u;
+      }
+    }
+  });
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_EQ(refused, 8u);
+}
+
 // Deliverable 7: the Ladder and Family reads (serve and implied_vol) allocate nothing.
 TEST(SliceServeRecordAlloc, LadderAndFamilyReadsAllocateNothing) {
   const auto record = base_record();

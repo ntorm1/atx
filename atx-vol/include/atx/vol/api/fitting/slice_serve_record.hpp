@@ -22,7 +22,10 @@
 //   * per node side a spot ladder (tier 0): a Chebyshev plane in (ln S, sigma) sampled
 //     from the family at the node's OWN strike and yield;
 //   * a clone of the fitted IVolCurve (shared), the version digests, the build clocks,
-//     the byte footprint and the support block.
+//     the byte footprint and the support block;
+//   * an owned copy of the fit's side-specific withheld-node mask. A withheld node
+//     and either adjacent open interpolation segment refuse before every price/IV
+//     tier, including moved spots and Cold requests. Empty means full support.
 //
 // ## Error statements (ServeBoundClass; master plan 3.2, deep review F02 / 5.4)
 //
@@ -110,7 +113,7 @@ enum class ServeStatus : std::uint8_t {
   Ok = 0,              // answered by `tier`
   Exercised = 1,       // the family's exercise regime: intrinsic with the exercise Greeks
   PriceOnly = 2,       // the certified price is served; no volatility identifies it (C0)
-  OutOfDomain = 3,     // the strike lies outside the certified strike domain
+  OutOfDomain = 3,     // outside the strike domain or in this side's withheld support
   SigmaOutOfBox = 4,   // the volatility lies outside every allowed tier's box
   TierUnavailable = 5, // no allowed tier has a map for this contract (see support())
   Stale = 6,           // older than the policy's max_age_ns, or no clock to tell (now_ns <= 0)
@@ -128,8 +131,8 @@ enum class ServeRoute : std::uint8_t {
   None = 0,     // answered
   ColdPath = 1, // tier 3: today's path on the fit (query / andersen_lake / american IV)
   Rebuild = 2,  // rebuild the record from the same fit (stale; async, serve_book.hpp)
-  Refit = 3,    // the fit itself must be redone (outside its domain, price-only node,
-                // invalidated geometry)
+  Refit = 3,    // the fit itself must be redone (outside its domain, withheld support,
+                // price-only node, invalidated geometry)
 };
 
 enum class ServePriceSource : std::uint8_t {
@@ -399,7 +402,7 @@ struct ServeRecordVersion {
 };
 
 struct ServeRecordBytes {
-  std::size_t nodes = 0;
+  std::size_t nodes = 0;      // served nodes plus the owned withheld-support mask
   std::size_t ladders = 0;
   std::size_t families = 0;   // AlSigmaQFamily::state_bytes() of the held families
   std::size_t geometries = 0; // every prepared geometry the holder owns (three per holder)
