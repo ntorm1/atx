@@ -35,7 +35,7 @@ add_executable(atx-vol-quote-slice-tests
     fit_native_route_test.cpp quote_slice_call_floor_test.cpp
     quote_slice_admission_test.cpp fit_fanout_determinism_test.cpp
     inbox_projection_test.cpp
-    joint_inbox_projection_test.cpp raw_price_draft_test.cpp)
+    joint_inbox_projection_test.cpp raw_price_draft_test.cpp quote_slice_final_price_test.cpp)
 target_link_libraries(atx-vol-quote-slice-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main nlohmann_json::nlohmann_json)
 # The channel/term-prior suites test internal fitting headers (src/fitting/).
@@ -50,7 +50,7 @@ string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* Quo
        QuoteSliceBoxCertificate.* QuoteSliceIdentification.* QuoteSlicePublication.*
        FitNativeRoute.* QuoteSliceCallFloor.* QuoteSliceAdmission.* FitFanoutDeterminism.*
        FitFanoutDeterminismChild.* InboxProjection.* QuoteSliceInboxProjection.* JointInboxProjection.*
-       RawPriceDraft.*)
+       RawPriceDraft.* QuoteSliceFinalPrice.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
@@ -403,6 +403,7 @@ add_executable(atx-vol-tests
     inbox_projection_test.cpp
     joint_inbox_projection_test.cpp
     raw_price_draft_test.cpp
+    quote_slice_final_price_test.cpp
     quote_slice_carry_test.cpp
     implied_forward_test.cpp
     quote_surface_test.cpp

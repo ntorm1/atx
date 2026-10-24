@@ -673,7 +673,11 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
   BelowMinimumBid,
   WideSpreadToMid,
   WideSpreadVol,
-  LowVegaWeight
+  LowVegaWeight,
+  // A valid original quote served from jointly projected raw prices, without a
+  // midpoint IV admission. market_iv is NaN and admitted remains false. Archives
+  // must refuse this runtime-only provenance until their schema persists it.
+  ProjectedPrice
 };
 // PriceOnly: the row carries a certified price (fitted_price) but no volatility
 // (fitted_iv NaN), because a repair moved its node to a price that has no
@@ -867,7 +871,7 @@ struct QuoteSliceChannelDiagnostics {
 // VolChannel; all zero otherwise). The counters are the work THIS fit added to
 // the chain's cache: zero inversions on a complete reuse.
 struct QuoteSliceDeamDiagnostics {
-  bool used = false;              // quote volatilities were read from the cache
+  bool used = false;              // the cache or its family-only preparation was used
   bool reused = false;            // the cache was built by an earlier fit (deam_cache)
   std::size_t inversions = 0;     // American IV inversions (fallbacks included)
   std::size_t model_prices = 0;   // American prices of the band edges (kIvMin, kIvMax)
@@ -943,6 +947,11 @@ struct QuoteSliceDiagnostics {
   std::vector<QuoteSliceCallFloorLine> call_floor_lines;
   std::size_t call_floor_lifted = 0;
   bool call_floor_refused = false;
+  // Final-price publication only: unique OTM observations actually supplied to
+  // ConvexDense and unique node sides with an identified final-price IV. These
+  // are separate from raw midpoint admission; all historical methods leave zero.
+  std::size_t final_price_observations = 0;
+  std::size_t final_price_identified_nodes = 0;
 };
 
 struct QuoteSliceCarryPoint {

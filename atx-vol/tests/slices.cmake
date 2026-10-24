@@ -39,6 +39,7 @@ set(ATX_VOL_SLICE_OWNED_ELSEWHERE
     quote_slice_publication                                         # atx-vol-quote-slice-tests
     quote_slice_call_floor                                          # atx-vol-quote-slice-tests
     quote_slice_admission                                           # atx-vol-quote-slice-tests
+    quote_slice_final_price                                         # atx-vol-quote-slice-tests
     fit_fanout_determinism                                          # atx-vol-quote-slice-tests
     inbox_projection                                                # atx-vol-quote-slice-tests
     joint_inbox_projection                                          # atx-vol-quote-slice-tests

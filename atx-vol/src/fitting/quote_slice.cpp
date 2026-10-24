@@ -386,6 +386,8 @@ const char *to_string(QuoteSliceQuoteStatus value) noexcept {
     return "wide_spread_vol";
   case QuoteSliceQuoteStatus::LowVegaWeight:
     return "low_vega_weight";
+  case QuoteSliceQuoteStatus::ProjectedPrice:
+    return "projected_price";
   }
   return "unknown";
 }
@@ -1239,11 +1241,12 @@ std::optional<double> reimply_price_budget(const QuoteSliceFit &fit, double stri
 
 void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
                             const QuoteSliceConfig &config,
-                            std::span<const QuoteSliceQuote> quotes) {
+                            std::span<const QuoteSliceQuote> quotes,
+                            bool keep_identifications = false) {
   const bool native = cache != nullptr && config.channel.deam_native_route &&
       cache->families() != nullptr;
   if (fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
-      (!native && !(config.reimply_price_cap > 0.0))) return;
+      (!native && !(config.reimply_price_cap > 0.0) && !keep_identifications)) return;
   auto context = std::make_shared<QuoteSliceReimplyContext>();
   if (native) context->families = cache->hold_families();
   context->model = reimply_model_key(fit);
@@ -2687,6 +2690,160 @@ Result<ChannelFitDiagnostics> solve_channel_family(QuoteSliceFit &out,
   return Ok(solved.diagnostics);
 }
 
+// A draft is private but independently staged: reject inconsistent publication
+// inputs before allocating any inverse work or consuming its prepared state.
+Status validate_final_price_draft(const detail::RawPriceDraft &draft,
+                                  const QuoteSliceConfig &config) {
+  const auto &fit = draft.prepared;
+  const auto &quotes = draft.original_quotes;
+  if (!draft.projected || draft.nodes.size() < 2 || draft.nodes.size() > quotes.size() / 2 ||
+      draft.raw_targets.size() != draft.nodes.size() || draft.boxes.size() != draft.nodes.size() ||
+      draft.quote_nodes.size() != quotes.size() ||
+      draft.terminal_prepaid.size() != draft.nodes.size() || fit.curve || fit.prices ||
+      !fit.rows.empty() || fit.fit_status == QuoteSliceFitStatus::Success ||
+      config.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
+      config.carry.mode != QuoteSliceCarryMode::Supplied ||
+      config.dividend_model == QuoteSliceDividendModel::DatedCash) {
+    return Err(ErrorCode::InvalidArgument, "raw price finalization: invalid draft or policy");
+  }
+  QuoteSliceFit checked;
+  ATX_TRY_VOID(prepare_fit(checked, fit.market, quotes, config, {}));
+  ATX_TRY_VOID(validate_channel(config.channel));
+  if (reimply_model_key(checked) != reimply_model_key(fit) ||
+      fit.floor_policy != checked.floor_policy ||
+      fit.terminal_floor_recovery != checked.terminal_floor_recovery ||
+      fit.calendar_parity_clamp != checked.calendar_parity_clamp ||
+      fit.diagnostics.forward != checked.diagnostics.forward ||
+      fit.diagnostics.discount != checked.diagnostics.discount ||
+      fit.diagnostics.effective_yield != checked.diagnostics.effective_yield) {
+    return Err(ErrorCode::InvalidArgument, "raw price finalization: changed model or policy");
+  }
+  const auto nodes = draft.projected->nodes();
+  if (nodes.size() != draft.nodes.size()) {
+    return Err(ErrorCode::InvalidArgument, "raw price finalization: incomplete projection");
+  }
+  std::vector<std::uint8_t> sides(nodes.size(), 0u);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &quote = quotes[i];
+    const auto node = draft.quote_nodes[i];
+    if (node >= nodes.size() || quote.strike != nodes[node].strike || !valid_side(quote.side) ||
+        !nonnegative(quote.bid) || !positive(quote.ask) || quote.bid > quote.ask) {
+      return Err(ErrorCode::InvalidArgument, "raw price finalization: invalid quote mapping");
+    }
+    sides[node] |= quote.side == Side::Call ? 1u : 2u;
+  }
+  double q_min = checked.diagnostics.effective_yield;
+  double q_max = q_min;
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const auto &node = nodes[i];
+    const double q = effective_yield(checked, calendar_yield_at(checked, node.strike));
+    q_min = std::min(q_min, q);
+    q_max = std::max(q_max, q);
+    if (sides[i] != 3u || node.strike != draft.nodes[i].strike ||
+        node.strike != draft.raw_targets[i].strike || node.call != draft.nodes[i].call ||
+        node.put != draft.nodes[i].put ||
+        q != effective_yield(fit, calendar_yield_at(fit, node.strike)) ||
+        draft.terminal_prepaid[i] != fit.market.spot * std::exp(-q * fit.market.variance_years) ||
+        detail::call_floor_at(fit.diagnostics.call_floor_lines, node.strike) !=
+            detail::call_floor_at(checked.diagnostics.call_floor_lines, node.strike)) {
+      return Err(ErrorCode::InvalidArgument, "raw price finalization: changed projected state");
+    }
+  }
+  const auto bound_key = [](const AmericanPriceBounds &b) {
+    return std::array{b.spot, b.discount_min, b.discount_max, b.prepaid_min, b.prepaid_max};
+  };
+  const AmericanPriceBounds expected{fit.market.spot, std::min(1.0, fit.diagnostics.discount),
+      std::max(1.0, fit.diagnostics.discount),
+      fit.market.spot * std::exp(-std::max(q_max, 0.0) * fit.market.variance_years),
+      fit.market.spot * std::exp(std::max(-q_min, 0.0) * fit.market.variance_years)};
+  if (bound_key(draft.bounds) != bound_key(expected) ||
+      bound_key(draft.projected->bounds()) != bound_key(expected)) {
+    return Err(ErrorCode::InvalidArgument, "raw price finalization: changed certificate bounds");
+  }
+  return Ok();
+}
+
+// One genuine final OTM observation per strike. Raw spreads set curve weights;
+// their numerical weight floor does not change the separate economic IV budget.
+std::vector<FitObs> final_price_observations(const QuoteSliceFit &fit,
+    const detail::RawPriceDraft &draft, std::span<const detail::VolIdentification> ids,
+    const QuoteSliceConfig &config) {
+  constexpr auto missing = std::numeric_limits<std::size_t>::max();
+  constexpr double inf = std::numeric_limits<double>::infinity();
+  std::vector<std::array<std::size_t, 2>> source(draft.nodes.size(), {missing, missing});
+  std::vector<std::array<double, 2>> spreads(draft.nodes.size(), {inf, inf});
+  for (std::size_t i = 0; i < draft.original_quotes.size(); ++i) {
+    const auto &quote = draft.original_quotes[i];
+    const auto node = draft.quote_nodes[i];
+    const auto side = quote.side == Side::Call ? 0u : 1u;
+    source[node][side] = std::min(source[node][side], i);
+    spreads[node][side] = std::min(spreads[node][side], quote.ask - quote.bid);
+  }
+  std::vector<FitObs> observations;
+  observations.reserve(draft.nodes.size());
+  const auto &diag = fit.diagnostics;
+  const double years = fit.market.variance_years;
+  const double max_weight_root = std::sqrt(config.quality.max_weight);
+  for (std::size_t node = 0; node < draft.nodes.size(); ++node) {
+    const double strike = draft.nodes[node].strike;
+    const double carry = calendar_yield_at(fit, strike);
+    const double forward = local_forward(fit, carry, effective_yield(fit, carry));
+    const auto side = strike < forward ? 1u : 0u;
+    const auto &id = ids[2 * node + side];
+    if (id.status != QuoteSliceEvaluationStatus::Success || source[node][side] == missing) continue;
+    const double sigma = id.volatility;
+    const Side option_side = side == 0u ? Side::Call : Side::Put;
+    const auto euro = black76_value_and_vega(diag.forward, strike, years, sigma,
+                                           diag.discount, option_side);
+    const double local_vega = forward == diag.forward ? euro.vega :
+        black76_value_and_vega(forward, strike, years, sigma, diag.discount, option_side).vega;
+    const double spread = std::max(spreads[node][side], config.spread_floor);
+    const double weight_root = (local_vega / spread) / (2.0 * sigma * years);
+    const double weight = weight_root >= max_weight_root
+        ? config.quality.max_weight : weight_root * weight_root;
+    const double normalized = spread * (euro.vega / local_vega);
+    const double variance = sigma * sigma * years;
+    if (!positive(euro.vega) || !positive(local_vega) || !nonnegative(euro.price) ||
+        !positive(weight) || !positive(normalized) || !positive(variance)) continue;
+    FitObs obs;
+    obs.k = std::log(strike / diag.forward);
+    obs.sigma_mkt = sigma;
+    obs.score_sigma_mkt = sigma;
+    obs.w_mkt = variance;
+    obs.weight_w = weight;
+    obs.active_weight_w = weight;
+    obs.K = strike;
+    obs.F = diag.forward;
+    obs.df = diag.discount;
+    obs.mid = euro.price;
+    obs.spread = normalized;
+    obs.vega = euro.vega;
+    obs.noise_sigma = spread / local_vega;
+    obs.side = option_side;
+    obs.source_strike_index = static_cast<std::uint32_t>(source[node][side]);
+    observations.push_back(obs);
+  }
+  return observations;
+}
+
+void publish_final_price_rows(QuoteSliceFit &fit, const detail::RawPriceDraft &draft,
+                             std::span<const detail::VolIdentification> ids) {
+  fit.rows.assign(draft.original_quotes.size(), QuoteSliceRow{});
+  fit.moved_nodes.assign(draft.nodes.size(), 3u); // every served price is independent of curve IV
+  for (std::size_t i = 0; i < draft.original_quotes.size(); ++i) {
+    const auto side = draft.original_quotes[i].side == Side::Call ? 0u : 1u;
+    const auto node = draft.quote_nodes[i];
+    auto &row = fit.rows[i];
+    row.quote_status = QuoteSliceQuoteStatus::ProjectedPrice;
+    row.fitted_price = side == 0u ? draft.nodes[node].call : draft.nodes[node].put;
+    row.evaluation_status = ids[2 * node + side].status;
+    publish_identification(fit, row, ids[2 * node + side],
+        QuoteSliceVolConvention::ReimpliedRepaired, node, side == 0u ? 1u : 2u, draft.nodes.size());
+  }
+  fit.diagnostics.prices_produced = fit.rows.size();
+  remember_reimplied_nodes(fit, draft.original_quotes);
+}
+
 } // namespace
 
 Status detail::prepare_raw_price_draft_metadata(RawPriceDraft &draft,
@@ -2720,6 +2877,60 @@ Status detail::prepare_raw_price_draft_metadata(RawPriceDraft &draft,
 
 Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
   return validate_channel(config);
+}
+
+Result<QuoteSliceFit> detail::finalize_raw_price_draft(
+    RawPriceDraft &&draft, const QuoteSliceConfig &config) {
+  ATX_TRY_VOID(validate_final_price_draft(draft, config));
+  QuoteSliceFit fit = std::move(draft.prepared);
+  fit.prices = std::move(draft.projected);
+  {
+    const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Deam);
+    VolSpaceCache cache(fit, draft.original_quotes, config);
+    cache.view().prepare_families();
+    retain_reimply_context(fit, &cache, config, draft.original_quotes, true);
+  }
+  std::vector<ReimplyPriceTarget> targets;
+  targets.reserve(2 * draft.nodes.size());
+  for (const auto &node : draft.nodes) {
+    targets.push_back({node.strike, Side::Call, node.call});
+    targets.push_back({node.strike, Side::Put, node.put});
+  }
+  std::vector<detail::VolIdentification> ids;
+  ids.reserve(targets.size());
+  {
+    const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Certify);
+    const auto prepared = prepare_reimplied_targets(fit, targets);
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+      const auto &target = targets[i];
+      ids.push_back(detail::reimplied_vol(fit, target.strike, target.side, target.price,
+          QuoteSliceFloorPolicy::PriceOnly, prepared_at(prepared, i)));
+      fit.diagnostics.final_price_identified_nodes +=
+          ids.back().status == QuoteSliceEvaluationStatus::Success ? 1u : 0u;
+    }
+  }
+  const auto observations = final_price_observations(fit, draft, ids, config);
+  fit.diagnostics.final_price_observations = observations.size();
+  if (observations.size() < config.min_quotes) {
+    return Err(ErrorCode::Unavailable, "raw price finalization: too few final OTM observations");
+  }
+  {
+    const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Solve);
+    CurveConfig curve = config.curve;
+    curve.kind = VolCurveKind::ConvexDense;
+    ATX_TRY(fit.curve, fit_slice_curve(curve, observations, fit.diagnostics.forward,
+        fit.market.variance_years, fit.diagnostics.discount, {}, {},
+        {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()},
+        &fit.diagnostics.curve_fit));
+  }
+  std::vector<std::uint8_t> projection_moves;
+  fit.diagnostics.box.outcome = measure_move(draft.raw_targets, draft.nodes,
+      config.repair.immaterial_price_move, projection_moves, fit.diagnostics.box);
+  fit.diagnostics.box.terminal_floor_asks = draft.recovery.raised_asks;
+  fit.diagnostics.box.terminal_floor_max_ask_raise = draft.recovery.max_ask_raise;
+  publish_final_price_rows(fit, draft, ids);
+  fit.fit_status = QuoteSliceFitStatus::Success; // no provisional fit escapes before this point
+  return Ok(std::move(fit));
 }
 
 Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {

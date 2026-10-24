@@ -58,4 +58,12 @@ struct RawPriceDraftResult {
     std::span<RawPriceDraft> drafts, std::size_t max_iterations = 100,
     JointInboxDiagnostics *diagnostics = nullptr);
 
+// Consumes a successfully projected private draft. Classifies each final node side,
+// builds a genuine ConvexDense curve from identified final OTM observations, then
+// publishes Success with all node prices served off that curve. Every original row
+// remains unadmitted ProjectedPrice with market_iv NaN. On any failure no public fit
+// is returned; the surface caller can atomically fall back to its existing policy.
+[[nodiscard]] Result<QuoteSliceFit> finalize_raw_price_draft(
+    RawPriceDraft &&draft, const QuoteSliceConfig &config);
+
 } // namespace atx::vol::detail
