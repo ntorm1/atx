@@ -26,6 +26,7 @@
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"   // deam_iv_memo_clear (rung memo tests)
 #include "fitting/expiry_schedule.hpp" // ScopedExpiryDispatchTrace (fan-out order seam)
+#include "fitting/publication_seam.hpp"
 #include "fitting/quote_slice_nodes.hpp" // repaired-price identification contract
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 #include "pricing/american_iv_premium.hpp"
@@ -4090,6 +4091,247 @@ TEST(QuoteSurfaceTiming, ScreenSeededReasonSplitPartitionsInversionSolvesAndCoun
   EXPECT_GT(family_builds, 0u);
   EXPECT_GT(family_prices, 0u);
   expect_same_surface(*off, *on);
+}
+
+// Also compares refused/PriceOnly rows: equal NaN payloads must remain unchanged.
+void expect_same_raw_fallback(const std::vector<QuoteSurfaceSlice> &a,
+                              const std::vector<QuoteSurfaceSlice> &b) {
+  ASSERT_EQ(a.size(), b.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(a[i].grade, b[i].grade);
+    EXPECT_EQ(a[i].method, b[i].method);
+    EXPECT_EQ(a[i].refusal, b[i].refusal);
+    EXPECT_EQ(a[i].fit.fit_status, b[i].fit.fit_status);
+    ASSERT_EQ(a[i].fit.rows.size(), b[i].fit.rows.size());
+    for (std::size_t r = 0; r < a[i].fit.rows.size(); ++r) {
+      const auto &x = a[i].fit.rows[r];
+      const auto &y = b[i].fit.rows[r];
+      EXPECT_EQ(x.quote_status, y.quote_status);
+      EXPECT_EQ(x.admitted, y.admitted);
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(x.market_iv),
+                std::bit_cast<std::uint64_t>(y.market_iv));
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(x.fitted_price),
+                std::bit_cast<std::uint64_t>(y.fitted_price));
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(x.fitted_iv),
+                std::bit_cast<std::uint64_t>(y.fitted_iv));
+    }
+  }
+}
+
+TEST(QuoteSurfaceJointRaw, DefaultRemainsTheExistingPolicy) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.01)};
+  QuoteSurfaceConfig explicit_default;
+  EXPECT_EQ(explicit_default.cold_fit, QuoteSurfaceColdFit::ExistingPolicy);
+  const auto implicit = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  const auto named = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, explicit_default);
+  ASSERT_TRUE(implicit && named);
+  expect_same_surface(*implicit, *named);
+  EXPECT_EQ(named->front().cold_fit_fallback, QuoteSurfaceColdFitFallback::None);
+}
+
+TEST(QuoteSurfaceJointRaw, PublishesEveryFinalPriceWithTruthfulMethodAndGrade) {
+  const std::vector<Chain> chains{chain(0.5, 0.24, -0.08, 0.02),
+                                  chain(0.25, 0.22, -0.1, 0.02)};
+  auto config = box_certificate_config(0.0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  auto inputs = expiries(chains);
+  inputs[0].snapshot.quote_ns = 123456;
+  inputs[0].snapshot.carry_version = 7;
+  const auto result = fit_quote_surface(inputs, config, surface);
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->size(), chains.size());
+  for (std::size_t i = 0; i < result->size(); ++i) {
+    const auto &slice = (*result)[i];
+    EXPECT_EQ(slice.method, QuoteSurfaceMethod::JointRawMid);
+    EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::None);
+    EXPECT_EQ(slice.grade, QuoteSliceGrade::B);
+    ASSERT_EQ(slice.fit.fit_status, QuoteSliceFitStatus::Success);
+    ASSERT_TRUE(slice.fit.curve && slice.fit.prices);
+    ASSERT_EQ(slice.fit.rows.size(), chains[i].quotes.size());
+    EXPECT_EQ(slice.fit.diagnostics.quotes_admitted, 0u);
+    EXPECT_EQ(slice.fit.diagnostics.iv_attempted, 0u);
+    EXPECT_FALSE(slice.channel_refit);
+    EXPECT_FALSE(slice.calendar_retry);
+    for (std::size_t r = 0; r < chains[i].quotes.size(); ++r) {
+      const auto &row = slice.fit.rows[r];
+      const auto &quote = chains[i].quotes[r];
+      EXPECT_FALSE(row.admitted);
+      EXPECT_TRUE(std::isnan(row.market_iv));
+      EXPECT_TRUE(row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+                  row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly);
+      EXPECT_GE(row.fitted_price, quote.bid - 1e-8);
+      EXPECT_LE(row.fitted_price, quote.ask + 1e-8);
+      const auto served = served_quote_slice_price(slice.fit, quote.strike, quote.side);
+      ASSERT_TRUE(served);
+      EXPECT_DOUBLE_EQ(*served, row.fitted_price);
+    }
+  }
+  expect_calendar_consistent(*result);
+  EXPECT_EQ(result->front().fit.snapshot.quote_ns, 123456);
+  EXPECT_EQ(result->front().fit.snapshot.carry_version, 7u);
+  EXPECT_STREQ(to_string(result->front().method), "joint_raw_mid");
+}
+
+TEST(QuoteSurfaceJointRaw, OneMissingSideFallsBackForTheWholeSurface) {
+  std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02),
+                            chain(0.5, 0.24, -0.08, 0.02)};
+  chains.back().quotes.erase(chains.back().quotes.begin());
+  QuoteSliceConfig config;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  const auto legacy = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(legacy);
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  expect_same_raw_fallback(*legacy, *result);
+  for (const auto &slice : *result) {
+    EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::UnsupportedInput);
+    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointRawMid);
+  }
+}
+
+TEST(QuoteSurfaceJointRaw, UnknownModeIsRejected) {
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = static_cast<QuoteSurfaceColdFit>(255);
+  const auto result = fit_quote_surface({}, QuoteSliceConfig{}, surface);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_STREQ(to_string(surface.cold_fit), "unknown");
+}
+
+TEST(QuoteSurfaceJointRaw, CalendarInfeasibilityKeepsTheWholeLegacyResult) {
+  const std::vector<Chain> chains{chain(0.25, 0.6, 0, 0.001),
+                                  chain(0.5, 0.1, 0, 0.001)};
+  QuoteSliceConfig config;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  const auto legacy = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(legacy);
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  expect_same_raw_fallback(*legacy, *result);
+  for (const auto &slice : *result) {
+    EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::ProjectionInfeasible);
+  }
+}
+
+TEST(QuoteSurfaceJointRaw, ProjectionExhaustionIsNotCalledInfeasible) {
+  const Chain nonconvex{{100, .5, .5, 0, 0, 0},
+      {{90, Side::Call, 6.75, 17.25}, {90, Side::Put, 0, 7.25},
+       {100, Side::Call, 7, 13}, {100, Side::Put, 7, 13},
+       {110, Side::Call, 0, 7.25}, {110, Side::Put, 6.75, 17.25}}};
+  const std::vector<Chain> chains{nonconvex};
+  auto config = box_certificate_config(0);
+  config.repair.joint_max_sweeps = 1;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  const auto legacy = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(legacy);
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  expect_same_raw_fallback(*legacy, *result);
+  EXPECT_EQ(result->front().cold_fit_fallback,
+            QuoteSurfaceColdFitFallback::ProjectionNonConverged);
+}
+
+TEST(QuoteSurfaceJointRaw, FinalPublicationFailureDiscardsEveryPreparedExpiry) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02),
+                                  chain(0.5, 0.24, -0.08, 0.02)};
+  auto config = box_certificate_config(0.0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  QuoteSurfaceConfig surface;
+  surface.publication = QuoteSurfacePublication::Validate;
+  const auto legacy = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(legacy);
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  detail::PublicationInjection injection;
+  injection.refuse_expiry = 1;
+  const detail::ScopedPublicationInjection inject(injection);
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(injection.injected, 1u);
+  expect_same_raw_fallback(*legacy, *result);
+  for (const auto &slice : *result) {
+    EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::PublicationFailed);
+    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointRawMid);
+  }
+}
+
+TEST(QuoteSurfaceJointRaw, InsufficientFinalCurveEvidenceFallsBackAtomically) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02),
+                                  chain(0.5, 0.24, -0.08, 0.02, 95, 100, 5)};
+  auto config = box_certificate_config(0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  const auto legacy = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(legacy);
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  expect_same_raw_fallback(*legacy, *result);
+  for (const auto &slice : *result) {
+    EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::FinalizationFailed);
+    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointRawMid);
+  }
+}
+
+TEST(QuoteSurfaceJointRaw, DuplicateRowsShareTheFinalIdentificationAndRawBudgets) {
+  std::vector<Chain> chains{chain(0.5, 0.24, -0.08, 0.02)};
+  const auto quote = chains[0].quotes[10];
+  auto duplicate = quote;
+  duplicate.bid = .75 * quote.bid + .25 * quote.ask;
+  duplicate.ask = .25 * quote.bid + .75 * quote.ask;
+  chains[0].quotes.push_back(duplicate);
+  auto config = box_certificate_config(0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  config.reimply_price_cap = .001;
+  config.reimply_spread_fraction = .01;
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->front().method, QuoteSurfaceMethod::JointRawMid);
+  const auto &rows = result->front().fit.rows;
+  ASSERT_EQ(rows.size(), chains[0].quotes.size());
+  EXPECT_DOUBLE_EQ(rows[10].fitted_price, rows.back().fitted_price);
+  EXPECT_EQ(rows[10].evaluation_status, rows.back().evaluation_status);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(rows[10].fitted_iv),
+            std::bit_cast<std::uint64_t>(rows.back().fitted_iv));
+  EXPECT_GE(rows.back().fitted_price, duplicate.bid);
+  EXPECT_LE(rows.back().fitted_price, duplicate.ask);
+}
+
+TEST(QuoteSurfaceJointRaw, TracingCountsFinalWorkAndRetainsFailedAttemptCost) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02)};
+  auto config = box_certificate_config(0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  const auto untraced = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(untraced);
+  ft::SurfaceTrace trace;
+  const auto traced = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(traced);
+  expect_same_raw_fallback(*untraced, *traced);
+  ASSERT_EQ(trace.chains.size(), 1u);
+  EXPECT_EQ(trace.chains[0].rung_attempts, 1u);
+  EXPECT_GT(trace.chains[0].al_price_calls, 0u);
+  expect_partitioned(trace.chains[0]);
+  detail::PublicationInjection injection;
+  injection.refuse_expiry = 0;
+  const detail::ScopedPublicationInjection inject(injection);
+  const auto fallback = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(fallback);
+  EXPECT_EQ(fallback->front().cold_fit_fallback, QuoteSurfaceColdFitFallback::PublicationFailed);
+  ASSERT_EQ(trace.chains.size(), 1u);
+  EXPECT_GT(trace.chains[0].rung_attempts, 1u);
+  expect_partitioned(trace.chains[0]);
 }
 
 } // namespace

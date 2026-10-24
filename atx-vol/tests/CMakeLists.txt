@@ -50,7 +50,7 @@ string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* Quo
        QuoteSliceBoxCertificate.* QuoteSliceIdentification.* QuoteSlicePublication.*
        FitNativeRoute.* QuoteSliceCallFloor.* QuoteSliceAdmission.* FitFanoutDeterminism.*
        FitFanoutDeterminismChild.* InboxProjection.* QuoteSliceInboxProjection.* JointInboxProjection.*
-       RawPriceDraft.* QuoteSliceFinalPrice.*)
+       RawPriceDraft.* QuoteSliceFinalPrice.* QuoteSurfaceJointRaw.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")

@@ -53,6 +53,7 @@
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only, clear_identification
+#include "fitting/raw_price_draft.hpp"
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 #include "fitting/term_prior.hpp"
 
@@ -83,7 +84,9 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       (s.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
        s.ladder != QuoteSurfaceLadder::KnotFirst) ||
       (s.publication != QuoteSurfacePublication::Off &&
-       s.publication != QuoteSurfacePublication::Validate)) {
+       s.publication != QuoteSurfacePublication::Validate) ||
+      (s.cold_fit != QuoteSurfaceColdFit::ExistingPolicy &&
+       s.cold_fit != QuoteSurfaceColdFit::JointRawMid)) {
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
   }
   return Ok();
@@ -234,6 +237,14 @@ public:
   }
 
   [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>> run() {
+    QuoteSurfaceColdFitFallback cold_fallback = QuoteSurfaceColdFitFallback::None;
+    if (surface_.cold_fit == QuoteSurfaceColdFit::JointRawMid) {
+      cold_fallback = joint_raw_attempt();
+      if (cold_fallback == QuoteSurfaceColdFitFallback::None) {
+        publish_timing();
+        return Ok(std::move(out_));
+      }
+    }
     if (ladder()) {
       knot_pass();
     } else {
@@ -259,6 +270,7 @@ public:
     // write or refit adoption (K4) must come before it, or go through validated().
     ATX_TRY_VOID(publication_pass());
     for (QuoteSurfaceSlice &slice : out_) {
+      slice.cold_fit_fallback = cold_fallback;
       if (slice.grade == QuoteSliceGrade::Refused) {
         strip(slice.fit);
       } else if (slice.grade == QuoteSliceGrade::A && !slice.fit.moved_nodes.empty()) {
@@ -272,6 +284,114 @@ public:
   }
 
 private:
+  // All intermediate fits stay local. A failed attempt preserves every legacy
+  // slot; the same recorders retain its cost when the legacy policy then runs.
+  [[nodiscard]] QuoteSurfaceColdFitFallback joint_raw_attempt() {
+    using Fallback = QuoteSurfaceColdFitFallback;
+    namespace ft = counters::fit_timing;
+    if (expiries_.empty()) return Fallback::None;
+    if (config_.floor_policy != QuoteSliceFloorPolicy::PriceOnly) {
+      return Fallback::UnsupportedInput;
+    }
+    std::vector<detail::RawPriceDraft> drafts;
+    drafts.reserve(expiries_.size());
+    for (std::size_t i = 0; i < expiries_.size(); ++i) {
+      const ft::ChainScope chain(slot(i), 1);
+      const auto &e = expiries_[i];
+      auto raw = detail::make_raw_price_draft(e.market, e.quotes, config_, e.calendar_dividends);
+      if (!raw.draft) {
+        return raw.refusal == detail::RawPriceDraftRefusal::EmptyQuoteIntersection
+            ? Fallback::ProjectionInfeasible : Fallback::UnsupportedInput;
+      }
+      drafts.push_back(std::move(*raw.draft));
+    }
+    {
+      // Global work belongs to the first slot, as in the existing joint rung;
+      // it is not attributed to that expiry's independent fitting work.
+      const ft::ChainScope chain(slot(0));
+      const ft::BucketScope bucket(ft::Bucket::Calendar);
+      const auto projected = detail::project_raw_price_drafts(
+          drafts, std::min(std::size_t{100}, config_.repair.joint_max_sweeps));
+      switch (projected.outcome) {
+      case JointProjectionOutcome::InfeasibleData: return Fallback::ProjectionInfeasible;
+      case JointProjectionOutcome::NonConverged: return Fallback::ProjectionNonConverged;
+      case JointProjectionOutcome::InvalidInput: return Fallback::UnsupportedInput;
+      case JointProjectionOutcome::Feasible: break;
+      }
+    }
+    std::vector<QuoteSurfaceSlice> candidate(expiries_.size());
+    for (std::size_t i = 0; i < drafts.size(); ++i) {
+      const ft::ChainScope chain(slot(i));
+      auto fit = detail::finalize_raw_price_draft(std::move(drafts[i]), config_);
+      if (!fit || fit->fit_status != QuoteSliceFitStatus::Success ||
+          !fit->curve || !fit->prices) return Fallback::FinalizationFailed;
+      candidate[i].fit = std::move(*fit);
+      if (!raw_quality(candidate[i], expiries_[i].quotes)) return Fallback::PublicationFailed;
+    }
+    if (!raw_publication(candidate)) return Fallback::PublicationFailed;
+    for (auto &slice : candidate) {
+      slice.grade = QuoteSliceGrade::B;
+      slice.method = QuoteSurfaceMethod::JointRawMid;
+    }
+    out_ = std::move(candidate);
+    return Fallback::None;
+  }
+
+  // The raw objective replaces the legacy fitting ladder, not its requested
+  // containment/distance safeguards. Every original row must remain served.
+  [[nodiscard]] bool raw_quality(QuoteSurfaceSlice &slice,
+                                 std::span<const QuoteSliceQuote> quotes) const {
+    if (slice.fit.rows.size() != quotes.size()) return false;
+    for (std::size_t r = 0; r < quotes.size(); ++r) {
+      const auto &row = slice.fit.rows[r];
+      if ((row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+           row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) ||
+          !std::isfinite(row.fitted_price)) return false;
+      if (config_.repair.market_distance == QuoteSliceMarketDistance::Off) continue;
+      const double distance = market_distance_spreads(row.fitted_price,
+          quotes[r].bid, quotes[r].ask, config_.repair.box_tick);
+      if (!std::isfinite(distance) || distance > config_.repair.market_distance_spreads) {
+        return false;
+      }
+      ++slice.market_checked_rows;
+      slice.market_max_spreads = std::max(slice.market_max_spreads, distance);
+    }
+    slice.market_max_spreads_after = slice.market_max_spreads;
+    if (ladder()) {
+      const auto outside = outside_share(slice.fit, quotes, true);
+      slice.outside_fraction = outside.fraction;
+      slice.outside_quotes = outside.count;
+      if (outside.fraction > surface_.ladder_channel_max_outside_fraction &&
+          outside.count >= surface_.ladder_min_outside_quotes) return false;
+    }
+    return true;
+  }
+
+  // Always check the actual serving API, including identification. Unlike the
+  // legacy backstop, failure discards the entire private candidate; no slice or
+  // row is silently dropped to make the new mode pass.
+  [[nodiscard]] bool raw_publication(std::vector<QuoteSurfaceSlice> &candidate) const {
+    namespace ft = counters::fit_timing;
+    const ft::ChainScope chain(slot(0));
+    const ft::BucketScope bucket(ft::Bucket::Certify);
+    std::vector<QuoteSlicePublicationSlice> slices;
+    slices.reserve(candidate.size());
+    for (std::size_t i = 0; i < candidate.size(); ++i) {
+      slices.push_back({&candidate[i].fit, expiries_[i].quotes});
+    }
+    QuoteSlicePublicationConfig check;
+    check.box_tick = config_.repair.box_tick;
+    if (config_.repair.market_distance != QuoteSliceMarketDistance::Off) {
+      check.market_distance_spreads = config_.repair.market_distance_spreads;
+    }
+    auto report = validate_published_representation(slices, check);
+    if (!report) return false;
+    detail::inject_final(*report, every_expiry());
+    if (!report->clean()) return false;
+    for (auto &slice : candidate) ++slice.publication_checks;
+    return true;
+  }
+
   // Runs body(i) once for every expiry index in `tasks`, fanned out over
   // surface_.fit_workers in longest-first order: the strictly two-sided quote
   // count, the pre-fit proxy for the admitted count, descending, with ties by
@@ -1783,6 +1903,28 @@ const char *to_string(QuoteSurfaceMethod value) noexcept {
     return "channel";
   case QuoteSurfaceMethod::ChannelRefit:
     return "channel_refit";
+  case QuoteSurfaceMethod::JointRawMid:
+    return "joint_raw_mid";
+  }
+  return "unknown";
+}
+
+const char *to_string(QuoteSurfaceColdFit value) noexcept {
+  switch (value) {
+  case QuoteSurfaceColdFit::ExistingPolicy: return "existing_policy";
+  case QuoteSurfaceColdFit::JointRawMid: return "joint_raw_mid";
+  }
+  return "unknown";
+}
+
+const char *to_string(QuoteSurfaceColdFitFallback value) noexcept {
+  switch (value) {
+  case QuoteSurfaceColdFitFallback::None: return "none";
+  case QuoteSurfaceColdFitFallback::UnsupportedInput: return "unsupported_input";
+  case QuoteSurfaceColdFitFallback::ProjectionInfeasible: return "projection_infeasible";
+  case QuoteSurfaceColdFitFallback::ProjectionNonConverged: return "projection_nonconverged";
+  case QuoteSurfaceColdFitFallback::FinalizationFailed: return "finalization_failed";
+  case QuoteSurfaceColdFitFallback::PublicationFailed: return "publication_failed";
   }
   return "unknown";
 }
