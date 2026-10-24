@@ -418,3 +418,33 @@ root solving, serial/batch/thread-count equality, poisoned jobs and the genuine
 crossing-Delta refusal all pass. No job, contract or assertion was removed.
 The checkpoint retains this known failure rather than claiming a full release
 pass. Evidence: repair-iv/greek-bev-european.{log,xml}.
+
+
+Carried marks now retain their row status, requested/supported masks and nine
+field reasons with the numeric snapshot. A finite supported price remains a
+usable carry when some risk fields are refused. A complete carried mark can
+also replace a currently refused Greek result without leaving NaN in totals.
+The reusable row frame sizes and forwards metadata for both marks and full
+Greek routes. Price/risk totals are rebuilt in final published row order using
+the same private accumulator as the portfolio pricer, including exact-zero
+weights, signed/gross Vega overflow refusal and separate complete/priced/partial
+counts. This replaces numeric delta adjustments, which cannot undo NaN or
+correct a changed row's availability. Existing complete-risk error gates remain.
+
+A deferred close retains an explicit Vega-supply bit after its carry entry is
+pruned. None/PriceBps costs use the supported carried price; unavailable turnover
+Vega remains NaN. VolTicks costs refuse unavailable carried Vega before it can
+enter cost/cash, preserving the exact-zero-position exception. This is internal
+availability propagation; no public result-column or archive format changed.
+
+Three actual consumer regressions cover partial-price carry and later recovery,
+complete carry replacing refused current Greeks, and partial carry close under
+None/PriceBps/VolTicks. Original RED receipts show the skipped partial carry and
+wrong cost failure. The final 28 focused carry/portfolio/coverage/overflow/bucket
+tests and three owning PCH-off objects pass. Evidence is
+repair-iv/greek-carry-{red,close-red,final,hygiene}.*, with exact source/binary
+hashes in greek-carry-final-receipt.json. One initial control compared an owned
+surface Greek against the archive-backed route; that unrelated rounding mismatch
+was replaced with an exact same-archive control, retaining strict comparison.
+The prelink-controls receipt is explicitly not the final rebuilt-binary gate.
+No new Greek accuracy or latency claim is made.

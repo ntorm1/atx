@@ -1253,6 +1253,176 @@ TEST(BacktestGreekAvailability, PartialRiskErrorDoesNotClaimTheSurfaceIsMissing)
   EXPECT_EQ(guarded.error().message().find("no surface"), std::string::npos);
 }
 
+[[nodiscard]] Result<PricedSurface> partial_carry_surface(int day, double spot, std::int64_t expiry,
+                                                          bool truncated) {
+  constexpr double rate = .04496, yield = .00162193;
+  const auto now = kBaseNow + static_cast<std::int64_t>(day) * kDayNs;
+  const double T = static_cast<double>(expiry - now) / kNsPerYear;
+  CurveSurface curves;
+  std::vector<SliceContext> context;
+  for (const double scale :
+       truncated ? std::vector<double>{.25} : std::vector<double>{.5, 1., 1.5}) {
+    const double slice_T = T * scale, forward = spot * std::exp((rate - yield) * slice_T);
+    EssviParams e{};
+    e.T = slice_T;
+    e.F = forward;
+    e.theta = .12 * .12 * (truncated ? T : slice_T);
+    e.phi = e.rho = 0.;
+    e.psi = e.p = e.lambda = .5;
+    curves.push(std::make_unique<EssviCurve>(e, std::exp(-rate * slice_T)));
+    context.push_back({slice_T, forward, 0., yield, 100u, 1u});
+  }
+  PricingContext pricing;
+  pricing.S = spot;
+  pricing.r = rate;
+  pricing.now_ts_ns = now;
+  pricing.uid = kUid;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_profile(std::nullopt);
+  pricing.al_opts.profile = AlProfile::Reference;
+  return PricedSurface::create(std::move(curves), std::move(context), pricing);
+}
+
+TEST(BacktestGreekAvailability, CarryPreservesPartialPriceAndLaterRiskRecovery) {
+  constexpr double strike = 811.6395, tenor = .0682;
+  const auto expiry = kBaseNow + static_cast<std::int64_t>(tenor * kNsPerYear);
+  const auto initial = partial_carry_surface(0, 772.99, expiry, false);
+  const auto truncated = partial_carry_surface(1, 790., expiry, true);
+  const auto recovered = partial_carry_surface(2, 850., expiry, false);
+  ASSERT_TRUE(initial);
+  ASSERT_TRUE(truncated);
+  ASSERT_TRUE(recovered);
+  const double first_T = static_cast<double>(expiry - kBaseNow) / kNsPerYear;
+  const auto first = initial->greeks(strike, first_T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(has_field(first->supported, GreekFieldMask::Price));
+  ASSERT_EQ(first->reasons[1], AmericanGreekReason::StencilCrossing);
+  const double last_T = static_cast<double>(expiry - kBaseNow - 2 * kDayNs) / kNsPerYear;
+  const auto last = recovered->greeks(strike, last_T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(last);
+  ASSERT_EQ(last->supported, GreekFieldMask::All);
+  const auto dir = fresh_dir("greek-partial-carry");
+  const auto clock = Clock::from_manifest(
+      make_manifest({{"2026-08-01", write_one(dir, "2026-08-01", "SPX", *initial)},
+                     {"2026-08-02", write_one(dir, "2026-08-02", "SPX", *truncated)},
+                     {"2026-08-03", write_one(dir, "2026-08-03", "SPX", *recovered)}},
+                    "SPX"));
+  ASSERT_TRUE(clock);
+  PortfolioState book;
+  book.lots.push_back({1u, {kUid, strike, 0., Side::Put}, 1., 100., expiry, 0u, 0.});
+  RunConfig config;
+  config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  config.mark_domain = MarkDomainPolicy::CarryLastMark;
+  const auto result = run_backtest(*clock, book, config);
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->size(), 3u);
+  EXPECT_EQ(result->n_carried_marks[1], 1.);
+  EXPECT_EQ(result->n_unpriced_greeks[0], 1.);
+  EXPECT_EQ(result->n_unpriced_greeks[1], 1.);
+  EXPECT_TRUE(std::isnan(result->gross_vega[0]));
+  EXPECT_TRUE(std::isnan(result->gross_vega[1]));
+  EXPECT_DOUBLE_EQ(result->nav[1], result->nav[0]);
+  EXPECT_EQ(result->n_unpriced_greeks[2], 0.);
+  EXPECT_TRUE(std::isfinite(result->gross_vega[2]));
+  config.mark_domain = MarkDomainPolicy::Extrapolate;
+  const auto control = run_backtest(*clock, book, config);
+  ASSERT_TRUE(control);
+  EXPECT_DOUBLE_EQ(result->gross_vega[2], control->gross_vega[2]);
+}
+
+TEST(BacktestGreekAvailability, CarriedPartialCloseRequiresVegaOnlyForVolatilityCost) {
+  const auto expiry = kBaseNow + kDayNs + static_cast<std::int64_t>(.0682 * kNsPerYear);
+  const auto initial = partial_carry_surface(0, 850., expiry, false);
+  const auto partial = partial_carry_surface(1, 772.99, expiry, false);
+  const auto truncated = partial_carry_surface(2, 790., expiry, true);
+  ASSERT_TRUE(initial);
+  ASSERT_TRUE(partial);
+  ASSERT_TRUE(truncated);
+  const auto dir = fresh_dir("greek-partial-carry-close");
+  const auto clock = Clock::from_manifest(
+      make_manifest({{"2026-08-01", write_one(dir, "2026-08-01", "SPX", *initial)},
+                     {"2026-08-02", write_one(dir, "2026-08-02", "SPX", *partial)},
+                     {"2026-08-03", write_one(dir, "2026-08-03", "SPX", *truncated)}},
+                    "SPX"));
+  ASSERT_TRUE(clock);
+  class OpenThenClose final : public IStrategy {
+  public:
+    explicit OpenThenClose(std::int64_t expiry) : expiry_(expiry) {}
+    Status on_step(const MarketSnapshot &snap, std::size_t step, PortfolioState &book,
+                   std::uint64_t &next_id) override {
+      if (step == 0u) {
+        const auto surface = snap.find(kUid);
+        const double T = static_cast<double>(expiry_ - snap.ts_ns()) / kNsPerYear;
+        const auto price = surface->fair_value(811.6395, T, Side::Put);
+        if (!price)
+          return atx::core::Err(price.error());
+        book.lots.push_back(
+            {next_id++, {kUid, 811.6395, 0., Side::Put}, 1., 100., expiry_, 0u, *price});
+      } else if (step == 2u)
+        book.lots.clear();
+      return atx::core::Ok();
+    }
+
+  private:
+    std::int64_t expiry_;
+  };
+  for (const auto kind : {FrictionModel::SpreadKind::None, FrictionModel::SpreadKind::PriceBps,
+                          FrictionModel::SpreadKind::VolTicks}) {
+    OpenThenClose strategy(expiry);
+    RunConfig config;
+    config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+    config.mark_domain = MarkDomainPolicy::CarryLastMark;
+    config.frictions.spread_kind = kind;
+    const auto result = run_backtest(*clock, strategy, config);
+    if (kind == FrictionModel::SpreadKind::VolTicks) {
+      EXPECT_FALSE(result);
+      if (!result) {
+        EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
+        EXPECT_NE(result.error().message().find("carried Vega"), std::string::npos);
+      }
+    } else {
+      ASSERT_TRUE(result) << result.error().to_string();
+      ASSERT_EQ(result->size(), 3u);
+      EXPECT_EQ(result->n_unpriced_greeks[1], 1.);
+      EXPECT_EQ(result->n_open_lots[2], 0.);
+      EXPECT_TRUE(std::isfinite(result->nav[2]));
+      EXPECT_TRUE(std::isfinite(result->cost[2]));
+      EXPECT_TRUE(std::isnan(result->turnover_vega[2]));
+    }
+  }
+}
+
+TEST(BacktestGreekAvailability, CompleteCarryReplacesRefusedCurrentGreeks) {
+  constexpr double strike = 811.6395;
+  const auto expiry = kBaseNow + kDayNs + static_cast<std::int64_t>(.0682 * kNsPerYear);
+  const auto initial = partial_carry_surface(0, 850., expiry, false);
+  const auto truncated = partial_carry_surface(1, 772.99, expiry, true);
+  ASSERT_TRUE(initial);
+  ASSERT_TRUE(truncated);
+  const double T = static_cast<double>(expiry - kBaseNow - kDayNs) / kNsPerYear;
+  const auto current = truncated->greeks(strike, T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(current);
+  ASSERT_EQ(current->reasons[2], AmericanGreekReason::StencilCrossing);
+  const auto dir = fresh_dir("greek-complete-carry");
+  const auto clock = Clock::from_manifest(make_manifest(
+      {{"2026-08-01", write_one(dir, "2026-08-01", "SPX", *initial)},
+       {"2026-08-02", write_one(dir, "2026-08-02", "SPX", *truncated)}}, "SPX"));
+  ASSERT_TRUE(clock);
+  PortfolioState book;
+  book.lots.push_back({1u, {kUid, strike, 0., Side::Put}, 1., 100., expiry, 0u, 0.});
+  RunConfig config;
+  config.mark_domain = MarkDomainPolicy::CarryLastMark;
+  const auto result = run_backtest(*clock, book, config);
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->size(), 2u);
+  EXPECT_EQ(result->n_carried_marks[1], 1.);
+  EXPECT_EQ(result->n_unpriced_greeks[1], 0.);
+  EXPECT_TRUE(std::isfinite(result->gross_vega[1]));
+  EXPECT_DOUBLE_EQ(result->gross_vega[1], result->gross_vega[0]);
+  EXPECT_DOUBLE_EQ(result->gross_delta[1], result->gross_delta[0]);
+  EXPECT_DOUBLE_EQ(result->nav[1], result->nav[0]);
+}
+
 TEST(Backtest, FixedBookDuplicateLotIdsFailBeforeArchiveLoadOrPricing) {
   const fs::path dir = fresh_dir("fixed-book-duplicate-id");
   const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);

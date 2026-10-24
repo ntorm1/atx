@@ -41,6 +41,7 @@
 #include "fitting/counters.hpp" // counters::ledger — V1 always-on solve ledger (per-step)
 #include "pricing/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
 #include "pricing/american_greek_availability.hpp"
+#include "backtest/price_totals_reduction.hpp"
 #include "storage/snapshot_pool.hpp" // Task C2: SnapshotPool (RunConfig::snapshot_pool)
 
 namespace atx::vol {
@@ -1759,6 +1760,7 @@ public:
   struct CarriedClose {
     double price{0.0};
     double vega{0.0};
+    bool vega_supported{false};
   };
 
   // STEP PHASE (first). Opens the step's deferral record. It is kept SEPARATE from
@@ -1808,7 +1810,7 @@ public:
     if (at == deferred_.end() || at->id != lot_id) {
       return std::nullopt;
     }
-    return CarriedClose{at->price, at->vega};
+    return CarriedClose{at->price, at->vega, at->vega_supported};
   }
 
   // The mark an expiring lot must explain against when its LAST row was served
@@ -1829,8 +1831,9 @@ public:
     if (frame.size() != lots.size()) {
       return Err(ErrorCode::Internal, "run_backtest: mark-carry frame is not aligned with the book");
     }
-    if (!lots.empty() && !frame.greeks_materialized()) {
-      return Err(ErrorCode::Internal, "run_backtest: mark-carry needs a full-Greek price frame");
+    if ((!lots.empty() && !frame.greeks_materialized()) || frame.requested.size() != lots.size() ||
+        frame.supported.size() != lots.size() || frame.reasons.size() != lots.size()) {
+      return Err(ErrorCode::Internal, "run_backtest: mark-carry needs Greek metadata");
     }
     std::uint32_t cached_uid = 0;
     bool cached = false;
@@ -1848,7 +1851,11 @@ public:
         cached = true;
       }
       Entry &entry = find_or_insert(lot.id);
-      if (frame.status[i] != PriceStatus::Ok) {
+      const auto supplied = row_greeks(frame, i);
+      if ((frame.status[i] != PriceStatus::Ok &&
+           frame.status[i] != PriceStatus::GreeksUnavailable) ||
+          !detail::american_greeks_support(supplied, GreekFieldMask::Price) ||
+          !std::isfinite(frame.pv[i])) {
         // An unvaluable lane belongs to UnpricedLotPolicy, which reports and
         // excludes it. Leave the lane and the carry untouched, and cancel any
         // release so a NaN can never reach the adjustment.
@@ -1876,6 +1883,18 @@ public:
     // release pending instead would leak a stale `-value` into a later row's P&L.
     for (Entry &entry : entries_) {
       complete(entry);
+    }
+    // Recompute from final published rows. Incremental NaN differences cannot
+    // remove a refused current Greek when an earlier complete mark is restored,
+    // or preserve coverage when a partial mark replaces a complete current row.
+    const auto requested = frame.total.requested;
+    frame.total = {};
+    detail::initialize_price_totals(frame.total, requested);
+    for (std::size_t i = 0; i < lots.size(); ++i) {
+      if (frame.status[i] != PriceStatus::Ok && frame.status[i] != PriceStatus::GreeksUnavailable)
+        continue;
+      detail::add_priced_row(frame.total, row_greeks(frame, i), frame.pv[i], frame.status[i],
+                             lots[i].qty * lots[i].multiplier == 0.);
     }
     row.pnl_adjustment = pending_;
     pending_ = 0.0;
@@ -1906,6 +1925,10 @@ private:
     double vanna{0.0};
     double volga{0.0};
     double charm{0.0};
+    PriceStatus status{PriceStatus::NumericError};
+    GreekFieldMask requested{GreekFieldMask::None};
+    GreekFieldMask supported{GreekFieldMask::None};
+    std::array<AmericanGreekReason, 9> reasons{};
   };
 
   // One lot this STEP kept out of the pricer batch, with the valuation its row
@@ -1915,6 +1938,7 @@ private:
     std::uint64_t id{0};
     double price{0.0};
     double vega{0.0};
+    bool vega_supported{false};
   };
 
   void record_deferred(std::uint64_t id, const Entry &entry) {
@@ -1924,7 +1948,13 @@ private:
     if (at != deferred_.end() && at->id == id) {
       return; // one record per lot per step
     }
-    deferred_.insert(at, Deferred{id, entry.price, entry.vega});
+    AmericanGreeks evidence;
+    evidence.vega = entry.vega;
+    evidence.requested = entry.requested;
+    evidence.supported = entry.supported;
+    evidence.reasons = entry.reasons;
+    deferred_.insert(at, Deferred{id, entry.price, entry.vega,
+                                  detail::american_greeks_support(evidence, GreekFieldMask::Vega)});
   }
 
   void complete(Entry &entry) noexcept {
@@ -1932,6 +1962,23 @@ private:
       pending_ += entry.value;
       entry.pending = false;
     }
+  }
+
+  [[nodiscard]] static AmericanGreeks row_greeks(const PriceFrame &frame, std::size_t i) {
+    AmericanGreeks g;
+    g.price = frame.price[i];
+    g.delta = frame.delta[i];
+    g.gamma = frame.gamma[i];
+    g.vega = frame.vega[i];
+    g.theta = frame.theta[i];
+    g.rho = frame.rho[i];
+    g.vanna = frame.vanna[i];
+    g.volga = frame.volga[i];
+    g.charm = frame.charm[i];
+    g.requested = frame.requested[i];
+    g.supported = frame.supported[i];
+    g.reasons = frame.reasons[i];
+    return g;
   }
 
   static void capture(const PriceFrame &frame, std::size_t i, Entry &entry, bool in_domain) {
@@ -1951,28 +1998,29 @@ private:
     entry.vanna = frame.vanna[i];
     entry.volga = frame.volga[i];
     entry.charm = frame.charm[i];
+    entry.status = frame.status[i];
+    entry.requested = frame.requested[i];
+    entry.supported = frame.supported[i];
+    entry.reasons = frame.reasons[i];
   }
 
-  // Replace one lane with its carried valuation and move the frame totals by
-  // exactly the same deltas, so `PriceTotals` stays the sum of the lanes it
-  // describes (the totals are what `gross_*` and the liquidation value read).
+  // Replace the row and its evidence together; apply_row reduces final rows.
   static void splice(PriceFrame &frame, std::size_t i, const Entry &entry) {
-    const auto swap_in = [](double &cell, double value, double &total) {
-      total += value - cell;
-      cell = value;
-    };
-    frame.total.abs_vega += std::fabs(entry.vega) - std::fabs(frame.vega[i]);
-    swap_in(frame.pv[i], entry.pv, frame.total.pv);
-    swap_in(frame.delta[i], entry.delta, frame.total.delta);
-    swap_in(frame.gamma[i], entry.gamma, frame.total.gamma);
-    swap_in(frame.vega[i], entry.vega, frame.total.vega);
-    swap_in(frame.theta[i], entry.theta, frame.total.theta);
-    swap_in(frame.rho[i], entry.rho, frame.total.rho);
-    swap_in(frame.vanna[i], entry.vanna, frame.total.vanna);
-    swap_in(frame.volga[i], entry.volga, frame.total.volga);
-    swap_in(frame.charm[i], entry.charm, frame.total.charm);
+    frame.pv[i] = entry.pv;
     frame.price[i] = entry.price;
     frame.iv[i] = entry.iv;
+    frame.delta[i] = entry.delta;
+    frame.gamma[i] = entry.gamma;
+    frame.vega[i] = entry.vega;
+    frame.theta[i] = entry.theta;
+    frame.rho[i] = entry.rho;
+    frame.vanna[i] = entry.vanna;
+    frame.volga[i] = entry.volga;
+    frame.charm[i] = entry.charm;
+    frame.status[i] = entry.status;
+    frame.requested[i] = entry.requested;
+    frame.supported[i] = entry.supported;
+    frame.reasons[i] = entry.reasons;
   }
 
   [[nodiscard]] const Entry *find(std::uint64_t id) const noexcept {
@@ -2064,12 +2112,16 @@ struct ReusablePriceFrame {
     frame.volga.resize(n);
     frame.charm.resize(n);
     frame.status.resize(n);
+    frame.requested.resize(n);
+    frame.supported.resize(n);
+    frame.reasons.resize(n);
   }
 
   [[nodiscard]] PriceFrameView view() noexcept {
-    return PriceFrameView{frame.id,    frame.uid,   frame.pv,    frame.price,  frame.iv,
-                          frame.delta, frame.gamma, frame.vega,  frame.theta,  frame.rho,
-                          frame.vanna, frame.volga, frame.charm, frame.status, &frame.total};
+    return PriceFrameView{
+        frame.id,    frame.uid,    frame.pv,     frame.price,     frame.iv,        frame.delta,
+        frame.gamma, frame.vega,   frame.theta,  frame.rho,       frame.vanna,     frame.volga,
+        frame.charm, frame.status, &frame.total, frame.requested, frame.supported, frame.reasons};
   }
 
   // Marks-only sizing (B2 settlement): marks columns to n, greek columns emptied so
@@ -2083,6 +2135,9 @@ struct ReusablePriceFrame {
     frame.price.resize(n);
     frame.iv.resize(n);
     frame.status.resize(n);
+    frame.requested.resize(n);
+    frame.supported.resize(n);
+    frame.reasons.resize(n);
     frame.delta.clear();
     frame.gamma.clear();
     frame.vega.clear();
@@ -2094,9 +2149,24 @@ struct ReusablePriceFrame {
   }
 
   [[nodiscard]] PriceFrameView marks_view() noexcept {
-    return PriceFrameView{frame.id, frame.uid, frame.pv, frame.price,  frame.iv,
-                          {},       {},        {},       {},           {},
-                          {},       {},        {},       frame.status, &frame.total};
+    return PriceFrameView{frame.id,
+                          frame.uid,
+                          frame.pv,
+                          frame.price,
+                          frame.iv,
+                          {},
+                          {},
+                          {},
+                          {},
+                          {},
+                          {},
+                          {},
+                          {},
+                          frame.status,
+                          &frame.total,
+                          frame.requested,
+                          frame.supported,
+                          frame.reasons};
   }
 };
 
@@ -4592,6 +4662,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         mark = carried->price;
         const double weight = lot.qty * lot.multiplier;
         vega = (weight != 0.0) ? carried->vega / weight : 0.0;
+        if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks && weight != 0.0 &&
+            (!carried->vega_supported || !std::isfinite(vega))) {
+          return Err(ErrorCode::Unavailable,
+                     "run_backtest: carried Vega unavailable for volatility-based close cost");
+        }
       } else if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks) {
         if (s == nullptr) {
           return Err(ErrorCode::NotFound,
