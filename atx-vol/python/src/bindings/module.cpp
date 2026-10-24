@@ -20,6 +20,7 @@ void bind_analytics(py::module_ &m);
 void bind_dispersion(py::module_ &m);
 void bind_fit(py::module_ &m);
 void bind_quote_slice(py::module_ &m);
+void bind_fit_archive(py::module_ &m);
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
@@ -68,6 +69,9 @@ PYBIND11_MODULE(_core, m) {
   // The quote-slice fit, typed query and one-spot rebase (lane C0). Its call signatures
   // take Side, which `bind_pricing` registers.
   bind_quote_slice(m);
+  // Lane PY (2026-10-23). After quote_slice: the archive decodes QuoteSliceFit and reads
+  // its enums; FitArchiveError subclasses the AtxError registered above.
+  bind_fit_archive(m);
 
   // Reflection for the enum-completeness tests (common.hpp): {value: C++ name}.
   m.def(

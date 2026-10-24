@@ -26,6 +26,8 @@ set(ATXVOL_BINDING_SOURCES
     dispersion.cpp
     fit.cpp
     quote_slice.cpp
+    # Lane PY (2026-10-23): the r5/r6 public surface a research user consumes.
+    fit_archive.cpp
 )
 
 # atxvol_add_core_module(<target>)
