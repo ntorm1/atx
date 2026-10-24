@@ -65,7 +65,8 @@ void bind_enums(py::module_ &m) {
       .value("BELOW_MINIMUM_BID", QuoteSliceQuoteStatus::BelowMinimumBid)
       .value("WIDE_SPREAD_TO_MID", QuoteSliceQuoteStatus::WideSpreadToMid)
       .value("WIDE_SPREAD_VOL", QuoteSliceQuoteStatus::WideSpreadVol)
-      .value("LOW_VEGA_WEIGHT", QuoteSliceQuoteStatus::LowVegaWeight);
+      .value("LOW_VEGA_WEIGHT", QuoteSliceQuoteStatus::LowVegaWeight)
+      .value("PROJECTED_PRICE", QuoteSliceQuoteStatus::ProjectedPrice);
   py::enum_<QuoteSliceEvaluationStatus>(m, "QuoteSliceEvaluationStatus")
       .value("SUCCESS", QuoteSliceEvaluationStatus::Success)
       .value("INVALID_CONTRACT", QuoteSliceEvaluationStatus::InvalidContract)
