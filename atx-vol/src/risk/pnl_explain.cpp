@@ -69,50 +69,71 @@ constexpr std::size_t kShares = 16;
 constexpr std::size_t kExcludedPremium = 17;
 constexpr std::size_t kTotalsCount = 18;
 
+// The row columns of one Ok leg, in totals column order (all but the excluded premium).
+using TotalsRow = std::array<double, kExcludedPremium>;
+
+[[nodiscard]] TotalsRow totals_row(const ExplainResult &e, std::size_t i) noexcept {
+  return {e.pv_base[i],   e.pv_target[i], e.pnl_total[i], e.pnl_delta[i],      e.pnl_gamma[i],
+          e.pnl_vega[i],  e.pnl_volga[i], e.pnl_vanna[i], e.pnl_theta[i],      e.pnl_rho[i],
+          e.pnl_charm[i], e.pnl_unexplained[i], e.vol_level[i], e.vol_skew[i], e.vol_curv[i],
+          e.vol_resid[i], e.kind[i] == ExplainLegKind::Share ? e.pnl_total[i] : 0.0};
+}
+
+// One Neumaier sum per totals column (risk_neumaier.hpp), held column-parallel: a row
+// is added to every column at once. Per column the operations are exactly
+// NeumaierSum::add's, in the same order; the branch is a select between the two
+// compensation terms (both computed, one kept), so the columns vectorize and every
+// column keeps the scalar sum's bits (no reassociation, no contraction: no product).
 class TotalsAcc {
 public:
-  void add_ok(const ExplainResult &e, std::size_t i) noexcept {
-    const std::array<double, kExcludedPremium> row{
-        e.pv_base[i],   e.pv_target[i], e.pnl_total[i], e.pnl_delta[i],      e.pnl_gamma[i],
-        e.pnl_vega[i],  e.pnl_volga[i], e.pnl_vanna[i], e.pnl_theta[i],      e.pnl_rho[i],
-        e.pnl_charm[i], e.pnl_unexplained[i], e.vol_level[i], e.vol_skew[i], e.vol_curv[i],
-        e.vol_resid[i], e.kind[i] == ExplainLegKind::Share ? e.pnl_total[i] : 0.0};
+  void add_ok(const TotalsRow &row) noexcept {
     for (std::size_t k = 0; k < row.size(); ++k) {
-      sums_[k].add(row[k]);
+      add_at(k, row[k]);
     }
     ++n_ok_;
   }
   void add_excluded(double premium) noexcept {
-    sums_[kExcludedPremium].add(premium);
+    add_at(kExcludedPremium, premium);
     ++n_excluded_;
   }
   [[nodiscard]] ExplainTotals totals() const noexcept {
     ExplainTotals t;
-    t.pv_base = sums_[kPvBase].value();
-    t.pv_target = sums_[kPvTarget].value();
-    t.pnl_total = sums_[kTotal].value();
-    t.pnl_delta = sums_[kDelta].value();
-    t.pnl_gamma = sums_[kGamma].value();
-    t.pnl_vega = sums_[kVega].value();
-    t.pnl_volga = sums_[kVolga].value();
-    t.pnl_vanna = sums_[kVanna].value();
-    t.pnl_theta = sums_[kTheta].value();
-    t.pnl_rho = sums_[kRho].value();
-    t.pnl_charm = sums_[kCharm].value();
-    t.pnl_unexplained = sums_[kUnexplained].value();
-    t.vol_level = sums_[kLevel].value();
-    t.vol_skew = sums_[kSkew].value();
-    t.vol_curv = sums_[kCurv].value();
-    t.vol_resid = sums_[kResid].value();
-    t.shares_pnl = sums_[kShares].value();
+    t.pv_base = value(kPvBase);
+    t.pv_target = value(kPvTarget);
+    t.pnl_total = value(kTotal);
+    t.pnl_delta = value(kDelta);
+    t.pnl_gamma = value(kGamma);
+    t.pnl_vega = value(kVega);
+    t.pnl_volga = value(kVolga);
+    t.pnl_vanna = value(kVanna);
+    t.pnl_theta = value(kTheta);
+    t.pnl_rho = value(kRho);
+    t.pnl_charm = value(kCharm);
+    t.pnl_unexplained = value(kUnexplained);
+    t.vol_level = value(kLevel);
+    t.vol_skew = value(kSkew);
+    t.vol_curv = value(kCurv);
+    t.vol_resid = value(kResid);
+    t.shares_pnl = value(kShares);
     t.n_ok = n_ok_;
     t.n_excluded = n_excluded_;
-    t.excluded_premium = sums_[kExcludedPremium].value();
+    t.excluded_premium = value(kExcludedPremium);
     return t;
   }
 
 private:
-  std::array<risk_detail::NeumaierSum, kTotalsCount> sums_{};
+  void add_at(std::size_t k, double x) noexcept {
+    const double s = sum_[k];
+    const double t = s + x;
+    const double s_larger = (s - t) + x;
+    const double x_larger = (x - t) + s;
+    comp_[k] += std::fabs(s) >= std::fabs(x) ? s_larger : x_larger;
+    sum_[k] = t;
+  }
+  [[nodiscard]] double value(std::size_t k) const noexcept { return sum_[k] + comp_[k]; }
+
+  std::array<double, kTotalsCount> sum_{};
+  std::array<double, kTotalsCount> comp_{};
   std::uint32_t n_ok_{0};
   std::uint32_t n_excluded_{0};
 };
@@ -559,9 +580,10 @@ void reduce_totals(const PreparedRiskBook &book, std::size_t n_opt, std::size_t 
       eslot = exp_offset + static_cast<std::size_t>(it - s.expiries.begin());
     }
     if (out.status[i] == RiskLaneStatus::Ok) {
-      total.add_ok(out, i);
-      s.by_uid[uslot].add_ok(out, i);
-      s.by_expiry[eslot].add_ok(out, i);
+      const TotalsRow row = totals_row(out, i);
+      total.add_ok(row);
+      s.by_uid[uslot].add_ok(row);
+      s.by_expiry[eslot].add_ok(row);
       rate_moved = rate_moved || (!is_share && out.d_rate[i] != 0.0);
       continue;
     }
