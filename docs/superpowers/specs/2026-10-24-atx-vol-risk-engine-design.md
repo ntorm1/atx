@@ -23,6 +23,7 @@ library leads with.
 
 ## 0.1 Status log
 
+- 2026-10-24 17:10 UTC: user correction — the licensed drop is present as a single parquet in Downloads (2026-10-14, not 2026-08-14). Profiled, partitioned into `C:\atx-data\spiderrock-30min`; §1 fact row rewritten, D7 revised, D16 added; lane C notified (additive `american_only` filter, real-store env-gated test, docs date).
 - 2026-10-24 16:40 UTC: builder check (Opus subagent) returned 7 questions + API conflicts;
   resolved as D4 (revised), D5 (revised), D11–D15 below; headers re-patched and re-checked.
 - 2026-10-24 15:50 UTC: base lease `pool-34` on `feat/vol-risk-base-20261024` @ main 96cd56db;
@@ -42,7 +43,7 @@ library leads with.
 | Three delta conventions exist and disagree: projection spine = B76 forward only; `strategy.hpp` = American spot; `contract_projection` = American seeded from a carry-discounted spot | `types.hpp:128-160` (AN-P2-6) | One `DeltaConvention` enum with `Forward`, `Spot`, `American`; every solver accepts all three or returns `NotImplemented`, never a different answer under the same name |
 | `pnl_attribution` pivots at fixed k = ±0.10; for a 7-day option that is ~6σ√T in the wing → NaN → whole vega P&L falls to `vol_resid` | `pnl_attribution.hpp` | Pivots must be in standardized moneyness (z = k / (σ_atm √T)) |
 | `Position` carries only `OptionContract`; shares exist only inside the backtest ledger and the VaR engine (`VarStockPosition`) | `portfolio_pricer.hpp:140-156`, `var.hpp:45` | The new book carries share legs natively |
-| SpiderRock drop `tbloptionintradayhist_30min_eqt_id_v2.00_2026-08-14` (31.77 M rows, 19 `bucket_et` partitions 0940–1630, 64 pinned columns incl. srVol/srPrc/de/ga/th/ve/rh/ph/vo/va/deDecay, uPrc, rate, sdiv, ddiv, years) was ingested to `C:\atx-cache\oracle\spiderrock` | NORTHSTAR.md, `scripts/oracle_store_metadata.py` | **The store is NOT on this machine today** (no `C:\atx-cache\oracle`, no `C:\atx-data`, no zip in Downloads, 27.6 GB free on the only drive). The benchmark must be store-path-driven with a data-free SpiderRock-shaped generator; the licensed run happens when the store is re-ingested (`scripts/oracle_ingest.py --zip …`, needs ~6 GB parquet + a 15 GB TSV work dir unless `--work` points at a bigger disk) |
+| Licensed SpiderRock intraday drop IS on this machine: `C:\Users\natha\Downloads\OptionIntradayHist_30min_2026-10-14.parquet` (single DuckDB-written parquet, 1.79 GB, 34,011,291 rows, trading date 2026-10-14, 6067 underliers, 62 columns: `okey_dt` date instead of yr/mn/dy, float32 vendor columns, -99 sentinels in ~1 % of rows, 20 slices 0930–1630 of which 11 fall in 10:00–15:00; 2401 underliers have ≥ 100 usable two-sided contracts at 10:00; 6 % of rows are `exType=European`/`prcFramework=Forward` index products — SPX, NDX, XSP, RUT) | DuckDB profile 2026-10-24 (scratchpad `profile_sr.py`) | Partitioned by `scripts/spiderrock_intraday_to_store.py` (DuckDB, single pass) into the pinned store layout `C:\atx-data\spiderrock-30min\date=2026-10-14\bucket_et=HHMM\` with pinned names/types (float64, int64, utf8 strings, -99 → NULL). The benchmark's licensed run is part of integration 1 (D7 revised); the loader filters to American exercise (D16) |
 | SpiderRock `years` is a hybrid vol-time clock (ledger 2026-08-23, VolTime constants); their resolved pricing convention is a discrete-dividend tree, spot = uPrc, rate = row.rate, q = sdiv; srVol is a per-expiry smoothed surface value, not a quote | `bench/oracle/CONVENTIONS.md`, LEDGER 2026-10-16 | Marked vols per contract are exactly the "market environment" an explain engine wants for listed contracts; no refit needed per snapshot |
 | Pool: 3 free warm vol slots (pool-34/35/36, `build-vol-rel` + `-avx2` + hygiene warm); host i7-1260P 4P+8E, 15.7 GB RAM → 3 lanes at `-Jobs 4` | `lease-worktree.ps1 -Status`, `atx-vol/CLAUDE.md` | Wave 1 = 3 parallel lanes; wave 2 sequential |
 | vol-sprint workflow gates are a closed path registry that fails on unknown paths | `vol-dag` skill | Greenfield module files are unknown paths → this sprint runs on the worktree pool with Opus subagents and fresh reviewers, not through the broker |
@@ -411,7 +412,7 @@ or rewritten to the new API (lane D decides per file; nothing is left half-dead)
 
 `tools/risk_bench_main.cpp` (+ `tools/risk_bench.hpp/.cpp` for the testable core):
 ```
-atx-vol-risk-bench --store <root> --date 2026-08-14 --from 1000 --to 1500
+atx-vol-risk-bench --store <root> --date 2026-10-14 --from 1000 --to 1500
                    [--synthetic <dir>] [--underliers 100] [--options 10000] [--shares 100]
                    [--kernel family|cold|both] [--threads 8] [--needs rho]
                    [--out report.json] [--md summary.md] [--seed 1]
@@ -427,8 +428,9 @@ the run: contracts/s and legs/s per stage, p50/p95 over steps, explained ratio
 and actual per-position P&L (see research brief), vendor parity (our Δ/ν vs `de`/`ve`, MAE,
 symmetric rel) when vendor columns are present, thread determinism (`--threads 1` vs N totals
 bit-equal), and the cold-kernel comparison when `--kernel both`. JSON schema versioned; a
-`bench/baselines/i7-1260p-clang18-avx2-risk-bench-synthetic.json` pin is produced in the
-integration stage from `vol-rel-avx2`.
+`bench/baselines/i7-1260p-clang18-avx2-risk-bench-synthetic.json` pin and a
+`…-risk-bench-spiderrock-2026-10-14.json` pin (licensed store, 11 slices 1000–1500) are
+produced in the integration stage from `vol-rel-avx2`.
 
 ## 6. Correctness fixes folded in
 
@@ -509,9 +511,12 @@ suite. Wave 2: lane D on one slot. Integration 2: full `atx_vol_fast` label on `
 - D6. Totals are Neumaier-compensated sums in leg input order on the calling thread;
   per-lane work is fanned over the process pricing executor with disjoint slots. Determinism
   across thread counts is a gate, not a goal.
-- D7. The benchmark's licensed run is deferred until the store exists on disk; the tool,
-  its tests and the baseline pin run on the synthetic store, which exercises the identical
-  loader and engine path (only the directory differs).
+- D7 (revised 17:10 UTC). The licensed store exists (`C:\atx-data\spiderrock-30min`, date
+  2026-10-14, partitioned from the Downloads parquet by `scripts/spiderrock_intraday_to_store.py`).
+  Lane C still builds and tests against the synthetic store (identical loader/engine path);
+  the licensed run (10:00–15:00, 11 slices, 100 uids / 10k options / 100 shares) is part of
+  integration 1 and produces its own baseline pin. Lane C adds one env-gated real-store
+  test (`ATX_VOL_SPIDERROCK_STORE`) that is skipped when the store is absent.
 - D8. No Python bindings; no serving-record kernel; no sticky-delta scenarios in explain.
 - D9. The research brief (`scratchpad/research-pnl-explain.md`, cited sources S1–S41) informs:
   the bench's explain-quality statistics use the FRTB PLA cutoffs verbatim (green: Spearman
@@ -546,6 +551,15 @@ suite. Wave 2: lane D on one slot. Integration 2: full `atx_vol_fast` label on `
   its record or false).
 - D15. "Allocation-free" is bounded, not zero, for the family kernel (families are
   reconstructed per state; `FrameCounters` reports the counts); the lane test pins the bound.
+- D16. The SpiderRock loader filters to American exercise (`SpiderRockStoreSpec::american_only`,
+  default true, additive): rows with `exType != "American"` (SPX/NDX/XSP/RUT — European,
+  forward-framework index products, 6 % of rows) are dropped and counted before top-N
+  underlier selection; a store without the column (synthetic, old oracle drop) is treated as
+  all-American. Reason: the family kernel is American-on-spot and vendor parity on European
+  rows would fail by construction. A European route is deferred, not faked. The ingest also
+  normalizes the drop: float32 → float64, -99 → NULL on every vendor column, `okey_dt` →
+  `okey_yr/mn/dy`, `bucket_et` = America/New_York HHMM of the slice instant; strings are utf8
+  (not large_utf8) and every reader accepts both.
 
 ## 10. Left to the builder
 
