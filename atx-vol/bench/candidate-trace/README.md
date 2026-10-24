@@ -48,4 +48,14 @@ Native CLI controls refuse incompatible scopes before
 reading input or creating files. The separate 13-gate scalar actual-API audit
 and prediction-byte parity remain required before using captured SPY work for
 an architecture decision. No whole-SPY capture has yet been established by this
-source component; no timing or numerical improvement is claimed.
+source component alone; no timing or numerical improvement is claimed.
+
+The completed [700-call receipt and proof-batching plan](../../docs/cold-price-candidate-capture-review-20261024.md)
+now records the separate same-binary 13-gate API audit and prediction parity.
+`proof_requests.py capture.json requests.json` validates the complete capture
+before extracting every visited finite proof seed for the existing cold-seed
+component replay. It retains no-proof calls and original call/phase joins in
+the extraction metadata. Contiguous cache/options groups start cold in replay;
+interleaved direct-seed calls are absent, so this does not reproduce the entire
+finalizer's warm state. Four controls cover exact seed/options, denominator
+corruption and retained proposal refusals.
