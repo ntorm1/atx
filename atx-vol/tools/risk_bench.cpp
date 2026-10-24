@@ -367,11 +367,12 @@ void fill_cold(ColdComparison &c, const RiskFrame &m, const RiskFrame &k, const 
   c.max_abs_vanna = max_abs_diff(m.vanna, k.vanna, ok);
   c.max_abs_volga = max_abs_diff(m.volga, k.volga, ok);
   c.max_abs_charm = max_abs_diff(m.charm, k.charm, ok);
-  // Lane A2: the price gate over the family-served rows (relative to the cold price).
+  // Lane A2: the price gate over the family-served rows (relative to the cold price; a
+  // zero cold price has no relative gap and is skipped rather than read as inf / NaN).
   bool any_family = false;
   double max_rel = 0.0;
   for (std::size_t r = 0; r < ok.size(); ++r) {
-    if (ok[r] != 0 && m.route[r] == RiskRoute::Family) {
+    if (ok[r] != 0 && m.route[r] == RiskRoute::Family && k.price[r] != 0.0) {
       max_rel = std::max(max_rel, std::abs(m.price[r] - k.price[r]) / std::abs(k.price[r]));
       any_family = true;
     }
