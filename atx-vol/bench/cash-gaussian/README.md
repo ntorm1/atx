@@ -185,3 +185,20 @@ that run passed and is **not** described as runtime-red evidence. The ownership
 defect is established by source lifetime analysis; no ASan result is claimed.
 `grid_nodes` also states the size of this setup copy, separately from constructed
 PWL-knot counts. No follow-up pilot result was produced before this correction.
+
+`atx-vol-cash-gaussian-followup` is a separate fixed, argument-free native
+diagnostic. Its 18 European results have no cash or exercise; the original raw
+events remain in the full-50 manifest. Its five observer attempts must exactly
+match the original refusal text/code and every work count. The native tool
+receives no baseline file or price. Captured PWL data are copied during the
+synchronous callback; no borrowed spans escape to serialization.
+
+`followup_audit.py` pins both original reference and prior 32-outcome pilot hashes.
+It independently evaluates Black76, checks exact full semigroup work identities
+and reconstructs the captured PWL slope/subtraction/fused evaluation before
+reconstructing each crossing at Decimal precision 100 and 200. It reports the
+nearest binary64 point and local affine-line chord excess, with no full-price
+bound. The one-step Black76 diagnostic uses a fixed 5e-10 absolute check,
+declared before the 18 results; every multi-step residual remains visible.
+Three reader controls cover complete/refused denominators and 18 malformed
+model/work/capture mutations. The original 32 numerical outcomes are unchanged.

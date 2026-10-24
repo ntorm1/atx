@@ -40,6 +40,13 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
         ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/atx-vol/src)
     target_link_libraries(atx-vol-cash-gaussian-pilot PRIVATE
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-cash-gaussian-followup ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp
+        ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/semigroup.cpp
+        ${CASH_GAUSSIAN_DIR}/followup.cpp)
+    target_include_directories(atx-vol-cash-gaussian-followup PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/atx-vol/src)
+    target_link_libraries(atx-vol-cash-gaussian-followup PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
 endif()
 
 # Explicit private research target; no kernel is linked into the production library.
