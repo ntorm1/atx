@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -9,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -20,6 +22,7 @@
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
+#include "simd/american_boundary_nodes_avx2.hpp"
 
 // L2h-b sigma-q family (2026-10-21). AlSigmaQFamily lays Chebyshev-Lobatto nodes over
 // (σ, q) so ONE family per (expiry, side) prices every strike at its OWN effective
@@ -344,6 +347,90 @@ TEST(AlSigmaQFamily, CollapsedQBoxOnTheAvx2BuildIsTheSigmaFamilyToRounding) {
   EXPECT_LE(c.scaled, kBound);
   std::cout << "[AlSigmaQFamily] collapsed avx2 vs sigma-family: " << c.mismatched << " of "
             << c.checked << " differ, max |dP|/max(P,1)=" << c.scaled << "\n";
+}
+
+TEST(AlSigmaQFamily, Avx2NodeGeometryReusePreservesBitsAndInvalidatesInputs) {
+  if (!atx::vol::simd::have_avx2()) GTEST_SKIP() << "AVX2 required";
+  namespace amer = atx::vol::amer;
+  namespace kernel = atx::vol::simd::detail;
+  struct Scratch {
+    std::array<amer::AlBoundary, 4> boundaries{};
+    std::array<amer::AlWorkspace, 4> work;
+    kernel::NodePackScratch geometry;
+  };
+  auto reused = std::make_unique_for_overwrite<Scratch>();
+  std::array<double, 4> strikes{100.0, 100.0, 100.0, 100.0};
+  std::array<double, 4> sigma{0.10, 0.15, 0.20, 0.25};
+  std::array<double, 4> rate{0.05, 0.05, 0.05, 0.05};
+  std::array<double, 4> yield{0.02, 0.02, 0.02, 0.02};
+  double T = 0.5;
+  auto scheme = amer::scheme_from_opts(std::nullopt);
+  const auto compare_fresh = [&] {
+    auto fresh = std::make_unique_for_overwrite<Scratch>();
+    const auto run = [&](Scratch &s) {
+      return kernel::solve_put_boundaries4_avx2(strikes.data(), T, sigma.data(),
+          rate.data(), yield.data(), scheme, s.boundaries.data(), s.work.data(), s.geometry);
+    };
+    const unsigned actual = run(*reused), expected = run(*fresh);
+    EXPECT_EQ(actual, expected);
+    for (unsigned lane = 0; lane < 4; ++lane) {
+      if ((expected & (1u << lane)) == 0) continue;
+      const auto &a = reused->boundaries[lane], &b = fresh->boundaries[lane];
+      EXPECT_EQ(a.n, b.n);
+      for (unsigned k = 0; k < std::min(a.n, b.n); ++k) {
+        EXPECT_TRUE(same_bits(a.y[k], b.y[k])) << "lane=" << lane << " node=" << k;
+      }
+    }
+    return actual;
+  };
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 1u);
+  EXPECT_EQ(reused->geometry.carry_builds, 1u);
+  for (double &s : sigma) s += 0.12;
+  strikes = {80.0, 90.0, 110.0, 120.0};
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 1u);
+  EXPECT_EQ(reused->geometry.carry_builds, 1u);
+  yield[1] = -0.01; // retain geometry, invalidate the entire four-lane carry key
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 1u);
+  EXPECT_EQ(reused->geometry.carry_builds, 2u);
+  rate[2] = 0.07;
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 1u);
+  EXPECT_EQ(reused->geometry.carry_builds, 3u);
+  T = 0.75;
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 2u);
+  EXPECT_EQ(reused->geometry.carry_builds, 4u);
+  scheme.n_boundary = 16;
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 3u);
+  EXPECT_EQ(reused->geometry.carry_builds, 5u);
+  scheme.n_quad_fp = 32;
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 4u);
+  EXPECT_EQ(reused->geometry.carry_builds, 6u);
+  scheme.n_iter_fp += 1;
+  scheme.tol *= 0.1; // solve controls do not alter the initialized geometry
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 4u);
+  EXPECT_EQ(reused->geometry.carry_builds, 6u);
+  strikes[0] = -1.0; // a different reference lane must not poison the cached grid
+  EXPECT_EQ(compare_fresh() & 1u, 0u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 4u);
+  EXPECT_EQ(reused->geometry.carry_builds, 6u);
+  strikes.fill(-1.0);
+  EXPECT_EQ(compare_fresh(), 0u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 4u);
+  strikes.fill(100.0);
+  scheme.n_boundary = 24; // unsupported hoist shape uses the unchanged inline kernel
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 4u);
+  scheme = amer::scheme_from_opts(std::nullopt);
+  EXPECT_EQ(compare_fresh(), 15u);
+  EXPECT_EQ(reused->geometry.geometry_builds, 5u);
+  EXPECT_EQ(reused->geometry.carry_builds, 7u);
 }
 
 TEST(AlSigmaQFamily, Avx2BuildMatchesTheScalarBuildToRounding) {

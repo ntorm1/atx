@@ -19,6 +19,8 @@
 
 #include "fitting/counters.hpp" // BoundarySolves / AlBoundarySolves — per-solve ledger
 
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -33,11 +35,31 @@ namespace atx::vol::simd::detail {
 
 namespace {
 
-// The sweep-invariant quadrature geometry of pair p = (collocation node i, quadrature
-// node k): eqn_b_ND's u / t_u / zc / barycentric terms (lane-uniform: the pack shares T,
-// so tau_i and u_ik are common) and its per-lane exp / volatility factors.
-void hoist_geometry(const PutPackBoundary &pk, const amer::AlBoundary &ref_bnd,
-                    const amer::AlWorkspace &ref_ws, NodePackScratch &geo) noexcept {
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+[[nodiscard]] bool same_geometry(const PutPackBoundary &pk, const amer::AlBoundary &bnd,
+                                  const amer::AlWorkspace &ws,
+                                  const NodePackScratch &geo) noexcept {
+  const auto &key = geo.geometry_key;
+  if (!geo.geometry_ready || key.nb != pk.nb || key.nq != pk.nq || !same_bits(key.T, bnd.T)) {
+    return false;
+  }
+  for (unsigned i = 0; i < pk.nb; ++i) {
+    if (!same_bits(key.tau[i], bnd.tau[i]) || !same_bits(key.z[i], pk.znodes[i]) ||
+        !same_bits(key.wbary[i], pk.wbary[i])) return false;
+  }
+  for (unsigned i = 0; i < pk.nq; ++i) {
+    if (!same_bits(key.qx[i], ws.qx_fp[i]) || !same_bits(key.qw[i], ws.qw_fp[i])) return false;
+  }
+  return true;
+}
+
+// These intrinsic operations are unchanged. Only their lifetime moves from one
+// sigma pack to one exact initialized time/grid/quadrature key.
+void hoist_invariant_geometry(const PutPackBoundary &pk, const amer::AlBoundary &ref_bnd,
+                               const amer::AlWorkspace &ref_ws, NodePackScratch &geo) noexcept {
   const __m256d zero = _mm256_setzero_pd();
   const __m256d one = _mm256_set1_pd(1.0);
   const __m256d two = _mm256_set1_pd(2.0);
@@ -81,13 +103,60 @@ void hoist_geometry(const PutPackBoundary &pk, const amer::AlBoundary &ref_bnd,
       geo.tu_gt[p] = static_cast<std::uint8_t>((_mm256_movemask_pd(tu_gt) & 1) != 0 ? 1 : 0);
       const __m256d safe_tu = k_sel(tu_gt, t_u, one);
       geo.safe_tu[p] = _mm256_cvtsd_f64(safe_tu);
+      geo.u[p] = _mm256_cvtsd_f64(u);
+      geo.weight[p] = _mm256_cvtsd_f64(wv);
+      geo.sqrt_tu[p] = _mm256_cvtsd_f64(_mm256_sqrt_pd(safe_tu));
+    }
+  }
+  auto &key = geo.geometry_key;
+  key.T = ref_bnd.T;
+  key.nb = pk.nb;
+  key.nq = pk.nq;
+  for (unsigned i = 0; i < pk.nb; ++i) {
+    key.tau[i] = ref_bnd.tau[i];
+    key.z[i] = pk.znodes[i];
+    key.wbary[i] = pk.wbary[i];
+  }
+  for (unsigned i = 0; i < pk.nq; ++i) {
+    key.qx[i] = ref_ws.qx_fp[i];
+    key.qw[i] = ref_ws.qw_fp[i];
+  }
+  geo.geometry_ready = true;
+  geo.carry_ready = false;
+  ++geo.geometry_builds;
+}
+
+void hoist_geometry(const PutPackBoundary &pk, const amer::AlBoundary &ref_bnd,
+                    const amer::AlWorkspace &ref_ws, NodePackScratch &geo) noexcept {
+  if (!same_geometry(pk, ref_bnd, ref_ws, geo)) {
+    hoist_invariant_geometry(pk, ref_bnd, ref_ws, geo);
+  }
+  std::array<double, 4> rate{}, yield{};
+  _mm256_storeu_pd(rate.data(), pk.Rv);
+  _mm256_storeu_pd(yield.data(), pk.Qv);
+  bool carry_matches = geo.carry_ready;
+  for (unsigned lane = 0; lane < 4; ++lane) {
+    carry_matches = carry_matches && same_bits(rate[lane], geo.carry_r[lane]) &&
+                    same_bits(yield[lane], geo.carry_q[lane]);
+  }
+  const unsigned pairs = (pk.nb - 1u) * pk.nq;
+  for (unsigned p = 0; p < pairs; ++p) {
+    if (!carry_matches) {
+      const __m256d u = _mm256_set1_pd(geo.u[p]);
+      const __m256d wv = _mm256_set1_pd(geo.weight[p]);
       _mm256_store_pd(&geo.er[static_cast<std::size_t>(p) * 4u],
                       _mm256_mul_pd(wv, exp_pd(_mm256_mul_pd(pk.Rv, u))));
       _mm256_store_pd(&geo.eq[static_cast<std::size_t>(p) * 4u],
                       _mm256_mul_pd(wv, exp_pd(_mm256_mul_pd(pk.Qv, u))));
-      _mm256_store_pd(&geo.vq[static_cast<std::size_t>(p) * 4u],
-                      _mm256_mul_pd(pk.SIG, _mm256_sqrt_pd(safe_tu)));
     }
+    _mm256_store_pd(&geo.vq[static_cast<std::size_t>(p) * 4u],
+                    _mm256_mul_pd(pk.SIG, _mm256_set1_pd(geo.sqrt_tu[p])));
+  }
+  if (!carry_matches) {
+    geo.carry_r = rate;
+    geo.carry_q = yield;
+    geo.carry_ready = true;
+    ++geo.carry_builds;
   }
 }
 

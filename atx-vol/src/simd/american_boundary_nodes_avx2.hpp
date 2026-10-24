@@ -18,19 +18,37 @@
 //
 // NOT a public header. Not installed.
 
+#include <array>
 #include <cstdint>
 
 #include "pricing/american_boundary.hpp" // amer::AlScheme / AlBoundary / AlWorkspace
 
 namespace atx::vol::simd::detail {
 
-// Caller-owned scratch for one pack's hoisted sweep geometry (~115 KB: heap it). Sized
+// Caller-owned scratch for retained sweep geometry (~130 KB: heap it). Sized
 // for n_boundary <= kMaxNodes and n_quad_fp <= kMaxQuad — the Reference scheme is
 // (12, 24); a larger scheme runs the kernel's own inline-geometry sweeps instead.
 struct NodePackScratch {
   static constexpr unsigned kMaxNodes = 16;
   static constexpr unsigned kMaxQuad = 32;
   static constexpr unsigned kMaxPairs = (kMaxNodes - 1u) * kMaxQuad;
+  // Local to one family preparation. Compare the actual initialized grid/tables,
+  // not their addresses, before retaining invariant coefficients across packs.
+  struct GeometryKey {
+    double T = 0.0;
+    unsigned nb = 0;
+    unsigned nq = 0;
+    std::array<double, kMaxNodes> tau{}, z{}, wbary{};
+    std::array<double, kMaxQuad> qx{}, qw{};
+  } geometry_key;
+  bool geometry_ready = false;
+  bool carry_ready = false;
+  std::array<double, 4> carry_r{}, carry_q{};
+  std::uint32_t geometry_builds = 0; // diagnostic work counts for this scratch lifetime
+  std::uint32_t carry_builds = 0;
+  double u[kMaxPairs];
+  double weight[kMaxPairs];
+  double sqrt_tu[kMaxPairs];
   double qq[kMaxPairs * kMaxNodes];  // wbary_m / (zc_p - z_m), pair-major
   double den[kMaxPairs];             // sum_m of the above, the kernel's order
   double safe_tu[kMaxPairs];         // tau_i - u_ik where > 1e-14, else 1
