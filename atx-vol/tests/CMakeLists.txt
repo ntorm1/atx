@@ -28,12 +28,17 @@ set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 option(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH "Build independent stock-state Gaussian controls" OFF)
 if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
     set(CASH_GAUSSIAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-gaussian")
+    find_path(ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR
+        NAMES boost/multiprecision/cpp_bin_float.hpp REQUIRED)
     add_executable(atx-vol-cash-gaussian-research-tests
         ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp ${CASH_GAUSSIAN_DIR}/stock_pwl_test.cpp
         ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/event_owner_test.cpp
-        ${CASH_GAUSSIAN_DIR}/semigroup.cpp ${CASH_GAUSSIAN_DIR}/followup_test.cpp)
+        ${CASH_GAUSSIAN_DIR}/semigroup.cpp ${CASH_GAUSSIAN_DIR}/followup_test.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_weights_test.cpp)
     target_link_libraries(atx-vol-cash-gaussian-research-tests PRIVATE
         atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-cash-gaussian-research-tests SYSTEM PRIVATE
+        ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
     add_executable(atx-vol-cash-gaussian-pilot ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp
         ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/pilot.cpp)
     target_include_directories(atx-vol-cash-gaussian-pilot PRIVATE
@@ -46,6 +51,12 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
     target_include_directories(atx-vol-cash-gaussian-followup PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/atx-vol/src)
     target_link_libraries(atx-vol-cash-gaussian-followup PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-cash-cubic-weight-control
+        ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_weights_probe.cpp)
+    target_include_directories(atx-vol-cash-cubic-weight-control SYSTEM PRIVATE
+        ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
+    target_link_libraries(atx-vol-cash-cubic-weight-control PRIVATE
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
 endif()
 

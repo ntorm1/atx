@@ -72,11 +72,26 @@ affine and degree-2/3 coefficient identities; add separate full-domain/tail and
 repeated-polynomial controls before calling Stage A complete. The 12-cell
 weight study alone cannot satisfy the broader Stage A gate.
 
+Before the first 24 weight outputs, fix the diagnostic reader thresholds:
+100/200-digit results must agree to 1e-40 relative for every reported moment
+and weight. Positive-integrand quadrature uses SciPy `quad` on the full local
+coordinate interval [0,1], with fixed epsabs=1e-14, epsrel=3e-13 and limit=200.
+Rescale by the peak log density only to avoid numerical underflow, without
+dropping any interval. Compare each scaled weight with tolerance
+`5e-11*abs(quadrature_value) + 8*reported_quadrature_error`; retain estimated
+errors, evaluation counts and every failed comparison. The quadrature error
+estimate and two-precision agreement remain empirical controls.
+
 The helper owns bounded fixed-precision workspace and returns no partial
 weights on failure. Limits are four moment attempts and eight normal-function
 calls per request by default; lower caller budgets exercise partial-work
 accounting. Internal special-function series exhaustion is typed numerical
 refusal. Count actual attempted work and distinguish it from the fixed maximum.
+The fixed special-function limits are 4096 series iterations and 256 root
+iterations. Additional admission requires positive finite weight combinations,
+absolute-term/signed-sum condition at most 10^(digits-30), and mass/first-moment
+partition residuals at most 1e-25 relative. These arithmetic guards are not
+certified transcendental error bounds or a monetary tolerance.
 
 Boost documents correctly rounded basic arithmetic/sqrt but not transcendental
 functions. Therefore agreement at two precisions and independent quadrature is

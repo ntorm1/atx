@@ -212,3 +212,25 @@ no rounding treatment is applied. See the
 and [prospective cubic plan](cubic-plan.md). The cubic representation is design
 only; no new numerical implementation, American reference or timing result is
 included.
+
+## Stage A local cubic-weight control
+
+`cubic-moment-plan.md` predeclares a separate 12-cell/2-precision study, including
+adjacent high/low stock and positive near-zero time. `cubic_weights.hpp/.cpp`
+uses the installed Boost headers only in explicit research targets. It computes
+scaled Bernstein price/derivative weights at fixed 100 or 200 decimal digits,
+returns decimal strings and counts actual moment/normal-function/coefficient
+work. Unsupported numerical domains, conditioning and budgets return typed
+refusals; no tails are dropped and no rigorous transcendental bound is claimed.
+
+Three stub tests failed at runtime. Six new native controls plus the unchanged
+26 Gaussian controls now pass; three owning TUs pass with PCH off. The private
+probe exports all24 declared precision/cell outcomes, and its independent reader
+uses positive-integrand SciPy quadrature, input bits, partition identities and
+two-precision comparisons. Its malformed and common-bias controls require an
+explicit native fixture via `ATX_CUBIC_WEIGHT_CONTROL_FIXTURE`.
+
+This component does not construct a new option curve, run the18 semigroup
+requests, perform American exercise, establish Stage A completeness or replace
+the previous negative PWL receipts. Full-domain/tail, repeated-polynomial and
+owner/derivative-kink controls remain necessary before progression.
