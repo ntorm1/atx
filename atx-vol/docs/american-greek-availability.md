@@ -201,3 +201,15 @@ exact integer bit patterns are frozen in `repair-iv/greek-deriv-book-fma-*`.
 All six owning PCH-off objects pass; final receipts are
 `repair-iv/greek-deriv-book-final2.*`, `greek-deriv-scenario-final.*` and
 `greek-deriv-book-hygiene*.log`.
+
+Backtest Error policy now checks aggregate availability as well as the existing
+complete-row risk count. A finite row population can still overflow an aggregate;
+that is an Unavailable error, without fabricating excluded rows. Partial priced
+rows retain their PV under report mode and produce a requested-risk diagnostic
+under Error mode, rather than claiming their surface is absent. This component
+does not add persistence columns or change the complete-risk coverage policy.
+
+Two runtime regressions first reproduced the aggregate false pass and misleading
+partial-risk diagnostic. All 81 backtest/shape/mark tests and eight declarative
+strategy/tolerance tests pass; three owning PCH-off objects pass. Receipts are
+`repair-iv/greek-backtest-risk-{red,green,policy,hygiene}.*`.
