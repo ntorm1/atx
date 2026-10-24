@@ -370,6 +370,97 @@ TEST(QuoteSlice, ConflictingAndNonFiniteStrikeCarryIsRefusedWithoutAveraging) {
   EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
 }
 
+TEST(QuoteSlice, CarryCoalescingBoundsPriceImpactAndDoesNotChangeQuoteBoxes) {
+  const QuoteSliceMarket market{773.0, 0.36674055457115173, 0.36674055457115173,
+                                0.04689053073525429, -0.001, 1.8158732652664185};
+  std::vector<QuoteSliceQuote> quotes{
+      {784.0, Side::Call, 31.0, 31.1, -0.0010234875371679664},
+      {784.0, Side::Put, 29.0, 29.1, -0.0010234880028292537}};
+  const auto raw = quotes;
+  const auto result = coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::AggregatePresentValue, 1e-6);
+  ASSERT_TRUE(result) << result.error().to_string();
+  EXPECT_EQ(result->strikes_changed, 1u);
+  EXPECT_GT(result->max_price_change_bound, 0.0);
+  EXPECT_LT(result->max_price_change_bound, 1e-6);
+  ASSERT_EQ(quotes[0].continuous_yield, quotes[1].continuous_yield);
+  EXPECT_GT(*quotes[0].continuous_yield, *raw[1].continuous_yield);
+  EXPECT_LT(*quotes[0].continuous_yield, *raw[0].continuous_yield);
+  const double canonical = *quotes[0].continuous_yield -
+      std::log1p(-market.dividend_pv / market.spot) / market.variance_years;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    EXPECT_EQ(quotes[i].bid, raw[i].bid);
+    EXPECT_EQ(quotes[i].ask, raw[i].ask);
+    const double original = *raw[i].continuous_yield -
+        std::log1p(-market.dividend_pv / market.spot) / market.variance_years;
+    for (const double sigma : {0.1, 0.3, 1.0}) {
+      const auto before = andersen_lake(market.spot, 784.0, market.variance_years, sigma,
+                                        market.rate, original, quotes[i].side);
+      const auto after = andersen_lake(market.spot, 784.0, market.variance_years, sigma,
+                                       market.rate, canonical, quotes[i].side);
+      ASSERT_TRUE(before && after);
+      EXPECT_LE(std::abs(*before - *after), result->max_price_change_bound + 1e-10);
+    }
+  }
+  auto reversed = raw;
+  std::reverse(reversed.begin(), reversed.end());
+  ASSERT_TRUE(coalesce_quote_slice_carry(
+      market, reversed, QuoteSliceDividendModel::AggregatePresentValue, 1e-6));
+  EXPECT_EQ(reversed[0].continuous_yield, quotes[0].continuous_yield);
+}
+
+TEST(QuoteSlice, CarryCoalescingRefusesMaterialConflictsWithoutPartialChanges) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  std::vector<QuoteSliceQuote> quotes{
+      {95.0, Side::Call, 6.0, 6.1, 0.01},
+      {95.0, Side::Put, 1.0, 1.1, 0.0100000001},
+      {105.0, Side::Call, 1.0, 1.1, 0.01},
+      {105.0, Side::Put, 6.0, 6.1, 0.02}};
+  const auto raw = quotes;
+  EXPECT_FALSE(coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, 1e-6));
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    EXPECT_EQ(quotes[i].continuous_yield, raw[i].continuous_yield);
+  }
+  quotes.resize(2);
+  EXPECT_FALSE(coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, 0.0));
+  EXPECT_FALSE(coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::DatedCash, 1e-6));
+  EXPECT_FALSE(coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, -1.0));
+}
+
+TEST(QuoteSlice, CarryCoalescingUsesTheCalendarClockAndPreservesUnchangedOverrides) {
+  QuoteSliceMarket market{100.0, 0.1, 1.0, 0.04, -0.05, 0.0};
+  const std::vector<QuoteSliceQuote> raw{
+      {95.0, Side::Call, 6.0, 6.1, std::nullopt},
+      {95.0, Side::Put, 1.0, 1.1, -0.04999999},
+      {105.0, Side::Call, 1.0, 1.1, std::nullopt},
+      {105.0, Side::Put, 6.0, 6.1, std::nullopt}};
+  auto quotes = raw;
+  // The drift exposure is one calendar year, even with only 0.1 variance years.
+  EXPECT_FALSE(coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, 5e-7));
+  const auto accepted = coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, 2e-6);
+  ASSERT_TRUE(accepted);
+  EXPECT_EQ(accepted->strikes_changed, 1u);
+  EXPECT_GT(accepted->max_price_change_bound, 1e-6);
+  EXPECT_EQ(quotes[0].continuous_yield, quotes[1].continuous_yield);
+  EXPECT_FALSE(quotes[2].continuous_yield);
+  EXPECT_FALSE(quotes[3].continuous_yield);
+  const auto repeated = coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, 0.0);
+  ASSERT_TRUE(repeated);
+  EXPECT_EQ(repeated->strikes_changed, 0u);
+  EXPECT_EQ(repeated->max_price_change_bound, 0.0);
+  market.calendar_years = 0.1;
+  quotes = raw;
+  EXPECT_TRUE(coalesce_quote_slice_carry(
+      market, quotes, QuoteSliceDividendModel::ContinuousYield, 5e-7));
+}
+
 TEST(QuoteSlice, DatedCashInversionAndServingPreserveStrikeSpecificCarry) {
   const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.01, 0.0};
   const std::vector<CashDividend> calendar_events{{0.2, 1.8}};

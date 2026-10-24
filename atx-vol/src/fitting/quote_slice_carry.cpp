@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <utility>
 #include <vector>
@@ -11,6 +12,123 @@
 #include "atx/vol/api/pricing/american.hpp" // kTauAtExpiryRelTol, CashDividend
 
 namespace atx::vol {
+namespace {
+
+struct CarryInput {
+  std::size_t row;
+  double strike;
+  double yield;
+};
+
+// Same effective-carry conversion as the fitter, without rounded intermediate forwards.
+double coalescing_effective_yield(const QuoteSliceMarket &m, QuoteSliceDividendModel model,
+                                  double yield) noexcept {
+  double retention = 0.0;
+  switch (model) {
+  case QuoteSliceDividendModel::ContinuousYield:
+    break;
+  case QuoteSliceDividendModel::AggregatePresentValue:
+    retention = std::log1p(-m.dividend_pv / m.spot);
+    break;
+  case QuoteSliceDividendModel::AggregateFundingPresentValue:
+    if (m.dividend_pv > 0.0) {
+      const double fraction =
+          std::exp(std::log(m.dividend_pv) - std::log(m.spot) + yield * m.calendar_years);
+      if (!(fraction < 1.0)) return std::numeric_limits<double>::quiet_NaN();
+      retention = std::log1p(-fraction);
+    }
+    break;
+  case QuoteSliceDividendModel::DatedCash:
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return yield * (m.calendar_years / m.variance_years) - retention / m.variance_years;
+}
+
+double carry_price_bound(const QuoteSliceMarket &m, QuoteSliceDividendModel model,
+                          double low, double high) noexcept {
+  const double q_low = coalescing_effective_yield(m, model, low);
+  const double q_high = coalescing_effective_yield(m, model, high);
+  if (!std::isfinite(q_low) || !std::isfinite(q_high) || q_high < q_low) {
+    return std::numeric_limits<double>::infinity();
+  }
+  // Couple both GBM paths. For any exercise time tau <= T, the one-Lipschitz
+  // call/put payoff difference is at most S_low(tau)*(1-exp(-delta_q*T)).
+  // Discounted S_low(tau) has expectation <= S*exp(max(-q_low,0)*T), by the
+  // bounded-stopping-time martingale identity. Taking the supremum over tau
+  // bounds both American values uniformly in strike and volatility.
+  const double exposure = m.spot * std::exp(std::max(-q_low, 0.0) * m.variance_years);
+  const double fraction = -std::expm1(-(q_high - q_low) * m.variance_years);
+  const double padding = 64.0 * std::numeric_limits<double>::epsilon() *
+      (1.0 + (std::abs(q_low) + std::abs(q_high)) * m.variance_years);
+  return exposure * (fraction + padding);
+}
+
+} // namespace
+
+Result<QuoteSliceCarryCoalescing>
+coalesce_quote_slice_carry(const QuoteSliceMarket &market, std::span<QuoteSliceQuote> quotes,
+                           QuoteSliceDividendModel model, double max_price_change) {
+  if (!(max_price_change >= 0.0) || !std::isfinite(max_price_change) ||
+      !(market.spot > 0.0) || !std::isfinite(market.spot) ||
+      !(market.variance_years > 0.0) || !std::isfinite(market.variance_years) ||
+      !(market.calendar_years > 0.0) || !std::isfinite(market.calendar_years) ||
+      !std::isfinite(market.rate) || !std::isfinite(market.continuous_yield) ||
+      !(market.dividend_pv >= 0.0) || !std::isfinite(market.dividend_pv) ||
+      (model != QuoteSliceDividendModel::ContinuousYield &&
+       model != QuoteSliceDividendModel::AggregatePresentValue &&
+       model != QuoteSliceDividendModel::AggregateFundingPresentValue &&
+       model != QuoteSliceDividendModel::DatedCash) ||
+      (model == QuoteSliceDividendModel::ContinuousYield && market.dividend_pv != 0.0) ||
+      (model == QuoteSliceDividendModel::AggregatePresentValue &&
+       !(market.dividend_pv < market.spot))) {
+    return atx::core::Err(ErrorCode::InvalidArgument, "carry coalescing: invalid input");
+  }
+  std::vector<CarryInput> inputs;
+  inputs.reserve(quotes.size());
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &quote = quotes[i];
+    const double yield = quote.continuous_yield.value_or(market.continuous_yield);
+    if (!std::isfinite(yield)) {
+      return atx::core::Err(ErrorCode::InvalidArgument, "carry coalescing: non-finite yield");
+    }
+    if (quote.strike > 0.0 && std::isfinite(quote.strike) &&
+        (quote.side == Side::Call || quote.side == Side::Put)) {
+      inputs.push_back({i, quote.strike, yield});
+    }
+  }
+  std::sort(inputs.begin(), inputs.end(), [](const CarryInput &a, const CarryInput &b) {
+    return a.strike < b.strike || (a.strike == b.strike && a.yield < b.yield);
+  });
+  QuoteSliceCarryCoalescing report;
+  std::vector<std::pair<std::size_t, double>> changes;
+  changes.reserve(inputs.size());
+  for (std::size_t first = 0; first < inputs.size();) {
+    std::size_t end = first + 1;
+    while (end < inputs.size() && inputs[end].strike == inputs[first].strike) ++end;
+    const double low = inputs[first].yield;
+    const double high = inputs[end - 1].yield;
+    if (low != high) {
+      const double bound = carry_price_bound(market, model, low, high);
+      if (!std::isfinite(bound) || !(bound <= max_price_change)) {
+        return atx::core::Err(ErrorCode::InvalidArgument,
+                              "carry coalescing: conflicting yields exceed price budget");
+      }
+      const double canonical = std::midpoint(low, high);
+      ++report.strikes_changed;
+      report.max_abs_yield_change = std::max(
+          report.max_abs_yield_change, std::max(canonical - low, high - canonical));
+      report.max_price_change_bound = std::max(report.max_price_change_bound, bound);
+      for (std::size_t i = first; i < end; ++i) {
+        changes.emplace_back(inputs[i].row, canonical);
+      }
+    }
+    first = end;
+  }
+  // Commit only after every group passed: a later material conflict cannot leave
+  // the caller with an earlier strike already normalized.
+  for (const auto &[row, yield] : changes) quotes[row].continuous_yield = yield;
+  return atx::core::Ok(report);
+}
 
 const char *to_string(QuoteSliceCarryMode value) noexcept {
   switch (value) {

@@ -1047,6 +1047,22 @@ rebase_quote_slice_spot(const QuoteSliceMarket &market, double snapshot_spot,
                         QuoteSliceDividendModel model,
                         std::span<const CashDividend> calendar_dividends = {});
 
+// Explicit input normalization for duplicated strikes with slightly different supplied
+// carries. The canonical carry is the midpoint of the group's extrema (order independent).
+// Accept only when a bound on the resulting American call/put price change, uniformly in
+// strike and volatility, is at most max_price_change. Quote boxes are never changed.
+// Zero budget retains exact equality. Material conflicts, non-finite inputs and any
+// conflicting DatedCash carry refuse without changing the input span. O(n log n) cold work.
+struct QuoteSliceCarryCoalescing {
+  std::size_t strikes_changed = 0;
+  double max_abs_yield_change = 0.0;
+  double max_price_change_bound = 0.0;
+};
+
+[[nodiscard]] Result<QuoteSliceCarryCoalescing>
+coalesce_quote_slice_carry(const QuoteSliceMarket &market, std::span<QuoteSliceQuote> quotes,
+                           QuoteSliceDividendModel model, double max_price_change);
+
 // Fits raw American bid/ask quotes, then reprices every valid contract with the
 // fitted smile, including quotes excluded from fitting. No reference fair
 // values or reference volatilities are accepted by this API.
