@@ -10,6 +10,7 @@
 #include "bench_clocks.hpp"
 #include "core/parallel_for.hpp"
 #include "fitting/counters.hpp"
+#include "fitting/joint_inbox_projection.hpp"
 #include "fitting/reimply_seed_mode.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the fast-path audit's contract
@@ -2291,6 +2292,14 @@ Json seed_target_provenance() {
   return {{"cmake_option", "ATX_VOL_EMPIRICAL_VECTOR_SEEDS"}, {"enabled", empirical},
       {"target_kernel", empirical ? "VectorReferenceEmpirical" : "ScalarReference"},
       {"scalar_audit_reference", "AndersenLakeReference"},
+      {"joint_projection", {
+          {"cmake_option", "ATX_VOL_JOINT_CENTRALITY_RESEARCH"},
+          {"enabled", detail::joint_centrality_compiled()},
+          {"direction", detail::joint_centrality_compiled()
+              ? "MehrotraWithBoundedCentrality" : "OriginalMehrotra"},
+          {"maximum_extra_directions_per_factor", detail::joint_centrality_compiled() ? 3 : 0},
+          {"primal_feasibility_tolerance", 1e-10},
+          {"publication_certificates", "Original slice, exact box and all-pair calendar"}}},
       {"candidate_proof_batch", {
           {"cmake_option", "ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS"},
           {"enabled", reimply_candidate_batch_enabled()},

@@ -288,7 +288,20 @@ void check_external_draft_projection(bool feasible_mid) {
         {"certificate_ns", profile.certificate_ns}, {"row_arities", profile.row_arities},
         {"bound_rows", profile.bound_rows}, {"row_storage_bytes", profile.row_storage_bytes},
         {"matrix_nonzeros", profile.matrix_nonzeros}, {"factor_nonzeros", profile.factor_nonzeros},
-        {"factorizations", profile.factorizations}, {"directions", profile.directions}};
+        {"factorizations", profile.factorizations}, {"directions", profile.directions},
+        {"centrality", {{"enabled", profile.centrality_enabled},
+            {"setup_ns", profile.centrality_setup_ns}, {"inclusive_ns", profile.centrality_ns},
+            {"attempts", profile.centrality_attempts}, {"solves", profile.centrality_solves},
+            {"accepted", profile.centrality_accepted},
+            {"zero_target", profile.centrality_zero_target},
+            {"nonfinite", profile.centrality_nonfinite},
+            {"nonimproving", profile.centrality_nonimproving},
+            {"solve_refused", profile.centrality_solve_refused},
+            {"invalid_target", profile.centrality_invalid_target},
+            {"input_refusals", profile.centrality_input_refusals},
+            {"setup_refusals", profile.centrality_setup_refusals},
+            {"allocation_refusals", profile.centrality_allocation_refusals},
+            {"workspace_bytes", profile.centrality_workspace_bytes}}}};
     std::cout << "joint-qp-profile " << result.dump() << '\n';
   }
 }

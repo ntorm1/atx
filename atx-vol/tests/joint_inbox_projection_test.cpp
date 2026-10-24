@@ -20,6 +20,30 @@ namespace {
 
 constexpr AmericanPriceBounds kCarry{100.0, 1.0, 1.0, 98.0, 100.0};
 
+TEST(JointInboxProjection, ExplicitResearchModeMatchesTheLinkedSolverAvailability) {
+  std::vector<AmericanPriceNode> nodes{{90, 12, 3}, {100, 7, 8}, {110, 2, 13}};
+  const auto before = nodes;
+  const std::vector<AmericanPriceBox> boxes{{11, 13, 2, 4}, {6, 8, 7, 9}, {1, 3, 12, 14}};
+  const std::array<detail::JointInboxSlice, 1> input{{{nodes, boxes, kCarry}}};
+  detail::JointInboxProfile profile;
+  detail::JointInboxDiagnostics diagnostics;
+  const auto result = detail::project_joint_in_box(input, 100, &diagnostics, &profile,
+                                                  detail::JointDirectionMode::Centrality);
+  EXPECT_EQ(result.outcome, detail::joint_centrality_compiled()
+      ? JointProjectionOutcome::Feasible : JointProjectionOutcome::InvalidInput);
+  EXPECT_EQ(profile.centrality_enabled, detail::joint_centrality_compiled());
+  EXPECT_EQ(diagnostics.certificate_passed, detail::joint_centrality_compiled());
+  EXPECT_EQ(profile.centrality_workspace_bytes, 0u);
+  EXPECT_EQ(profile.factorizations, 0u);
+  EXPECT_EQ(profile.directions, 0u);
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(nodes[i].call),
+              std::bit_cast<std::uint64_t>(before[i].call));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(nodes[i].put),
+              std::bit_cast<std::uint64_t>(before[i].put));
+  }
+}
+
 TEST(JointInboxProjection, OptionalProfilePreservesEveryPriceBitAndSolverDecision) {
   const std::vector<AmericanPriceNode> original_near{{90, 12, 2}, {100, 7, 6}, {110, 2, 12}};
   const std::vector<AmericanPriceNode> original_far{{90, 11, 3}, {100, 5, 6}, {110, 1, 13}};

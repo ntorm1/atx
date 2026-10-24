@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
+#include <new>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -376,6 +378,10 @@ public:
       }
     }
     assembly.finish();
+    // Finite inputs can overflow A^T diag(z/s) A. Eigen may still report a
+    // successful factor and a finite but invalid direction for an infinite H.
+    if (!std::all_of(matrix_.valuePtr(), matrix_.valuePtr()+matrix_.nonZeros(),
+                     [](double value) { return std::isfinite(value); })) return false;
     ProfileSpan numeric(profile_ ? &profile_->factor_ns : nullptr);
     factor_.factorize(matrix_);
     if (profile_) {
@@ -390,10 +396,13 @@ public:
 
   [[nodiscard]] bool direction(const Vector &s, const Vector &z, const Vector &rp,
                                 const Vector &rd, const Vector &rc,
-                                Vector &dx, Vector &ds, Vector &dz) const {
+                                Vector &dx, Vector &ds, Vector &dz,
+                                Vector *rhs_scratch = nullptr) const {
     ProfileSpan rhs_timer(profile_ ? &profile_->rhs_ns : nullptr);
     if (profile_) ++profile_->directions;
-    Vector rhs = -rd;
+    Vector owned_rhs;
+    Vector &rhs = rhs_scratch ? *rhs_scratch : owned_rhs;
+    rhs = -rd;
     for (std::size_t j = 0; j < p_.rows.size(); ++j) {
       const auto row = static_cast<Eigen::Index>(j);
       const double v = (rc[row] + z[row] * rp[row]) / s[row];
@@ -434,6 +443,93 @@ private:
   std::vector<Term> terms_;
 };
 
+#if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+std::span<double> values(Vector &vector) noexcept {
+  return {vector.data(), static_cast<std::size_t>(vector.size())};
+}
+
+// All trial directions live here until the primitive accepts a complete triple.
+// Iterates are borrowed read-only; the factor belongs to the original solve.
+struct CentralityWorkspace {
+  const NewtonSystem &system;
+  const Vector &s, &z;
+  JointInboxProfile *profile;
+  Vector zero_rp, zero_rd, residual, dx, ds, dz, rhs;
+
+  CentralityWorkspace(const NewtonSystem &factor, const Vector &slack, const Vector &dual,
+                      Eigen::Index variables, JointInboxProfile *observation)
+      : system(factor), s(slack), z(dual), profile(observation),
+        zero_rp(Vector::Zero(slack.size())), zero_rd(Vector::Zero(variables)),
+        residual(slack.size()), dx(variables), ds(slack.size()), dz(slack.size()), rhs(variables) {}
+
+  research::CentralityDirection direction() noexcept {
+    return {values(dx), values(ds), values(dz)};
+  }
+
+  static bool homogeneous(void *context, std::span<const double> rc,
+                          research::CentralityDirection output) {
+    auto &work = *static_cast<CentralityWorkspace *>(context);
+    if (rc.data() != work.residual.data() || rc.size() != values(work.residual).size() ||
+        output.x.data() != work.dx.data() || output.x.size() != values(work.dx).size() ||
+        output.s.data() != work.ds.data() || output.s.size() != values(work.ds).size() ||
+        output.z.data() != work.dz.data() || output.z.size() != values(work.dz).size()) {
+      return false;
+    }
+    try {
+      return work.system.direction(work.s, work.z, work.zero_rp, work.zero_rd, work.residual,
+                                   work.dx, work.ds, work.dz, &work.rhs);
+    } catch (const std::bad_alloc &) {
+      if (work.profile) ++work.profile->centrality_allocation_refusals;
+      return false;
+    }
+  }
+
+  void improve(Vector &primal, Vector &slack, Vector &dual, double mu_target) {
+    ProfileSpan timer(profile ? &profile->centrality_ns : nullptr);
+    research::CentralityWork work;
+    const bool valid = research::improve_centrality(
+        {s.data(), static_cast<std::size_t>(s.size())},
+        {z.data(), static_cast<std::size_t>(z.size())}, mu_target,
+        {values(primal), values(slack), values(dual)},
+        {values(residual), direction()}, homogeneous, this, work);
+    if (!profile) return;
+    profile->centrality_attempts += work.attempts;
+    profile->centrality_solves += work.solves;
+    profile->centrality_accepted += work.accepted;
+    profile->centrality_zero_target += work.zero_target;
+    profile->centrality_nonfinite += work.nonfinite;
+    profile->centrality_nonimproving += work.nonimproving;
+    profile->centrality_solve_refused += work.solve_refused;
+    profile->centrality_invalid_target += work.invalid_target;
+    if (!valid) ++profile->centrality_input_refusals;
+  }
+};
+
+void prepare_centrality(std::optional<CentralityWorkspace> &scratch,
+                        const NewtonSystem &system, const Vector &s, const Vector &z,
+                        Eigen::Index variables, JointInboxProfile *profile) {
+  ProfileSpan timer(profile ? &profile->centrality_setup_ns : nullptr);
+  const auto n = static_cast<std::size_t>(variables), m = static_cast<std::size_t>(s.size());
+  constexpr auto limit = (std::numeric_limits<std::size_t>::max()-sizeof(CentralityWorkspace)) /
+      sizeof(double);
+  if (m > limit/4u || n > (limit-4u*m)/3u) {
+    if (profile) ++profile->centrality_setup_refusals;
+    return;
+  }
+  if (profile) {
+    profile->centrality_workspace_bytes = sizeof(CentralityWorkspace)+(4u*m+3u*n)*sizeof(double);
+  }
+  try {
+    scratch.emplace(system, s, z, variables, profile);
+  } catch (const std::bad_alloc &) {
+    if (profile) {
+      ++profile->centrality_setup_refusals;
+      ++profile->centrality_allocation_refusals;
+    }
+  }
+}
+#endif
+
 [[nodiscard]] double step_bound(const Vector &positive, const Vector &delta) {
   double step = 1.0;
   for (Eigen::Index i = 0; i < positive.size(); ++i) {
@@ -443,7 +539,8 @@ private:
 }
 
 [[nodiscard]] bool solve(const Problem &p, std::size_t budget, Vector &x, std::size_t &used,
-                         JointInboxDiagnostics &diagnostics, JointInboxProfile *profile) {
+                         JointInboxDiagnostics &diagnostics, JointInboxProfile *profile,
+                         bool centrality) {
   const auto n = static_cast<Eigen::Index>(p.target.size());
   const auto m = static_cast<Eigen::Index>(p.rows.size());
   x.resize(n);
@@ -463,6 +560,12 @@ private:
     s[j] = std::max(1.0, p.rows[static_cast<std::size_t>(j)].value(x));
   }
   NewtonSystem system(p, profile);
+#if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+  std::optional<CentralityWorkspace> correction;
+  if (centrality) prepare_centrality(correction, system, s, z, n, profile);
+#else
+  static_cast<void>(centrality);
+#endif
   for (std::size_t iteration = 0; iteration < budget; ++iteration) {
     ProfileSpan iteration_timer(profile ? &profile->iteration_ns : nullptr);
     ProfileSpan residual_timer(profile ? &profile->residual_ns : nullptr);
@@ -496,6 +599,9 @@ private:
     const double sigma = ratio * ratio * ratio;
     rc.array() += ds_aff.array() * dz_aff.array() - sigma * mu;
     if (!system.direction(s, z, rp, rd, rc, dx, ds, dz)) return false;
+#if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+    if (correction) correction->improve(dx, ds, dz, sigma * mu);
+#endif
     ProfileSpan update_timer(profile ? &profile->update_ns : nullptr);
     const double alpha_p = std::min(1.0, 0.995 * step_bound(s, ds));
     const double alpha_d = std::min(1.0, 0.995 * step_bound(z, dz));
@@ -602,7 +708,6 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
     default: return result;
   }
   if (profile) profile->centrality_enabled = centrality;
-  // Original-direction stub until the independent whole-QP controls are RED.
   if (max_iterations == 0u || slices.empty()) return result;
   Problem p;
   if (!build_variables(slices, p)) return result;
@@ -640,7 +745,7 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
     for (const Row &row : p.rows) ++profile->row_arities[row.count];
   }
   build_timer.finish();
-  if (!solve(p, max_iterations, x, result.sweeps, record, profile)) {
+  if (!solve(p, max_iterations, x, result.sweeps, record, profile, centrality)) {
     result.outcome = JointProjectionOutcome::NonConverged;
     return result;
   }
@@ -664,11 +769,44 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
 namespace atx::vol::research {
 bool solve_joint_homogeneous_control(const JointHomogeneousInput &input,
     CentralityDirection output, JointHomogeneousWork &work) {
-  // Refusal stub: independent controls must fail before the actual solve is wired.
-  static_cast<void>(input);
-  static_cast<void>(output);
   work = {};
-  return false;
+  const auto n = input.variables, m = input.s.size();
+  if (n == 0 || n > 4 || m == 0 || m > 32 || input.a.size() != m*n ||
+      input.z.size() != m || input.rc.size() != m || output.x.size() != n ||
+      output.s.size() != m || output.z.size() != m) return false;
+  const auto finite = [](double v) { return std::isfinite(v); };
+  const auto positive = [](double v) { return v > 0. && std::isfinite(v); };
+  if (!std::all_of(input.a.begin(), input.a.end(), finite) ||
+      !std::all_of(input.rc.begin(), input.rc.end(), finite) ||
+      !std::all_of(input.s.begin(), input.s.end(), positive) ||
+      !std::all_of(input.z.begin(), input.z.end(), positive)) return false;
+  try {
+    detail::Problem problem;
+    problem.target.resize(n);
+    problem.rows.resize(m);
+    for (std::size_t row = 0; row < m; ++row) {
+      for (std::size_t col = 0; col < n; ++col) {
+        problem.rows[row].term(static_cast<int>(col), input.a[row*n+col]);
+      }
+    }
+    const Eigen::Index rows = static_cast<Eigen::Index>(m);
+    const detail::Vector s = Eigen::Map<const detail::Vector>(input.s.data(), rows);
+    const detail::Vector z = Eigen::Map<const detail::Vector>(input.z.data(), rows);
+    detail::NewtonSystem system(problem, nullptr);
+    detail::CentralityWorkspace scratch(system, s, z, static_cast<Eigen::Index>(n), nullptr);
+    std::copy(input.rc.begin(), input.rc.end(), scratch.residual.data());
+    ++work.factors;
+    if (!system.factor(s, z)) return false;
+    ++work.directions;
+    if (!detail::CentralityWorkspace::homogeneous(&scratch, detail::values(scratch.residual),
+                                                  scratch.direction())) return false;
+    std::copy_n(scratch.dx.data(), n, output.x.begin());
+    std::copy_n(scratch.ds.data(), m, output.s.begin());
+    std::copy_n(scratch.dz.data(), m, output.z.begin());
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
 }
 } // namespace atx::vol::research
 #endif
