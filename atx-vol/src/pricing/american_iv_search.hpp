@@ -30,4 +30,11 @@ struct IvSearchResult {
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts, double max_price_error) noexcept;
 
+// Checks an externally prepared sigma with the same cold price/exercise/slope
+// acceptance as price_candidate, without any inverse iteration or fallback.
+// A seed is only a proposal; neither a family root nor its residual is trusted.
+[[nodiscard]] std::optional<double> american_implied_vol_price_seed(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error, double sigma) noexcept;
+
 } // namespace atx::vol

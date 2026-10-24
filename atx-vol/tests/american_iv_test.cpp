@@ -1769,6 +1769,40 @@ TEST(AmericanIvNonMonotone, PriceBudgetCandidateUsesColdTargetAndRefusesExercise
   }
 }
 
+TEST(AmericanIvNonMonotone, ExternalPriceSeedUsesColdChecksWithoutAnInverse) {
+  namespace led = atx::vol::counters::ledger;
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double target = cold_al(100, 105, .5, .3, .04, .01, side);
+    const auto before = led::snapshot();
+    const auto answer = atx::vol::american_implied_vol_price_seed(
+        target, 100, 105, .5, .04, .01, side, opts, .001, .3);
+    const auto work = led::snapshot() - before;
+    ASSERT_TRUE(answer);
+    EXPECT_DOUBLE_EQ(*answer, .3);
+    EXPECT_EQ(work.get(led::Solve::IvNewtonIters), 0u);
+    EXPECT_LE(work.get(led::Solve::AlBoundarySolves), 2u);
+    EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+        target, 100, 105, .5, .04, .01, side, opts, .001, .5));
+  }
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+      40, 100, 140, 1, .05, 0, Side::Put, opts, .001, .05));
+  for (const double sigma : {0.0, atx::vol::kIvMin, -1.0,
+                              std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity()}) {
+    EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+        10, 100, 100, 1, .04, .01, Side::Put, opts, .001, sigma));
+  }
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+      std::numeric_limits<double>::quiet_NaN(), 100, 100, 1, .04, .01,
+      Side::Put, opts, .001, .3));
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+      10, 100, 100, 1, .04, .01, static_cast<Side>(255), opts, .001, .3));
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_seed(
+      10, 100, 100, 1, .04, .01, Side::Put, opts, 0, .3));
+}
+
 // Outside the region the flag changes nothing: a target far above the band on the
 // ledgered contract, an ATM contract, the kIvMin clamp of a European-regime call (no
 // exercise region), and the BAW route (the refusal is for the cold Andersen-Lake map).
