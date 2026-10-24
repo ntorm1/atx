@@ -7,6 +7,7 @@
 // replaced global operator new), linked ONLY into atx-vol-iv-batch-alloc-tests. The
 // family, its table and the scratch are built (allocating) outside the counted block.
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -71,6 +72,39 @@ TEST(IvCandidateCaptureAlloc, BoundedObservationAddsNoAllocation) {
   EXPECT_TRUE(capture.valid());
   ASSERT_EQ(capture.records().size(), 1u);
   EXPECT_EQ(capture.records()[0].trace.outcome, research::IvCandidateOutcome::InvalidControls);
+}
+
+TEST(IvCandidateCaptureAlloc, RefusedCacheAllocationRetainsAcceptedColdFloorFallback) {
+  const auto price = andersen_lake(773., 780., 1. / 365., .35, .045, .01, Side::Put);
+  ASSERT_TRUE(price);
+  research::IvPriceCandidateTrace warm;
+  const auto expected = research::american_implied_vol_price_candidate_traced(*price,
+      773., 780., 1. / 365., .045, .01, Side::Put, IvOpts{}, .001, warm);
+  ASSERT_TRUE(expected);
+  IvPriceSeedFloorCache cache;
+  research::IvPriceCandidateTrace trace;
+  testkit::alloc_counter_arm();
+  testkit::alloc_counter_fail_once_at(1);
+  const auto actual = research::american_implied_vol_price_candidate_traced(*price,
+      773., 780., 1. / 365., .045, .01, Side::Put, IvOpts{}, .001, trace,
+      IvPriceProposalKernel::ScreenThenFast, &cache);
+  const auto allocations = testkit::alloc_counter_disarm();
+  ASSERT_TRUE(actual);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(*actual), std::bit_cast<std::uint64_t>(*expected));
+  EXPECT_EQ(allocations, 1u); // first cache State allocation fails, then scalar floor prices
+  EXPECT_EQ(trace.outcome, research::IvCandidateOutcome::Accepted);
+  EXPECT_EQ(trace.phases[1].outcome, research::IvCandidatePhaseOutcome::Value);
+  EXPECT_EQ(trace.floor_preparations, 0u);
+  EXPECT_EQ(trace.floor_hits, 0u);
+  EXPECT_EQ(cache.preparations(), 0u);
+  EXPECT_EQ(cache.hits(), 0u);
+  for (const auto &slot : trace.floor_after.slots) EXPECT_FALSE(slot.prepared);
+  // The optional helper contains the allocation failure; no phase-level
+  // AllocationFailure is fabricated for the successful scalar fallback.
+  EXPECT_EQ(trace.work, warm.work);
+  RecordProperty("cache_allocation_attempts", static_cast<int>(allocations));
+  RecordProperty("accepted_with_empty_cache", 1);
+  RecordProperty("scalar_proof_boundary_solves", static_cast<int>(trace.phases[1].work[0]));
 }
 
 TEST(IvBatchAlloc, QueryLoopAllocatesNothing) {

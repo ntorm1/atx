@@ -38,7 +38,13 @@ hashes plus all700 attempts,684 acceptances and16 refusals. Those are fixed
 expected counts, not a numerical model theorem or a license to drop other calls.
 
 Unit controls retain five distinct refusal/retry/invalid/allocation paths and
-19 malformed mutations. Native CLI controls refuse incompatible scopes before
+21 malformed mutations, plus an inter-call cache-key mutation. Prepared keys must
+remain unchanged when preparations do not advance, including before/after each
+call, between calls and at owner close. The optional cache may decline and leave
+its state untouched while the original cold scalar floor fallback accepts; that
+valid path is counted separately. An actual fail-once native control demonstrates
+the accepted, bit-identical candidate with an empty cache and unchanged solve work.
+Native CLI controls refuse incompatible scopes before
 reading input or creating files. The separate 13-gate scalar actual-API audit
 and prediction-byte parity remain required before using captured SPY work for
 an architecture decision. No whole-SPY capture has yet been established by this

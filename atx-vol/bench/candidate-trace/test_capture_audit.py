@@ -131,6 +131,8 @@ class CaptureAudit(unittest.TestCase):
             lambda x: record(x)["trace"].update(work=[0, 0, 0]),
             lambda x: record(x)["trace"].update(elapsed_ns=1),
             lambda x: record(x)["trace"]["floor_after"].update(hits=2),
+            lambda x: record(x)["trace"]["floor_before"]["slots"][1].update(anchor=real(101.)),
+            lambda x: x["caches"][0]["final_state"]["slots"][1].update(anchor=real(101.)),
             lambda x: record(x)["trace"]["request"]["S"].update(value=101.),
             lambda x: record(x)["trace"]["request"]["S"].update(value=True),
             lambda x: x["slice_counters"]["slices"][0]["timing"].update(reimply_candidate_roots=0),
@@ -141,6 +143,42 @@ class CaptureAudit(unittest.TestCase):
                 mutate(value)
                 with self.assertRaises((ValueError, KeyError, TypeError)):
                     audit.validate_capture(value)
+
+    def test_accepted_cold_floor_fallback_can_leave_optional_cache_empty(self):
+        value = fixture()
+        trace = value["records"][0]["trace"]
+        empty_slot = copy.deepcopy(trace["floor_before"]["slots"][0])
+        empty = {"preparations": 0, "hits": 0, "slots": [empty_slot, copy.deepcopy(empty_slot)]}
+        trace["floor_before"] = copy.deepcopy(empty)
+        trace["floor_after"] = copy.deepcopy(empty)
+        trace["floor_hits"] = trace["phases"][1]["floor_hits"] = 0
+        value["caches"][0]["final_state"] = copy.deepcopy(empty)
+        result = audit.validate_capture(value)
+        self.assertEqual(result["accepted"], 1)
+        self.assertEqual(result["accepted_cold_floor_fallbacks"], 1)
+
+    def test_keys_cannot_change_between_calls_without_preparation(self):
+        value = fixture()
+        second = copy.deepcopy(value["records"][0])
+        second["sequence"] = 1
+        second["trace"]["floor_before"]["hits"] = 1
+        second["trace"]["floor_after"]["hits"] = 2
+        value["records"].append(second)
+        value["attempted_calls"] = 2
+        value["caches"][0]["closed_after_calls"] = 2
+        value["caches"][0]["final_state"]["hits"] = 2
+        counters = value["slice_counters"]["slices"][0]["timing"]
+        for key in counters:
+            counters[key] *= 2
+        self.assertEqual(audit.validate_capture(value)["accepted"], 2)
+        # Internally consistent second call and final close, but the key changed
+        # after call zero without a preparation. This must fail the inter-call join.
+        second["trace"]["request"]["K"] = real(101.)
+        for snapshot in (second["trace"]["floor_before"], second["trace"]["floor_after"],
+                         value["caches"][0]["final_state"]):
+            snapshot["slots"][1]["anchor"] = real(101.)
+        with self.assertRaises(ValueError):
+            audit.validate_capture(value)
 
 
 if __name__ == "__main__":

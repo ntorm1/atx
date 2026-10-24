@@ -85,6 +85,24 @@ def floor_state(value):
     require(value["preparations"] >= sum(s["prepared"] for s in value["slots"]), "floor preparation census")
 
 
+def empty_floor():
+    return {"preparations": 0, "hits": 0, "slots": [
+        {"prepared": False, "anchor": encoded(0.), "T": encoded(0.), "r": encoded(0.),
+         "q": encoded(0.), "side": 1, "options": None} for _ in range(2)]}
+
+
+def floor_transition(before, after):
+    """Every changed successful slot consumes a preparation; hits cannot change keys."""
+    require(after["preparations"] >= before["preparations"] and after["hits"] >= before["hits"],
+            "cache census reversed")
+    changes = 0
+    for old, new in zip(before["slots"], after["slots"]):
+        require(not old["prepared"] or new["prepared"], "prepared floor slot disappeared")
+        changes += old != new
+    require(changes <= after["preparations"] - before["preparations"],
+            "floor key changed without preparation")
+
+
 def usable(phase):
     return phase["outcome"] == 1 and phase["sigma"] is not None and \
         math.isfinite(real(phase["sigma"])) and real(phase["sigma"]) > .005
@@ -205,13 +223,14 @@ def validate_trace(trace):
     require(integer(trace["elapsed_ns"]) >= sum(p["elapsed_ns"] for p in phases), "nested clock sum")
     before, after = trace["floor_before"], trace["floor_after"]
     floor_state(before); floor_state(after)
+    floor_transition(before, after)
     for field, key in (("floor_preparations", "preparations"), ("floor_hits", "hits")):
         require(integer(trace[field]) == sum(p[field] for p in phases) == after[key] - before[key], "floor delta mismatch")
     cache_present = boolean(trace["floor_cache_present"])
     if not cache_present:
         require(before["preparations"] == before["hits"] == after["preparations"] == after["hits"] == 0,
                 "null cache has work")
-    elif expected_outcome == 2:
+    elif expected_outcome == 2 and trace["floor_preparations"] + trace["floor_hits"] > 0:
         slot = after["slots"][request["side"]]
         require(slot["prepared"] and slot["anchor"] == request["S" if request["side"] == 0 else "K"] and
                 all(slot[key] == request[key] for key in ("T", "r", "q")) and
@@ -244,6 +263,7 @@ def validate_capture(value):
                "screen_accepted": "reimply_screen_roots", "stopped_early": "reimply_proposal_stops",
                "accepted_early": "reimply_proposal_roots", "retried_full_search": "reimply_proposal_retries"}
     phase_calls, phase_ns = [0] * 6, [0] * 6
+    accepted_cold_floor_fallbacks = 0
     phase_work = [[0] * 3 for _ in range(6)]
     models = set()
     for i, record in enumerate(records):
@@ -255,10 +275,14 @@ def validate_capture(value):
         if cache_id:
             cache = by_id[cache_id]
             require(cache["created_before_call"] <= i < cache["closed_after_calls"], "call outside owner lifetime")
-            for key in ("preparations", "hits"):
-                require(previous.get(cache_id, {}).get(key, 0) <= trace["floor_before"][key] <=
-                        trace["floor_after"][key] <= cache["final_state"][key], "cache census reversed")
+            floor_transition(previous.get(cache_id, empty_floor()), trace["floor_before"])
+            floor_transition(trace["floor_after"], cache["final_state"])
             previous[cache_id] = trace["floor_after"]
+            # The source always establishes the floor before accepting. With
+            # zero cache activity, its optional cache declined and the unchanged
+            # cold scalar fallback supplied that proof; no cache key is invented.
+            accepted_cold_floor_fallbacks += outcome == 2 and \
+                trace["floor_preparations"] + trace["floor_hits"] == 0
         counts["reimply_candidate_roots"] += outcome == 2
         for key, name in mapping.items():
             counts[name] += stats[key]
@@ -274,9 +298,12 @@ def validate_capture(value):
     require(type(slices) is list and slices, "missing independent fit counters")
     observed = {key: sum(integer(entry["timing"][key]) for entry in slices) for key in counts}
     require(observed == counts, "whole-fit counter join")
+    for cache in caches:
+        floor_transition(previous.get(cache["id"], empty_floor()), cache["final_state"])
     return {"schema": "atx-price-candidate-summary-v1", "timing_qualifying": False,
             "attempts": count, "accepted": counts["reimply_candidate_roots"],
             "refused": count - counts["reimply_candidate_roots"], "cache_lifetimes": len(caches),
+            "accepted_cold_floor_fallbacks": accepted_cold_floor_fallbacks,
             "model_key_count": len(models), "phase_order": PHASES, "phase_calls": phase_calls,
             "phase_ns": phase_ns, "phase_work": phase_work,
             "inclusive_observed_ns": sum(r["trace"]["elapsed_ns"] for r in records), "fit_counters": counts}
