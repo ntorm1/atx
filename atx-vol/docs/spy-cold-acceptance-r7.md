@@ -5,20 +5,38 @@ Updated: 2026-10-24 (America/New_York). Starting local main:
 `feat/vol-r7-acceptance-20261023`, pool-33. This document records a development
 oracle and reproducible gates, **not an achieved subsecond fit**.
 
-Current checkpoint: local main contains reviewed `96cd56db`; the combined
-release binary passes all 13 API gates and three fresh one-core fits of
-1.1647743/1.0251590/1.0989175 seconds (median 1.0989175). Later historical
-statements about pending main integration are superseded. New finalizer floor
-reuse at `c721422d` preserves prediction hash
-`e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`
-and all 13 gates in development and ThinLTO; its qualified latency is pending.
-Latest ThinLTO binary hash:
-`6afb2de0f3eb61f93a9bc59fc8b6d6abf6e2245e562cf530d26db8100b13c632`.
-Receipt: `acceptance/integrated-final-floor-lto-v1-audit/verification-reviewed-v3.json`.
-The failed busy-host interleaved controls remain in evidence and establish no
-whole-fit improvement. Mixed-precision replay is research-only and not promoted;
-[its report](qp-mixed-precision-research-20261024.md) separates component
-diagnostics from the unchanged production fit and publication gates.
+Current checkpoint: local main contains reviewed `96cd56db`; new reviewed
+Greek/cash components are integrating separately in pool-3.
+
+The latest complete-fit release trials are **1.3944879, 1.4460046 and
+1.3173856 seconds; median 1.3944879**. These are fresh processes, one worker,
+P-core 6, with the sibling-activity gate passed. Binary `6afb2de0` includes the
+finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
+12,866/12,866 eligible rows, 99.88341365% raw containment, 12,850 identified IVs
+and 16 truthful PriceOnly results. Maximum cold Reference residual remains
+$0.000501296609/share under `min($0.001, 1% of original spread)`.
+
+The immediately following archived-main control measured 1.4906585, 1.6913849
+and 1.5600743 seconds, but its second run failed the sibling-activity gate
+(11.00917%). Retain all receipts; this comparison establishes no speedup or
+regression. The historical main checkpoint median 1.0989175 and earlier 1.03-second
+sets remain valid records of their own runs, not substitutes for the latest clock.
+Subsecond and 100-process release qualification remain open.
+
+The finalizer source is `c721422d`; measured clean source `0662116e` adds docs.
+Exact binary SHA256: `6afb2de0f3eb61f93a9bc59fc8b6d6abf6e2245e562cf530d26db8100b13c632`.
+Prediction SHA256: `e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`.
+Evidence root: `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/`.
+Latest timing manifest: `final-floor-v1-lto-profile/manifest.json`, SHA256
+`d338dbfe5dedef52c33e77ed64726de7b8ccd43a0a8b4f049f7c766f8b0c247e`.
+Control: `final-floor-v1-main-control/manifest.json`, SHA256
+`4d3fb0a0ca45532dd784a6fe74957f4b09cbbe53308ca5f8ab45edecb8007613`.
+Joined result: `acceptance/integrated-final-floor-lto-v1-audit/qualification-clock-v1.json`.
+Every correctness check passes; timing fails only the 100-process count and
+all-under-one-second checks. The control's sibling failure remains separately visible.
+
+The [mixed-precision experiment](qp-mixed-precision-research-20261024.md) is not
+promoted. Double block-factor replay is research-only pending a full-QP prototype.
 
 ## Frozen workload and denominator
 

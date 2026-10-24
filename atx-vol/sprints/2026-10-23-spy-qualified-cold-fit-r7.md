@@ -2,21 +2,32 @@
 
 Status: implementation in progress; no qualified sub-second result.
 
-Current integration checkpoint, 2026-10-24: local `C:/atx` main is merged through
-`96cd56db` after combined SPY/storage/Python gates, preserving all existing local
-files. Later entries that describe a pending merge are historical. Latest measured
-complete-fit release trials are 1.1647743/1.0251590/1.0989175 seconds, median
-1.0989175; all 13 API gates pass. No subsecond or 100-process qualification.
-The subsequent finalizer floor-cache change preserves every prediction byte and
-all 13 gates in development and ThinLTO, removing 265 boundary solves; qualified
-latency remains pending. Cash reference admission guards are integrated in the
-active branch with 28 focused tests and exact 50-case historical parity.
+Current integration checkpoint, 2026-10-24: local `C:/atx` main contains
+`96cd56db`, with all pre-existing files preserved. New Greek/cash components are
+integrating in pool-3; later pending-merge statements are historical.
 
-The isolated mixed-precision QP experiment is not promoted: exact replay controls
-pass, but 191 correction solves and 26 double fallback directions establish no
-performance gain. See [the retained experiment](../docs/qp-mixed-precision-research-20261024.md).
-Greek per-field admission and consumer propagation remain active, separately
-reviewed work. Price accuracy does not qualify Greek or discrete-cash accuracy.
+The latest complete-fit release trials are **1.3944879, 1.4460046 and
+1.3173856 seconds; median 1.3944879**. These are fresh processes, one worker,
+P-core 6, with the sibling-activity gate passed. Binary `6afb2de0` includes the
+finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
+12,866/12,866 eligible rows, 99.88341365% raw containment, 12,850 identified IVs
+and 16 truthful PriceOnly results. Maximum cold Reference residual remains
+$0.000501296609/share under `min($0.001, 1% of original spread)`.
+
+The immediately following archived-main control measured 1.4906585, 1.6913849
+and 1.5600743 seconds, but its second run failed the sibling-activity gate
+(11.00917%). Retain all receipts; this comparison establishes no speedup or
+regression. The historical main checkpoint median 1.0989175 and earlier 1.03-second
+sets remain valid records of their own runs, not substitutes for the latest clock.
+Subsecond and 100-process release qualification remain open.
+
+Finalizer floor reuse removes 265 boundary solves with identical predictions.
+FP32 replay is rejected; double block replay is promising but unqualified and
+requires a full-QP prototype. Boundary Greek admission passes the complete715
+rerun with all prices unchanged; downstream portfolio/Python propagation and
+short-time derivative accuracy remain open. Cash guards and exact50-case manifest
+are integrated; three-grid PDE evidence retains43/44 pass plus1uncertain at finest.
+See [current exact-binary evidence](../docs/spy-cold-acceptance-r7.md).
 
 ## Acceptance contract
 
