@@ -60,7 +60,7 @@ struct ColdPoint {
   }
   const ColdPoint p = cold_point(s, K, T, interp);
   if (!p.valid) {
-    return atx::core::Err(ErrorCode::InvalidArgument, "cold_delta: no vol at (K, T)");
+    return atx::core::Err(ErrorCode::Unavailable, "cold_delta: no vol at (K, T)");
   }
   return american_delta(p.S, p.K, p.T, p.sigma, p.r, p.q, side, s.pricing().method,
                         std::optional<AlOpts>{s.pricing().al_opts});
@@ -73,7 +73,7 @@ struct ColdPoint {
   }
   const ColdPoint p = cold_point(s, K, T, interp);
   if (!p.valid) {
-    return atx::core::Err(ErrorCode::InvalidArgument, "cold_price: no vol at (K, T)");
+    return atx::core::Err(ErrorCode::Unavailable, "cold_price: no vol at (K, T)");
   }
   return american_price(p.S, p.K, p.T, p.sigma, p.r, p.q, side, s.pricing().method,
                         std::optional<AlOpts>{s.pricing().al_opts});
@@ -87,7 +87,7 @@ struct ColdPoint {
   }
   const ColdPoint p = cold_point(s, K, T, interp);
   if (!p.valid) {
-    return atx::core::Err(ErrorCode::InvalidArgument, "cold_greeks_analytic: no vol at (K, T)");
+    return atx::core::Err(ErrorCode::Unavailable, "cold_greeks_analytic: no vol at (K, T)");
   }
   const PricingContext &pc = s.pricing();
   if (pc.method == AmericanMethod::AndersenLake) {
