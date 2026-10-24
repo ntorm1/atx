@@ -8,7 +8,7 @@ oracle and reproducible gates, **not an achieved subsecond fit**.
 Current checkpoint: local main contains reviewed `96cd56db`; new reviewed
 Greek/cash components are integrating separately in pool-3.
 
-The latest ordinary-backend control takes **1.3226988, 1.4265373 and
+The last ordinary-backend control passing its sibling gate takes **1.3226988, 1.4265373 and
 1.4471122 seconds; median 1.4265373**. All three fresh processes use one worker
 on P-core 6 and pass the sibling-activity gate. Archived binary `6afb2de0` includes
 the finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
@@ -26,6 +26,13 @@ The earlier 1.3944879-second ordinary-backend median, historical main median
 1.0989175 and earlier 1.03-second sets remain evidence of their own runs.
 They are not replacements for the latest clock or proof of a source regression.
 Subsecond and 100-process release qualification remain open.
+Whole-host qualification correction: that ordinary control recorded 27.4-28.7%
+system activity, so passing its sibling gate did not establish a quiet host.
+A newer six-run paired original/block experiment retained all results and failed
+the declared system-load gate on every run (18.6-38.2%); three also failed the
+sibling gate. Its medians, 1.2948967/1.2080157 seconds, cannot qualify a speedup.
+The independent Windows aggregate-accounting cross-check agrees with the native
+measurement. See `qp-paired-clock-v1/` and the block-factor research report.
 
 The finalizer source is `c721422d`; measured clean source `0662116e` adds docs.
 Exact binary SHA256: `6afb2de0f3eb61f93a9bc59fc8b6d6abf6e2245e562cf530d26db8100b13c632`.

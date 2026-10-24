@@ -8,7 +8,9 @@ All relative evidence paths below use
 
 **The prototype passes every SPY correctness gate but has no qualified speedup
 or subsecond result.** Both candidate timing sets fail the host-activity gate.
-The full original control set passes that gate. Every run remains recorded.
+The original control set passes the SMT-sibling gate only: its recorded system
+activity is 27.4-28.7%. It does not establish a quiet whole-host control. Every
+run remains recorded.
 
 ## Why change the factorization
 
@@ -211,3 +213,43 @@ origin, including Unicode's additional notice. Its SHA256 is
 Toolchain/runtime distribution notices and final deployment review remain open.
 The initial incomplete notice inventory and malformed unquoted CMake path are
 retained beside the successful follow-ups; neither affected numerical evidence.
+
+## Paired timing attempt and whole-host correction
+
+The predeclared next experiment alternated archived original `6afb2de0` and
+block `60b87627` binaries in three adjacent pairs, reversing the middle pair.
+Every run was a fresh process on P-core 6 with one worker. Before/after scans
+found no build or native-test process. All six predictions retain their own
+previously audited hash, and no trial was discarded.
+
+| Order | Arm | Cold fit seconds | SMT sibling % | Whole system % |
+|---:|---|---:|---:|---:|
+| 1 | Original | 1.0872376 | 0 | 18.5517 |
+| 2 | Block | 1.2080157 | 20.7547 | 38.1786 |
+| 3 | Block | 1.0731624 | 0 | 31.2839 |
+| 4 | Original | 1.4144892 | 7.6923 | 30.0275 |
+| 5 | Original | 1.2948967 | 0 | 24.5997 |
+| 6 | Block | 1.2763449 | 10.9756 | 33.2609 |
+
+All six fail the predeclared system activity below 10% requirement; three also
+fail the sibling requirement. Neither median (original 1.2948967, block
+1.2080157 seconds) qualifies a speed comparison. Source provenance is bound to
+the archived build manifests, not the current development checkout. Evidence:
+`qp-paired-clock-v1/manifest.json` and `qp-paired-predeclared-v1.ps1`.
+
+The preceding ordinary control's 1.4265373-second median also came with recorded
+system activity 27.4054-28.6662%, despite passing its sibling check. The earlier
+1.3944879-second median had system activity 35.9472-38.6560%. Prior statements
+calling those controls quiet refer only to sibling admission and must not be
+read as whole-host qualification. These data cannot establish a source slowdown
+or speedup. Future timing preflight must inspect total activity in addition to
+named processes; an idle sibling does not isolate shared package resources.
+
+A read-only, after-window cross-check independently queried Windows
+`GetSystemTimes` and summed `NtQuerySystemInformation` per-CPU counts. All three
+one-second intervals agree exactly on aggregate percentages. Microsoft documents
+that kernel time includes idle and that totals sum all processors on this
+16-logical-CPU host. [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes),
+[processor accounting](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation).
+The check ran after agents resumed, so it validates accounting rather than
+identifying the earlier load's owner. No unrelated process was stopped or changed.
