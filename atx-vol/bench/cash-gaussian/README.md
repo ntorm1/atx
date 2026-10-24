@@ -244,3 +244,28 @@ See the [complete result](../../docs/cash-cubic-weight-review-20261024.md) and
 [prospective direct local-weight series](cubic-local-series-plan.md). The latter
 freezes a positive-integrand construction, truncation and work caps before
 implementation; it does not authorize the18 semigroup run.
+
+The explicit `cubic_local_weight_control` primitive now implements that frozen
+construction with separately owned work and route metadata. It forms the seven
+weights directly from local density, retains raw moments only for diagnostic
+identities, and labels the original-moment route when the analytic/order domain
+does not admit the series. Caller resource exhaustion never selects fallback.
+The original entry point and v1 producer remain unchanged in meaning; a focused
+default-route regression reproduces the entire old24 JSON byte-for-byte.
+
+Three stub controls failed at runtime; ten new local-series groups plus all32
+previous groups pass. Controls independently check rational integrals through
+beta moments, both precisions across stock scales, positive-integrand Simpson
+quadrature, cubic value/Delta identities, first admissible orders/remainders at
+250 digits, exact original-route fallback and typed low-budget/invalid cases.
+Two owning translation units pass with PCH off (the numerical owner is compiled
+for both research targets). Source handles allocation failure; no injected
+allocator-failure test or sanitizer result is claimed by this component.
+
+`workspace_bytes` is a conservative construction reservation including fixed
+scalar/short-array temporaries, not a measured heap/stack peak. Actual selection,
+special-function and coefficient-product counts are separate. Reported remainder
+strings cover real-arithmetic series truncation only, evaluated at fixed
+precision; they exclude arithmetic/transcendental and complete-price errors.
+The successor fixed24 exporter/reader is not implemented or executed yet, and
+neither Stage A completeness nor18-request progression is established.
