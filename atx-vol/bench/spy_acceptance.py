@@ -25,6 +25,7 @@ NUMERIC = ("strike", "bid", "ask", "spot", "rate", "sdiv", "ddiv_pv", "years",
            "years_calendar")
 STRICT_IV_CONTRACT = "strict-iv-v1"
 RAW_SPREAD_PRICE_CONTRACT = "raw-spread-price-v1"
+IDENTIFICATION_BASELINE = Path(__file__).with_name("fixtures") / "spy-wave1-identification-v1.json"
 
 
 def accuracy_contract(version):
@@ -115,10 +116,23 @@ def freeze(path):
                        "rows": len(group), "eligible_rows": len(good),
                        "valid_strikes": len({row["strike"] for row in good}),
                        "raw_reasons": dict(reasons), "required": bool(good)})
-    return {"schema": "atx-vol-spy-eligibility-v1", "input_sha256": sha256(path),
+    baseline = read_json(IDENTIFICATION_BASELINE)
+    baseline_price_only = baseline["price_only_row_ids"]
+    if baseline.get("schema") != "atx-vol-spy-identification-baseline-v1" or \
+       baseline["input_sha256"] != INPUT_SHA256 or \
+       len(set(baseline_price_only)) != len(baseline_price_only) or \
+       not set(baseline_price_only) <= set(eligible_ids) or \
+       baseline["eligible_rows"] != len(eligible_ids) or \
+       baseline["price_only_rows"] != len(baseline_price_only) or \
+       len(eligible_ids) - len(baseline_price_only) != baseline["identified_rows"] or \
+       baseline["identified_rows"] != 12183:
+        raise ValueError("identification baseline differs from the frozen SPY coverage")
+    return {"schema": "atx-vol-spy-eligibility-v2", "input_sha256": sha256(path),
             "rows": len(rows), "eligible_rows": len(eligible_ids),
             "required_slices": sum(c["required"] for c in chains), "chains": chains,
             "eligible_row_ids": sorted(eligible_ids),
+            "minimum_identified_rows": 12183,
+            "identification_baseline": baseline,
             "rules": "Finite American positive-time valid quote boxes; no fit-output exclusions. "
                      "Locked/bidless/wide quotes and price-only contracts remain eligible.",
             "containment_min": 0.995, "containment_tolerance_usd": 1e-12,
@@ -640,6 +654,7 @@ def cold_price_audit(report, rows, roots=None):
     for row in eligible:
         raw[row["chain_id"], row["strike"], "call" if row["is_call"] else "put"].append(row)
     observations, matched, seen = [], set(), set()
+    price_only_ids = []
     price_only_rows = checked_rows = zero_budget_rows = roundoff_rows = 0
     for snapshot in report.get("graded_stats", {}).get("acceptance_audit", {}).get("snapshots", []):
         for entry in snapshot:
@@ -667,6 +682,7 @@ def cold_price_audit(report, rows, roots=None):
                         continue
                     if query["status"] == "price_only":
                         price_only_rows += len(group)
+                        price_only_ids.extend(row["row_id"] for row in group)
                         continue
                     if key in invalid_contracts:
                         continue
@@ -702,14 +718,17 @@ def cold_price_audit(report, rows, roots=None):
     missing = sorted(set(row_ids) - matched)
     if missing:
         failures.append({"kind": "eligible_rows_missing_from_price_audit", "row_ids": missing})
+    if checked_rows == 0:
+        failures.append({"kind": "no_identified_rows_checked"})
     # Keep full local estimates in a separate artifact; qualification embeds only
     # summaries and failures, avoiding a second copy of every successful query.
     return {"schema": "atx-vol-cold-node-price-audit-v1",
             "accuracy_contract": accuracy_contract(RAW_SPREAD_PRICE_CONTRACT),
             "eligible_rows": len(eligible), "identified_rows_checked": checked_rows,
             "price_only_rows": price_only_rows, "zero_budget_rows": zero_budget_rows,
+            "price_only_row_ids": sorted(price_only_ids),
             "roundoff_only_rows": roundoff_rows, "failure_count": len(failures),
-            "price_accuracy_passed": bool(eligible) and not failures and
+            "price_accuracy_passed": checked_rows > 0 and not failures and
                 checked_rows + price_only_rows == len(eligible),
             "max_center_residual_usd": max((o["abs_residual_usd"] for o in observations), default=0.0),
             "max_budget_utilization": max((o["abs_residual_usd"] / o["economic_budget_usd"]
@@ -729,6 +748,30 @@ def cold_price_audit(report, rows, roots=None):
             "strict_iv_diagnostic": {key: roots[key] for key in
                 ("strict_accuracy_passed", "strict_straddles", "roundoff_only_count", "failure_count")},
             "failures": failures, "observations": observations}
+
+
+def identification_coverage(prices, eligibility):
+    """Accuracy cannot be bought by silently demoting previously identified rows.
+
+    Baseline output is acceptance evidence only, never a fitting input or an
+    eligibility exclusion. A legitimate demotion requires a reviewed baseline
+    change; offsetting it with a newly identified row does not hide it here.
+    """
+    minimum = eligibility.get("minimum_identified_rows", 1)
+    baseline = eligibility.get("identification_baseline")
+    current_price_only = set(prices["price_only_row_ids"])
+    baseline_price_only = set(baseline["price_only_row_ids"]) if baseline else set()
+    new_price_only = sorted(current_price_only - baseline_price_only) if baseline else []
+    newly_identified = sorted(baseline_price_only - current_price_only) if baseline else []
+    return {"minimum_identified_rows": minimum,
+            "identified_rows_checked": prices["identified_rows_checked"],
+            "baseline_applied": baseline is not None,
+            "new_price_only_row_ids": new_price_only,
+            "baseline_price_only_rows_now_not_price_only": newly_identified,
+            "coverage_passed": isinstance(minimum, int) and not isinstance(minimum, bool) and
+                minimum > 0 and prices["identified_rows_checked"] >= minimum and not new_price_only,
+            "scope": "New PriceOnly classifications require explicit review, even if count gains "
+                     "elsewhere offset them. Missing/error rows still fail the independent serving gates."}
 
 
 def prediction_metadata_matches(query, prediction):
@@ -1036,6 +1079,7 @@ def verify(args, eligibility):
     roots = cold_root_audit(report, rows)
     contract = accuracy_contract(getattr(args, "accuracy_contract", STRICT_IV_CONTRACT))
     prices = cold_price_audit(report, rows, roots)
+    coverage = identification_coverage(prices, eligibility)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
         "input_frozen": receipt["input_sha256"] == eligibility["input_sha256"],
@@ -1045,6 +1089,7 @@ def verify(args, eligibility):
         "all_valid_slices_fully_served": metrics["fully_served_slices"] == eligibility["required_slices"],
         "containment_995": metrics["containment_of_served"] >= eligibility["containment_min"],
         "actual_api_shape_parity_calendar": not violations,
+        "identified_coverage_preserved": coverage["coverage_passed"],
     }
     if contract["version"] == RAW_SPREAD_PRICE_CONTRACT:
         checks["identified_node_cold_reference_price_accuracy"] = prices["price_accuracy_passed"]
@@ -1087,6 +1132,7 @@ def verify(args, eligibility):
               "metadata_failures_first100": metadata_failures[:100],
               "cold_root_audit": roots,
               "cold_price_audit": {key: value for key, value in prices.items() if key != "observations"},
+              "identification_coverage": coverage,
               "eligibility_sha256": hashlib.sha256(json.dumps(eligibility, sort_keys=True).encode()).hexdigest(),
               "evidence_scope": "Static American node bounds, all-pair vertical spreads, global "
                   "convex envelopes, affine call-put, strike-specific terminal European lower "
@@ -1145,6 +1191,9 @@ def main():
         gate = "strict_accuracy_passed" if args.command == "cold-roots" else "price_accuracy_passed"
         result[gate] &= not result["raw_model_failures"] and result["report_hash_verified"] and \
             result["input_hash_verified"]
+        if args.command == "cold-prices":
+            result["identification_coverage"] = identification_coverage(result, eligibility)
+            result[gate] &= result["identification_coverage"]["coverage_passed"]
     elif args.command == "freeze":
         result = eligibility
     elif args.command == "predictions":
@@ -1166,6 +1215,7 @@ def main():
     write_json(args.out, result)
     print(json.dumps({key: value for key, value in result.items()
                       if key not in ("chains", "eligible_row_ids", "metrics",
+                                     "identification_baseline",
                                      "api_violations_first100", "row_failures_first100",
                                      "metadata_failures_first100", "cold_root_audit", "cold_price_audit",
                                      "failures", "roundoff_only", "observations")}, indent=2))

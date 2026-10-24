@@ -24,6 +24,15 @@ price-only result fails. Fitting receives no vendor price or volatility labels.
 
 Raw eligibility is saved in `acceptance/eligibility-v1.json` under
 `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/`.
+The subsequent `acceptance/eligibility-identification-v2.json` keeps exactly
+that raw eligibility and adds an independent minimum of **12,183 identified
+rows**, frozen from wave1. `bench/fixtures/spy-wave1-identification-v1.json`
+records the 683 baseline price-only row IDs and source/input/report/prediction
+hashes. Every other eligible row must remain identified. A new price-only result
+fails the coverage gate even if another row becomes identified and preserves
+the total count. A legitimate change of final prices/classification requires
+explicit review of the baseline; it cannot silently weaken acceptance. This
+baseline is acceptance evidence only and is never provided to fitting.
 
 ## C4 comparison on that exact input
 
@@ -209,6 +218,9 @@ Crossed/nonfinite boxes are invalid raw inputs under the existing frozen rules;
 the budget function rejects them. Genuine price-only rows remain served and make
 no point-IV claim. All serving, containment, model, metadata and price-arbitrage
 gates are unchanged. Missing original budgets or missing cold contracts fail.
+The generic numerical oracle also requires at least one checked identified row;
+an entirely price-only surface cannot obtain a vacuous accuracy pass. The SPY
+promotion gate additionally enforces the frozen per-row identification coverage.
 
 The original +/-1e-7 IV results are diagnostics under this version, including
 local finite-difference vega, residual/vega and budget/vega estimates. Those local
@@ -325,7 +337,9 @@ API pass is not evidence that those IVs satisfied the strict target.
 Re-evaluating the same immutable wave1 evidence under the explicitly authorized
 `raw-spread-price-v1` contract yields **zero price-budget failures** across all
 12,183 identified nodes. `cold-node-prices-v2.json` contains every raw row/budget,
-input/report hash receipt, and `verification-economic-v2.json` passes all correctness checks. No fit was
+input/report hash receipt. `verification-economic-v3.json` passes all correctness
+checks including frozen identification coverage: no new price-only row IDs and
+all 12,183 identified rows checked. No fit was
 rerun and no price, quote box, IV, classification or denominator was changed.
 No row needs the separate roundoff allowance. Maximum absolute residual is
 **$0.0007096053/share**, using 70.9605% of that row's $0.001 budget: expiry 21568,
@@ -346,11 +360,16 @@ The two representative worst-price/low-vega contracts, including their opposite
 sides and all four original raw boxes, are frozen in
 `bench/fixtures/spy-wave1-cold-price-cases-v1.json`. Their numerical regression
 passes the economic contract, preserves two strict-IV failures, and fails when
-an original box is made genuinely tighter. The 37-test independent oracle suite
+an original box is made genuinely tighter. The 40-test independent oracle suite
 also exercises explicit version selection, duplicate-row budgets, locked/crossed
 spreads, nonfinite evidence and the unchanged timing protections. The native CLI
 fixture checks both sides against independent Black-Scholes cold prices and
 passes the versioned economic oracle with original input boxes.
+Fresh peer review found that the first economic oracle could pass an entirely
+price-only fixture because it checked no point IVs. The follow-up rejects zero
+identified rows and freezes the SPY count and identities independently of the
+candidate. Regression tests reject both mass demotion and a count-preserving
+swap of an identified row for a formerly price-only row.
 
 The separate development cold fit was **22.1222 seconds**, with 8.57% measured
 SMT-sibling activity. It is neither a quiet latency qualification nor a subsecond

@@ -328,6 +328,44 @@ class ColdNodePriceOracleTests(unittest.TestCase):
         query["volatility"] = 0.2
         self.assertFalse(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
 
+    def test_all_price_only_cannot_make_cold_accuracy_vacuously_pass(self):
+        report, _, rows = self.fixture()
+        entry = report["graded_stats"]["acceptance_audit"]["snapshots"][0][0]
+        for query in entry["queries"]:
+            query.update(status="price_only", volatility=None, reason="low_vega",
+                         vol_convention="none")
+        result = audit.cold_price_audit(report, rows)
+        self.assertEqual(result["identified_rows_checked"], 0)
+        self.assertEqual(result["price_only_rows"], 6)
+        self.assertFalse(result["price_accuracy_passed"])
+        self.assertTrue(any(f["kind"] == "no_identified_rows_checked" for f in result["failures"]))
+
+    def test_coverage_count_and_row_identity_both_prevent_silent_demotion(self):
+        baseline = {"minimum_identified_rows": 4,
+                    "identification_baseline": {"price_only_row_ids": [4, 5]}}
+        same = {"identified_rows_checked": 4, "price_only_row_ids": [4, 5]}
+        self.assertTrue(audit.identification_coverage(same, baseline)["coverage_passed"])
+        fewer = {"identified_rows_checked": 3, "price_only_row_ids": [0, 4, 5]}
+        self.assertFalse(audit.identification_coverage(fewer, baseline)["coverage_passed"])
+        # Recovering row4 cannot conceal demoting previously identified row0.
+        swapped = {"identified_rows_checked": 4, "price_only_row_ids": [0, 5]}
+        result = audit.identification_coverage(swapped, baseline)
+        self.assertFalse(result["coverage_passed"])
+        self.assertEqual(result["new_price_only_row_ids"], [0])
+        self.assertEqual(result["baseline_price_only_rows_now_not_price_only"], [4])
+        self.assertFalse(audit.identification_coverage(
+            {"identified_rows_checked": 0, "price_only_row_ids": []}, {})["coverage_passed"])
+
+    def test_frozen_spy_identification_baseline_has_named_source_and_required_count(self):
+        baseline = audit.read_json(audit.IDENTIFICATION_BASELINE)
+        self.assertEqual(baseline["input_sha256"], audit.INPUT_SHA256)
+        self.assertEqual(baseline["identified_rows"], 12183)
+        self.assertEqual(baseline["eligible_rows"], 12866)
+        self.assertEqual(len(set(baseline["price_only_row_ids"])), 683)
+        self.assertEqual(baseline["source_commit"], "47b2037572690d60ce87113c37340c75ac129913")
+        self.assertEqual(baseline["prediction_sha256"],
+                         "681c3b44e3edbd799b90b03ccfaad2564d98a580085ae4131093cf749e08a8cf")
+
     def test_low_vega_estimate_is_separate_and_does_not_relax_price_gate(self):
         report, query, rows = self.fixture()
         self.residual(query, 0.0005, half_width=1e-10)
