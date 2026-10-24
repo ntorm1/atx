@@ -521,7 +521,7 @@ ReadmeCount readme_tier_count(std::string_view label) {
 // up as one added plus one removed instead of a silent pass.
 constexpr std::string_view kApiModules[] = {
     "analytics", "backtest", "core", "fitting",
-    "marketdata", "pricing", "risk", "simd", "storage",
+    "marketdata", "persist", "pricing", "risk", "simd", "storage",
 };
 
 TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
@@ -791,6 +791,11 @@ constexpr std::string_view kPathLiteralExempt[] = {
     // The documented default of --store, the licensed aggregate store root shared with
     // scripts/oracle-targeted-gate.ps1 (a CLI constant, overridable).
     "oracle_bench_main.cpp",
+    // 2026-10-24 (persist lane P1): the parent-directory key and manifest file name are
+    // handed to persist_file_name / PersistDirectory to prove each escape is REFUSED
+    // (PersistDirectory.RefusesTraversalFileName). The literals are the adversary; every
+    // real path in the file comes from fs::temp_directory_path().
+    "persist_file_test.cpp",
 };
 
 // Files permitted to call current_path(). Only the test that exists to flip the

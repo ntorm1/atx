@@ -24,7 +24,7 @@ thread counts, bounded allocation once warm.
 | `pnl_explain.hpp` | `explain` / `explain_into`: eight Taylor terms (delta, gamma, vega split into level / skew / curvature in standardized moneyness, theta, rho, vanna, volga, charm) + unexplained, shares as delta-one legs, `VolMoveConvention`, by-uid / by-expiry buckets; `RiskStream` (one frame per state, explain per step) |
 | `strike_coord.hpp` | Strike coordinate conversions: strike, log-moneyness, K/S, standardized moneyness, delta under `DeltaConvention::{Forward, Spot, American}`; `TenorInterp::{TotalVariance, ShapeBlend}` and `TenorExtrapPolicy`; every answer carries flags |
 | `theo_contract.hpp` | Theoretical contracts (`MaturitySpec` relative or absolute, `StrikeCoord`) resolved on a surface at a timestamp: `resolve_theo`, `resolve_theo_many`, `project_series` (fixed TTE / fixed moneyness or delta across historical surfaces) |
-| `historical_var.hpp` | One-period historical VaR / ES over (base, shifted) state pairs for a reference book of theoretical templates (lane D) |
+| `historical_var.hpp` | `historical_var`: one-period historical VaR / ES over (base, shifted) state pairs for a reference book of theoretical templates (`TheoLeg`) plus share legs, templates re-resolved on each base state, nearest-rank quantiles with the Greek attribution of the tail (`tail_mean`); `summarize_historical_var` (the quantile half over stored frames). Replaces the deleted `src/analytics/var.*` / `historical_projection.*`; `dispersion_book_var` runs on it. See [`historical-var.md`](historical-var.md) |
 | `api/marketdata/spiderrock_store.hpp` | SpiderRock intraday store loader (`date=<d>/bucket_et=<HHMM>/` parquet partitions → SoA bucket → `MarketStateStorage`), SpiderRock-shaped synthetic store |
 
 ## Flow

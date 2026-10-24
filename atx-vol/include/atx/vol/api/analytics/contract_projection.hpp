@@ -82,7 +82,7 @@ enum class OptionDeltaSolvePolicy : std::uint8_t {
   // Cross-sectional inverse-delta with cold confirm. In the scalar
   // project_option_contract entry point this behaves exactly as
   // FastScreenColdConfirm (a batch of one gains nothing); batch consumers
-  // (PreparedVarPortfolio) select the cross-sectional group solver.
+  // call the cross-sectional group solver, solve_american_delta_batch.
   CrossSectionalColdConfirm = 2,
 };
 

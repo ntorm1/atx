@@ -223,8 +223,15 @@ namespace {
   if (!(std::isfinite(p.sigma_box_floor) && p.sigma_box_floor > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "RiskKernel: sigma_box_floor must be finite > 0");
   }
-  if (p.n_sigma_min < kAlSigmaFamilyMinNodes || p.n_sigma_min > p.n_sigma) {
-    return Err(ErrorCode::InvalidArgument, "RiskKernel: n_sigma_min outside [4, n_sigma]");
+  // A floor above n_sigma is legal: the ceiling caps the floor (node_count).
+  if (p.n_sigma_min < kAlSigmaFamilyMinNodes) {
+    return Err(ErrorCode::InvalidArgument, "RiskKernel: n_sigma_min below 4");
+  }
+  if (p.n_sigma_min_short < kAlSigmaFamilyMinNodes) {
+    return Err(ErrorCode::InvalidArgument, "RiskKernel: n_sigma_min_short below 4");
+  }
+  if (!(std::isfinite(p.short_box_tau) && p.short_box_tau >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "RiskKernel: short_box_tau must be finite >= 0");
   }
   if (!(std::isfinite(p.sigma_node_spacing) && p.sigma_node_spacing > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "RiskKernel: sigma_node_spacing must be finite > 0");

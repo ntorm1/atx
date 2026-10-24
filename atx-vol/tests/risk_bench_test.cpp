@@ -281,10 +281,13 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
   EXPECT_FALSE(d->family_dynamic_schedule.has_value());
   EXPECT_FALSE(d->family_node_cost_us.has_value());
   EXPECT_FALSE(d->cold_lane_cost_us.has_value());
+  EXPECT_FALSE(d->short_box_tau.has_value());
+  EXPECT_FALSE(d->n_sigma_min_short.has_value());
   const auto a = parse({"--store", "s", "--n-sigma", "12", "--n-sigma-min", "12",
                         "--sigma-box-pad", "0.25", "--sigma-node-spacing", "0.1",
                         "--family-economics", "off", "--family-schedule", "dynamic",
-                        "--family-node-cost-us", "33", "--cold-lane-cost-us", "140.5"});
+                        "--family-node-cost-us", "33", "--cold-lane-cost-us", "140.5",
+                        "--short-box-tau", "0.25", "--n-sigma-min-short", "6"});
   ASSERT_TRUE(a.has_value()) << a.error().to_string();
   EXPECT_EQ(a->n_sigma, std::optional<std::uint16_t>{12});
   EXPECT_EQ(a->n_sigma_min, std::optional<std::uint16_t>{12});
@@ -294,6 +297,8 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
   EXPECT_EQ(a->family_dynamic_schedule, std::optional<bool>{true});
   EXPECT_EQ(a->family_node_cost_us, std::optional<double>{33.0});
   EXPECT_EQ(a->cold_lane_cost_us, std::optional<double>{140.5});
+  EXPECT_EQ(a->short_box_tau, std::optional<double>{0.25});
+  EXPECT_EQ(a->n_sigma_min_short, std::optional<std::uint16_t>{6});
   const auto b = parse({"--store", "s", "--family-economics", "on", "--family-schedule", "static"});
   ASSERT_TRUE(b.has_value()) << b.error().to_string();
   EXPECT_EQ(b->family_economics, std::optional<bool>{true});
@@ -307,6 +312,9 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
       {"--store", "s", "--family-economics", "yes"},
       {"--store", "s", "--family-schedule", "auto"},
       {"--store", "s", "--cold-lane-cost-us", "inf"},
+      {"--store", "s", "--short-box-tau", "nan"},
+      {"--store", "s", "--short-box-tau"},
+      {"--store", "s", "--n-sigma-min-short", "-1"},
   };
   for (const auto &argv : bad) {
     const auto r = parse(argv);
@@ -315,7 +323,8 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
   }
   for (const char *flag : {"--n-sigma", "--n-sigma-min", "--sigma-box-pad",
                            "--sigma-node-spacing", "--family-economics", "--family-schedule",
-                           "--family-node-cost-us", "--cold-lane-cost-us"}) {
+                           "--family-node-cost-us", "--cold-lane-cost-us", "--short-box-tau",
+                           "--n-sigma-min-short"}) {
     EXPECT_NE(rb::risk_bench_usage().find(flag), std::string::npos) << flag;
   }
 }

@@ -98,6 +98,7 @@ Result<YieldCurve> YieldCurve::create(std::span<const double> t_years,
   YieldCurve curve;
   const std::size_t n = t_years.size();
   curve.t_years_.resize(n);
+  curve.zero_rates_.assign(zero_rates.begin(), zero_rates.end());
   curve.log_df_.resize(n);
   curve.m_.resize(n);
   for (std::size_t i = 0; i < n; ++i) {

@@ -851,7 +851,8 @@ HarvestParityGrid make_harvest_parity_grid(std::int64_t now) {
 //
 // So the harvest is not bit-identical to the dedicated pass, but it is ~4 orders
 // of magnitude inside the 1e-9 economic gate. Per the Task 7 brief that verdict
-// keeps VarBaseMarkSource::DedicatedPricePass as the default. The SP100 P&L
+// kept the dedicated price pass as the default base-mark source of the historical-VaR
+// engine (since deleted; historical VaR now runs on api/risk). The SP100 P&L
 // parity rerun the brief asks for before any default flip WAS run (worst drift
 // 1.5e-12 relative on scenario P&L); see task-7-report.md for the numbers and
 // the decision not to take the flip in this task.

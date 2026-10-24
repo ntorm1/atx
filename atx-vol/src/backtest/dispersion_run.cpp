@@ -40,7 +40,8 @@
 #include "core/log_emit.hpp"
 #include "storage/archive_util.hpp"
 #include "atx/vol/api/backtest/dispersion.hpp" // contract_vega_per_vol_point (the ONE vol-point conversion)
-#include "analytics/historical_projection.hpp"
+#include "atx/vol/api/risk/historical_var.hpp" // HistoricalVarFrame, summarize_historical_var
+#include "atx/vol/api/risk/theo_contract.hpp"  // ResolvedTheo, to_string(TheoStatus)
 #include "atx/vol/api/backtest/listed_dispersion.hpp"
 #include "atx/vol/research/listed_dispersion_pipeline.hpp" // ListedDispersionMethodology (L9)
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp"
@@ -2114,8 +2115,16 @@ constexpr std::string_view kProjectedVarHeader =
     "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
     "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\tas_of_ts_ns\t"
     "book_fingerprint";
+// One row per consecutive session pair (base -> shifted): the risk engine's explain totals
+// for the as-of book's templates, the resolution counts, admission, and the aggregate
+// definition fingerprint of the pair's legs (seeded with prepared_fingerprint).
 constexpr std::string_view kProjectedScenarioHeader =
-    "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\tdefinition_fingerprint";
+    "base_date\tbase_ts_ns\tshifted_date\tshifted_ts_ns\tpv_base\tpv_target\tpnl_total\t"
+    "pnl_delta\tpnl_gamma\tpnl_vega\tpnl_volga\tpnl_vanna\tpnl_theta\tpnl_rho\tpnl_charm\t"
+    "pnl_unexplained\tvol_level\tvol_skew\tvol_curv\tvol_resid\tshares_pnl\tn_ok\tn_excluded\t"
+    "excluded_premium\tn_legs_resolved\tn_legs_unresolved\tadmitted\tdefinition_fingerprint";
+constexpr std::size_t kProjectedScenarioFields = 28u;
+// One row per (pair, template): the template resolved on the pair's BASE session (`date`).
 constexpr std::string_view kProjectedLegHeader =
     "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
     "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus";
@@ -2141,6 +2150,20 @@ struct ProjectedLegIdentity {
   double multiplier{0.0};
   std::int64_t relative_expiry_ns{0};
 };
+
+struct ProjectedScenarioRow {
+  std::string base_date;
+  std::string shifted_date;
+  HistoricalVarFrame frame;
+  std::uint64_t definition_fingerprint{0};
+};
+
+// The scenario <-> legs join key: the pair's leg fingerprints folded onto the templates'
+// identity, never 0. Shared by the writer and the verifier.
+[[nodiscard]] std::uint64_t finish_definition_fingerprint(std::size_t folded) noexcept {
+  const auto value = static_cast<std::uint64_t>(folded);
+  return value == 0u ? 1u : value;
+}
 
 Status projected_tsv_header(std::ifstream &stream, const fs::path &path,
                             std::string_view expected) {
@@ -2203,10 +2226,12 @@ read_projected_var_summary(const fs::path &path, std::size_t n_sessions) {
       return Err(ErrorCode::InvalidArgument,
                  path.filename().string() + " row violates the projected-VaR contract");
     }
-    if (n_sessions != 0u && row.n_scenarios != n_sessions) {
+    // One scenario per consecutive session pair (risk-engine historical VaR, D13).
+    if (n_sessions != 0u && row.n_scenarios + 1u != n_sessions) {
       return Err(ErrorCode::InvalidArgument,
                  "projected VaR covers " + std::to_string(row.n_scenarios) +
-                     " scenarios but the run has " + std::to_string(n_sessions) + " sessions");
+                     " scenarios but the run has " + std::to_string(n_sessions) +
+                     " sessions (one scenario per consecutive pair)");
     }
     if (!rows.empty()) {
       const ProjectedVarSummaryRow &first = rows.front();
@@ -2243,7 +2268,7 @@ Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_ses
 
 namespace {
 
-Result<std::vector<HistoricalProjectionFrame>>
+Result<std::vector<ProjectedScenarioRow>>
 read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &summary,
                          std::span<const SnapshotRef> expected_sessions) {
   std::ifstream stream(path, std::ios::binary);
@@ -2252,10 +2277,9 @@ read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &sum
   }
   ATX_TRY_VOID(projected_tsv_header(stream, path, kProjectedScenarioHeader));
 
-  std::vector<HistoricalProjectionFrame> frames;
-  frames.reserve(summary.n_scenarios);
+  std::vector<ProjectedScenarioRow> rows;
+  rows.reserve(summary.n_scenarios);
   std::string line;
-  std::string previous_date;
   while (std::getline(stream, line)) {
     if (!line.empty() && line.back() == '\r') {
       line.pop_back();
@@ -2264,50 +2288,70 @@ read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &sum
       return Err(ErrorCode::ParseError,
                  path.filename().string() + " contains an empty/trailing row");
     }
-    const std::vector<std::string_view> fields = split(line, '\t');
-    if (fields.size() != 10u) {
+    const std::vector<std::string_view> f = split(line, '\t');
+    if (f.size() != kProjectedScenarioFields) {
       return Err(ErrorCode::ParseError,
-                 path.filename().string() + " row does not have 10 fields");
+                 path.filename().string() + " row does not have 28 fields");
     }
-    HistoricalProjectionFrame frame;
-    std::string date{fields[0]};
-    if (date.empty() || !parse_number(fields[1], frame.ts_ns) ||
-        !parse_double(fields[2], frame.value) || !parse_double(fields[3], frame.delta) ||
-        !parse_double(fields[4], frame.gamma) || !parse_double(fields[5], frame.vega) ||
-        !parse_double(fields[6], frame.theta) || !parse_number(fields[7], frame.n_ok) ||
-        !parse_number(fields[8], frame.n_failed) ||
-        !parse_number(fields[9], frame.definition_fingerprint)) {
+    ProjectedScenarioRow row;
+    row.base_date = f[0];
+    row.shifted_date = f[2];
+    HistoricalVarFrame &fr = row.frame;
+    ExplainTotals &t = fr.totals;
+    unsigned admitted = 0u;
+    if (row.base_date.empty() || row.shifted_date.empty() ||
+        !parse_number(f[1], fr.base_ts_ns) || !parse_number(f[3], fr.shifted_ts_ns) ||
+        !parse_double(f[4], t.pv_base) || !parse_double(f[5], t.pv_target) ||
+        !parse_double(f[6], t.pnl_total) || !parse_double(f[7], t.pnl_delta) ||
+        !parse_double(f[8], t.pnl_gamma) || !parse_double(f[9], t.pnl_vega) ||
+        !parse_double(f[10], t.pnl_volga) || !parse_double(f[11], t.pnl_vanna) ||
+        !parse_double(f[12], t.pnl_theta) || !parse_double(f[13], t.pnl_rho) ||
+        !parse_double(f[14], t.pnl_charm) || !parse_double(f[15], t.pnl_unexplained) ||
+        !parse_double(f[16], t.vol_level) || !parse_double(f[17], t.vol_skew) ||
+        !parse_double(f[18], t.vol_curv) || !parse_double(f[19], t.vol_resid) ||
+        !parse_double(f[20], t.shares_pnl) || !parse_number(f[21], t.n_ok) ||
+        !parse_number(f[22], t.n_excluded) || !parse_double(f[23], t.excluded_premium) ||
+        !parse_number(f[24], fr.n_legs_resolved) || !parse_number(f[25], fr.n_legs_unresolved) ||
+        !parse_number(f[26], admitted) || !parse_number(f[27], row.definition_fingerprint)) {
       return Err(ErrorCode::ParseError,
                  path.filename().string() + " row contains invalid or trailing input");
     }
-    if (frame.ts_ns <= 0 || frame.n_ok != summary.n_positions || frame.n_failed != 0u ||
-        frame.definition_fingerprint == 0u || utc_date_from_ns(frame.ts_ns) != date ||
-        (!previous_date.empty() && date <= previous_date)) {
+    fr.admitted = admitted == 1u;
+    // Every published pair is complete (dispersion_book_var's gate) and the pairs chain:
+    // each base is the previous row's shifted session.
+    const bool chained =
+        rows.empty() || (row.base_date == rows.back().shifted_date &&
+                         fr.base_ts_ns == rows.back().frame.shifted_ts_ns);
+    if (fr.base_ts_ns <= 0 || fr.shifted_ts_ns <= fr.base_ts_ns || !fr.admitted ||
+        fr.n_legs_resolved != summary.n_positions || fr.n_legs_unresolved != 0u ||
+        row.definition_fingerprint == 0u || utc_date_from_ns(fr.base_ts_ns) != row.base_date ||
+        utc_date_from_ns(fr.shifted_ts_ns) != row.shifted_date ||
+        row.shifted_date <= row.base_date || !chained) {
       return Err(ErrorCode::InvalidArgument,
                  path.filename().string() + " row violates date/position/risk invariants");
     }
     if (!expected_sessions.empty() &&
-        (frames.size() >= expected_sessions.size() ||
-         date != expected_sessions[frames.size()].date)) {
+        (rows.size() + 1u >= expected_sessions.size() ||
+         row.base_date != expected_sessions[rows.size()].date ||
+         row.shifted_date != expected_sessions[rows.size() + 1u].date)) {
       return Err(ErrorCode::InvalidArgument,
                  path.filename().string() + " dates do not match the qualified clock");
     }
-    previous_date = std::move(date);
-    frames.push_back(frame);
+    rows.push_back(std::move(row));
   }
   if (!stream.eof()) {
     return Err(ErrorCode::IoError, "cannot finish reading " + path.string());
   }
-  if (frames.size() != summary.n_scenarios ||
-      (!expected_sessions.empty() && frames.size() != expected_sessions.size())) {
+  if (rows.size() != summary.n_scenarios ||
+      (!expected_sessions.empty() && rows.size() + 1u != expected_sessions.size())) {
     return Err(ErrorCode::InvalidArgument,
                path.filename().string() + " row count does not match n_scenarios");
   }
-  return Ok(std::move(frames));
+  return Ok(std::move(rows));
 }
 
 Status verify_projected_legs(const fs::path &path, const ProjectedVarSummaryRow &summary,
-                             std::span<const HistoricalProjectionFrame> frames) {
+                             std::span<const ProjectedScenarioRow> scenarios) {
   if (summary.n_positions > std::numeric_limits<std::size_t>::max() / summary.n_scenarios) {
     return Err(ErrorCode::InvalidArgument, "projected risk leg row count overflows");
   }
@@ -2342,6 +2386,7 @@ Status verify_projected_legs(const fs::path &path, const ProjectedVarSummaryRow 
     }
     const std::size_t scenario_index = row_index / summary.n_positions;
     const std::size_t expected_leg = row_index % summary.n_positions;
+    const std::int64_t base_ts = scenarios[scenario_index].frame.base_ts_ns;
     std::size_t leg = 0u;
     std::uint32_t uid = 0u;
     std::int64_t expiry_ts_ns = 0;
@@ -2354,26 +2399,25 @@ Status verify_projected_legs(const fs::path &path, const ProjectedVarSummaryRow 
     double vega = 0.0;
     double theta = 0.0;
     std::uint64_t definition_fingerprint = 0u;
-    if (fields[0] != utc_date_from_ns(frames[scenario_index].ts_ns) ||
-        !parse_number(fields[1], leg) || !parse_number(fields[2], uid) ||
-        (fields[3] != "Call" && fields[3] != "Put") ||
+    if (fields[0] != scenarios[scenario_index].base_date || !parse_number(fields[1], leg) ||
+        !parse_number(fields[2], uid) || (fields[3] != "Call" && fields[3] != "Put") ||
         !parse_number(fields[4], expiry_ts_ns) || !parse_double(fields[5], strike) ||
         !parse_double(fields[6], quantity) || !parse_double(fields[7], multiplier) ||
         !parse_double(fields[8], mark) || !parse_double(fields[9], delta) ||
         !parse_double(fields[10], gamma) || !parse_double(fields[11], vega) ||
         !parse_double(fields[12], theta) ||
-        !parse_number(fields[13], definition_fingerprint) || fields[14] != "Ok") {
+        !parse_number(fields[13], definition_fingerprint) ||
+        fields[14] != to_string(TheoStatus::Ok)) {
       return Err(ErrorCode::ParseError,
                  path.filename().string() + " row contains invalid or trailing input");
     }
-    if (leg != expected_leg || uid == 0u || expiry_ts_ns <= frames[scenario_index].ts_ns ||
-        strike <= 0.0 || quantity == 0.0 || multiplier <= 0.0 || mark < 0.0 ||
-        definition_fingerprint == 0u) {
+    if (leg != expected_leg || uid == 0u || expiry_ts_ns <= base_ts || strike <= 0.0 ||
+        quantity == 0.0 || multiplier <= 0.0 || mark < 0.0 || definition_fingerprint == 0u) {
       return Err(ErrorCode::InvalidArgument,
                  path.filename().string() + " row violates leg identity/risk invariants");
     }
     const ProjectedLegIdentity identity{uid, std::string(fields[3]), quantity, multiplier,
-                                        expiry_ts_ns - frames[scenario_index].ts_ns};
+                                        expiry_ts_ns - base_ts};
     if (scenario_index == 0u) {
       identities[leg] = identity;
     } else {
@@ -2386,8 +2430,7 @@ Status verify_projected_legs(const fs::path &path, const ProjectedVarSummaryRow 
       }
     }
     aggregate_fingerprints[scenario_index] =
-        atx::core::hash_combine(aggregate_fingerprints[scenario_index],
-                               definition_fingerprint);
+        atx::core::hash_combine(aggregate_fingerprints[scenario_index], definition_fingerprint);
     ++row_index;
   }
   if (!stream.eof()) {
@@ -2397,13 +2440,9 @@ Status verify_projected_legs(const fs::path &path, const ProjectedVarSummaryRow 
     return Err(ErrorCode::InvalidArgument,
                path.filename().string() + " row count does not match scenarios * positions");
   }
-  for (std::size_t scenario = 0u; scenario < frames.size(); ++scenario) {
-    std::uint64_t fingerprint =
-        static_cast<std::uint64_t>(aggregate_fingerprints[scenario]);
-    if (fingerprint == 0u) {
-      fingerprint = 1u;
-    }
-    if (fingerprint != frames[scenario].definition_fingerprint) {
+  for (std::size_t scenario = 0u; scenario < scenarios.size(); ++scenario) {
+    if (finish_definition_fingerprint(aggregate_fingerprints[scenario]) !=
+        scenarios[scenario].definition_fingerprint) {
       return Err(ErrorCode::InvalidArgument,
                  path.filename().string() +
                      " definition fingerprints disagree with the scenario table");
@@ -2464,29 +2503,42 @@ Status verify_projected_var_artifacts_impl(const fs::path &run_dir, std::size_t 
   ATX_TRY(std::vector<ProjectedVarSummaryRow> summaries,
           read_projected_var_summary(paths[0], n_sessions));
   const ProjectedVarSummaryRow &summary = summaries.front();
-  ATX_TRY(std::vector<HistoricalProjectionFrame> frames,
+  ATX_TRY(std::vector<ProjectedScenarioRow> scenarios,
           read_projected_scenarios(paths[1], summary, expected_sessions));
-  ATX_TRY_VOID(verify_projected_legs(paths[2], summary, frames));
-  if (summary.as_of_date != utc_date_from_ns(frames.back().ts_ns) ||
-      summary.as_of_ts_ns != frames.back().ts_ns ||
-      summary.reference_value != frames.back().value) {
+  ATX_TRY_VOID(verify_projected_legs(paths[2], summary, scenarios));
+  // The as-of book is the one held at the LAST session: the last pair's shifted state.
+  if (summary.as_of_date != scenarios.back().shifted_date ||
+      summary.as_of_ts_ns != scenarios.back().frame.shifted_ts_ns) {
     return Err(ErrorCode::InvalidArgument,
                "projected VaR summary does not identify the final scenario/as-of book");
   }
+  // Recompute every published point from the scenario rows with the engine's own quantile
+  // half (nearest rank, Neumaier means): bit-equal or the generation is not this run's.
+  std::vector<double> confidences;
+  std::vector<HistoricalVarFrame> frames;
+  confidences.reserve(summaries.size());
+  frames.reserve(scenarios.size());
   for (const ProjectedVarSummaryRow &row : summaries) {
-    ATX_TRY(ProjectedHistoricalVar expected,
-            projected_historical_var(frames, frames.back().value, row.confidence));
-    if (row.reference_value != expected.reference_value ||
-        row.value_at_risk != expected.value_at_risk ||
-        row.expected_shortfall != expected.expected_shortfall ||
-        row.n_scenarios != expected.n_scenarios) {
+    confidences.push_back(row.confidence);
+  }
+  for (const ProjectedScenarioRow &row : scenarios) {
+    frames.push_back(row.frame);
+  }
+  ATX_TRY(const HistoricalVarResult expected,
+          summarize_historical_var(std::move(frames), confidences));
+  for (std::size_t k = 0; k < summaries.size(); ++k) {
+    const ProjectedVarSummaryRow &row = summaries[k];
+    const HistoricalVarPoint &point = expected.points[k];
+    if (row.reference_value != expected.reference_pv ||
+        row.value_at_risk != point.value_at_risk ||
+        row.expected_shortfall != point.expected_shortfall ||
+        row.n_scenarios != expected.n_admitted) {
       return Err(ErrorCode::InvalidArgument,
                  "projected VaR risk summary does not recompute from scenario rows");
     }
   }
   return Ok();
 }
-
 } // namespace
 
 // ── Public: native reference reconciliation (M1) ────────────────────────────
@@ -3086,24 +3138,23 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   //
   // ── REVIEW C-1: THE AS-OF IS THE LAST QUALIFIED SNAPSHOT ──────────────────
   //
-  // The anchor used to be `snapshots.front()` — the OLDEST session — while
-  // `dispersion_book_var` fixes the VaR reference at `frames.back().value`, the
-  // LAST session (listed_dispersion_pipeline.cpp:508-516), and every loss is
-  // `reference_value - frame.value` (historical_projection.cpp:118-147). That is
-  // historical-simulation VaR, and it is only VaR if the book being re-valued is
-  // the book actually HELD at the reference date. It was not: a name
+  // The anchor used to be `snapshots.front()` — the OLDEST session — while the
+  // VaR describes the book held NOW. Historical-simulation VaR is only VaR if the
+  // book being re-valued over the history is the book actually HELD at the as-of
+  // date. It was not: a name
   // reconstituted out of the basket mid-window was still in it, a name
   // reconstituted in was missing from it, and every quantity was sized on the
   // oldest session's spot and vol. The output stayed finite and plausible while
   // describing a portfolio nobody holds.
   //
   // AS-OF SEMANTICS, chosen deliberately: the as-of is THE LAST QUALIFIED
-  // SNAPSHOT IN THE MANIFEST CLOCK. It is not a caller-supplied parameter,
-  // because the reference value is not one either — the seam fixes it at
-  // `frames.back()`, so any anchor other than the last session simply re-opens
-  // the mismatch this closes. A caller who wants a different as-of moves
-  // `date_hi`, which already bounds which sessions qualify. The book is then
-  // IMMUTABLE and is projected back over every prior surface.
+  // SNAPSHOT IN THE MANIFEST CLOCK — the most recent session, whose book is the
+  // one at risk. It is not a caller-supplied parameter; a caller who wants a
+  // different as-of moves `date_hi`, which already bounds which sessions
+  // qualify. The book is then IMMUTABLE: its relative templates are re-resolved
+  // on every prior session and each consecutive pair (session_i ->
+  // session_{i+1}) is one historical scenario of its one-period P&L (risk-engine
+  // historical VaR, design D13; `dispersion_book_var`).
   //
   // Both the as-of timestamp and a fingerprint of the resulting book are written
   // into `projected_var.tsv` below, so a reader is told which session the number
@@ -3133,38 +3184,24 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   const std::string &as_of_date = clock.refs().back().date;
   const std::uint64_t book_fingerprint = dispersion_book_fingerprint(initial);
 
-  // REV-TAIL I-2. The book -> OptionProjectionSpec synthesis + prepare +
-  // evaluate_into + per-confidence VaR split USED to be hand-rolled inline here,
-  // a second copy of `dispersion_book_var` (listed_dispersion_pipeline.cpp:464).
-  // `347ad44` — the commit whose stated purpose was restoring CLI seams — created
-  // that copy by inlining, and in doing so left `dispersion_book_var` with ZERO
-  // production callers: an exported public API whose only remaining caller was a
-  // test. That is exactly the shape this file's own header warns rots quietly and
-  // is then deleted by someone who assumes it was always dead. Worse, the tested
-  // copy was the ORPHANED one — `dispersion_run_projected_var` has no test at all
-  // — so the shipped economics were the untested duplicate of a tested seam.
-  //
-  // What `347ad44` did NOT do is regress this route. The pre-inline CLI body
-  // (`b0080fa:examples/spy_dispersion_backtest.cpp:950,981-982`) read the SAME
-  // loose `read_run_spec` and hardcoded the SAME `side` / `multiplier = 100.0`;
-  // those are not a capability this route ever had and then lost. `347ad44`
-  // genuinely ADDED C1-ACTIVATE point-in-time universe resolution above, replacing
-  // `universe_at(universe_rows, clock.refs().front().date)`. So the correct repair
-  // is to keep the PIT resolution and give the synthesis back to the seam, which
-  // is what this call does. (REVIEW C-15 has since closed the loose-spec half of
-  // that history: the route reads the STRICT typed config above and builds its
-  // book through the shared builder, so the two routes cannot disagree.)
-  //
-  // ORDERING, stated because it is the one behavioural delta: the incomplete-frame
-  // gate now fires INSIDE `dispersion_book_var`, i.e. BEFORE the loose TSVs are
-  // written, so a failed projection no longer leaves `projected_risk_scenarios
-  // .tsv` / `projected_risk_legs.tsv` behind in the run directory. That is the
-  // `b0080fa` ordering, restored. `elapsed_seconds` likewise spans the whole call
-  // (prepare + evaluate + risk) again rather than `evaluate_into` alone; it feeds
-  // only `projections_per_second`, non-deterministic wall-clock telemetry.
-  const std::vector<double> confidences = {0.95, 0.99};
-  HistoricalProjectionConfig config;
-  config.n_threads = run_config.fit.workers;
+  // REV-TAIL I-2. The book -> template synthesis and the VaR calculation live in ONE
+  // place, `dispersion_book_var` (listed_dispersion_pipeline.cpp); this route only
+  // supplies the history and serializes the result, so the shipped economics are the
+  // tested seam's. The incomplete-scenario gate fires INSIDE `dispersion_book_var`,
+  // BEFORE any loose TSV is written, so a failed projection leaves nothing behind.
+  // `elapsed_seconds` spans the whole call; it feeds only `projections_per_second`,
+  // non-deterministic wall-clock telemetry.
+  if (clock.size() < 2u) {
+    return Err(ErrorCode::Unavailable,
+               "projected VaR: needs at least two qualified sessions (one consecutive pair)");
+  }
+  HistoricalVarConfig var_config;
+  var_config.confidences = {0.95, 0.99};
+  // A dispersion book is small (two legs per name) and the history long, so the
+  // consecutive pairs are the parallel axis: the kernel runs single-threaded and the
+  // scenarios fan out over the `fit.workers` budget (historical_var's threading rule).
+  var_config.family.n_threads = 1u;
+  var_config.n_threads = run_config.fit.workers;
   std::vector<std::uint32_t> required_uids;
   required_uids.reserve(initial.positions.size());
   for (const Position &position : initial.positions) {
@@ -3179,64 +3216,57 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   ATX_TRY(
       DispersionBookVar var,
       dispersion_book_var(
-          initial, *dispersion.projected_maturity, clock.size(), confidences,
-          [&](const PreparedHistoricalProjection &prepared,
-              std::span<HistoricalProjectionFrame> output_frames,
-              std::span<ProjectedOption> output_legs,
-              const HistoricalProjectionConfig &evaluation_config) -> Status {
-            for (std::size_t batch_start = 0u; batch_start < clock.size();
-                 batch_start += kSnapshotBatch) {
-              // Plan 5.5 safe point: the top of a snapshot batch. This lambda is
-              // the whole of the entry's long-running work, and every artifact
-              // (`projected_var.tsv`, the scenarios/legs pair, the generation
-              // marker) is written only after it returns — so a stop here leaves
-              // the run dir byte-for-byte as it was found. The Status propagates
-              // out through dispersion_book_var's ATX_TRY.
+          initial, *dispersion.projected_maturity, clock.size(),
+          [&](const DispersionVarWindow &run_window) -> Status {
+            // Windows of up to kSnapshotBatch + 1 consecutive sessions overlapping by
+            // one: a window's last snapshot is CARRIED into the next window rather than
+            // reloaded, so every archive is opened exactly once and the as-of anchor is
+            // never reopened (P-1).
+            std::unique_ptr<MarketSnapshot> carried;
+            for (std::size_t first = 0u; first + 1u < clock.size(); first += kSnapshotBatch) {
+              // Plan 5.5 safe point: the top of a snapshot batch. This lambda is the
+              // whole of the entry's long-running work, and every artifact is written
+              // only after it returns — so a stop here leaves the run dir byte-for-byte
+              // as it was found. The Status propagates out through dispersion_book_var.
               if (cancel.stop_requested()) {
                 return Err(ErrorCode::Cancelled,
                            "dispersion_run_projected_var: cancelled before scenario batch at " +
-                               std::to_string(batch_start) + " (no artifacts written)");
+                               std::to_string(first) + " (no artifacts written)");
               }
-              const std::size_t batch_size =
-                  std::min(kSnapshotBatch, clock.size() - batch_start);
+              const std::size_t last = std::min(first + kSnapshotBatch, clock.size() - 1u);
               std::vector<std::unique_ptr<MarketSnapshot>> owners;
-              std::vector<HistoricalProjectionScenario> scenarios;
-              owners.reserve(batch_size);
-              scenarios.reserve(batch_size);
-              for (std::size_t offset = 0u; offset < batch_size; ++offset) {
-                const std::size_t scenario_index = batch_start + offset;
-                if (scenario_index + 1u == clock.size()) {
-                  scenarios.push_back({as_of.ts_ns(), &as_of.set()});
+              std::vector<DispersionVarSnapshot> window;
+              owners.reserve(last - first + 1u);
+              window.reserve(last - first + 1u);
+              for (std::size_t index = first; index <= last; ++index) {
+                if (index + 1u == clock.size()) {
+                  window.push_back({as_of.ts_ns(), &as_of.set()});
                   continue;
                 }
-                ATX_TRY(MarketSnapshot snapshot,
-                        MarketSnapshot::load(
-                            clock.refs()[scenario_index].archive_path,
-                            QueryPricingTier::LegacyCompatible, required_uids,
-                            ArchiveBacking::Sealed));
-                owners.push_back(
-                    std::make_unique<MarketSnapshot>(std::move(snapshot)));
-                scenarios.push_back(
-                    {owners.back()->ts_ns(), &owners.back()->set()});
+                if (index == first && carried != nullptr) {
+                  owners.push_back(std::move(carried));
+                } else {
+                  ATX_TRY(MarketSnapshot snapshot,
+                          MarketSnapshot::load(clock.refs()[index].archive_path,
+                                               QueryPricingTier::LegacyCompatible,
+                                               required_uids, ArchiveBacking::Sealed));
+                  owners.push_back(std::make_unique<MarketSnapshot>(std::move(snapshot)));
+                }
+                window.push_back({owners.back()->ts_ns(), &owners.back()->set()});
               }
-              // I2: this route feeds projected_historical_var, so marks must
-              // be cold-confirmed like VarEvaluationConfig's own default --
-              // never silently inherit whatever query tier the loaded
-              // snapshots happen to carry.
-              ATX_TRY_VOID(prepared.evaluate_into(
-                  scenarios, output_frames.subspan(batch_start, batch_size),
-                  output_legs.subspan(batch_start * prepared.n_positions(),
-                                      batch_size * prepared.n_positions()),
-                  evaluation_config, QueryExecution::ColdReference));
+              ATX_TRY_VOID(run_window(window, first));
+              if (last + 1u < clock.size()) {
+                carried = std::move(owners.back()); // a historical session, not the anchor
+              }
             }
             return Ok();
           },
-          config));
+          var_config));
   const double elapsed_seconds = std::max(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
       std::numeric_limits<double>::min());
-  const std::vector<HistoricalProjectionFrame> &frames = var.frames;
-  const std::vector<ProjectedOption> &legs = var.legs;
+  const std::vector<HistoricalVarFrame> &frames = var.var.frames;
+  const std::vector<ResolvedTheo> &legs = var.legs;
 
   // S3-T16. The canonical triple is this stage's ONLY output and it has no
   // archive counterpart, so with the flag off the projection still runs and
@@ -3252,41 +3282,45 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
                           std::ios::binary | std::ios::trunc);
     if (!frame_out || !leg_out)
       return Err(ErrorCode::IoError, "projected VaR: cannot open output");
-    frame_out << std::setprecision(17)
-              << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
-                 "definition_fingerprint\n";
-    leg_out << std::setprecision(17)
-            << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
-               "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n";
+    frame_out << std::setprecision(17) << kProjectedScenarioHeader << '\n';
+    leg_out << std::setprecision(17) << kProjectedLegHeader << '\n';
     for (std::size_t scenario = 0; scenario < frames.size(); ++scenario) {
-      const HistoricalProjectionFrame &frame = frames[scenario];
-      frame_out << clock.refs()[scenario].date << '\t' << frame.ts_ns << '\t' << frame.value << '\t'
-                << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
-                << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
-                << frame.definition_fingerprint << '\n';
-      // `var.n_positions == initial.positions.size()`, and the seam builds one
-      // relative template per book position IN ORDER, so leg `i` is book position
-      // `i` and its quantity is `initial.positions[i].qty` — the same value the
-      // inlined copy read out of its own `relative_positions[leg].quantity`.
-      for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
-        const ProjectedOption &projected = legs[scenario * var.n_positions + leg];
-        leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
-                << projected.definition.contract.uid << '\t'
-                << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
-                << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
-                << '\t' << initial.positions[leg].qty << '\t' << projected.definition.multiplier
-                << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
-                << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
-                << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
-                << to_string(projected.status) << '\n';
+      const HistoricalVarFrame &frame = frames[scenario];
+      const ExplainTotals &t = frame.totals;
+      const std::span<const ResolvedTheo> pair_legs(legs.data() + scenario * var.n_positions,
+                                                    var.n_positions);
+      std::size_t folded = static_cast<std::size_t>(var.prepared_fingerprint);
+      for (const ResolvedTheo &leg : pair_legs) {
+        folded = atx::core::hash_combine(folded, leg.fingerprint);
+      }
+      // Pair `scenario` is session `scenario` -> session `scenario + 1` of the clock.
+      frame_out << clock.refs()[scenario].date << '\t' << frame.base_ts_ns << '\t'
+                << clock.refs()[scenario + 1u].date << '\t' << frame.shifted_ts_ns << '\t'
+                << t.pv_base << '\t' << t.pv_target << '\t' << t.pnl_total << '\t'
+                << t.pnl_delta << '\t' << t.pnl_gamma << '\t' << t.pnl_vega << '\t'
+                << t.pnl_volga << '\t' << t.pnl_vanna << '\t' << t.pnl_theta << '\t'
+                << t.pnl_rho << '\t' << t.pnl_charm << '\t' << t.pnl_unexplained << '\t'
+                << t.vol_level << '\t' << t.vol_skew << '\t' << t.vol_curv << '\t'
+                << t.vol_resid << '\t' << t.shares_pnl << '\t' << t.n_ok << '\t'
+                << t.n_excluded << '\t' << t.excluded_premium << '\t' << frame.n_legs_resolved
+                << '\t' << frame.n_legs_unresolved << '\t' << (frame.admitted ? 1 : 0) << '\t'
+                << finish_definition_fingerprint(folded) << '\n';
+      // The seam builds one template per book position IN ORDER, so leg `i` is book
+      // position `i`, resolved on the pair's BASE session.
+      for (std::size_t leg = 0; leg < pair_legs.size(); ++leg) {
+        const ResolvedTheo &r = pair_legs[leg];
+        leg_out << clock.refs()[scenario].date << '\t' << leg << '\t' << r.leg.uid << '\t'
+                << (r.leg.side == Side::Call ? "Call" : "Put") << '\t' << r.leg.expiry_ns << '\t'
+                << r.leg.K << '\t' << r.leg.qty << '\t' << r.leg.multiplier << '\t' << r.mark
+                << '\t' << r.greeks.delta << '\t' << r.greeks.gamma << '\t' << r.greeks.vega
+                << '\t' << r.greeks.theta << '\t' << r.fingerprint << '\t'
+                << to_string(r.status) << '\n';
       }
     }
     frame_out.close();
     leg_out.close();
     if (!frame_out || !leg_out)
       return Err(ErrorCode::IoError, "projected VaR: output write failed");
-    // The incomplete-frame gate that used to sit here now fires inside
-    // `dispersion_book_var`, before these writes — see the ordering note above.
 
     std::ofstream summary(run_dir / "projected_var.tsv.pending",
                           std::ios::binary | std::ios::trunc);
@@ -3295,13 +3329,12 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
     // The three trailing columns are REVIEW C-1's provenance: which session the
     // immutable book was resolved and sized on, and that book's identity. They are
     // APPENDED so `n_scenarios` stays field 5 for `verify_projected_var_artifacts`.
-    summary << std::setprecision(17)
-            << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-               "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\t"
-               "as_of_ts_ns\tbook_fingerprint\n";
-    for (const ProjectedHistoricalVar &risk : var.risks) {
-      summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk
-              << '\t' << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
+    // `reference_value` is the engine's reference_pv (the mean base value of the
+    // book over the admitted pairs); `n_scenarios` the admitted pair count.
+    summary << std::setprecision(17) << kProjectedVarHeader << '\n';
+    for (const HistoricalVarPoint &point : var.var.points) {
+      summary << point.confidence << '\t' << var.var.reference_pv << '\t' << point.value_at_risk
+              << '\t' << point.expected_shortfall << '\t' << var.var.n_admitted << '\t'
               << var.n_positions << '\t' << (static_cast<double>(legs.size()) / elapsed_seconds)
               << '\t' << var.prepared_fingerprint << '\t' << as_of_date << '\t' << as_of_ts_ns
               << '\t' << book_fingerprint << '\n';
@@ -3314,7 +3347,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   // The as-of is on the console line for the same reason it is in the artifact:
   // the number is meaningless without the session whose book it describes.
   detail::log_emitf(LogLevel::Info, LogStream::Stdout,
-                    "projected relative-template VaR complete: scenarios=%zu positions=%zu "
+                    "projected relative-template VaR complete: pairs=%zu positions=%zu "
                     "as_of=%s book_fingerprint=%llu rate=%.1f/s",
                     frames.size(), var.n_positions, as_of_date.c_str(),
                     static_cast<unsigned long long>(book_fingerprint),

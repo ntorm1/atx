@@ -23,6 +23,12 @@ library leads with.
 
 ## 0.1 Status log
 
+- 2026-10-24 session 2, 21:30Z: lane C follow-up 2 (bc1ed934 + fix 4134f621, review-3 APPROVE) and lane A2
+  (01bc9d5b: evaluate p50 344 -> 139 ms, explain 9.8 -> 4.0 ms, run 4.4 -> 2.1 s, gate 9.6e-8, bit-deterministic)
+  merged -> integration 08f74513. Parity re-analysis (artifacts/s2-parity-after-c2.md): sym-rel 4.41 -> 4.27 %
+  only; repricing on the vendor's `years` with the forward held gives 0.40 % (inside bid/ask 82.7 -> 96.6 %) ->
+  D22. Explain unexplained 3.0 % is 73 % forward-basis changes (no carry axis) + implied/published mode chatter
+  (274/1,913 expiries flip across 1000-1500) -> D23. Lane E (clock + carry) opened on the integration tip.
 - 2026-10-24 session 2 (orchestrator resumed from HANDOFF.md): integration tip c534bfca = 8110f6ee +
   merge of main @ 163c4f8d (60 commits: American Greek availability metadata, SPY r7 cold floors,
   portfolio pricer / deriv book / priced surface). Zero conflicts; risk 110/110, umbrella 10/10,
@@ -615,6 +621,25 @@ suite. Wave 2: lane D on one slot. Integration 2: full `atx_vol_fast` label on `
   VaR / ES implementation. Nothing frozen is removed or changed. Dispersion keeps the ATM-forward +
   relative-maturity template mapping (the American-delta mapping belonged to the deleted
   `var.hpp` positions dispersion never used).
+
+- **D22 (session 2, parity re-analysis): per-expiry vendor-T override.** `ExpiryCarry` gains an ADDITIVE
+  `double T_override{NaN}` (years; finite => the kernel's T for that expiry AND the explain's per-expiry dt /
+  theta roll use it instead of `time_to_expiry_years(ts, expiry, spec)`; NaN => unchanged behaviour). The
+  SpiderRock loader fills it with the per-expiry median of the vendor's `years` under a new loader clock mode
+  `SpiderRockClock::VendorYears` (default for `--store`; `--time vendor|voltime|calendar365`; the synthetic store
+  keeps Calendar365). Reason: VolTime reproduces `years` to <= 0.02 d until the first NYSE early close and then
+  drifts +0.47 d per early close (VolTimeCalendar has full closures only); repricing on `years` removes almost all
+  of the remaining vendor price gap (4.27 % -> 0.40 %, slope 0.99 / R^2 0.77 on the clock term). The early-close
+  table for `VolTimeCalendar` is a separate core-clock decision for the user (it moves every VolTime consumer).
+- **D23 (session 2): carry axis + sticky carry mode.** (a) `explain` gains an ADDITIVE carry term: per-leg column
+  `d_carry` and `ExplainTotals::pnl_carry` = the P&L from the per-expiry carry change (q and pv_divs) between the
+  base and shifted states, so forward-basis re-marks stop landing in `unexplained`; the exact remainder identity
+  is preserved (unexplained = total - sum of all axes incl. carry); bit-deterministic; the per-leg column count
+  becomes 21 (lane P2's RiskRun layout and fingerprint follow at integration). (b) the implied/published mode of
+  a (uid, expiry) is STICKY across consecutive buckets of a day: the bench passes the previous state's
+  `SpiderRockExpiryForward` table into the next load; an expiry that was implied stays implied unless its IQR
+  exceeds 3x the guard or it has < 3 calls; an expiry that was published switches to implied only when the
+  guard passes with a 2x margin. Reason: 274 of 1,913 expiries chatter at the 1e-3 guard between 1000 and 1500.
 
 ## 10. Left to the builder
 

@@ -792,6 +792,53 @@ namespace {
   return st;
 }
 
+// The irregular-grid cases of the pivot mark pairing (sample_marks pairs every base mark
+// with the FIRST mark of the same (expiry, side, K) on the other side, or none): rewrites
+// a normalized marks-only twin in place, per uid and (expiry, side) run, so that its k-th
+// row (k from 0)
+//   is dropped when `drop` and k % 3 == 1 and no book leg sits on that strike;
+//   is followed by a duplicate of its key at sigma x `dup_scale` when k == 20 (the first
+//     row stays first, so a pairing that took the later one would move the pivots);
+//   is followed by an off-grid row at K + 0.25 (between grid strikes: every fixture grid
+//     step is >= 0.5) at sigma x 1.002 when `extra` and k % 5 == 2.
+// Rows stay sorted by (expiry, side, K); the duplicate stays (normalize_marks would drop
+// it; make_market_state accepts a non-decreasing key).
+[[nodiscard]] std::unique_ptr<MarketStateStorage>
+irregular_twin(std::unique_ptr<MarketStateStorage> st, const std::vector<OptionLeg> &legs,
+               bool drop, bool extra, double dup_scale) {
+  for (MarketStateStorage::MarksColumns &m : st->marks) {
+    MarketStateStorage::MarksColumns out;
+    out.uid = m.uid;
+    const auto push = [&out](std::int64_t e, Side s, double K, double sigma) {
+      out.expiry_ns.push_back(e);
+      out.side.push_back(s);
+      out.strike.push_back(K);
+      out.sigma.push_back(sigma);
+    };
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < m.sigma.size(); ++i) {
+      if (i > 0 && (m.expiry_ns[i] != m.expiry_ns[i - 1] || m.side[i] != m.side[i - 1])) {
+        k = 0;
+      }
+      const bool on_book = std::any_of(legs.begin(), legs.end(), [&](const OptionLeg &leg) {
+        return leg.uid == m.uid && leg.K == m.strike[i];
+      });
+      if (!(drop && k % 3u == 1u && !on_book)) {
+        push(m.expiry_ns[i], m.side[i], m.strike[i], m.sigma[i]);
+      }
+      if (k == 20u) {
+        push(m.expiry_ns[i], m.side[i], m.strike[i], m.sigma[i] * dup_scale);
+      }
+      if (extra && k % 5u == 2u) {
+        push(m.expiry_ns[i], m.side[i], m.strike[i] + 0.25, m.sigma[i] * 1.002);
+      }
+      ++k;
+    }
+    m = std::move(out);
+  }
+  return st;
+}
+
 // FNV-1a over the bytes of every per-leg column of `e` (the pin's per-leg half).
 [[nodiscard]] std::uint64_t legs_digest(const ExplainResult &e) {
   std::uint64_t h = 1469598103934665603ULL;
@@ -819,10 +866,11 @@ namespace {
 } // namespace
 
 // The explain fan-out (pivot sampling and the per-leg rows) gives the same bits for any
-// worker count, AND the same bits as the explain this lane started from: the totals,
-// every bucket and a digest of every per-leg column are pinned to the values printed by
-// the pre-A2 explain (lane A @ 4469d3e5) on marks-only states, so an explain speed-up
-// can never move a number. Frames come from the cold kernel (no family policy involved).
+// worker count (the totals, every bucket and every per-leg column compared across worker
+// counts), AND the same bits as the explain this lane started from: the totals and a
+// digest of every per-leg column are pinned to the values printed by the pre-A2 explain
+// (lane A @ 4469d3e5) on marks-only states, so an explain speed-up can never move a
+// number. Frames come from the cold kernel (no family policy involved).
 TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
   const auto b_owned = rt::make_state(rt::StateMove{});
   const auto t_owned = rt::make_state(rt::shifted_move());
@@ -1196,4 +1244,70 @@ TEST(RiskExplain, CarryAxisZeroWhenCarryUnchanged) {
   const ExplainResult c = explain(full_prep, cb->state, g.fb, ct->state, g.ft).value();
   EXPECT_TRUE(all_zero(c)) << "flat q unchanged";
   EXPECT_NE(c.total.pnl_total, 0.0);
+}
+
+// Lane A2 review 1: the merge walk that pairs pivot marks (0e0a6d18) must reproduce the
+// lower_bound pairing it replaced on IRREGULAR grids too -- shifted marks missing some
+// base strikes, extra off-grid shifted strikes, and a duplicated key on each side (the
+// first row of a key must win). The digest, the totals and the pivot counts are pinned
+// to the values printed by the pre-A2 explain (the lower_bound pairing, as at 5ae50be1)
+// on these states.
+TEST(RiskExplain, MarksPairingIrregularGridPinned) {
+  const std::vector<OptionLeg> legs = rt::make_option_legs();
+  const auto b_owned = rt::make_state(rt::StateMove{});
+  const auto t_owned = rt::make_state(rt::shifted_move());
+  const auto b_store = irregular_twin(marks_only_twin(*b_owned), legs, false, false, 0.97);
+  const auto t_store = irregular_twin(marks_only_twin(*t_owned), legs, true, true, 1.05);
+  // The premise: the two sides' grids differ (rows dropped and added on the shifted side).
+  ASSERT_EQ(b_store->marks.size(), t_store->marks.size());
+  for (std::size_t u = 0; u < b_store->marks.size(); ++u) {
+    ASSERT_NE(b_store->marks[u].sigma.size(), t_store->marks[u].sigma.size()) << u;
+  }
+  const MarketState base = make_market_state(*b_store).value();
+  const MarketState shifted = make_market_state(*t_store).value();
+  const RiskBook book = RiskBook::create(legs, rt::make_share_legs()).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const RiskKernel kernel = RiskKernel::cold();
+  RiskFrame fb;
+  RiskFrame ft;
+  RiskWorkspace ws;
+  ASSERT_TRUE(kernel.evaluate(prep, base, RiskNeeds{}, fb, ws).has_value());
+  ASSERT_TRUE(kernel.evaluate(prep, shifted, RiskNeeds{}, ft, ws).has_value());
+
+  ExplainOptions one;
+  one.n_threads = 1;
+  const ExplainResult ref = explain(prep, base, fb, shifted, ft, one).value();
+  std::size_t from_marks = 0;
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    from_marks += has_flag(ref.flags[i], RiskFlag::PivotFromMarks) ? 1u : 0u;
+  }
+  EXPECT_GT(from_marks, 0u) << "the vega split must still come from marks";
+  ExplainOptions eight;
+  eight.n_threads = 8;
+  const ExplainResult e8 = explain(prep, base, fb, shifted, ft, eight).value();
+  EXPECT_EQ(legs_digest(e8), legs_digest(ref));
+  EXPECT_TRUE(totals_equal(e8.total, ref.total));
+
+  std::cout << "[RiskExplain] irregular pin: legs digest 0x" << std::hex << legs_digest(ref)
+            << " totals";
+  for (const TotalsField f : kTotalsFields) {
+    std::cout << " 0x" << std::bit_cast<std::uint64_t>(ref.total.*f);
+  }
+  std::cout << std::dec << " pivot groups " << ref.n_pivot_groups << " edge "
+            << ref.n_pivot_edge_fallback << " from marks " << from_marks << "\n";
+  constexpr std::uint64_t kPinnedDigest = 0x1271741b9de2fee4ULL;
+  constexpr std::array<std::uint64_t, 18> kPinnedTotals{
+      0xc0b65d5f0cf24b1eULL, 0xc0b4fc5b70eb93f9ULL, 0x40761039c06b723aULL, 0x408b5ffa407a3848ULL,
+      0xc01020c400b10519ULL, 0xc07ac4f301d262ccULL, 0xc00332f9be70a8a0ULL, 0x400cca2e984d58d1ULL,
+      0x403295a8af607cb7ULL, 0x0ULL,                0x3ff4b74fe1c1f001ULL, 0xc05bee13ccfd6a57ULL,
+      0xc07d6c9d0e0f8684ULL, 0xc04ef99c7f2b8241ULL, 0xc04150eb3857aaecULL, 0x406161f6065b12b5ULL,
+      0x40607ffffffffff7ULL, 0x0ULL};
+  EXPECT_EQ(ref.n_pivot_groups, 12u);
+  EXPECT_EQ(ref.n_pivot_edge_fallback, 0u);
+  EXPECT_EQ(from_marks, 61u);
+  EXPECT_EQ(legs_digest(ref), kPinnedDigest);
+  for (std::size_t k = 0; k < kTotalsFields.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.*kTotalsFields[k]), kPinnedTotals[k])
+        << "totals field " << k;
+  }
 }

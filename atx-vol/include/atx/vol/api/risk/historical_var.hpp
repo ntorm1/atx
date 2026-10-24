@@ -55,6 +55,11 @@ struct HistoricalVarConfig {
   std::vector<double> confidences{0.95, 0.99};
   double max_excluded_premium_frac{0.0}; // a scenario with more excluded premium is dropped
   unsigned n_threads{0};
+  // ADDITIVE (lane D): keep every template's resolution on every base state in
+  // `HistoricalVarResult::resolved_legs` (which strike / expiry the relative template
+  // became on that date). Off by default: the rows carry cold Greeks and are only
+  // worth their memory when a caller reports them.
+  bool keep_resolved_legs{false};
 };
 
 struct HistoricalVarFrame {
@@ -79,6 +84,12 @@ struct HistoricalVarResult {
   std::vector<HistoricalVarPoint> points; // one per confidence
   std::size_t n_admitted{0};
   double reference_pv{0.0};               // mean pv_base over admitted scenarios
+  // ADDITIVE (lane D): scenario-major (frames.size() * book.options.size()), filled iff
+  // HistoricalVarConfig::keep_resolved_legs. Row (i, j) is template j resolved on
+  // scenario i's base state; `leg.qty` is the template's signed qty; a template that
+  // did not resolve carries its TheoStatus (SurfaceUnavailable when the base state has
+  // no surface for its uid), NaN strike-level fields and fingerprint 0.
+  std::vector<ResolvedTheo> resolved_legs;
 };
 
 // InvalidArgument on an empty book, a null state pointer, a confidence outside
@@ -87,5 +98,20 @@ struct HistoricalVarResult {
 [[nodiscard]] Result<HistoricalVarResult>
 historical_var(const HistoricalVarBook &book, std::span<const HistoricalVarScenario> scenarios,
                const HistoricalVarConfig &config = {});
+
+// ADDITIVE (lane D): the quantile half of `historical_var` over already-evaluated
+// frames — nearest-rank VaR / ES / tail attribution per confidence, n_admitted and
+// reference_pv — with `frames` moved into the result. `historical_var` ends with
+// exactly this call, so a caller that evaluates a long history in bounded windows
+// (one `historical_var` per window, `confidences` empty) summarizes the concatenated
+// frames once, and a verifier recomputes published points from stored frames, both
+// bit-identical to one `historical_var` over the whole history. With no admitted
+// scenario every point has NaN value_at_risk / expected_shortfall, tail_scenarios 0
+// and a zero tail_mean, and reference_pv is NaN. InvalidArgument on a confidence
+// outside (0, 1) or on an ADMITTED frame whose pnl_total or pv_base is not finite
+// (historical_var never admits one); frames that are not admitted are never read.
+[[nodiscard]] Result<HistoricalVarResult>
+summarize_historical_var(std::vector<HistoricalVarFrame> frames,
+                         std::span<const double> confidences);
 
 } // namespace atx::vol

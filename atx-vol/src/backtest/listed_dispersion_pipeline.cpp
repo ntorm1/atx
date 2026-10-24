@@ -1,7 +1,10 @@
 #include "atx/vol/research/listed_dispersion_pipeline.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -19,7 +22,10 @@
 #include "atx/vol/api/analytics/contract_projection.hpp" // OptionProjectionSpec, ProjectedStrikeSpec, ProjectedOption
 #include "atx/vol/api/backtest/dispersion.hpp"         // DispersionUniverse, DispersionBook, MissingNameSpec, resolve_universe_uids
 #include "atx/vol/research/dispersion_workflow.hpp" // all_symbols, universe_at, UniverseRow, RunSpec
-#include "analytics/historical_projection.hpp" // RelativeOptionPosition, PreparedHistoricalProjection, projected_historical_var
+#include "atx/vol/api/risk/historical_var.hpp" // TheoLeg, historical_var, summarize_historical_var
+#include "atx/vol/api/risk/market_state.hpp"   // market_state_from_surfaces
+#include "atx/vol/api/risk/theo_contract.hpp"  // TheoContract, MaturitySpec, ResolvedTheo
+#include "atx/vol/api/core/vol_time.hpp"        // kCalendarYearNs, TimeSpec
 #include "atx/vol/api/marketdata/opra_batch.hpp"        // OpraBatchResult, OpraBatchEntry, load_opra_daterange
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"  // kNsPerYear, Position
 #include "atx/vol/api/backtest/priced_surface.hpp"    // PricedSurface, FullGreekSeed
@@ -564,87 +570,211 @@ StepObserver make_mark_divergence_observer(const ListedDispersionSchedule &sched
   };
 }
 
+namespace {
+
+// ProjectedMaturitySpec -> MaturitySpec. The two relative kinds the old engine aged by a
+// fixed offset (a year fraction, or N x 24 h) become a fixed year-fraction TTE, so every
+// scenario re-ages the template to base_valuation + maturity exactly as before.
+[[nodiscard]] Result<MaturitySpec> template_maturity(const ProjectedMaturitySpec &maturity) {
+  constexpr double kDayNs = 86'400.0 * 1.0e9;
+  switch (maturity.kind) {
+  case ProjectedMaturityKind::YearFraction:
+    return MaturitySpec::years_of(maturity.year_fraction);
+  case ProjectedMaturityKind::CalendarDays:
+    if (maturity.calendar_count <= 0) {
+      return Err(ErrorCode::InvalidArgument, "projected VaR: calendar days must be positive");
+    }
+    return MaturitySpec::years_of(static_cast<double>(maturity.calendar_count) * kDayNs /
+                                  kCalendarYearNs);
+  case ProjectedMaturityKind::CalendarMonths:
+    return MaturitySpec::months(maturity.calendar_count);
+  case ProjectedMaturityKind::AbsoluteExpiry:
+    return MaturitySpec::absolute(maturity.expiry_ts_ns);
+  }
+  return Err(ErrorCode::InvalidArgument, "projected VaR: unknown maturity kind");
+}
+
+// Identity of the relative templates and their quantities, never 0.
+[[nodiscard]] std::uint64_t templates_fingerprint(std::span<const TheoLeg> templates) {
+  std::string material;
+  material.reserve(templates.size() * 64u);
+  const auto append = [&material](const auto &value) {
+    // SAFETY: `value` is a trivially-copyable scalar; its object representation is read
+    // as bytes for hashing only, never written or reinterpreted as another type.
+    material.append(reinterpret_cast<const char *>(&value), sizeof value);
+  };
+  for (const TheoLeg &t : templates) {
+    const TheoContract &c = t.contract;
+    append(c.uid);
+    append(static_cast<std::uint8_t>(c.side));
+    append(std::bit_cast<std::uint64_t>(c.multiplier));
+    append(static_cast<std::uint8_t>(c.maturity.kind));
+    append(std::bit_cast<std::uint64_t>(c.maturity.years));
+    append(c.maturity.calendar_count);
+    append(c.maturity.expiry_ns);
+    append(static_cast<std::uint8_t>(c.strike.kind));
+    append(std::bit_cast<std::uint64_t>(c.strike.value));
+    append(static_cast<std::uint8_t>(c.strike.delta_conv));
+    append(std::bit_cast<std::uint64_t>(t.qty));
+  }
+  const std::uint64_t digest = atx::core::hash_bytes(material.data(), material.size());
+  return digest == 0u ? 1u : digest;
+}
+
+// One window's states: market_state_from_surfaces over the book's uids present in each set.
+// The storage owns what each MarketState views, so both live (and die) together here.
+struct WindowStates {
+  std::vector<MarketStateStorage> storage;
+  std::vector<MarketState> states;
+};
+
+[[nodiscard]] Result<WindowStates> window_states(std::span<const DispersionVarSnapshot> window,
+                                                 std::span<const std::uint32_t> uids,
+                                                 const TimeSpec &time) {
+  WindowStates out;
+  out.storage.reserve(window.size());
+  out.states.reserve(window.size());
+  std::vector<SurfaceRef> refs;
+  refs.reserve(uids.size());
+  for (const DispersionVarSnapshot &snapshot : window) {
+    if (snapshot.surfaces == nullptr || snapshot.ts_ns <= 0) {
+      return Err(ErrorCode::InvalidArgument, "projected VaR: invalid scenario snapshot");
+    }
+    refs.clear();
+    bool untimed = false;
+    for (const std::uint32_t uid : uids) {
+      const SurfaceRef ref = snapshot.surfaces->find(uid);
+      if (!ref.valid()) {
+        continue;
+      }
+      // A surface that carries no valuation instant is measured from the snapshot's; any
+      // other disagreement between a surface's instant and its snapshot's is refused HERE,
+      // per surface, because an untimed surface switches market_state_from_surfaces' own
+      // check off for the whole set.
+      const std::int64_t surface_ns = ref->pricing().now_ts_ns;
+      if (surface_ns <= 0) {
+        untimed = true;
+      } else if (surface_ns != snapshot.ts_ns) {
+        return Err(ErrorCode::InvalidArgument,
+                   "projected VaR: a surface's valuation instant (uid " + std::to_string(uid) +
+                       ") disagrees with its snapshot's");
+      }
+      refs.push_back(ref);
+    }
+    ATX_TRY(MarketStateStorage storage,
+            market_state_from_surfaces(snapshot.ts_ns, time, refs, untimed));
+    out.storage.push_back(std::move(storage));
+  }
+  for (const MarketStateStorage &storage : out.storage) {
+    ATX_TRY(MarketState state, make_market_state(storage));
+    out.states.push_back(std::move(state));
+  }
+  return out;
+}
+
+} // namespace
+
 Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
-                    std::size_t n_scenarios, std::span<const double> confidences,
-                    const DispersionProjectionEvaluator &evaluate,
-                    const HistoricalProjectionConfig &cfg) {
-  // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec
-  // synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
-  // per confidence (spy_dispersion_backtest.cpp:1119-1194), minus the loose-TSV
-  // emission the CLI keeps (T9). Each book position becomes a relative template with
-  // the same uid / side / multiplier / qty, an ATM-forward strike, and the caller's
-  // relative `maturity`; the templates re-project onto every scenario, then the loss
-  // quantile splits per requested confidence. No vega x100 here: the book handed in
-  // is already sized. (E1 abolished the upstream per-vol-point -> per-unit-vol
-  // boundary outright; its constant was deleted as dead in the C-2 follow-up.)
-  std::vector<RelativeOptionPosition> relative_positions;
-  relative_positions.reserve(book.positions.size());
-  for (const Position &position : book.positions) {
-    OptionProjectionSpec option;
-    option.uid = position.contract.uid;
-    option.maturity = maturity;
-    option.strike = ProjectedStrikeSpec::atm_forward();
-    option.side = position.contract.side;
-    option.multiplier = position.multiplier;
-    relative_positions.push_back({option, position.qty});
+                    std::size_t n_snapshots, const DispersionProjectionEvaluator &evaluate,
+                    const HistoricalVarConfig &cfg) {
+  // Book -> relative templates: same uid / side / multiplier / qty, ATM-forward strike, the
+  // caller's relative maturity. No vega x100 here: the book handed in is already sized.
+  if (book.positions.empty()) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: empty book");
   }
-
-  ATX_TRY(PreparedHistoricalProjection prepared,
-          PreparedHistoricalProjection::create(relative_positions));
-
-  DispersionBookVar result;
-  result.n_positions = relative_positions.size();
-  if (result.n_positions != 0u &&
-      n_scenarios > std::numeric_limits<std::size_t>::max() / result.n_positions) {
-    return Err(ErrorCode::InvalidArgument, "projected VaR: scenario output size overflows");
+  if (n_snapshots < 2u) {
+    return Err(ErrorCode::InvalidArgument,
+               "projected VaR: needs at least two snapshots (one consecutive pair)");
   }
-  // Surfaced for the CLI's projected_var.tsv provenance column (prepared_fingerprint),
-  // so the caller need not rebuild the projection just to echo its identity hash.
-  result.prepared_fingerprint = prepared.fingerprint();
-  result.frames.assign(n_scenarios, HistoricalProjectionFrame{});
-  result.legs.assign(n_scenarios * relative_positions.size(), ProjectedOption{});
   if (!evaluate) {
     return Err(ErrorCode::InvalidArgument, "projected VaR: missing scenario evaluator");
   }
-  ATX_TRY_VOID(evaluate(prepared, result.frames, result.legs, cfg));
+  ATX_TRY(const MaturitySpec template_tte, template_maturity(maturity));
+  HistoricalVarBook templates;
+  templates.options.reserve(book.positions.size());
+  std::vector<std::uint32_t> uids;
+  uids.reserve(book.positions.size());
+  for (const Position &position : book.positions) {
+    TheoContract contract;
+    contract.uid = position.contract.uid;
+    contract.maturity = template_tte;
+    contract.strike = StrikeCoord::log_moneyness(0.0);
+    contract.side = position.contract.side;
+    contract.multiplier = std::isfinite(position.multiplier) && position.multiplier > 0.0
+                              ? position.multiplier
+                              : 100.0;
+    templates.options.push_back(TheoLeg{contract, position.qty});
+    uids.push_back(position.contract.uid);
+  }
+  std::sort(uids.begin(), uids.end());
+  uids.erase(std::unique(uids.begin(), uids.end()), uids.end());
 
-  // Post-projection gate (spy_dispersion_backtest.cpp:1175-1178): any incomplete
-  // scenario aborts — a VaR over a partially-failed frame set is not meaningful. On
-  // this path no risk summary is produced (the CLI errors before writing its summary).
-  for (const HistoricalProjectionFrame &frame : result.frames) {
-    if (frame.n_failed != 0u) {
+  const std::size_t n_scenarios = n_snapshots - 1u;
+  const std::size_t n_positions = templates.options.size();
+  if (n_scenarios > std::numeric_limits<std::size_t>::max() / n_positions) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: scenario output size overflows");
+  }
+  HistoricalVarConfig window_cfg = cfg;
+  window_cfg.keep_resolved_legs = true;
+  window_cfg.confidences.clear(); // the points are computed once, over the whole history
+
+  DispersionBookVar result;
+  result.n_positions = n_positions;
+  result.prepared_fingerprint = templates_fingerprint(templates.options);
+  result.legs.assign(n_scenarios * n_positions, ResolvedTheo{});
+  std::vector<HistoricalVarFrame> frames(n_scenarios);
+  std::vector<std::uint8_t> covered(n_scenarios, 0u);
+
+  const DispersionVarWindow run_window =
+      [&](std::span<const DispersionVarSnapshot> window, std::size_t first) -> Status {
+    if (window.size() < 2u || first >= n_scenarios ||
+        window.size() - 1u > n_scenarios - first) {
+      return Err(ErrorCode::InvalidArgument, "projected VaR: window outside the history");
+    }
+    ATX_TRY(const WindowStates states, window_states(window, uids, cfg.projection.time));
+    std::vector<HistoricalVarScenario> pairs;
+    pairs.reserve(window.size() - 1u);
+    for (std::size_t k = 0; k + 1u < states.states.size(); ++k) {
+      pairs.push_back(HistoricalVarScenario{&states.states[k], &states.states[k + 1u]});
+    }
+    ATX_TRY(HistoricalVarResult part, historical_var(templates, pairs, window_cfg));
+    for (std::size_t k = 0; k < pairs.size(); ++k) {
+      if (covered[first + k] != 0u) {
+        return Err(ErrorCode::InvalidArgument, "projected VaR: a pair was evaluated twice");
+      }
+      covered[first + k] = 1u;
+      frames[first + k] = part.frames[k];
+    }
+    std::move(part.resolved_legs.begin(), part.resolved_legs.end(),
+              result.legs.begin() + static_cast<std::ptrdiff_t>(first * n_positions));
+    return Ok();
+  };
+  ATX_TRY_VOID(evaluate(run_window));
+
+  if (std::find(covered.begin(), covered.end(), std::uint8_t{0}) != covered.end()) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: the evaluator left a pair uncovered");
+  }
+  // Incomplete-scenario gate: a pair that lost a template, or that the engine did not admit
+  // (an excluded lane), would make the VaR describe a different book.
+  for (const HistoricalVarFrame &frame : frames) {
+    if (!frame.admitted || frame.n_legs_unresolved != 0u) {
       return Err(ErrorCode::Unavailable, "projected VaR: incomplete scenario projection");
     }
   }
-
-  // One risk summary per confidence, reference = the last scenario's value
-  // (spy_dispersion_backtest.cpp:1186-1188). frames is non-empty on any successful
-  // path (an empty scenario span yields no frames, so projected_historical_var below
-  // returns Err — the reference guard only avoids UB, it never feeds a real result).
-  result.risks.reserve(confidences.size());
-  const double reference_value = result.frames.empty() ? 0.0 : result.frames.back().value;
-  for (const double confidence : confidences) {
-    ATX_TRY(ProjectedHistoricalVar risk,
-            projected_historical_var(result.frames, reference_value, confidence));
-    result.risks.push_back(risk);
-  }
+  ATX_TRY(HistoricalVarResult summary,
+          summarize_historical_var(std::move(frames), cfg.confidences));
+  result.var = std::move(summary);
   return Ok(std::move(result));
 }
 
 Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
-                    std::span<const HistoricalProjectionScenario> scenarios,
-                    std::span<const double> confidences, const HistoricalProjectionConfig &cfg) {
+                    std::span<const DispersionVarSnapshot> snapshots,
+                    const HistoricalVarConfig &cfg) {
   return dispersion_book_var(
-      book, maturity, scenarios.size(), confidences,
-      [scenarios](const PreparedHistoricalProjection &prepared,
-                  std::span<HistoricalProjectionFrame> frames, std::span<ProjectedOption> legs,
-                  const HistoricalProjectionConfig &config) {
-        // I2: this overload feeds projected_historical_var below, so force
-        // the same cold-confirmed marks VarEvaluationConfig defaults to.
-        return prepared.evaluate_into(scenarios, frames, legs, config, QueryExecution::ColdReference);
-      },
+      book, maturity, snapshots.size(),
+      [snapshots](const DispersionVarWindow &run_window) { return run_window(snapshots, 0u); },
       cfg);
 }
 

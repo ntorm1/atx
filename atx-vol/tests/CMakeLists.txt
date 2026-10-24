@@ -404,6 +404,23 @@ gtest_discover_tests(atx-vol-risk-alloc-tests
     PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
+# Wave-3 lane P: PersistFile.NoAllocationAfterOpen (design persist D6 / T8).
+# support/alloc_counter.cpp replaces global operator new for THIS binary only, so the
+# case lives only here. The "persist/" prefix keeps it inside the lane's anchored
+# -R "^persist/PersistFile\."; atx-vol-persist-slice depends on it (below the slices
+# include) so building the slice builds it.
+add_executable(atx-vol-persist-alloc-tests persist_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-persist-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-persist-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(atx-vol-persist-alloc-tests
+    TEST_PREFIX "persist/"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+# Wave-3 lane P2: the history formats' allocation contracts
+# (PersistSurfaceTimeline.NoAllocationOnRangeLookup) ride the same counting exe.
+target_sources(atx-vol-persist-alloc-tests PRIVATE persist_history_alloc_test.cpp)
+
 # Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
 # arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
@@ -463,6 +480,7 @@ add_executable(atx-vol-tests
     test_paths_test.cpp
     arb_test.cpp
     risk_book_test.cpp
+    risk_historical_var_test.cpp
     risk_kernel_test.cpp
     risk_market_state_test.cpp
     risk_pnl_explain_test.cpp
@@ -522,10 +540,6 @@ add_executable(atx-vol-tests
     batch_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
-    historical_projection_test.cpp
-    var_test.cpp
-    var_report_test.cpp
-    var_validation_test.cpp
     american_iv_test.cpp
     american_iv_batch_test.cpp
     dividend_test.cpp
@@ -735,6 +749,17 @@ add_executable(atx-vol-tests
     # ... and the ENGINE-FREE core of atx-vol-risk-bench (RiskBenchArgs.* /
     # RiskBenchBook.* / RiskBenchStats.* / RiskBenchReport.*; risk slice).
     risk_bench_test.cpp
+    # Wave-3 lane P (binary persistence; persist slice): P1 the PersistFile container +
+    # directory (PersistFile.* / PersistDirectory.*), the MarketState archive
+    # (PersistStateArchive.*) and the SpiderRock-derived state store
+    # (PersistStateStore.* / PersistStateStoreReal.*, the latter env-gated on
+    # ATX_VOL_SPIDERROCK_STORE); P2 the surface timeline (PersistSurfaceTimeline.*) and
+    # the risk-run archive (PersistRiskRun.*).
+    persist_file_test.cpp
+    persist_risk_run_test.cpp
+    persist_state_archive_test.cpp
+    persist_state_store_test.cpp
+    persist_surface_timeline_test.cpp
     # vrp_model_test.cpp (vrp-ml lane vrp-model) is NOT listed here: it needs
     # the atx-engine learn layer, so it builds into its own
     # atx-vol-vrp-model-tests exe further down, which exists only when the
@@ -1278,3 +1303,5 @@ set_tests_properties(AlphaRegistry PROPERTIES
 include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)
 # The risk lane's focused allocation exe rides the risk slice build (see above).
 add_dependencies(atx-vol-risk-slice atx-vol-risk-alloc-tests)
+# The persist lane's focused allocation exe rides the persist slice build (see above).
+add_dependencies(atx-vol-persist-slice atx-vol-persist-alloc-tests)

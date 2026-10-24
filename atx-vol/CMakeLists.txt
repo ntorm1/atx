@@ -256,10 +256,6 @@ set(ATX_VOL_STORAGE_SOURCES
 set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/rv_lognormal.cpp
     src/analytics/contract_projection.cpp
-    src/analytics/historical_projection.cpp
-    src/analytics/var.cpp
-    src/analytics/var_report.cpp
-    src/analytics/var_validation.cpp
     src/analytics/event_vol.cpp
     src/analytics/scenario_grid.cpp
     src/analytics/pnl_attribution.cpp
@@ -305,6 +301,24 @@ set(ATX_VOL_RISK_SOURCES
     src/risk/american_delta_solve.cpp
     src/risk/strike_coord.cpp
     src/risk/theo_contract.cpp
+    src/risk/historical_var.cpp
+)
+
+# Wave-3 lane P: binary persistence (docs/storage/PERSIST_FORMAT.md) over the frozen
+# api/persist/* headers. P1: the PersistFile (ATXVPF) container, its zstd + byte-shuffle
+# cold-tier codec, the directory / manifest pattern, the MarketState archive and the
+# SpiderRock-derived state store. P2: the uid-major surface timeline and the risk-run
+# segment archive. persist_api_check.cpp compiles every frozen header and stays empty.
+set(ATX_VOL_PERSIST_SOURCES
+    src/persist/persist_api_check.cpp
+    src/persist/persist_file.cpp
+    src/persist/persist_codec.cpp
+    src/persist/persist_directory.cpp
+    src/persist/state_archive.cpp
+    src/persist/state_store.cpp
+    src/persist/surface_timeline.cpp
+    src/persist/risk_run_archive.cpp
+    src/persist/risk_run_archive_publish.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES
@@ -352,6 +366,7 @@ target_sources(atx-vol PRIVATE
     ${ATX_VOL_ANALYTICS_SOURCES}
     ${ATX_VOL_BACKTEST_SOURCES}
     ${ATX_VOL_RISK_SOURCES}
+    ${ATX_VOL_PERSIST_SOURCES}
 )
 
 # ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------
@@ -523,6 +538,14 @@ target_link_libraries(atx-vol
         atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings
 )
+
+# Wave-3 lane P (orchestrator ruling Q6): the PersistFile cold-tier codec
+# (src/persist/persist_codec.cpp) calls zstd directly. PRIVATE: no persist header names
+# a zstd type. zstd is already in the vcpkg manifest and already find_dependency'd by
+# cmake/atx-volConfig.cmake.in (atx-core links it too), so the install export needs no
+# change.
+find_package(zstd CONFIG REQUIRED)
+target_link_libraries(atx-vol PRIVATE zstd::libzstd)
 
 # ---- D2: research Parquet track store (backtest-production-lakehouse sprint) ----
 # ATX_VOL_LAKEHOUSE (root CMakeLists.txt) gates the ONE atx-vol translation
@@ -1293,6 +1316,16 @@ if(ATX_BUILD_TOOLS)
         tools/risk_bench.cpp
         tools/risk_bench_core.cpp)
     target_link_libraries(atx-vol-risk-bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Wave-3 lane P (docs/storage/PERSIST_FORMAT.md, docs/persist.md): the persistence
+    # CLIs. atx-vol-state-store (P1): build | inspect | verify | bench over the
+    # SpiderRock-derived MarketState store. atx-vol-history-store (P2): timeline build |
+    # inspect | bench and riskrun inspect | bench. Names checked against bench/ targets
+    # (LEDGER:540): no collision.
+    add_executable(atx-vol-state-store tools/state_store_main.cpp)
+    target_link_libraries(atx-vol-state-store PRIVATE atx::vol atx::core atx_warnings)
+    add_executable(atx-vol-history-store tools/history_store_main.cpp)
+    target_link_libraries(atx-vol-history-store PRIVATE atx::vol atx::core atx_warnings)
 
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
