@@ -184,12 +184,16 @@ struct FamilyBoundedRequest {
 struct FamilyBoundedBatchWork {
   std::size_t fused_prices = 0;
   std::size_t scalar_prices = 0;
+  // Exact carry changes among admitted fused requests; owned by one batch call.
+  std::size_t carry_preparations = 0;
 };
 
 // The same scalar price bits, with a bound no smaller than family_price_bounded's.
 // Fuses the accurate premium and sensitivity passes; omitting the per-node minimum
 // with the trivial bound can only enlarge the envelope. Uncovered/stale envelopes
 // and unsupported arithmetic profiles use the unchanged scalar path. No allocation.
+// Consecutive admitted requests with identical q bits share the same discount
+// exponentials. The scratch lifetime is this call, so it cannot outlive its model.
 // Unequal lengths return false without writing. Work counts are added, not reset.
 [[nodiscard]] bool family_prices_bounded(const AlSigmaQFamily &f,
                                          const ValidatedErrorEnvelope &env,

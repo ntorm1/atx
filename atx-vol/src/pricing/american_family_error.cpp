@@ -24,6 +24,8 @@
 #include "pricing/american_family_error.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -320,6 +322,40 @@ thread_local const ValidatedErrorEnvelope *t_family_envelope = nullptr;
          env.domain.side == st->side;
 }
 
+// One batch owns this cache. Its family, geometry and envelope cannot change within
+// that call; the only changing carry input is the request's q. Exact-bit keys also
+// distinguish signed zero. Invalid requests never prepare or consume this state.
+struct BoundedCarry {
+  bool ready = false;
+  std::uint64_t q_bits = 0;
+  double growth = 0.0;
+  double discount = 0.0;
+  std::array<double, kFamilyEnvelopeMaxQuad> dq{}, dr{};
+
+  void prepare(StatePtr st, const ValidatedErrorEnvelope &env, double q,
+               FamilyBoundedBatchWork *work) noexcept {
+    const auto bits = std::bit_cast<std::uint64_t>(q);
+    if (ready && q_bits == bits) return;
+    const auto rq = detail::internal_put_rates(st->side, st->rate, q);
+    growth = std::exp((rq.rp - rq.qp) * st->grid.T);
+    discount = std::exp(-rq.rp * st->grid.T);
+    unsigned evals = 0;
+    for (unsigned i = 0; i < env.n_quad; ++i) {
+      const double t = env.z[i] * env.z[i];
+      if (t <= 1.0e-14) continue;
+      dq[i] = std::exp(-rq.qp * t);
+      dr[i] = std::exp(-rq.rp * t);
+      ++evals;
+    }
+    q_bits = bits;
+    ready = true;
+    if (work != nullptr) ++work->carry_preparations;
+    // These counters cover the premium discounts, as on the original fused path.
+    ATX_VOL_COUNT_N(ExpCalls, 2u * evals);
+    counters::lightweight::record_exp_calls(2u * evals);
+  }
+};
+
 // Accurate premium_integrand_put's operation order is intentional: the price must
 // remain bit-identical, including sigma*sqrt(z*z) rather than sigma*z. The bound
 // uses the latter, exactly as node_term. Both passes share the boundary and log.
@@ -327,7 +363,8 @@ thread_local const ValidatedErrorEnvelope *t_family_envelope = nullptr;
 // calculation can only enlarge the old bound; no empirical rounding margin is used.
 [[nodiscard]] FamilyBoundedPrice fused_bounded(StatePtr st,
                                                const ValidatedErrorEnvelope &env,
-                                               const FamilyBoundedRequest &request) noexcept {
+                                               const FamilyBoundedRequest &request,
+                                               const BoundedCarry &carry_discounts) noexcept {
   const auto c = detail::internal_put_coords(st->side, request.S, request.K);
   const auto rq = detail::internal_put_rates(st->side, st->rate, request.q);
   const double S = c.Sp, K = c.Kp, sigma = request.sigma, r = rq.rp, q = rq.qp;
@@ -335,8 +372,8 @@ thread_local const ValidatedErrorEnvelope *t_family_envelope = nullptr;
   st->interpolate(sigma, request.q, bnd);
   bnd.K = K;
   bnd.xmax = amer::al_xmax_put(K, r, q);
-  const double euro = black76_price(S * std::exp((r - q) * bnd.T), K, bnd.T, sigma,
-                                    std::exp(-r * bnd.T), Side::Put);
+  const double euro = black76_price(S * carry_discounts.growth, K, bnd.T, sigma,
+                                    carry_discounts.discount, Side::Put);
   double premium = 0.0;
   double bound = 0.0;
   unsigned evals = 0;
@@ -353,8 +390,8 @@ thread_local const ValidatedErrorEnvelope *t_family_envelope = nullptr;
       if (boundary) bound += env.w[i] * node_term(bnd, env, i, z, S, K, sigma, r, q);
       continue;
     }
-    const double dq = std::exp(-q * t);
-    const double dr = std::exp(-r * t);
+    const double dq = carry_discounts.dq[i];
+    const double dr = carry_discounts.dr[i];
     const double log_ratio = std::log(S * dq / (bf * dr));
     const double v_price = sigma * std::sqrt(t);
     const double dp = log_ratio / v_price + 0.5 * v_price;
@@ -382,12 +419,10 @@ thread_local const ValidatedErrorEnvelope *t_family_envelope = nullptr;
     bound += env.w[i] * term;
   }
   if (evals != 0) {
-    ATX_VOL_COUNT_N(ExpCalls, 2u * evals);
     ATX_VOL_COUNT_N(PremiumQuadEvals, evals);
     ATX_VOL_COUNT_N(LogCalls, evals);
     ATX_VOL_COUNT_N(NormCdfCalls, 2u * evals);
     counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals, evals);
-    counters::lightweight::record_exp_calls(2u * evals);
   }
   const double half_sqrt_t = 0.5 * std::sqrt(bnd.T);
   premium *= half_sqrt_t;
@@ -534,10 +569,12 @@ bool family_prices_bounded(const AlSigmaQFamily &f, const ValidatedErrorEnvelope
   if (requests.size() != out.size()) return false;
   const StatePtr st = QFamilyAccess::state(f);
   const bool fused = matches(f, env, st) && !st->ws->fast;
+  BoundedCarry carry_discounts;
   for (std::size_t i = 0; i < requests.size(); ++i) {
     const auto &r = requests[i];
     if (fused && st->admit(r.S, r.K, r.sigma, r.q) == AlSigmaQFamilyStatus::Ok) {
-      out[i] = fused_bounded(st, env, r);
+      carry_discounts.prepare(st, env, r.q, work);
+      out[i] = fused_bounded(st, env, r, carry_discounts);
       if (work != nullptr) ++work->fused_prices;
       if (std::isfinite(out[i].price) && !std::isnan(out[i].bound_usd)) continue;
     }

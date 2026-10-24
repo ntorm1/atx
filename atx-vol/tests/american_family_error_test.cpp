@@ -174,6 +174,62 @@ TEST(AmericanFamilyError, BatchPreservesPriceBitsAndNeverTightensScalarBounds) {
   }
 }
 
+TEST(AmericanFamilyError, BatchReusesExactCarryWithoutSharingAcrossCalls) {
+  auto cases = family_cases();
+  cases.push_back({100.0, 0.5, 0.04, -0.095, -0.085, Side::Put, 0.1, 0.8, 4});
+  cases.push_back({100.0, 0.4, 0.04, -0.0001, 0.0001, Side::Put, 0.05, 0.9, 4});
+  for (const auto &c : cases) {
+    Built b(c);
+    ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    const auto env = atx::vol::build_family_error_envelope(b.family);
+    ASSERT_TRUE(env.covered());
+    const std::array<atx::vol::FamilyBoundedRequest, 7> requests{{
+        {c.S, 0.7 * c.S, .15, c.q_lo}, {c.S, c.S, .3, c.q_lo},
+        {c.S, 1.3 * c.S, .4, c.q_hi}, {c.S, .9 * c.S, .2, c.q_hi},
+        {c.S, -1.0, .3, c.q_lo},
+        {c.S, .8 * c.S, .3, c.q_lo}, {c.S, 1.1 * c.S, .4, c.q_lo}}};
+    std::array<FamilyBoundedPrice, 7> out;
+    atx::vol::FamilyBoundedBatchWork work;
+    for (unsigned pass = 1; pass <= 2; ++pass) {
+      ASSERT_TRUE(atx::vol::family_prices_bounded(b.family, env, requests, out, &work));
+      EXPECT_EQ(work.carry_preparations, 3u * pass);
+      EXPECT_EQ(work.fused_prices, 6u * pass);
+      EXPECT_EQ(work.scalar_prices, pass);
+      for (std::size_t i = 0; i < requests.size(); ++i) {
+        std::array<FamilyBoundedPrice, 1> cold;
+        ASSERT_TRUE(atx::vol::family_prices_bounded(
+            b.family, env, std::span(requests).subspan(i, 1), cold));
+        EXPECT_EQ(out[i].status, cold[0].status);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(out[i].price),
+                  std::bit_cast<std::uint64_t>(cold[0].price));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(out[i].bound_usd),
+                  std::bit_cast<std::uint64_t>(cold[0].bound_usd));
+      }
+    }
+    auto stale = env;
+    ++stale.preparation_stamp;
+    ASSERT_TRUE(atx::vol::family_prices_bounded(b.family, stale, requests, out, &work));
+    EXPECT_EQ(work.carry_preparations, 6u);
+    EXPECT_EQ(work.scalar_prices, 9u);
+    if (c.q_lo < 0.0 && c.q_hi > 0.0) {
+      const std::array<atx::vol::FamilyBoundedRequest, 4> zeros{{
+          {c.S, c.S, .3, -0.0}, {c.S, c.S, .3, +0.0},
+          {c.S, c.S, .3, -0.0}, {c.S, c.S, .3, -0.0}}};
+      std::array<FamilyBoundedPrice, 4> values;
+      atx::vol::FamilyBoundedBatchWork zero_work;
+      ASSERT_TRUE(atx::vol::family_prices_bounded(b.family, env, zeros, values, &zero_work));
+      EXPECT_EQ(zero_work.carry_preparations, 3u);
+      for (std::size_t i = 0; i < zeros.size(); ++i) {
+        const auto &r = zeros[i];
+        const auto scalar = atx::vol::family_price_bounded(b.family, env, r.S, r.K, r.sigma, r.q);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(values[i].price),
+                  std::bit_cast<std::uint64_t>(scalar.price));
+        EXPECT_GE(values[i].bound_usd, scalar.bound_usd);
+      }
+    }
+  }
+}
+
 TEST(AmericanFamilyError, BatchKeepsRefusalsAndStaleEnvelopeIdentity) {
   const auto c = family_cases()[0];
   Built b(c);
