@@ -338,3 +338,62 @@ weights. The three previous precision failures remain preserved, while their
 successor differences fall below1.66e-81. See the
 [complete result and work receipt](../../docs/cash-cubic-local-weight-review-20261024.md).
 This does not complete Stage A or authorize the18-option semigroup run.
+
+## Owned cubic representation component
+
+`stock_cubic.hpp/.cpp` is a private component within the same default-off research
+test target. `StockCubic::make` owns binary64 endpoint tuples and an anchored
+affine tail. Shared knot and endpoint-value bits must agree; derivative kinks
+are permitted. No borrowed storage survives construction. Direct evaluation
+uses offset Hermite increments at explicit100/200-digit precision, without
+forming large absolute Bernstein controls. The retained adjacent-stock
+counterexample has naive slopes0 at the endpoints and1.5 at the midpoint for
+the affine function with exact slope1.
+
+Direct stock queries return separate one-sided derivatives at a kink and an
+explicit right limit at zero. Cell-coordinate queries allow represented
+interiors between adjacent binary64 knots; exact endpoints use the owner's
+global knot semantics. There is no epsilon snapping. The finite-cell Gaussian
+control calls the unchanged reviewed weight primitive and applies the planned
+offset/value and derivative contractions. Its derivative contribution is the
+interior integral of `f'(X)*X/S`, not the derivative of a truncated option price:
+moving-boundary terms cancel only when a complete continuous partition,
+including its infinite tail, is assembled.
+
+Each call resets its work record and preserves partial work on refusal. Fixed
+coefficient records contain signed results, absolute-term sums and condition
+ratios. Identical input subtraction is disclosed as an exact algebraic-zero
+identity before arithmetic. All-zero sums are valid; zero from nonzero
+uncancelled terms refuses, as does a ratio above `10^(digits-30)`. This first
+component deliberately refuses a zero middle derivative coefficient formed by
+nonzero cancellation, even for a mathematically valid tuple such as `x^3` on
+`[0,1]`. That conservative limitation is tested and remains unresolved; it is
+not hidden by a tolerance or a fabricated nonzero coefficient.
+
+Reservation includes owned tuples,128 precision objects and8192 bytes for
+bounded arithmetic/string scratch. A weighted call additionally reserves up
+to the existing1MiB cell allowance, then reports the primitive's actual work
+separately. The reservation excludes allocator metadata and is not a measured
+resident-memory peak. Conversion counts include input decoding, coefficient
+diagnostic encoding and output encoding; coefficient/accumulation counts count
+the terms in their respective sums, not every machine arithmetic instruction.
+The existing moment/function/product counters retain their original meanings.
+
+This is representation and finite-cell arithmetic only. No full-domain
+expectation, discounting/deterministic evolution owner, polynomial-tail
+descriptor, repeated matrix or option rollback is supplied by this component.
+The prospective full-tail/limit controls and separately declared repetition
+matrix remain required before Stage A can complete. The original50/150/32,
+18+5 and fixed24 receipts remain unchanged. No timing, allocation-injection or
+general price/Greek accuracy claim follows from these controls.
+
+Six of the initial seven controls fail against the explicit refusal stub; the
+independent absolute-control counterexample already passes. The initial test
+compile error is retained separately and is not counted as runtime-red evidence.
+All13 final owner controls and the complete58-test research target pass, as do
+both owning translation units with precompiled headers disabled. Tests include
+negative offsets, exact affine derivatives at adjacent high/low/unit cells,
+weighted affine moment identities, genuine kinks, exact-zero versus cancelling
+sums, malformed inputs, low-budget partial work/reset and owned snapshots.
+Receipts remain under `E/calendar/cash-cubic-owner-v1/`; no numerical study
+matrix, option run or new reference decision was executed.
