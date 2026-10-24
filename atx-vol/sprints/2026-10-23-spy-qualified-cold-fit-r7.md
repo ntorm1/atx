@@ -237,3 +237,56 @@ the containment threshold and the actual-query constraints. The remaining
 performance gap is over twentyfold; no measured result yet supports a claim
 that these changes alone will close it. All 100 required quiet cold trials must
 pass on one reviewed candidate before the goal can be marked complete.
+
+## Wave 1: complete prices, failed cold-IV accuracy
+
+The combined candidate `47b2037572690d60ce87113c37340c75ac129913` includes
+repaired-node batches, lazy bid/ask preparation, configured Fast confirms,
+fused bounded-family prices and separate fallback stage counters. Its development
+binary SHA256 is `ee32307bdd29ef4a302364ddba520d148e5c1a126209dc3e8ccdffd6f8fc01da`.
+The integrated suite passes 310 quote-slice tests and 40 targeted pricing tests;
+two explicitly opt-in fixture/probe tests and one child-process entry are not
+part of those passing counts. These tests do not replace the full-input audit.
+
+The expanded actual-query audit **fails the accuracy gate**: of 12,183 reported
+point IVs, 11,157 strictly straddle their published price under cold Andersen-Lake
+evaluations at sigma +/- 1e-7, and 1,026 do not. There are no roundoff-only cases.
+The maximum center price residual is $0.0007096053236921307. All 33 expiries,
+12,866 eligible rows, 99.88341365% containment, price-shape/parity/calendar checks,
+and exact API/CSV status/reason/interval/convention checks still pass. The 683
+explicit PriceOnly rows are counted separately; converting failures to PriceOnly
+solely to pass this audit is not an accepted fix.
+
+Evidence is `acceptance/integrated-full-wave1-audit/verification.json` and
+`cold-node-roots.json` under the same evidence root. Predictions SHA256 is
+`681c3b44e3edbd799b90b03ccfaad2564d98a580085ae4131093cf749e08a8cf`.
+Compared with the complete baseline, only `predicted_vol` differs (8,160 rows);
+published prices and all other CSV fields are unchanged. The old audit did not
+perform these cold-IV checks, so its price-surface PASS is not an IV accuracy PASS.
+
+One development profile took 22.1222 seconds with 8.57% sibling activity and
+therefore fails timing qualification. It identifies the dominant work:
+
+| Stage | Calls | Elapsed seconds | Boundary solves |
+|---|---:|---:|---:|
+| Typed Search fallback | 5,274 | 13.5995 | 26,172 |
+| Repeated plain solve after NonMonotone refusal | 1,253 | 4.6228 | 4,262 |
+| Native acceptance/confirm | 21,066 | 0.3073 | 4,014 |
+| Plateau checks, including 51 edge searches | 2,546 | 0.4405 | 2,546 |
+
+Native batch lane preparation (0.0589 seconds) and bounded-family preparation
+(0.4209 seconds) are separate from native acceptance. Initial endpoint work is
+0.4964 seconds. Guard misses are 1,086 without a matching context, 472 outside
+the retained q-family coverage and 3,468 outside the native price-domain gate.
+The last count refers to the near-floor/nonmonotone price window, not a sigma
+interpolation range that can simply be widened. The first chain's recorder
+includes the whole joint calendar operation; it is not an expiry-local profile.
+
+The next gate is accurate cold-map identification, with regressions from the
+exported failures. Reuse the already-computed plain candidate to remove the
+duplicate NonMonotone solve without changing outcomes. Then repair the cold-root
+contract and optimize certified fallback work; `scalar_answer_certified` currently
+permits a 1e-4 Newton correction within its band, while the acceptance target is
+1e-7. Warm-boundary Search drift must also be checked outside that band. No speed
+claim closes this correctness blocker, and no full accurate-fit latency has yet
+been established.
