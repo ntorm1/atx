@@ -20,6 +20,8 @@
 
 #include <gtest/gtest.h>
 
+#include "storage/backtest_db.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic> // plan 5.5 cancellation flag
@@ -741,6 +743,8 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
+  EXPECT_EQ(a.n_priced_marks, b.n_priced_marks);
+  EXPECT_EQ(a.n_greeks_unavailable, b.n_greeks_unavailable);
   ASSERT_EQ(a.step_pnl_total.size(), b.step_pnl_total.size());
   for (std::size_t k = 0; k < a.step_pnl_total.size(); ++k) {
     EXPECT_TRUE(bits_equal(a.step_pnl_total[k], b.step_pnl_total[k])) << k;
@@ -1206,6 +1210,8 @@ TEST(BacktestGreekAvailability, AggregateOverflowFailsEvenWhenEveryRowIsComplete
   ASSERT_TRUE(visible.has_value()) << visible.error().to_string();
   ASSERT_EQ(visible->size(), 1u);
   EXPECT_EQ(visible->n_unpriced_greeks[0], 0.); // no fabricated excluded rows
+  EXPECT_EQ(visible->n_priced_marks, (std::vector<double>{12.}));
+  EXPECT_EQ(visible->n_greeks_unavailable, (std::vector<double>{0.}));
   EXPECT_TRUE(std::isnan(visible->gross_vega[0]));
   const auto guarded = run_backtest(*clock, book, RunConfig{});
   ASSERT_FALSE(guarded.has_value());
@@ -1323,6 +1329,8 @@ TEST(BacktestGreekAvailability, CarryPreservesPartialPriceAndLaterRiskRecovery) 
   EXPECT_TRUE(std::isnan(result->gross_vega[1]));
   EXPECT_DOUBLE_EQ(result->nav[1], result->nav[0]);
   EXPECT_EQ(result->n_unpriced_greeks[2], 0.);
+  EXPECT_EQ(result->n_priced_marks, (std::vector<double>{1., 1., 1.}));
+  EXPECT_EQ(result->n_greeks_unavailable, (std::vector<double>{1., 1., 0.}));
   EXPECT_TRUE(std::isfinite(result->gross_vega[2]));
   config.mark_domain = MarkDomainPolicy::Extrapolate;
   const auto control = run_backtest(*clock, book, config);
@@ -1385,6 +1393,8 @@ TEST(BacktestGreekAvailability, CarriedPartialCloseRequiresVegaOnlyForVolatility
       ASSERT_EQ(result->size(), 3u);
       EXPECT_EQ(result->n_unpriced_greeks[1], 1.);
       EXPECT_EQ(result->n_open_lots[2], 0.);
+      EXPECT_EQ(result->n_priced_marks, (std::vector<double>{1., 1., 0.}));
+      EXPECT_EQ(result->n_greeks_unavailable, (std::vector<double>{0., 1., 0.}));
       EXPECT_TRUE(std::isfinite(result->nav[2]));
       EXPECT_TRUE(std::isfinite(result->cost[2]));
       EXPECT_TRUE(std::isnan(result->turnover_vega[2]));
@@ -2928,6 +2938,10 @@ TEST(Backtest, Granularity) {
   ASSERT_TRUE(rf.has_value()) << rf.error().to_string();
   ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
   EXPECT_LT(rc->size(), rf->size()); // coarse genuinely downsampled
+  ASSERT_EQ(rc->n_priced_marks.size(), rc->size());
+  ASSERT_EQ(rf->n_priced_marks.size(), rf->size());
+  ASSERT_EQ(rc->n_greeks_unavailable.size(), rc->size());
+  ASSERT_EQ(rf->n_greeks_unavailable.size(), rf->size());
 
   // The FULL-RESOLUTION per-step series is retained at any stride and is bit-for-bit
   // identical between the fine and coarse runs — this is what makes the downsampled
@@ -2973,6 +2987,8 @@ TEST(Backtest, Granularity) {
     ASSERT_LT(fi, rf->size()) << "no fine row at coarse ts row " << j;
     EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;               // cumulative state
     EXPECT_TRUE(bits_equal(rc->gross_vega[j], rf->gross_vega[fi])) << j; // recorded-row state
+    EXPECT_EQ(rc->n_priced_marks[j], rf->n_priced_marks[fi]);
+    EXPECT_EQ(rc->n_greeks_unavailable[j], rf->n_greeks_unavailable[fi]);
     if (j > 0) {
       const double block = rf->nav[fi] - rf->nav[prev_fi];
       EXPECT_NEAR(rc->pnl_total[j], block, tol * (std::fabs(block) + 1.0)) << j;
@@ -3892,6 +3908,76 @@ TEST(BacktestResultShape, SkewedColumnIsRejected) {
 
 // EMPTY-or-row-parallel, not all-or-nothing: a fixture that fills only the
 // columns a fold reads is a legal partial result, and an empty result is legal.
+TEST(BacktestGreekCoverage, RequiresPairedValidCountsAndPreservesUnknownState) {
+  auto result = make_shape_fixture(2u);
+  EXPECT_TRUE(result.n_priced_marks.empty());
+  EXPECT_TRUE(result.n_greeks_unavailable.empty());
+  ASSERT_TRUE(result.validate());
+  result.n_priced_marks = {2., 1.};
+  EXPECT_FALSE(result.validate()); // One-sided coverage is not a known observation.
+  result.n_greeks_unavailable = {1., 0.};
+  ASSERT_TRUE(result.validate());
+  for (const double invalid : {-1., .5, 4294967296., 9007199254740992.,
+                               std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+    result.n_priced_marks[0] = invalid;
+    EXPECT_FALSE(result.validate());
+  }
+  result.n_priced_marks[0] = 4294967295.;
+  result.n_greeks_unavailable[0] = 4294967295.;
+  ASSERT_TRUE(result.validate()); // Largest native count remains exactly representable.
+  result.n_priced_marks[0] = 2.;
+  result.n_greeks_unavailable[0] = 3.;
+  EXPECT_FALSE(result.validate());
+  result.n_greeks_unavailable = {1.};
+  EXPECT_FALSE(result.validate());
+  result.n_greeks_unavailable = {1., 0.};
+  result.signals.emplace_back("n_priced_marks", std::vector<double>{0., 0.});
+  EXPECT_FALSE(result.validate()); // Signals cannot impersonate observed coverage.
+}
+
+TEST(BacktestGreekCoverage, AppendPreservesKnownPairAndRefusesUnknownTransactionally) {
+  auto first = make_shape_fixture(1u);
+  auto next = make_shape_fixture(1u);
+  first.date = {"2026-10-23"};
+  first.ts_ns = {1};
+  next.date = {"2026-10-24"};
+  next.ts_ns = {2};
+  first.signals.clear();
+  next.signals.clear();
+  first.n_priced_marks = {2.};
+  first.n_greeks_unavailable = {1.};
+  next.n_priced_marks = {3.};
+  next.n_greeks_unavailable = {0.};
+  auto combined = first;
+  ASSERT_TRUE(append_backtest_results(combined, next));
+  EXPECT_EQ(combined.n_priced_marks, (std::vector<double>{2., 3.}));
+  EXPECT_EQ(combined.n_greeks_unavailable, (std::vector<double>{1., 0.}));
+  auto unknown = next;
+  unknown.n_priced_marks.clear();
+  unknown.n_greeks_unavailable.clear();
+  auto refused = first;
+  EXPECT_FALSE(append_backtest_results(refused, unknown));
+  EXPECT_EQ(refused.date, first.date);
+  EXPECT_EQ(refused.n_priced_marks, first.n_priced_marks);
+  EXPECT_EQ(refused.n_greeks_unavailable, first.n_greeks_unavailable);
+  auto unknown_prefix = first;
+  unknown_prefix.n_priced_marks.clear();
+  unknown_prefix.n_greeks_unavailable.clear();
+  EXPECT_FALSE(append_backtest_results(unknown_prefix, next));
+  EXPECT_EQ(unknown_prefix.date, first.date);
+  EXPECT_TRUE(unknown_prefix.n_priced_marks.empty());
+  EXPECT_TRUE(unknown_prefix.n_greeks_unavailable.empty());
+  auto malformed = next;
+  malformed.n_greeks_unavailable = {4.};
+  EXPECT_FALSE(append_backtest_results(refused, malformed));
+  EXPECT_EQ(refused.date, first.date);
+  BacktestResult empty;
+  ASSERT_TRUE(append_backtest_results(empty, first));
+  EXPECT_EQ(empty.n_priced_marks, first.n_priced_marks);
+  EXPECT_EQ(empty.n_greeks_unavailable, first.n_greeks_unavailable);
+}
+
 TEST(BacktestResultShape, EmptyColumnsAreLegalPartialResults) {
   BacktestResult sparse;
   for (std::size_t i = 0; i < 4; ++i) {

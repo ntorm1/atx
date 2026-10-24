@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "backtest/backtest_series_columns.hpp"
+#include "backtest/mark_coverage.hpp"
 #include "storage/archive_util.hpp"
 #include "storage/writer_lock.hpp" // Task D3: cross-process manifest writer lock
 #include "storage/track_key.hpp" // Task D1: make_engine_id() (engine_id incl. economics rev)
@@ -691,6 +692,12 @@ decode_sources(const RaSectionView &section, const BacktestSeriesInfo &info) {
     }
   }
   const std::size_t rows = static_cast<std::size_t>(section.n_rows());
+  const auto priced = section.f64_col("n_priced_marks");
+  const auto partial = section.f64_col("n_greeks_unavailable");
+  const Status coverage = detail::validate_mark_coverage(priced, partial, rows);
+  if (!coverage) {
+    return Err(ErrorCode::ParseError, coverage.error().message());
+  }
   const RaDictColumn dates = section.dict_col("date");
   const auto timestamps = section.i64_col("ts_ns");
   if (dates.size() != rows || timestamps.size() != rows || sources.size() != rows) {
@@ -761,6 +768,10 @@ decode_sources(const RaSectionView &section, const BacktestSeriesInfo &info) {
       result.gross_vega_abs.assign(values.begin(), values.end());
     } else if (name == "nav_liquidation") {
       result.nav_liquidation.assign(values.begin(), values.end());
+    } else if (name == "n_priced_marks") {
+      result.n_priced_marks.assign(values.begin(), values.end());
+    } else if (name == "n_greeks_unavailable") {
+      result.n_greeks_unavailable.assign(values.begin(), values.end());
     } else {
       result.signals.emplace_back(name, std::vector<double>(values.begin(), values.end()));
     }
@@ -1623,7 +1634,7 @@ build_partition_sections(const BacktestSeriesInfo &info, const BacktestSeriesDat
           static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: checkpoint count is out of range");
   }
-  RaSectionData backtest = encode_backtest_section("backtest", data.backtest);
+  ATX_TRY(RaSectionData backtest, encode_backtest_section("backtest", data.backtest));
   if (!data.backtest.gross_vega_abs.empty()) {
     backtest.columns.emplace_back("gross_vega_abs", RaColumnData::of_f64(std::span<const double>(
                                                         data.backtest.gross_vega_abs)));
@@ -1707,6 +1718,8 @@ namespace {
 
 [[nodiscard]] Status validate_result_shape(const BacktestResult &result, bool require_nonempty) {
   const std::size_t rows = result.size();
+  ATX_TRY_VOID(detail::validate_mark_coverage(
+      result.n_priced_marks, result.n_greeks_unavailable, rows));
   if (require_nonempty && rows == 0) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: empty backtest series");
   }
@@ -1758,6 +1771,7 @@ namespace {
   for (const auto &[name, values] : result.signals) {
     if (name.empty() || name.size() > sizeof(RaColumnDescriptor{}.name) || values.size() != rows ||
         name == "gross_vega_abs" || name == "nav_liquidation" ||
+        detail::is_mark_coverage_name(name) ||
         !signal_names.insert(name).second) {
       return Err(ErrorCode::InvalidArgument, "backtest_db: invalid signal column");
     }
@@ -1932,6 +1946,11 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
       (dst.date.back() >= src.date.front() || dst.ts_ns.back() >= src.ts_ns.front())) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: appended rows are not ordered");
   }
+  if (dst.size() != 0u && src.size() != 0u &&
+      dst.n_priced_marks.empty() != src.n_priced_marks.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: cannot append known and unknown mark coverage");
+  }
   const bool gross_shape_ok = dst.gross_vega_abs.empty() == src.gross_vega_abs.empty() ||
                               dst.size() == 0 || src.size() == 0;
   const bool liquidation_shape_ok = dst.nav_liquidation.empty() == src.nav_liquidation.empty() ||
@@ -1999,6 +2018,8 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   }
   append_vector(combined.gross_vega_abs, src.gross_vega_abs);
   append_vector(combined.nav_liquidation, src.nav_liquidation);
+  append_vector(combined.n_priced_marks, src.n_priced_marks);
+  append_vector(combined.n_greeks_unavailable, src.n_greeks_unavailable);
   // Both sides carry the lane => concatenate. Shapes differ => the check above
   // has already proven neither side has real swap data, so collapsing to
   // "absent" (what a decoded result reports) is information-preserving.

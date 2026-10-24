@@ -15,6 +15,7 @@
 #include "storage/run_archive_schema.hpp"
 
 #include "atx/vol/api/backtest/backtest.hpp"            // BacktestResult (Task 5 encoders)
+#include "backtest/mark_coverage.hpp"
 #include "backtest/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/api/marketdata/corpus.hpp"              // CorpusManifest (RunDir::clock via manifest)
 #include "storage/archive_util.hpp" // crc32c (independent CRC check)
@@ -35,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -679,9 +681,149 @@ backtest_dbl_cols(const BacktestResult& r) {
   };
 }
 
+RaSectionData checked_backtest_section(std::string name, const BacktestResult &result) {
+  auto encoded = encode_backtest_section(std::move(name), result);
+  if (!encoded) {
+    ADD_FAILURE() << encoded.error().to_string();
+    return {};
+  }
+  return std::move(*encoded);
+}
+
+TEST(RunArchiveEncoders, ObservedMarkCoverageRoundTripsWithoutChangingRegistryPrefix) {
+  auto result = make_encoder_fixture_result();
+  result.n_priced_marks = {2., 1.};
+  result.n_greeks_unavailable = {1., 0.};
+  const auto section = checked_backtest_section("backtest", result);
+  result.n_priced_marks[0] = 99.; // The staged extension must own its snapshot.
+  const auto bytes = write_run_archive(std::span(&section, 1), 1, 1);
+  ASSERT_TRUE(bytes);
+  const auto archive = RunArchive::open(*bytes);
+  ASSERT_TRUE(archive);
+  const auto view = archive->section("backtest");
+  ASSERT_TRUE(view);
+  const auto priced = view->f64_col("n_priced_marks");
+  const auto partial = view->f64_col("n_greeks_unavailable");
+  ASSERT_EQ(priced.size(), 2u);
+  ASSERT_EQ(partial.size(), 2u);
+  EXPECT_EQ(priced[0], 2.);
+  EXPECT_EQ(priced[1], 1.);
+  EXPECT_EQ(partial[0], 1.);
+  EXPECT_EQ(partial[1], 0.);
+  const auto *registry = find_section("backtest");
+  ASSERT_NE(registry, nullptr);
+  ASSERT_EQ(registry->columns.size(), 27u); // date + ts_ns +25 frozen F64 columns.
+  for (std::size_t i = 0; i < registry->columns.size(); ++i) {
+    const auto &actual = view->columns()[i];
+    EXPECT_EQ(std::string_view(actual.name, actual.name_len), registry->columns[i].name);
+    EXPECT_EQ(actual.dtype, registry->columns[i].dtype);
+  }
+}
+
+TEST(RunArchiveEncoders, RejectsMalformedObservedCoverageBeforeSectionAssembly) {
+  const auto valid = [] {
+    auto result = make_encoder_fixture_result();
+    result.n_priced_marks = {2., 1.};
+    result.n_greeks_unavailable = {1., 0.};
+    return result;
+  };
+  const auto rejected = [](const BacktestResult &result) {
+    const auto encoded = encode_backtest_section("backtest", result);
+    ASSERT_FALSE(encoded);
+    EXPECT_EQ(encoded.error().code(), ErrorCode::InvalidArgument);
+  };
+  auto result = valid();
+  result.n_priced_marks.clear();
+  rejected(result);
+  result = valid();
+  result.n_greeks_unavailable.clear();
+  rejected(result);
+  result = valid();
+  result.n_priced_marks.pop_back();
+  rejected(result);
+  for (const double invalid : {-1., .5, 4294967296., 9007199254740992.,
+                               std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+    result = valid();
+    result.n_priced_marks[0] = invalid;
+    rejected(result);
+    result = valid();
+    result.n_greeks_unavailable[0] = invalid;
+    rejected(result);
+  }
+  result = valid();
+  result.n_greeks_unavailable[0] = 3.;
+  rejected(result);
+  for (const auto name : {"n_priced_marks", "n_greeks_unavailable"}) {
+    result = make_encoder_fixture_result(); // Unknown pair cannot be forged as signals.
+    result.signals.emplace_back(name, std::vector<double>{1., 0.});
+    rejected(result);
+  }
+  result = valid();
+  result.n_priced_marks[0] = 4294967295.;
+  result.n_greeks_unavailable[0] = 4294967295.;
+  auto encoded = encode_backtest_section("backtest", result);
+  ASSERT_TRUE(encoded);
+  auto bytes = write_run_archive(std::span(&*encoded, 1), 1, 1);
+  ASSERT_TRUE(bytes);
+  auto archive = RunArchive::open(std::move(*bytes));
+  ASSERT_TRUE(archive);
+  auto view = archive->section("backtest");
+  ASSERT_TRUE(view);
+  EXPECT_EQ(view->f64_col("n_priced_marks")[0], 4294967295.);
+  EXPECT_EQ(view->f64_col("n_greeks_unavailable")[0], 4294967295.);
+  result = valid();
+  result.nav.clear(); // Sparse in-memory objects are not complete archive sections.
+  ASSERT_TRUE(result.validate());
+  rejected(result);
+}
+
+TEST(RunArchiveReader, ChecksumValidMappedCoverageUsesTheBacktestValidator) {
+  struct Case {
+    std::vector<double> priced, partial;
+    bool valid;
+  };
+  const std::vector<Case> cases{
+      {{2., 1.}, {}, false}, {{}, {1., 0.}, false},
+      {{2., .5}, {1., 0.}, false}, {{1., 1.}, {2., 0.}, false},
+      {{2., 1.}, {1., 0.}, true}, {{}, {}, true}};
+  const auto path = std::filesystem::temp_directory_path() / "atx_mapped_mark_coverage.atxrun";
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto &item = cases[i];
+    auto section = checked_backtest_section("backtest", make_encoder_fixture_result());
+    // Bypass the high-level encoder's validation and write well-framed, CRC-valid
+    // raw extensions. This tests mapped spans plus the shared validator, not a
+    // forged end-to-end BacktestDb manifest/partition identity.
+    if (!item.priced.empty()) {
+      section.columns.emplace_back("n_priced_marks", RaColumnData::of_f64(item.priced));
+    }
+    if (!item.partial.empty()) {
+      section.columns.emplace_back("n_greeks_unavailable", RaColumnData::of_f64(item.partial));
+    }
+    ASSERT_TRUE(write_run_archive_file(path.string(), std::span(&section, 1), 1, 1));
+    {
+      auto archive = RunArchive::open_mapped(path.string());
+      ASSERT_TRUE(archive);
+      ASSERT_TRUE(archive->validate_all()); // The negative cases pass integrity checks.
+      auto view = archive->section("backtest");
+      ASSERT_TRUE(view);
+      const auto coverage = detail::validate_mark_coverage(
+          view->f64_col("n_priced_marks"), view->f64_col("n_greeks_unavailable"),
+          static_cast<std::size_t>(view->n_rows()));
+      EXPECT_EQ(coverage.has_value(), item.valid);
+      if (!item.valid) {
+        ASSERT_FALSE(coverage);
+        EXPECT_EQ(coverage.error().code(), ErrorCode::InvalidArgument);
+      }
+    }
+    EXPECT_TRUE(std::filesystem::remove(path)); // Release mapped ownership first.
+  }
+}
+
 TEST(RunArchiveEncoders, BacktestSectionRoundTripsValueExact) {
   const BacktestResult r = make_encoder_fixture_result();
-  const RaSectionData sec = encode_backtest_section("backtest", r);
+  const RaSectionData sec = checked_backtest_section("backtest", r);
   EXPECT_EQ(sec.name, "backtest");
   EXPECT_EQ(sec.kind, RaSectionKind::TimeSeries);
   EXPECT_EQ(sec.n_rows, 2u);
@@ -744,7 +886,7 @@ TEST(RunArchiveEncoders, BacktestSectionRoundTripsValueExact) {
 // others, so a section owns every byte it will write.
 TEST(RunArchiveEncoders, BacktestSection_SourceMutatedAfterEncode_WritesSnapshot) {
   BacktestResult r = make_encoder_fixture_result();
-  const RaSectionData sec = encode_backtest_section("backtest", r);
+  const RaSectionData sec = checked_backtest_section("backtest", r);
 
   // One mutation per class of previously-spanned column: the i64 ts_ns axis, two
   // of the 25 registry F64 members, and a dynamically-appended signal series.
@@ -772,7 +914,7 @@ TEST(RunArchiveEncoders, BacktestSection_SourceDestroyedBeforeWrite_WritesSnapsh
   // The source dies with the lambda; the section must still own its bytes.
   const RaSectionData sec = [] {
     const BacktestResult r = make_encoder_fixture_result();
-    return encode_backtest_section("backtest", r);
+    return checked_backtest_section("backtest", r);
   }();
 
   auto bytes = write_run_archive(std::span(&sec, 1), 1, 1);
@@ -826,7 +968,7 @@ TEST(RunArchiveEncoders, BacktestSeriesColumnsTsvEncoderParity) {
   const BacktestResult r = make_encoder_fixture_result();
 
   // Archive side.
-  const RaSectionData sec = encode_backtest_section("backtest", r);
+  const RaSectionData sec = checked_backtest_section("backtest", r);
   auto bytes = write_run_archive(std::span(&sec, 1), 1, 1);
   ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
   auto ar = RunArchive::open(std::move(*bytes));
@@ -1186,7 +1328,7 @@ std::filesystem::path python_fixture_path() {
 TEST(RunArchiveEncoders, MatchesCommittedPythonFixture) {
   const BacktestResult r = make_encoder_fixture_result();
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("backtest", r));
+  sections.push_back(checked_backtest_section("backtest", r));
 
   // meta: EXACTLY the three brief-pinned pairs, staged in the encoder's
   // two-dict shape (key table / value table, codes in row order).
@@ -1514,7 +1656,7 @@ void write_run_dir_archive(const std::filesystem::path& dir) {
   spec.date_hi = "2026-07-10";
 
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("backtest", r));  // arena-owned
+  sections.push_back(checked_backtest_section("backtest", r));  // arena-owned
   sections.push_back(encode_reconciliation_section(rec));      // arena-owned
   sections.push_back(encode_contract_marks_section(rec));      // arena-owned
   sections.push_back(encode_meta_section(spec));               // arena-owned
@@ -1572,7 +1714,7 @@ void write_run_dir_archive_row_mismatch(const std::filesystem::path& dir) {
   spec.date_hi = "2026-07-10";
 
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("backtest", r));  // arena-owned
+  sections.push_back(checked_backtest_section("backtest", r));  // arena-owned
   sections.push_back(encode_reconciliation_section(rec));      // arena-owned
   sections.push_back(encode_contract_marks_section(rec));      // arena-owned
   sections.push_back(encode_meta_section(spec));               // arena-owned
@@ -1841,7 +1983,7 @@ void write_projected_only(const RunDir& run_dir) {
   spec.date_lo = "2026-07-10";
   spec.date_hi = "2026-07-10";
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("projected_cold", projected));
+  sections.push_back(checked_backtest_section("projected_cold", projected));
   sections.push_back(encode_meta_section(spec));
   const Status status = run_dir.write_run_archive(sections);
   ASSERT_TRUE(status.has_value()) << status.error().to_string();
@@ -1886,7 +2028,7 @@ TEST(RunDir, MergeWriteCarriesUnsupersededSectionsOnSameInputs) {
   const std::vector<std::pair<std::string, std::string>> proj_meta_extra = {
       {"projected_execution", "cold"}};
   std::vector<RaSectionData> proj_sections;
-  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  proj_sections.push_back(checked_backtest_section("projected_cold", pr));
   proj_sections.push_back(encode_meta_section(proj_spec, proj_meta_extra));
   ASSERT_TRUE(run_dir.write_run_archive(proj_sections).has_value());
 
@@ -1943,7 +2085,7 @@ TEST(RunDir, MergeWriteDropsCarriedSectionsWhenInputsChange) {
   const RunDir run_dir(dir);
   const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
   std::vector<RaSectionData> proj_sections;
-  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  proj_sections.push_back(checked_backtest_section("projected_cold", pr));
   {
     RunSpec proj_spec;
     proj_spec.label = "projected-run";
@@ -2103,7 +2245,7 @@ TEST(RunDir, MergeWriteStartsFreshOnCorruptExistingArchive) {
   spec.date_lo = "2026-07-10";
   spec.date_hi = "2026-07-10";
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("backtest", r));
+  sections.push_back(checked_backtest_section("backtest", r));
   sections.push_back(encode_reconciliation_section(rec));
   sections.push_back(encode_contract_marks_section(rec));
   sections.push_back(encode_meta_section(spec));
@@ -2240,7 +2382,7 @@ TEST(RunDir, MergeWriteRejectsCarryForwardAfterManifestChange) {
   const RunDir run_dir(dir);
   const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
   std::vector<RaSectionData> proj_sections;
-  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  proj_sections.push_back(checked_backtest_section("projected_cold", pr));
   {
     RunSpec proj_spec;
     proj_spec.label = "projected-run";
@@ -2337,7 +2479,7 @@ TEST(RunDir, MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate) {
   const RunDir run_dir(dir);
   const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
   std::vector<RaSectionData> proj_sections;
-  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  proj_sections.push_back(checked_backtest_section("projected_cold", pr));
   {
     RunSpec proj_spec;
     proj_spec.label = "projected-run";

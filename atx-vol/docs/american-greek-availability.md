@@ -520,3 +520,61 @@ Evidence is repair-iv/greek-{scenario,margin}-{red,green,final}.*,
 greek-scenario-order-{build,green}.log, greek-scenario-hygiene.log, and
 greek-scenario-final-receipt.json. These are availability/consumer fixes, not a
 new Greek accuracy or latency qualification.
+
+
+Backtest results now expose two observed option-position coverage columns:
+`n_priced_marks` counts supplied per-share prices, including rows with partial
+risk; `n_greeks_unavailable` counts only priced rows missing requested risk.
+These are recorded-row state, not block-summed flow. Duplicate positions remain
+separate. Deferred lots, shares and swaps are outside the snapshot option book.
+The existing incomplete-risk counter remains separate. Complete row coverage
+does not certify aggregate risk: summing finite positions can still overflow.
+
+Both new columns must be populated together and row-parallel, with finite
+integer `0 <= n_greeks_unavailable <= n_priced_marks <= UINT32_MAX`. The native
+count limit is tighter than the F64 exact-integer limit `2^53`. An empty pair
+means unknown legacy coverage, not zero. Append preserves the pair and refuses
+known/unknown mixing transactionally when both chunks contain rows. Python
+exports owned arrays and includes both in `to_dict`; `resize` cannot manufacture
+observations and leaves the pair untouched. `BacktestResult` gains two fields,
+with its append-only aggregate arity pin moving from 53 to 55; consumers rebuild.
+
+Persistence uses two optional owned F64 extensions after the frozen archive
+prefix: `date`, `ts_ns`, then 25 F64 columns, or 27 registry columns in total.
+The registry, schema hash and unknown-coverage legacy byte layout are unchanged.
+Both new names are reserved against user signal collisions. The research
+`encode_backtest_section` API now returns `Result<RaSectionData>` and validates
+before constructing the section; its three production callers propagate errors
+with `ATX_TRY`. A sparse in-memory result is allowed by `validate`, but an archive
+section must supply all frozen prefix columns. BacktestDb validates mapped count
+spans and decodes the extensions into their dedicated fields, not signals.
+The pure-Python report archive reader retains them in its documented `extra`
+map for non-registry F64 columns. Frozen TSV/CSV rosters omit this pair; they
+must not be interpreted as evidence of zero or known coverage.
+
+
+Runtime RED receipts captured missing engine counts, missing Python properties,
+ignored paired validation, append dropping coverage, and save/read dropping the
+pair then refusing a normal known continuation. The coherent component passes
+122 native backtest controls, 49 archive/RunDir controls, 26 BacktestDb controls,
+and 105 Python backtest/archive/renderer controls. All eleven changed owning
+translation units compile without PCH. Actual DB build/daily-extension/one-shot
+comparisons require nonempty row-parallel counts and compare both columns.
+A synthetic save/read/append/save/read control also retains them. The initial
+second-save fixture incorrectly supplied an inception-style n-1 step history
+for a continuation; its rejection is retained, and only that fixture was fixed
+to the existing n-step suffix contract. No production validation was relaxed.
+
+Mapped negative controls bypass the high-level encoder, write checksum-valid
+archives, then pass actual mapped spans to the same coverage validator used by
+BacktestDb. They cover both one-sided shapes, fractional counts and partial
+counts exceeding priced counts, with valid known and unknown controls. This is
+a mapped-archive/shared-validator test, not a forged DB manifest identity test.
+Bad-write controls separately prove unchanged manifest generation and saved
+coverage; the original legacy archive golden remains byte-identical.
+Receipts are `repair-iv/greek-backtest-coverage-*`, including the final JSON
+receipt and frozen patch. Python's final run uses staged module SHA256
+`a4a015d80765ac55cd493c2a7f1b7c2e82963f6f7fb6faf7ea9ca089cd3f5575`.
+An optional third-party PyArrow loader emitted Windows diagnostics during the
+renderer controls, while pytest completed all105 with exit0; the complete log
+is retained. This change records availability, not Greek accuracy or latency.

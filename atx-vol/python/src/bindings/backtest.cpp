@@ -319,9 +319,11 @@ void bind_backtest(py::module_ &m) {
 #undef ATXVOL_RESIZE
           },
           py::arg("n"),
-          "Size every row-parallel column to n (zero-filled). Call this before "
+          "Size the standard row-parallel columns to n (zero-filled). Call this before "
           "assigning columns on a hand-built result: the library's consumers "
-          "index all columns by the row count, so a ragged result is invalid.")
+          "index all columns by the row count, so a ragged result is invalid. "
+          "Observed n_priced_marks/n_greeks_unavailable remain untouched; their "
+          "empty pair means unknown coverage, and resizing cannot invent observations.")
       .def(
           "validate",
           [](const BacktestResult &r) { atxvol::python::require_consistent(r, "validate"); },
@@ -373,6 +375,8 @@ void bind_backtest(py::module_ &m) {
             ATXVOL_COL(n_open_lots);
             ATXVOL_COL(n_unpriced_lots);
             ATXVOL_COL(n_unpriced_greeks);
+            ATXVOL_COL(n_priced_marks);
+            ATXVOL_COL(n_greeks_unavailable);
             ATXVOL_COL(n_extrapolated_marks);
             ATXVOL_COL(n_carried_marks);
             ATXVOL_COL(step_pnl_total);
@@ -423,6 +427,8 @@ void bind_backtest(py::module_ &m) {
   ATXVOL_SERIES(result, n_open_lots);
   ATXVOL_SERIES(result, n_unpriced_lots);
   ATXVOL_SERIES(result, n_unpriced_greeks);
+  ATXVOL_SERIES(result, n_priced_marks);
+  ATXVOL_SERIES(result, n_greeks_unavailable);
   ATXVOL_SERIES(result, n_extrapolated_marks);
   ATXVOL_SERIES(result, n_carried_marks);
   ATXVOL_SERIES(result, step_pnl_total);

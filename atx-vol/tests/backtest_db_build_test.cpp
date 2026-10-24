@@ -168,6 +168,12 @@ void expect_same_result(const BacktestResult &actual, const BacktestResult &expe
   expect_vectors_equal(actual.n_open_lots, expected.n_open_lots);
   expect_vectors_equal(actual.n_unpriced_lots, expected.n_unpriced_lots);
   expect_vectors_equal(actual.n_unpriced_greeks, expected.n_unpriced_greeks);
+  ASSERT_EQ(actual.n_priced_marks.size(), actual.size());
+  ASSERT_EQ(actual.n_greeks_unavailable.size(), actual.size());
+  ASSERT_EQ(expected.n_priced_marks.size(), expected.size());
+  ASSERT_EQ(expected.n_greeks_unavailable.size(), expected.size());
+  expect_vectors_equal(actual.n_priced_marks, expected.n_priced_marks);
+  expect_vectors_equal(actual.n_greeks_unavailable, expected.n_greeks_unavailable);
   expect_vectors_equal(actual.step_pnl_total, expected.step_pnl_total);
   expect_vectors_equal(actual.nav_liquidation, expected.nav_liquidation);
   EXPECT_EQ(actual.signals, expected.signals);

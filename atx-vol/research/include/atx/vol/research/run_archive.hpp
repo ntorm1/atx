@@ -328,9 +328,14 @@ write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_
 // writer emits "NA" — the registry pins those dtypes as F64.
 
 // `backtest` / `projected_cold` / `projected_nodiv` (pass the section name):
-// the 27 registry columns + one F64 column per r.signals entry, value-equal to
-// append_backtest_series_tsv (tearsheet.cpp). Snapshots `r`.
-[[nodiscard]] RaSectionData encode_backtest_section(std::string name, const BacktestResult &r);
+// The frozen prefix is date + ts_ns + 25 F64 columns, value-equal to
+// append_backtest_series_tsv (tearsheet.cpp). Optional observed mark coverage is
+// appended as two owned F64 extensions; absent coverage stays unknown and emits
+// neither column. Signals follow. Snapshots `r`, including every extension.
+// InvalidArgument rejects malformed shapes, counts or reserved coverage names
+// before constructing a section. The frozen registry/schema hash is unchanged.
+[[nodiscard]] Result<RaSectionData> encode_backtest_section(std::string name,
+                                                           const BacktestResult &r);
 
 // `reconciliation` over rows: serialize_listed_reconciliation column set.
 [[nodiscard]] RaSectionData

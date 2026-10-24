@@ -639,13 +639,29 @@ static_assert(backtest_series_matches_registry(),
 
 } // namespace
 
-RaSectionData encode_backtest_section(std::string name, const BacktestResult &r) {
+Result<RaSectionData> encode_backtest_section(std::string name, const BacktestResult &r) {
+  ATX_TRY_VOID(r.validate());
+  // A sparse in-memory result can be valid, but the frozen archive prefix must
+  // be complete. Reject before allocating the owned section snapshot.
+  if (r.ts_ns.size() != r.size()) {
+    return Err(ErrorCode::InvalidArgument, "backtest archive requires row-parallel ts_ns");
+  }
+  for (const auto &col : backtest_series_columns()) {
+    if ((r.*col.member).size() != r.size()) {
+      return Err(ErrorCode::InvalidArgument, "backtest archive requires complete registry columns");
+    }
+  }
+  for (const auto &sig : r.signals) {
+    if (sig.second.size() != r.size()) {
+      return Err(ErrorCode::InvalidArgument, "backtest archive requires row-parallel signals");
+    }
+  }
   auto arena = std::make_shared<EncoderArena>();
   RaSectionData sec;
   sec.name = std::move(name);
   sec.kind = RaSectionKind::TimeSeries;
   sec.n_rows = r.size();
-  sec.columns.reserve(2 + 25 + r.signals.size());
+  sec.columns.reserve(2 + 25 + (r.n_priced_marks.empty() ? 0 : 2) + r.signals.size());
 
   DictBuilder dates;
   dates.reserve(r.date.size());
@@ -662,13 +678,18 @@ RaSectionData encode_backtest_section(std::string name, const BacktestResult &r)
   for (const auto &col : backtest_series_columns()) {
     sec.columns.emplace_back(std::string(col.name), arena_f64(*arena, r.*col.member));
   }
-  // Per-signal series are appended dynamically after the registry columns,
-  // exactly like the TSV writer appends them after the fixed header.
+  // Optional extensions never change the frozen 27-column prefix or legacy
+  // unknown-coverage bytes. validate() has required both columns together.
+  if (!r.n_priced_marks.empty()) {
+    sec.columns.emplace_back("n_priced_marks", arena_f64(*arena, r.n_priced_marks));
+    sec.columns.emplace_back("n_greeks_unavailable", arena_f64(*arena, r.n_greeks_unavailable));
+  }
+  // Per-signal series follow the registry and any known coverage extensions.
   for (const auto &sig : r.signals) {
     sec.columns.emplace_back(sig.first, arena_f64(*arena, sig.second));
   }
   sec.storage = std::move(arena);
-  return sec;
+  return Ok(std::move(sec));
 }
 
 RaSectionData

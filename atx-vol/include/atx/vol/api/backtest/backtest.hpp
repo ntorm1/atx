@@ -1624,10 +1624,11 @@ struct BacktestResult {
   // `ra_schema_hash()`, so renaming one would move a schema hash and every
   // golden. `gross_vega_abs` below carries the genuinely gross vega instead.
   std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta;
-  // TRUE GROSS vega: Σ|position-scaled leg vega| over the Ok lanes of the same
+  // TRUE GROSS vega: Σ|position-scaled leg vega| over supplied Vega in the same
   // book pricing that produced `gross_vega`, in the same per-UNIT-vol,
   // position-scaled dollars (multiply by `kVegaPerVolPoint` for dollars per vol
-  // point). Non-negative by construction.
+  // point). Unavailable contributing Vega or overflow gives NaN; another missing
+  // risk field does not remove a priced row. Finite values are nonnegative.
   //
   // C-3. `gross_vega` is a near-cancelling residual for any vega-neutral book —
   // a dispersion book drives it to ~0 BY DESIGN — so the risk-normalized
@@ -1741,8 +1742,9 @@ struct BacktestResult {
   // recorded on it like any other row (also 0.0 for a normally-opened book, since
   // the strategy never opens a lot in an absent name and the share ledger is empty).
   std::vector<double> n_unpriced_lots;
-  // Positions whose surface was absent on THIS row's date; their greeks are EXCLUDED
-  // from this row's `gross_*`. Distinct from `n_unpriced_lots`, which measures the
+  // Positions whose requested risk bundle is incomplete on THIS row's date,
+  // including missing prices and partial-risk rows whose supported price and
+  // other risk fields remain supplied. Distinct from `n_unpriced_lots`, which measures the
   // step's PnL completeness (base AND shifted): `book_greeks` prices a single-date
   // snapshot against this row's date alone, so the two counts can diverge (a held
   // lot absent from the step's base but present again on this row's date is counted
@@ -1940,6 +1942,20 @@ struct BacktestResult {
   // the L2 step-mark memo's solve ledger. See `SolveLedgerSummary` above.
   SolveLedgerSummary solve_ledger{};
 
+  // Option-position coverage at the recorded row (STATE, not block-summed flow).
+  // n_priced_marks includes both complete and partial-risk rows with a supported
+  // per-share price. n_greeks_unavailable counts only those priced rows missing
+  // requested risk fields. Counts describe rows, not aggregate validity: finite
+  // rows can overflow a portfolio sum. Deferred lots, shares and swaps are outside
+  // this snapshot's option book. Duplicates remain distinct positions.
+  // Both columns are present together on engine output; both empty means unknown
+  // coverage on legacy/hand-built results, never zero coverage. Not members of the
+  // frozen 25-F64-column registry (27 columns including date/ts_ns). Counts use
+  // the native uint32 range, exactly representable as double (below 2^53).
+  // RunArchive/BacktestDb persist a paired optional F64 extension; legacy unknown
+  // archives retain their original bytes. TSV/CSV frozen rosters omit this pair.
+  std::vector<double> n_priced_marks, n_greeks_unavailable;
+
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
   // ── Column-shape invariant (plan item 4.6) ────────────────────────────────
@@ -1970,9 +1986,9 @@ struct BacktestResult {
   // Enforcement, not just availability: both `run_backtest` overloads validate
   // before returning Ok, so no engine-produced result can be skewed; the TSV and
   // CSV writers validate on entry, so no hand-built or decoded one reaches those
-  // wires. `encode_backtest_section` (the RunArchive encoder) has no error channel
-  // and is NOT checked; its production callers pass a `run_backtest` result that
-  // already was. The check is a pure read — it never touches a value.
+  // wires. `encode_backtest_section` returns Result and validates before assembly,
+  // additionally requiring every frozen registry column to be present.
+  // The check is a pure read — it never touches a value.
   //
   // @return InvalidArgument naming the first offending column and both lengths.
   [[nodiscard]] Status validate() const;
@@ -2044,7 +2060,7 @@ struct BacktestResult {
 //
 // `aggregate_arity_is_v` counts brace initializers and is BLIND TO A REORDER, so
 // this pin is not a substitute for care about field order.
-static_assert(detail::aggregate_arity_is_v<BacktestResult, 53>,
+static_assert(detail::aggregate_arity_is_v<BacktestResult, 55>,
               "BacktestResult field count changed: update this pin, add the column to "
               "swap_explain_columns() (src/backtest.cpp) if it is a swap_explain_* column, and "
               "to BacktestResult::validate(); note atx-vol/python parses these declarations.");

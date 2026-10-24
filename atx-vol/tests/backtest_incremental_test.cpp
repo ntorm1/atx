@@ -181,6 +181,8 @@ void append_result(BacktestResult &destination, const BacktestResult &source) {
   append(destination.n_open_lots, source.n_open_lots);
   append(destination.n_unpriced_lots, source.n_unpriced_lots);
   append(destination.n_unpriced_greeks, source.n_unpriced_greeks);
+  append(destination.n_priced_marks, source.n_priced_marks);
+  append(destination.n_greeks_unavailable, source.n_greeks_unavailable);
   append(destination.step_pnl_total, source.step_pnl_total);
   append(destination.nav_liquidation, source.nav_liquidation);
 }
@@ -214,6 +216,8 @@ void expect_same_result(const BacktestResult &actual, const BacktestResult &expe
   EXPECT_EQ(actual.n_open_lots, expected.n_open_lots);
   EXPECT_EQ(actual.n_unpriced_lots, expected.n_unpriced_lots);
   EXPECT_EQ(actual.n_unpriced_greeks, expected.n_unpriced_greeks);
+  EXPECT_EQ(actual.n_priced_marks, expected.n_priced_marks);
+  EXPECT_EQ(actual.n_greeks_unavailable, expected.n_greeks_unavailable);
   EXPECT_EQ(actual.step_pnl_total, expected.step_pnl_total);
   EXPECT_EQ(actual.nav_liquidation, expected.nav_liquidation);
   EXPECT_EQ(actual.signals, expected.signals);

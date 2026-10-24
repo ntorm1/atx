@@ -162,6 +162,11 @@ def test_run_produces_full_series(run):
     assert len(columns["nav"]) == NUM_DATES
     assert columns["nav"][-1] == pytest.approx(run.nav[-1])
     assert run.n_open_lots.max() > 0.0
+    assert len(columns["n_priced_marks"]) == NUM_DATES
+    assert len(columns["n_greeks_unavailable"]) == NUM_DATES
+    for priced, partial in zip(run.n_priced_marks, run.n_greeks_unavailable):
+        assert 0.0 <= partial <= priced
+        assert priced.is_integer() and partial.is_integer()
 
 
 def test_daily_delta_hedge_flattens_net_delta(run):
@@ -368,3 +373,31 @@ def test_skip_entry_on_missing_index_round_trips_and_propagates():
     cfg.skip_entry_on_missing_index = True
     assert cfg.skip_entry_on_missing_index
     assert av.make_dispersion_strangle_spec(cfg).skip_entry_on_missing_index
+
+
+def test_result_price_coverage_is_explicit_owned_and_validated():
+    result = av.BacktestResult()
+    result.resize(2)
+    result.date = ["2026-10-23", "2026-10-24"]
+    result.ts_ns = [1, 2]
+    # Resizing a hand-built result cannot fabricate observed coverage.
+    assert len(result.n_priced_marks) == 0
+    assert len(result.n_greeks_unavailable) == 0
+    result.n_priced_marks = [2.0, 1.0]
+    with pytest.raises(ValueError):
+        result.validate()
+    result.n_greeks_unavailable = [1.0, 0.0]
+    result.validate()
+    columns = result.to_dict()
+    assert columns["n_priced_marks"].tolist() == [2.0, 1.0]
+    assert columns["n_greeks_unavailable"].tolist() == [1.0, 0.0]
+    assert columns["n_priced_marks"].flags.owndata
+    columns["n_priced_marks"][0] = 99.0
+    assert result.n_priced_marks.tolist() == [2.0, 1.0]
+    for bad in ([0.5, 0.0], [-1.0, 0.0], [math.nan, 0.0], [3.0, 0.0], [1.0]):
+        result.n_greeks_unavailable = bad
+        with pytest.raises(ValueError):
+            result.validate()
+    result.n_priced_marks = []
+    result.n_greeks_unavailable = []
+    result.validate()

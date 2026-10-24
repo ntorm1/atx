@@ -42,6 +42,7 @@
 #include "pricing/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
 #include "pricing/american_greek_availability.hpp"
 #include "backtest/price_totals_reduction.hpp"
+#include "backtest/mark_coverage.hpp"
 #include "storage/snapshot_pool.hpp" // Task C2: SnapshotPool (RunConfig::snapshot_pool)
 
 namespace atx::vol {
@@ -3734,6 +3735,7 @@ Status BacktestResult::validate() const {
   ATX_TRY_VOID(check_column("n_extrapolated_marks", n_extrapolated_marks, rows));
   ATX_TRY_VOID(check_column("n_carried_marks", n_carried_marks, rows));
   ATX_TRY_VOID(check_column("margin_required", margin_required, rows));
+  ATX_TRY_VOID(detail::validate_mark_coverage(n_priced_marks, n_greeks_unavailable, rows));
 
   // Task F-8: the explain columns, driven off the ONE roster rather than
   // re-listed. They join `gross_vega_abs`/`nav_liquidation` rather than the
@@ -3762,6 +3764,9 @@ Status BacktestResult::validate() const {
 
   for (std::size_t i = 0; i < signals.size(); ++i) {
     const std::string &name = signals[i].first;
+    if (detail::is_mark_coverage_name(name)) {
+      return Err(ErrorCode::InvalidArgument, "BacktestResult signal shadows mark coverage");
+    }
     if (name.empty()) {
       return Err(ErrorCode::InvalidArgument,
                  "BacktestResult signal " + std::to_string(i) +
@@ -3876,6 +3881,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+    out.n_priced_marks.push_back(static_cast<double>(g.n_priced));
+    out.n_greeks_unavailable.push_back(static_cast<double>(g.n_greeks_unavailable));
     out.n_extrapolated_marks.push_back(n_extrapolated);
     out.n_carried_marks.push_back(n_carried);
     out.margin_required.push_back(margin_req); // Task B2
@@ -4407,6 +4414,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         out.n_open_lots.push_back(static_cast<double>(n_lots));
         out.n_unpriced_lots.push_back(n_unpriced);
         out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+        out.n_priced_marks.push_back(static_cast<double>(g.n_priced));
+        out.n_greeks_unavailable.push_back(static_cast<double>(g.n_greeks_unavailable));
         out.n_extrapolated_marks.push_back(n_extrapolated);
         out.n_carried_marks.push_back(n_carried);
         out.margin_required.push_back(margin_req); // Task B2
