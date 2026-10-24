@@ -67,4 +67,14 @@ class CensusCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode,0)
         self.assertEqual(stale.read_text(),'retained')
 
+    def test_post_fit_proof_and_census_are_rejected_before_running_a_fit(self):
+        capture = self.root / 'mixed-capture.json'
+        result = self.invoke('mixed', ['--joint-row-census', str(capture),
+                                      '--post-fit-acceptance-audit'])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('post-fit audit and joint row census are mutually exclusive', result.stderr)
+        self.assertFalse((self.root / 'mixed.csv').exists())
+        self.assertFalse((self.root / 'mixed.report.json').exists())
+        self.assertFalse(capture.exists())
+
 if __name__=='__main__':unittest.main()

@@ -14,6 +14,8 @@ thread_local JointRowObserver *local_owner = nullptr;
 
 template <class T> bool append_extent(std::span<T> values,
     std::array<std::pair<std::uintptr_t, std::uintptr_t>, 5> &ranges, std::size_t i) noexcept {
+  // SAFETY: supported targets use flat byte addresses representable in uintptr_t.
+  // Compare checked address ranges only; never convert back or dereference the cast.
   const auto begin = reinterpret_cast<std::uintptr_t>(values.data());
   if (values.size() > std::numeric_limits<std::uintptr_t>::max() / sizeof(T)) return false;
   const auto bytes = values.size() * sizeof(T);

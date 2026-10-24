@@ -231,6 +231,8 @@ Arguments arguments(int argc, char **argv) {
         (args.policy != "auto" && same_file(args.candidate_capture, args.policy)))
       throw std::runtime_error("candidate capture paths must differ from inputs, policy and outputs");
   }
+  if (args.post_fit_acceptance_audit && !args.joint_row_census.empty())
+    throw std::runtime_error("post-fit audit and joint row census are mutually exclusive");
   if (seen.contains("--joint-row-census")) {
     if (args.joint_row_census.empty() || args.model != "quote-slice" || !args.curve.empty() ||
         args.policy == "auto" || args.reps != 1U || atx_auto_worker_count() != 1U ||
