@@ -288,6 +288,11 @@ set(ATX_VOL_RISK_SOURCES
     src/risk/risk_api_check.cpp
     src/risk/risk_types.cpp
     src/risk/market_state.cpp
+    src/risk/risk_book.cpp
+    src/risk/risk_frame.cpp
+    src/risk/risk_kernel.cpp
+    src/risk/risk_kernel_cold.cpp
+    src/risk/risk_kernel_family.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES

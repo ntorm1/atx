@@ -407,6 +407,8 @@ add_executable(atx-vol-tests
     support/cached_artifacts.cpp
     test_paths_test.cpp
     arb_test.cpp
+    risk_book_test.cpp
+    risk_kernel_test.cpp
     risk_market_state_test.cpp
     risk_surface_validation_test.cpp
     surface_v2_qualification_test.cpp

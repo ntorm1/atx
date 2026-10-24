@@ -203,7 +203,7 @@ make_state(const StateMove &mv, CarryFrom carry = CarryFrom::Surface, std::size_
 // The 61-leg book: per underlier and expiry, five strikes around spot (puts below,
 // calls above, the ATM strike alternating side by expiry), signed quantities, plus a
 // repeat of the first contract so the dedup is exercised (60 unique contracts,
-// 48 (uid, expiry, side) groups at n_uids = 3).
+// 24 (uid, expiry, side) groups at n_uids = 3).
 [[nodiscard]] inline std::vector<OptionLeg> make_option_legs(std::size_t n_uids = 3) {
   constexpr std::array<double, 5> kRel{0.92, 0.97, 1.0, 1.03, 1.08};
   std::vector<OptionLeg> legs;
