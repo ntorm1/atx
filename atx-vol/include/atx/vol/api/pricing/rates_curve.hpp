@@ -78,6 +78,12 @@ inline constexpr double kQuietNaN = std::numeric_limits<double>::quiet_NaN();
 // safe to call concurrently from any number of threads once construction
 // has completed; `create` must not race a reader of the object it builds
 // into (it returns a fresh value, so this is naturally satisfied).
+// The pillars a YieldCurve was built from (see YieldCurve::pillars).
+struct YieldCurvePillarSpans {
+  std::span<const double> t_years;
+  std::span<const double> zero_rates;
+};
+
 class YieldCurve {
 public:
   YieldCurve() noexcept = default;
@@ -119,9 +125,18 @@ public:
 
   [[nodiscard]] std::size_t size() const noexcept { return t_years_.size(); }
 
+  // Exactly the arrays `create` was given (empty for a default-constructed curve), so
+  // `create(p.t_years, p.zero_rates)` rebuilds a curve whose `disc` / `zero` are bit-equal
+  // everywhere: how a persisted curve round-trips (2026-10-24, persist lane P1). The spans
+  // borrow this curve.
+  [[nodiscard]] YieldCurvePillarSpans pillars() const noexcept {
+    return {t_years_, zero_rates_};
+  }
+
 private:
-  std::vector<double> t_years_; // [n] strictly ascending
-  std::vector<double> log_df_;  // [n] log(discount factor) at each pillar
+  std::vector<double> t_years_;    // [n] strictly ascending
+  std::vector<double> zero_rates_; // [n] the zero rates as given to create()
+  std::vector<double> log_df_;     // [n] log(discount factor) at each pillar
   std::vector<double> m_;       // [n] Fritsch-Carlson Hermite tangents
 };
 

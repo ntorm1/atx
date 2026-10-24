@@ -75,7 +75,6 @@ constexpr std::int64_t kTs = 1786716000000000000LL; // 2026-08-14 14:00 UTC
 
 struct HandMarket {
   MarketStateStorage storage;
-  std::vector<YieldCurvePillars> pillars;
   std::vector<MarkExtrasColumns> extras; // one per storage.marks
   std::vector<std::string> tickers;      // index uid - 1
   BucketStateReport report;
@@ -111,9 +110,9 @@ struct HandMarket {
   s.underliers[0] = UnderlierState{7, 101.5, 0.04, nullptr, 0.01, {}, {}, CarryFrom::State};
   s.underliers[1] = UnderlierState{2, 55.25, 0.035, nullptr, 0.0, {}, {}, CarryFrom::State};
   s.underliers[2] = UnderlierState{5, 210.0, 0.042, nullptr, 0.013, {}, {}, CarryFrom::State};
-  h->pillars.push_back({{0.1, 0.5, 1.0, 2.0}, {0.040, 0.041, 0.043, 0.045}});
-  s.yield_curves.push_back(
-      YieldCurve::create(h->pillars[0].t_years, h->pillars[0].zero_rates).value());
+  const std::vector<double> pillar_t{0.1, 0.5, 1.0, 2.0};
+  const std::vector<double> pillar_r{0.040, 0.041, 0.043, 0.045};
+  s.yield_curves.push_back(YieldCurve::create(pillar_t, pillar_r).value());
   s.term_carries.resize(3);
   s.term_carries[1] = {{kTs + 86400000000000LL * 30, 0.12, 0.036, 0.001},
                        {kTs + 86400000000000LL * 60, 0.24, 0.037, 0.002},
@@ -156,7 +155,6 @@ struct HandMarket {
   in.storage = &h.storage;
   in.tickers_by_uid = h.tickers;
   in.extras = h.extras;
-  in.yield_pillars = h.pillars;
   in.report = &h.report;
   in.date = "2026-08-14";
   in.bucket_et = "1000";
@@ -484,15 +482,13 @@ TEST(PersistStateArchive, YieldCurveRebuiltAtOpen) {
     EXPECT_TRUE(bits(u->yield->zero(T), want.zero(T))) << T;
   }
   EXPECT_EQ(a->state().underlier(2)->yield, nullptr);
-  // The encoder refuses a curve it cannot prove it reproduces.
-  MarketStateWriteInput no_pillars = input_of(*h);
-  no_pillars.yield_pillars = {};
-  EXPECT_EQ(encode_market_state(no_pillars).error().status, PersistStatus::InvalidArgument);
-  std::vector<YieldCurvePillars> wrong = h->pillars;
-  wrong[0].zero_rates[2] += 1e-9;
-  MarketStateWriteInput lie = input_of(*h);
-  lie.yield_pillars = wrong;
-  EXPECT_EQ(encode_market_state(lie).error().status, PersistStatus::InvalidArgument);
+  // The encoder refuses a curve with no pillars to rebuild from (a default-constructed
+  // curve some underlier points at).
+  HandMarket empty_curve = *h;
+  empty_curve.storage.yield_curves[0] = YieldCurve{};
+  empty_curve.storage.underliers[0].yield = &empty_curve.storage.yield_curves[0];
+  EXPECT_EQ(encode_market_state(input_of(empty_curve)).error().status,
+            PersistStatus::InvalidArgument);
 }
 
 TEST(PersistStateArchive, ExtrasAlignWithMarks) {

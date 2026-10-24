@@ -44,10 +44,6 @@ template <class T> [[nodiscard]] std::span<const std::byte> bytes_of(const std::
   return std::as_bytes(std::span<const T>{v});
 }
 
-[[nodiscard]] bool bits_equal(double a, double b) noexcept {
-  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
-}
-
 template <std::size_t N> void put_text(std::array<char, N> &a, std::string_view s) noexcept {
   a.fill('\0');
   std::copy_n(s.begin(), std::min(s.size(), N - 1), a.begin());
@@ -99,37 +95,21 @@ struct Encoded {
 
 // The stored curve's pillars, proven: a curve rebuilt from them must reproduce the
 // stored curve's discount factor bit-for-bit at every pillar and between them.
-[[nodiscard]] PersistOutcome check_pillars(const YieldCurve &curve, const YieldCurvePillars &p) {
-  const std::size_t n = p.t_years.size();
-  if (n == 0 || p.zero_rates.size() != n || curve.size() != n) {
-    return persist_error(PersistStatus::InvalidArgument, sec(MS::YieldPillars));
-  }
-  auto rebuilt = YieldCurve::create(p.t_years, p.zero_rates);
-  if (!rebuilt) return persist_error(PersistStatus::InvalidArgument, sec(MS::YieldPillars));
-  std::vector<double> probes{0.5 * p.t_years.front(), 2.0 * p.t_years.back() + 1.0};
-  for (std::size_t i = 0; i < n; ++i) {
-    probes.push_back(p.t_years[i]);
-    if (i + 1 < n) probes.push_back(0.5 * (p.t_years[i] + p.t_years[i + 1]));
-  }
-  for (const double t : probes) {
-    if (!bits_equal(curve.disc(t), rebuilt->disc(t))) {
-      return persist_error(PersistStatus::InvalidArgument, sec(MS::YieldPillars));
-    }
-  }
-  return {};
-}
-
 [[nodiscard]] PersistOutcome add_yield(const MarketStateWriteInput &in, const UnderlierState &u,
                                        sf::UnderlierRow &row, Encoded &out) {
   if (u.yield == nullptr) return {};
   const MarketStateStorage &s = *in.storage;
   std::size_t k = 0;
   while (k < s.yield_curves.size() && &s.yield_curves[k] != u.yield) ++k;
-  if (k == s.yield_curves.size() || k >= in.yield_pillars.size()) {
+  // The pillars are the arrays the curve was created from, so the reader's
+  // YieldCurve::create over them rebuilds it bit-equal (rates_curve
+  // YieldCurve.Pillars_RebuildBitEqualCurve). A curve outside the storage, or an empty
+  // (default-constructed) one, has nothing to rebuild from.
+  const YieldCurvePillarSpans p =
+      k < s.yield_curves.size() ? s.yield_curves[k].pillars() : YieldCurvePillarSpans{};
+  if (p.t_years.empty() || p.zero_rates.size() != p.t_years.size()) {
     return persist_error(PersistStatus::InvalidArgument, sec(MS::YieldPillars), u.uid);
   }
-  const YieldCurvePillars &p = in.yield_pillars[k];
-  if (PersistOutcome ok = check_pillars(s.yield_curves[k], p); !ok) return ok;
   row.curve_begin = static_cast<std::uint32_t>(out.pillars.size());
   row.curve_count = static_cast<std::uint32_t>(p.t_years.size());
   for (std::size_t i = 0; i < p.t_years.size(); ++i) {

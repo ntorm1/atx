@@ -107,15 +107,6 @@ struct MarkExtrasColumns {
   std::vector<double> bid, ask, vendor_gamma, vendor_vega, vendor_theta, vendor_T, uprc;
 };
 
-// The pillars of one `MarketStateStorage::yield_curves` entry. ADDITIVE (lane P1):
-// `YieldCurve` exposes no pillar accessor, so a writer cannot recover them from the
-// curve; the encoder rebuilds a curve from these pillars and refuses
-// (InvalidArgument) unless it reproduces the stored curve bit-for-bit at every pillar.
-struct YieldCurvePillars {
-  std::vector<double> t_years;
-  std::vector<double> zero_rates;
-};
-
 struct MarketStateWriteInput {
   const MarketStateStorage *storage{nullptr};
   // tickers_by_uid[uid - 1] names uid (UnderlierTable::tickers()); a uid past the end
@@ -126,8 +117,7 @@ struct MarketStateWriteInput {
   // Surfaces to embed (owned `PricedSurface` refs only: a view has no writer). Empty
   // embeds `storage->surfaces`. Each must name a uid of the storage, at most one per uid.
   std::span<const SurfaceRef> surfaces{};
-  // ── Lane P1 additions ──
-  std::span<const YieldCurvePillars> yield_pillars{}; // one per storage->yield_curves
+  // ── Lane P1 additions ── (yield curves are stored from YieldCurve::pillars())
   const BucketStateReport *report{nullptr};           // loader counters -> Meta (optional)
   std::string_view date{};                            // "YYYY-MM-DD" provenance (<= 15 bytes)
   std::string_view bucket_et{};                       // "HHMM" provenance (<= 7 bytes)
@@ -140,8 +130,8 @@ struct MarketStateWriteInput {
 // Encode one state into a complete PersistFile image (deterministic: the same input
 // gives the same bytes). InvalidArgument on a null storage, inconsistent column
 // lengths, a uid listed twice, unsorted marks, a side byte outside
-// {0, 1}, a yield pointer that does not point into `storage->yield_curves`, missing /
-// non-reproducing pillars, a view-backed or foreign-uid surface, or an oversized
+// {0, 1}, a yield pointer that does not point into `storage->yield_curves` or at an
+// empty (default-constructed) curve, a view-backed or foreign-uid surface, or an oversized
 // date / bucket string. The round trip is canonical: rows come back sorted by uid.
 [[nodiscard]] PersistResult<std::vector<std::byte>>
 encode_market_state(const MarketStateWriteInput &input);
