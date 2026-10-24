@@ -3,8 +3,9 @@
 Source review, 2026-10-24. This extends
 [the frontier review](cash-reference-frontier-review-20261024.md) at `5f09ba3f`.
 Cash production/reference sources were read at `234b31fe`; their diff against
-the merged root `a1ca7d14` is empty. No cash pricing code or numerical profile was
-changed, and no new cash benchmark was run for this review.
+the merged root `a1ca7d14` is empty. No new cash benchmark was run for this review.
+Subsequent reference-admission hardening is recorded below; the production cash
+pricing profiles remain unchanged.
 
 The next concrete step is a **price-error frontier harness**, followed by a
 prepared, event-aligned PDE workspace experiment using the existing D0 solver.
@@ -96,6 +97,15 @@ claim a rigorous continuum error bound.
    is present only for positive bid and ask at least bid. The earlier per-row-spot
    file had 2,404 groups; the superseding chain-median file has 398. Freeze the
    exact input file and report normalization instead of mixing these cohorts.
+   The source control run inferred its cash schedule from per-expiry cash/PV
+   increments: its event inventory has 234 `exact`, 153 `sum_split` and four
+   `non_integer_day` entries. Those labels describe the inference procedure;
+   they are not an independently verified corporate-action truth set. Preserve
+   them in the manifest. The PV identity uses `exp(-rate * days / 365)`, while
+   the kernel clock uses `tau=T*days/life_days`; export and reconcile the actual
+   discounts if those clocks differ. The control run also explicitly treats the
+   supplied `sdiv` as residual yield alongside cash. Keep that model assumption
+   visible when comparing to a vendor or external cash dataset.
 4. **Historical price timings use heterogeneous sigmas.** `ddiv_latency_main.cpp`
    uses each contract's identified IV, otherwise `--sigma`. The CSV and aggregate
    timing report do not preserve these per-request sigmas for a replay. Export
@@ -203,6 +213,22 @@ invalidate the existing 50-case results. Before general production use, check
 stencil admissibility and the actual implicit-row conditions, returning a typed
 unsupported result or routing to a separately tested monotone discretization.
 Do not silently use centered drift outside its justified region.
+
+Follow-up `0bd781ce7c8e77406629b4a7f1bb7192f5ee39ab` implements this admission
+guard and a second check on each actual implicit matrix: finite nonpositive
+off-diagonals and strict diagonal dominance. The latter is a sufficient M-matrix
+condition and prevents large negative rates/time steps from bypassing the spatial
+guard. Unsupported grids return `OutOfRange` before their Thomas/Howard solve;
+the method does not change its stencil or time steps. This is a supported-grid
+restriction, not a general accuracy certificate. The source header now describes
+Richardson uncertainty as empirical, with its counterexample retained in a test.
+
+Validation passed 28 focused tests, owning PCH-off compilation and the full
+50-case matrix with its existing appendices. Every non-timing CSV column equals
+the archived D1 D0 matrix exactly. The source was independently approved by root
+and acceptance reviewers. Reproducible comparisons, red/green tests and hashes are
+in `calendar/cash-matrix-guards-v2/receipt.json` under the evidence directory above.
+This changes reference admission only and supplies no production PDE speed claim.
 
 Second, the cash jump is not entirely precomputable. `apply_jump` locates crossings
 of continuation and cum-dividend exercise, then integrates cells split at those
