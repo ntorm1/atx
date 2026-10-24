@@ -23,6 +23,15 @@ library leads with.
 
 ## 0.1 Status log
 
+- 2026-10-24 20:30 UTC: wave 1 landed on `feat/vol-risk-engine-20261024` @ 4469d3e5 (A @ 15ea7410
+  after a BLOCK/fix round on RiskStream's failure-path lifetime; B @ 39bd5360 after two minor
+  rounds; C @ 75293b21 APPROVE, follow-up in flight). Integration: risk suites 104/104, E2E green,
+  regression slices green, umbrella tier tests green (two pre-existing umbrella failures on main
+  are outside the sprint). First licensed benchmark (avx2, 8 thr): synthetic meets G3; licensed
+  MISSES G3 (frame p50 248 ms, explain 8 ms, run 3.2 s excl. I/O) because the real book yields
+  3.4 contracts per family and 24 % short-tenor cold rows → lane A2 (perf) opened on pool-36;
+  lane D (VaR) dispatched on pool-30 off 6b53fff6. Vendor parity on the real book (price sym-rel
+  4.4 %, max |Δ| 54.76) awaits lane C's per-leg dump.
 - 2026-10-24 17:10 UTC: user correction — the licensed drop is present as a single parquet in Downloads (2026-10-14, not 2026-08-14). Profiled, partitioned into `C:\atx-data\spiderrock-30min`; §1 fact row rewritten, D7 revised, D16 added; lane C notified (additive `american_only` filter, real-store env-gated test, docs date).
 - 2026-10-24 16:40 UTC: builder check (Opus subagent) returned 7 questions + API conflicts;
   resolved as D4 (revised), D5 (revised), D11–D15 below; headers re-patched and re-checked.
@@ -478,8 +487,8 @@ suite. Wave 2: lane D on one slot. Integration 2: full `atx_vol_fast` label on `
 - B: `StrikeCoord.RoundTripsAllPairs`, `StrikeCoord.ThreeDeltaConventionsDifferOnHighCarry`,
   `TheoContract.FixedMoneynessSeriesHoldsTAndK`, `TheoContract.TenorExtrapolationIsFlagged`,
   `PricedSurface.ShapeBlendDefaultOverloadBitIdentical`, `PricedSurface.ShapeBlendPreservesSkew`.
-- C: `SpiderRockStore.ReadsBothStringEncodings`, `SpiderRockStore.MarketStateFromBucketKeys`,
-  `SyntheticStore.ElevenBucketsMoveTheMarket`, `RiskBench.SyntheticEndToEndReportSchema`
+- C: `SpiderRockStore.ReadsBothStringEncodings`, `BucketState.StorageHasOneMarksBlockPerUid / BucketState.MarksSortedAndUnique`,
+  `SyntheticStore.WritesElevenBuckets / SyntheticStore.MarketMovesAcrossBuckets`, `RiskBenchReport.JsonSchemaV1RoundTrip / RiskBenchE2E.SyntheticRunProducesReport (ATX_VOL_RISK_E2E=ON)`
   (integration), `RiskBench.ThreadDeterminism` (integration).
 - D: `HistoricalVar.FixedDeltaAndFixedMoneynessTemplates`, `HistoricalVar.SharesInScenarioPnl`,
   dispersion suites still green.
@@ -560,6 +569,37 @@ suite. Wave 2: lane D on one slot. Integration 2: full `atx_vol_fast` label on `
   normalizes the drop: float32 → float64, -99 → NULL on every vendor column, `okey_dt` →
   `okey_yr/mn/dy`, `bucket_et` = America/New_York HHMM of the slice instant; strings are utf8
   (not large_utf8) and every reader accepts both.
+- D17 (lane C finding, 17:30 UTC). Non-standard option roots (`okey_tk != undSecKey_tk`: adjusted /
+  non-standard deliverables; 31,329 American rows on 291 uids at 10:00, 16,355 duplicated
+  (uid, expiry, side, strike) keys) are dropped by `SpiderRockStoreSpec::standard_roots_only`
+  (default true, additive; counted in `dropped_nonstandard_root`, applied before top-N). Keyed by
+  underlier they collide, and an adjusted contract priced on the underlier's spot is wrong, not
+  approximate. 61 uids that have only non-standard roots vanish; the 2,388 eligible-uid count
+  is unaffected in substance.
+- D18 (lane A request, deferred). `explain_into(..., RiskWorkspace&)` in place of the thread-local
+  grow-only scratch is a post-sprint API cleanup, not applied in integration 1: `RiskStream` already
+  owns a workspace and is the hot path; the scratch is safe because nested executor calls run
+  inline. Recorded so the next header revision carries it.
+- D19 (integration, 20:00 UTC). Family-kernel economics on the real book are a measured defect of
+  the design's density assumption, not of the implementation: G3 is judged on the licensed run
+  after lane A2, with the synthetic numbers reported alongside. Levers and their order are in
+  `lane-A2-brief.md`; `kAlSigmaFamilyMinTau` (a pricing-library guard) is not lowered.
+- D20 (integration, 21:10 UTC; per-leg parity dump on the licensed bucket). The licensed market
+  environment reproduces SpiderRock's pricing basis three ways, all in the loader / bench, none
+  in the kernel: (i) CLOCK — the state is built under `TimeConvention::VolTime` for the
+  licensed store (SpiderRock's `years` is its hybrid clock; at calendar T the same-day rows
+  were 60 % off, at `years` 1.3 %); the synthetic store stays Calendar365 (its vendor Greeks
+  were generated there); `--time` overrides; if VolTime does not reproduce `years` to ≤ 0.5 d
+  median on the real bucket, a per-expiry T override becomes a lane A header addition.
+  (ii) FORWARD BASIS — per (uid, expiry) the forward is implied from the vendor's OTM calls
+  (Black inversion at σ = srVol, T = years; median; ≥ 3 calls; IQR ≤ 0.1 %), written as an
+  `ExpiryCarry` with pv_divs = 0 and q = r − ln(F/S)/T; expiries failing the guard fall back
+  to D4 (escrowed `ddivPv` + `sdiv`). Reason: SpiderRock escrows discrete dividends up to an
+  undisclosed horizon and uses a continuous yield beyond it (DIA 2028-12: calls imply F = 562.2
+  flat across strikes = S·e^{(r−sdiv)T}, no escrow; TLT/LQD at 1 y are escrowed), and `sdiv`
+  is a signed residual. D4 stays the published-data fallback and the synthetic default.
+  (iii) PRICE FRAMEWORK — `prcFramework != Spot` rows are dropped and counted (D16 extension):
+  OEX carries a per-expiry forward in `uPrc`. Also `pv_divs` reads `ddivPv` (PV) not `ddiv`.
 
 ## 10. Left to the builder
 
