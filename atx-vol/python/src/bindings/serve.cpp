@@ -593,6 +593,8 @@ void bind_book(py::module_ &m) {
                 served_tier(static_cast<py::ssize_t>(n)), cls(static_cast<py::ssize_t>(n)),
                 map_cls(static_cast<py::ssize_t>(n)), reason(static_cast<py::ssize_t>(n));
             py::array_t<bool> sampled(static_cast<py::ssize_t>(n));
+            py::array_t<std::uint8_t> greek_reasons(py::array::ShapeContainer{
+                static_cast<py::ssize_t>(n), static_cast<py::ssize_t>(kServeGreekCount)});
             for (std::size_t i = 0; i < n; ++i) {
               const ServedChainStatement &s = statements[i];
               cert.mutable_data()[i] = s.certificate_usd;
@@ -606,6 +608,9 @@ void bind_book(py::module_ &m) {
               map_cls.mutable_data()[i] = static_cast<std::uint8_t>(s.map_certificate_class);
               reason.mutable_data()[i] = static_cast<std::uint8_t>(s.price_only_reason);
               sampled.mutable_data()[i] = s.sampled;
+              for (std::size_t j = 0; j < kServeGreekCount; ++j)
+                greek_reasons.mutable_data()[kServeGreekCount * i + j] =
+                    static_cast<std::uint8_t>(s.greek_reasons[j]);
             }
             py::dict d;
             d["price"] = std::move(price);
@@ -625,6 +630,7 @@ void bind_book(py::module_ &m) {
             d["iv_lower"] = std::move(iv_lo);
             d["iv_upper"] = std::move(iv_hi);
             d["sampled"] = std::move(sampled);
+            d["greek_reasons"] = std::move(greek_reasons);
             d["version"] = reader.pinned().number;
             return d;
           },

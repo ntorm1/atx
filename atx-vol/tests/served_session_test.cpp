@@ -26,6 +26,7 @@
 #include "atx/vol/api/fitting/serve_book.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "atx/vol/api/fitting/slice_serve_record.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/marketdata/data.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
 #include "atx/vol/api/pricing/american.hpp"
@@ -83,7 +84,7 @@ const VolaSession &session() {
 }
 
 // A quote-slice record of the session's first expiry (its own fit of an AL smile chain).
-std::shared_ptr<const SliceServeRecord> record_at(double T) {
+std::shared_ptr<const SliceServeRecord> record_at(double T, bool puts_price_only = false) {
   const double S = 100.0;
   const double r = 0.04;
   const double q = 0.008;
@@ -103,6 +104,7 @@ std::shared_ptr<const SliceServeRecord> record_at(double T) {
   Result<QuoteSliceFit> fit = fit_quote_slice(market, quotes);
   EXPECT_TRUE(fit.has_value());
   if (!fit) return nullptr;
+  if (puts_price_only) fit->price_only_nodes.assign(fit->prices->nodes().size(), 2u);
   Result<std::shared_ptr<const SliceServeRecord>> built = build_serve_record(*fit);
   EXPECT_TRUE(built.has_value());
   return built ? *built : nullptr;
@@ -165,6 +167,10 @@ TEST(ServedSession, ABoundExpiryIsTheBooksAnswerAndAnUnboundOneTheSessionsColdRo
   EXPECT_EQ(a.declaration.model, AnalyticsModel::QuotingRecord);
   EXPECT_EQ(a.declaration.book_version, book->version());
   EXPECT_EQ(a.declaration.expiry_id, 11u);
+  EXPECT_EQ(a.requested, GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta);
+  EXPECT_TRUE(has_field(a.supported, GreekFieldMask::Price));
+  for (const auto reason : a.cold_reasons) EXPECT_EQ(reason, AmericanGreekReason::NotRequested);
 
   const SessionServedAnswer b = served->serve(r, 100.0, T1, Side::Put, spot, kNow);
   EXPECT_EQ(b.source, SessionServeSource::SessionCold);
@@ -228,6 +234,9 @@ TEST(ServedSession, TheChainRoutesBoundRunsThroughServeChainAndTheRestToTheSessi
     EXPECT_EQ(st[k].book.status, st2[j].status) << k;
     EXPECT_EQ(st[k].book.certificate_class, st2[j].certificate_class) << k;
     EXPECT_EQ(st[k].book.sampled, st2[j].sampled) << k;
+    EXPECT_EQ(st[k].book.greek_reasons, st2[j].greek_reasons) << k;
+    const auto one = check.serve(11, book_request(bk[j], bs[j], spot));
+    EXPECT_EQ(st2[j].greek_reasons, one.reason) << k;
     EXPECT_EQ(st[k].input_class, classify_served_statement(st2[j], p2[j])) << k;
     EXPECT_EQ(scratch[k], 11u);
   }
@@ -249,6 +258,110 @@ TEST(ServedSession, TheChainRoutesBoundRunsThroughServeChainAndTheRestToTheSessi
                                  ChainTickOutputs{price, delta, gamma, vega, theta, tick}, st,
                                  scratch)
                    .has_value());
+}
+
+TEST(ServedSessionAvailability, ColdPartialPriceSurvivesWithActualFiveAxisReasons) {
+  constexpr auto wanted = GreekFieldMask::Price | GreekFieldMask::Delta | GreekFieldMask::Gamma |
+      GreekFieldMask::Vega | GreekFieldMask::Theta;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const bool put = side == Side::Put;
+    const double S = put ? 772.99 : 811.6395, K = put ? 811.6395 : 772.99;
+    const double r = put ? .04496 : .00162193, q = put ? .00162193 : .04496;
+    constexpr double T = .0682, sigma = .12;
+    const double F = S * std::exp((r - q) * T);
+    EssviParams p{};
+    p.T = T; p.F = F; p.theta = sigma * sigma * T;
+    p.phi = p.rho = 0.; p.psi = p.p = p.lambda = .5;
+    CurveSurface curves;
+    curves.push(std::make_unique<EssviCurve>(p, std::exp(-r * T)));
+    PricingContext pricing;
+    pricing.S = S; pricing.r = r;
+    auto surface = PricedSurface::create(std::move(curves), {{T, F, 0., q, 100u, 0u}}, pricing);
+    ASSERT_TRUE(surface.has_value());
+    auto book = std::make_shared<ServeBook>();
+    auto binding = ServedSession::bind(*surface, book, {});
+    ASSERT_TRUE(binding.has_value());
+    auto reader = binding->reader();
+    const auto direct = american_greeks_fd(S, K, T, surface->iv(K, T), r, q, side,
+        pricing.method, pricing.al_opts);
+    const auto direct_price = american_price(S, K, T, surface->iv(K, T), r, q, side,
+        pricing.method, pricing.al_opts);
+    ASSERT_TRUE(direct.has_value());
+    ASSERT_TRUE(direct_price.has_value());
+    ASSERT_EQ(direct->reasons[1], AmericanGreekReason::StencilCrossing);
+    const auto answer = binding->serve(reader, K, T, side, S, kNow);
+    EXPECT_EQ(answer.source, SessionServeSource::SessionCold);
+    EXPECT_EQ(answer.status, AnalyticsStatus::Estimate);
+    EXPECT_EQ(bits(answer.price), bits(*direct_price));
+    EXPECT_EQ(answer.requested, wanted);
+    EXPECT_EQ(answer.supported, direct->supported & wanted);
+    EXPECT_TRUE(has_field(answer.supported, GreekFieldMask::Price));
+    EXPECT_FALSE(has_field(answer.supported, GreekFieldMask::Gamma));
+    EXPECT_EQ(answer.cold_reasons[1], AmericanGreekReason::StencilCrossing);
+    EXPECT_EQ(answer.cold_reasons[8], AmericanGreekReason::ComputedEstimate);
+    for (const auto field : {4u, 5u, 6u, 7u})
+      EXPECT_EQ(answer.cold_reasons[field], AmericanGreekReason::NotRequested);
+    EXPECT_EQ(bits(answer.delta), bits(direct->delta));
+    EXPECT_EQ(bits(answer.gamma), bits(direct->gamma));
+    EXPECT_EQ(bits(answer.vega), bits(direct->vega));
+    EXPECT_EQ(bits(answer.theta), bits(direct->theta));
+
+    const std::array<double, 3> strikes{K, S, -1.}, tenors{T, T, T};
+    const std::array<Side, 3> sides{side, side, side};
+    std::array<double, 3> price{}, delta{}, gamma{}, vega{}, theta{};
+    std::array<TickStatus, 3> ticks{};
+    std::array<SessionChainStatement, 3> statements{};
+    std::array<std::uint64_t, 3> scratch{};
+    for (auto &st : statements) {
+      st.supported = GreekFieldMask::All;
+      st.cold_reasons.fill(AmericanGreekReason::Exercised);
+    }
+    ASSERT_TRUE(binding->serve_chain(reader, S, kNow, {strikes, tenors, sides},
+        {price, delta, gamma, vega, theta, ticks}, statements, scratch));
+    EXPECT_EQ(bits(price[0]), bits(answer.price));
+    EXPECT_EQ(statements[0].requested, answer.requested);
+    EXPECT_EQ(statements[0].supported, answer.supported);
+    EXPECT_EQ(statements[0].cold_reasons, answer.cold_reasons);
+    EXPECT_EQ(ticks[0], TickStatus::Fallback); // model route, not full risk supply
+    EXPECT_EQ(statements[1].supported, wanted);
+    EXPECT_EQ(statements[2].requested, wanted);
+    EXPECT_EQ(statements[2].supported, GreekFieldMask::None);
+    EXPECT_EQ(ticks[2], TickStatus::Unpriceable);
+    EXPECT_TRUE(std::isnan(price[2]));
+  }
+}
+
+TEST(ServedSessionAvailability, BookPriceOnlyAndRefusalNeverSupplyUnusedGreekZeros) {
+  const auto &s = session();
+  const double T = s.expiries()[0].T;
+  const auto record = record_at(T, true);
+  ASSERT_NE(record, nullptr);
+  const double K = record->nodes()[record->nodes().size() / 2].strike;
+  auto book = book_with(11, record);
+  const std::array<SessionBookExpiry, 1> bindings{{{T, 11}}};
+  auto binding = ServedSession::bind(s, book, bindings);
+  ASSERT_TRUE(binding.has_value());
+  auto reader = binding->reader();
+  const auto price_only = binding->serve(reader, K, T, Side::Put, 100., kNow);
+  ASSERT_EQ(price_only.status, AnalyticsStatus::PriceOnly);
+  ASSERT_TRUE(std::isfinite(price_only.price));
+  EXPECT_EQ(price_only.supported, GreekFieldMask::Price);
+  for (const auto reason : price_only.cold_reasons)
+    EXPECT_EQ(reason, AmericanGreekReason::NotRequested);
+  const std::array<double, 2> strikes{K, 500.}, tenors{T, T};
+  const std::array<Side, 2> sides{Side::Put, Side::Put};
+  std::array<double, 2> price{}, delta{}, gamma{}, vega{}, theta{};
+  std::array<TickStatus, 2> ticks{};
+  std::array<SessionChainStatement, 2> statements{};
+  std::array<std::uint64_t, 2> scratch{};
+  for (auto &st : statements) st.supported = GreekFieldMask::All;
+  ASSERT_TRUE(binding->serve_chain(reader, 100., kNow, {strikes, tenors, sides},
+      {price, delta, gamma, vega, theta, ticks}, statements, scratch));
+  EXPECT_EQ(statements[0].supported, GreekFieldMask::Price);
+  EXPECT_EQ(statements[0].book.greek_reasons, price_only.book.reason);
+  EXPECT_EQ(statements[1].supported, GreekFieldMask::None);
+  EXPECT_EQ(statements[1].source, SessionServeSource::Refused);
+  EXPECT_TRUE(std::isnan(price[1]));
 }
 
 TEST(ServedSession, BindRefusesANullBookABadTAndADuplicate) {

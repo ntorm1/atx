@@ -692,6 +692,7 @@ Status ServeBookReader::serve_chain(double spot, std::int64_t now_ns,
     st.map_certificate_class = a.map_certificate_class;
     st.price_only_reason = a.price_only_reason;
     st.sampled = a.sampled;
+    st.greek_reasons = a.reason;
     // review-H1 F1: a Sampled answer is never Ok on the status span.
     out.status[k] = a.status == ServeStatus::Ok && !a.sampled ? TickStatus::Ok
                     : a.status == ServeStatus::Exercised      ? TickStatus::Exercised

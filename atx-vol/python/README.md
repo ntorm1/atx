@@ -694,6 +694,15 @@ exclusion counts gain a trailing axis of length `len(ScenarioExclusion)`.
 `BOOK`), any other T by the surface's cold route (source `SESSION_COLD`, ticked
 `FALLBACK` in a chain). `session.serve(reader, K, T, side, spot, now_ns)` and
 `session.serve_chain(reader, spot, now_ns, strike, expiry, side)` mirror the book's API.
+Scalar answers expose `requested`, `supported` and `cold_reasons`; chain results
+export owning uint32 mask arrays plus uint8 `cold_reasons` `(N,9)` and
+`book_greek_reasons` `(N,6)`. Only Price/Delta/Gamma/Vega/Theta are requested.
+Cold reasons use `AmericanGreekReason`; book reasons use `ServeGreekReason`
+(including Phi, a different axis from Vanna). The inactive reason payload is
+NotRequested. `ServeBookReader.serve_chain` also exports its verbatim `(N,6)`
+`greek_reasons`. A valid price may coexist with refused Greeks: route/model
+statuses such as ESTIMATE or FALLBACK do not imply full Greek availability or
+qualified accuracy. PriceOnly book answers support only Price.
 The session keeps the surface alive and co-owns the book. The `VolaSession` overload and
 the common-model European outputs are not bound yet (see the coverage doc).
 

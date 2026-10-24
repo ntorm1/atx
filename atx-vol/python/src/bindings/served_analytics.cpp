@@ -563,6 +563,11 @@ py::dict session_chain(const ServedSession &session, ServeBookReader &reader, do
        cls = column_of<std::uint8_t>(n);
   auto cert = column_of<double>(n);
   auto sampled = column_of<bool>(n);
+  auto requested = column_of<std::uint32_t>(n), supported = column_of<std::uint32_t>(n);
+  py::array_t<std::uint8_t> cold_reasons(py::array::ShapeContainer{
+      static_cast<py::ssize_t>(n), py::ssize_t{9}});
+  py::array_t<std::uint8_t> book_reasons(py::array::ShapeContainer{
+      static_cast<py::ssize_t>(n), static_cast<py::ssize_t>(kServeGreekCount)});
   for (std::size_t i = 0; i < n; ++i) {
     const SessionChainStatement &s = statements[i];
     tick.mutable_data()[i] = static_cast<std::uint8_t>(ticks[i]);
@@ -574,6 +579,13 @@ py::dict session_chain(const ServedSession &session, ServeBookReader &reader, do
     cls.mutable_data()[i] = static_cast<std::uint8_t>(s.book.certificate_class);
     cert.mutable_data()[i] = s.book.certificate_usd;
     sampled.mutable_data()[i] = s.book.sampled;
+    requested.mutable_data()[i] = static_cast<std::uint32_t>(s.requested);
+    supported.mutable_data()[i] = static_cast<std::uint32_t>(s.supported);
+    for (std::size_t j = 0; j < s.cold_reasons.size(); ++j)
+      cold_reasons.mutable_data()[9 * i + j] = static_cast<std::uint8_t>(s.cold_reasons[j]);
+    for (std::size_t j = 0; j < kServeGreekCount; ++j)
+      book_reasons.mutable_data()[kServeGreekCount * i + j] =
+          static_cast<std::uint8_t>(s.book.greek_reasons[j]);
   }
   py::dict d;
   d["price"] = std::move(price);
@@ -590,6 +602,10 @@ py::dict session_chain(const ServedSession &session, ServeBookReader &reader, do
   d["certificate_class"] = std::move(cls);
   d["certificate_usd"] = std::move(cert);
   d["sampled"] = std::move(sampled);
+  d["requested"] = std::move(requested);
+  d["supported"] = std::move(supported);
+  d["cold_reasons"] = std::move(cold_reasons);
+  d["book_greek_reasons"] = std::move(book_reasons);
   return d;
 }
 
@@ -616,7 +632,10 @@ void bind_session(py::module_ &m) {
       .def_readonly("book", &SessionServedAnswer::book)
       .def_readonly("input_class", &SessionServedAnswer::input_class)
       .def_readonly("status", &SessionServedAnswer::status)
-      .def_readonly("declaration", &SessionServedAnswer::declaration);
+      .def_readonly("declaration", &SessionServedAnswer::declaration)
+      .def_readonly("requested", &SessionServedAnswer::requested)
+      .def_readonly("supported", &SessionServedAnswer::supported)
+      .def_readonly("cold_reasons", &SessionServedAnswer::cold_reasons);
 
   py::class_<ServedSession>(m, "ServedSession",
                             "A PricedSurface served through a ServeBook at the bound expiries.")

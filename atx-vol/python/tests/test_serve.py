@@ -110,6 +110,8 @@ def test_serve_chain_columns_equal_the_per_contract_answers_of_one_version(recor
     for name in ("status", "route", "tier", "certificate_class", "tick_status"):
         assert cols[name].dtype == np.uint8, name
     assert cols["sampled"].dtype == np.bool_
+    assert cols["greek_reasons"].shape == (4, 6)
+    assert cols["greek_reasons"].dtype == np.uint8
 
     for i in range(4):
         answer = reader.serve(int(ids[i]), av.ServeRequest(
@@ -120,6 +122,7 @@ def test_serve_chain_columns_equal_the_per_contract_answers_of_one_version(recor
         assert av.ServeTier(int(cols["tier"][i])) == answer.tier
         assert av.ServeBoundClass(int(cols["certificate_class"][i])) == answer.certificate_class
         assert bool(cols["sampled"][i]) == answer.sampled
+        assert cols["greek_reasons"][i].tolist() == [int(v) for v in answer.reason]
         assert (cols["price"][i] == answer.price) or (
             math.isnan(cols["price"][i]) and math.isnan(answer.price))
 

@@ -301,3 +301,31 @@ including partial rows, and report NaN error when no values were compared.
 These are correctness/denominator changes; no chain throughput or Greek
 accuracy claim is made. Native ServedSession propagation and additive backtest
 price coverage/carry bookkeeping remain separate work.
+
+ServedSession now carries exact five-axis common availability for Price, Delta,
+Gamma, Vega and Theta on both scalar answers and chain statements. Cold FD
+metadata is narrowed to those axes, while the independently computed declared
+price remains supplied even if derivatives fail. Nonfinite prices and malformed
+contracts cannot set availability. Book PriceOnly answers explicitly support
+only Price; other book derivative bits require both a finite value and the
+record's Served/Exercised reason. Route/model/price statuses remain separate
+from field availability, and no Greek accuracy certification is added.
+
+Cold and record provenance are not conflated: cold_reasons uses the nine-axis
+AmericanGreekReason order; the book answer keeps its six-axis ServeGreekReason
+payload, now also copied verbatim into ServedChainStatement.greek_reasons.
+NearExerciseEdge is not called StencilCrossing, and the record's Phi axis does
+not become Vanna. The inactive payload remains NotRequested. Every chain row
+overwrites its metadata, including refusals after a formerly supplied row.
+
+Python exposes readonly scalar masks/cold reasons and owning chain uint32
+requested/supported arrays, uint8 cold_reasons (N,9), and book_greek_reasons
+(N,6). The book's own chain API exports greek_reasons (N,6). Empty shapes,
+refused-row denominators, per-contract equality and buffer lifetime are tested.
+Four native runtime REDs and three Python REDs reproduced the missing metadata.
+Final scoped checks pass 6 native session tests, 4 book-chain/allocation tests,
+33 Python tests and 7 owning PCH-off objects. The actual staged module is
+SHA256 00d2012317bfbda0e3664ccc4754f6a37883cbd379ed40af3cb0664fbf603bfc;
+receipts are repair-iv/greek-session-{red,green,final,book-final,python-red,
+python-final,hygiene}.*. General cached/record chain-tick metadata and additive
+backtest price coverage/carry bookkeeping are still separate work.
