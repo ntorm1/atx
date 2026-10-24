@@ -134,28 +134,24 @@ struct ExplainScratch {
   return s;
 }
 
-// First marks row with the exact key, or npos (marks sorted by (expiry, side, K)).
-[[nodiscard]] std::size_t find_mark(const ContractMarks &m, std::int64_t expiry, Side side,
-                                    double K) noexcept {
-  std::size_t lo = 0;
-  std::size_t hi = m.size();
-  while (lo < hi) {
-    const std::size_t mid = lo + (hi - lo) / 2u;
-    const bool less = m.expiry_ns[mid] != expiry
-                          ? m.expiry_ns[mid] < expiry
-                          : (m.side[mid] != side ? static_cast<std::uint8_t>(m.side[mid]) <
-                                                       static_cast<std::uint8_t>(side)
-                                                 : m.strike[mid] < K);
-    if (less) {
-      lo = mid + 1u;
-    } else {
-      hi = mid;
-    }
-  }
-  if (lo < m.size() && m.expiry_ns[lo] == expiry && m.side[lo] == side && m.strike[lo] == K) {
-    return lo;
-  }
-  return std::numeric_limits<std::size_t>::max();
+// The rows [first, last) of one expiry (marks sorted by (expiry, side, K)).
+struct MarkRange {
+  std::size_t first{0};
+  std::size_t last{0};
+};
+
+[[nodiscard]] MarkRange expiry_range(const ContractMarks &m, std::int64_t expiry) noexcept {
+  const auto first = std::lower_bound(m.expiry_ns.begin(), m.expiry_ns.end(), expiry);
+  const auto last = std::upper_bound(first, m.expiry_ns.end(), expiry);
+  return {static_cast<std::size_t>(first - m.expiry_ns.begin()),
+          static_cast<std::size_t>(last - m.expiry_ns.begin())};
+}
+
+// (side, K) of row j strictly before (side, K): the within-expiry order of the marks.
+[[nodiscard]] bool key_less(const ContractMarks &m, std::size_t j, Side side, double K) noexcept {
+  return m.side[j] != side
+             ? static_cast<std::uint8_t>(m.side[j]) < static_cast<std::uint8_t>(side)
+             : m.strike[j] < K;
 }
 
 [[nodiscard]] bool finite_positive(double x) noexcept { return std::isfinite(x) && x > 0.0; }
@@ -189,14 +185,19 @@ void sample_surface(PivotGroup &pg, const SurfaceRef &sb, const SurfaceRef &st, 
 
 // Marks-only fallback: the three pivots are the group's marked contracts nearest to
 // z in {-z_ref, 0, +z_ref}; fewer than three distinct usable pivots => no split.
+//
+// Each base mark is paired with the FIRST shifted mark of the same (expiry, side, K), or
+// none. Both mark sets are validated non-decreasing by (expiry, side, K)
+// (market_state.cpp validate_marks), so one forward merge walk over the shifted expiry's
+// rows finds exactly the row a lower_bound search would, mark after mark: the walk only
+// skips rows strictly below the current base key, never past an equal one.
 void sample_marks(PivotGroup &pg, const ContractMarks &mb, const ContractMarks &ms,
                   double z_ref) noexcept {
   pg.sampled = true;
   pg.from_marks = true;
-  const auto first = std::lower_bound(mb.expiry_ns.begin(), mb.expiry_ns.end(), pg.expiry_ns);
-  const auto last = std::upper_bound(first, mb.expiry_ns.end(), pg.expiry_ns);
-  const auto lo = static_cast<std::size_t>(first - mb.expiry_ns.begin());
-  const auto hi = static_cast<std::size_t>(last - mb.expiry_ns.begin());
+  const MarkRange base = expiry_range(mb, pg.expiry_ns);
+  const std::size_t lo = base.first;
+  const std::size_t hi = base.last;
   double best_atm = std::numeric_limits<double>::infinity();
   for (std::size_t i = lo; i < hi; ++i) {
     const double dist = std::fabs(std::log(mb.strike[i] / pg.F_b));
@@ -213,10 +214,16 @@ void sample_marks(PivotGroup &pg, const ContractMarks &mb, const ContractMarks &
   std::array<double, 3> pd{};
   std::array<double, 3> best{};
   best.fill(std::numeric_limits<double>::infinity());
+  const MarkRange shifted = expiry_range(ms, pg.expiry_ns);
+  std::size_t j = shifted.first;
   for (std::size_t i = lo; i < hi; ++i) {
-    const std::size_t j = find_mark(ms, mb.expiry_ns[i], mb.side[i], mb.strike[i]);
-    if (j == std::numeric_limits<std::size_t>::max() || !finite_positive(mb.sigma[i]) ||
-        !finite_positive(ms.sigma[j])) {
+    // Bounded: j only moves forward, at most shifted.last - shifted.first steps in all.
+    while (j < shifted.last && key_less(ms, j, mb.side[i], mb.strike[i])) {
+      ++j;
+    }
+    const bool matched =
+        j < shifted.last && ms.side[j] == mb.side[i] && ms.strike[j] == mb.strike[i];
+    if (!matched || !finite_positive(mb.sigma[i]) || !finite_positive(ms.sigma[j])) {
       continue;
     }
     const double z = std::log(mb.strike[i] / pg.F_b) / (pg.sigma_atm * pg.sqrt_T);
