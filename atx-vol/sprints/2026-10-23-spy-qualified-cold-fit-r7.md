@@ -778,3 +778,47 @@ Local main has not yet been advanced at the time of this entry. Unrelated main
 worktree changes must remain intact. Default policy promotion,100-process
 subsecond qualification, full archive persistence and broad Greek/cash/frontier
 qualification remain open.
+
+
+## Local-main merge completed and current release clocks
+
+The authorized local-main merge completed at `96cd56db9ad034ee6868e3e5a8babb81ac8cb82c`.
+Main's bindings/storage history is retained through `725e36a7`; the only source
+integration fix is the independently reviewed Python `ProjectedPrice` enum in
+`a1ca7d14`. Storage3/3 gates pass; Python passes787 tests with245 environment
+skips and1 existing strict xfail. The first Python run found two stale CRLF
+fixture copies, restored to exact committed bytes; no golden or test source
+was changed. Before/after manifests prove identical SHA256 values for all52,031
+pre-existing modified/untracked files totaling2,120,057,056 bytes. Root CMake,
+editor settings and untracked work remain intact. Development continues in pool3.
+
+The combined development and ThinLTO executables pass all13 actual-API gates,
+with identical predictions `e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`.
+Their archived hashes are respectively
+`5c121cd1ed9408fa3814f5a785d7e22092b2d751714b168b989411fd9669e5c7` and
+`9e3f384cafc622539c5e58694634cc9be45094947d16d1af65cca61a3b855fc1`.
+Audits: `acceptance/main-merge-{v1,lto-v1}-audit/verification-reviewed-v3.json`.
+
+Three fresh-process ThinLTO one-worker/Pcore6 fits took **1.1647743,1.0251590,
+1.0989175s**, median **1.0989175s**; all exceeded one second. SMT sibling shares
+were2.609%,0%,0%, within the5% gate. Manifest
+`main-merge-v1-lto-profile/manifest.json` SHA256
+`88be793e4f3b711dcff33cccbbb3e904bf57118f1b4da13ce1696feafe167c81`.
+A current-host rerun of archived baseline `1eb11005...` took1.4172-1.5288s with
+23.7-28.1% system activity. A subsequent interleaved comparison recorded
+baseline1.1479/candidate1.2117s, then stopped with exit4 on the next baseline's
+5.747% SMT activity (34.6% system). These controls are retained under
+`main-merge-baseline-rerun-v1` and `main-floor-interleaved-v1-*`; they establish
+neither a speedup nor an algorithmic regression. Historical baseline source is
+`a0af95ab`; source-root is intentionally absent in the archived-binary reruns.
+
+Attribution is consistent with the removed work: the best current trial replaces
+roughly120ms of native confirmation plus later price checks with65.392ms of
+cold seed proof. Calendar381.625ms and family226.121ms were higher than the
+preceding low-load measurements; these stage clocks are not an isolated A/B
+proof. The next reviewed component `a180260f`, integrated as`c721422d`, shares
+exact floors across remaining ordinary candidates and removes265 more boundary
+solves with unchanged predicted bytes in its component replay. Integrated
+verification and qualified latency remain pending. The latency target and
+complete correctness contract are unchanged;100-process qualification remains
+open, and no worldwide ranking or default-policy promotion is asserted.
