@@ -186,6 +186,7 @@ TEST(QuoteSliceFinalPrice, NativeScalarBatchMatchesUnbatchedFinalPricesAndColdRe
   EXPECT_EQ(publication.result().reimply_batch_hits, publication.result().reimply_batch_lanes);
   EXPECT_EQ(publication.result().reimply_economic_attempts, 0u);
   EXPECT_EQ(publication.result().reimply_economic_roots, 0u);
+  EXPECT_EQ(publication.result().reimply_cold_seed_attempts, 0u);
   EXPECT_EQ(batch->diagnostics.deam.inversions, 0u);
   EXPECT_EQ(batch->diagnostics.deam.model_prices, 0u);
   const auto bits = [](double value) { return std::bit_cast<std::uint64_t>(value); };
@@ -198,6 +199,46 @@ TEST(QuoteSliceFinalPrice, NativeScalarBatchMatchesUnbatchedFinalPricesAndColdRe
         batch->rows[i].fitted_iv, market.rate, market.continuous_yield, quotes[i].side);
     ASSERT_TRUE(price);
     EXPECT_LE(std::abs(*price - batch->rows[i].fitted_price), 0.001);
+  }
+}
+
+TEST(QuoteSliceFinalPrice, WideFamilyBoundsUsePreparedColdProofBeforeStrictNative) {
+  const QuoteSliceMarket market{100, 1.0, 1.0, .04, .012, 0};
+  std::vector<QuoteSliceQuote> quotes;
+  for (double strike = 20; strike <= 140; strike += 5) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(100, strike, 1, .6, .04, .012, side);
+      ASSERT_TRUE(price);
+      quotes.push_back({strike, side, std::max(0.0, *price - .1), *price + .1});
+    }
+  }
+  const auto config = final_price_config(true);
+  auto draft = projected_draft(market, quotes, config);
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder publication;
+  auto fit = [&] {
+    const timing::ChainScope scope(&publication);
+    return detail::finalize_raw_price_draft(std::move(draft), config);
+  }();
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_GT(publication.result().reimply_cold_seed_hits, 0u);
+  EXPECT_EQ(publication.result().reimply_cold_seed_roots,
+            publication.result().reimply_cold_seed_hits);
+  EXPECT_GT(publication.result().reimply_cold_seed_floor_preparations, 0u);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fit->rows[i];
+    const auto actual = query_quote_slice(*fit, quotes[i].strike, quotes[i].side);
+    ASSERT_TRUE(actual);
+    EXPECT_EQ(actual->status, row.evaluation_status);
+    EXPECT_EQ(actual->price, row.fitted_price);
+    if (actual->status != QuoteSliceEvaluationStatus::Success) continue;
+    const auto cold = andersen_lake(100, quotes[i].strike, 1, actual->volatility,
+                                    .04, .012, quotes[i].side);
+    const auto floor = andersen_lake(100, quotes[i].strike, 1, kIvMin,
+                                     .04, .012, quotes[i].side);
+    ASSERT_TRUE(cold && floor);
+    EXPECT_GT(actual->price, *floor);
+    EXPECT_LE(std::abs(*cold - actual->price), .001);
   }
 }
 
@@ -233,7 +274,8 @@ TEST(QuoteSliceFinalPrice, NativeAvx2FinalTargetsKeepColdPriceAccuracyAndCachedQ
   }();
   ASSERT_TRUE(fit) << fit.error().to_string();
   EXPECT_GT(publication.result().reimply_batch_avx2_calls, 0u);
-  EXPECT_EQ(publication.result().reimply_batch_hits + publication.result().reimply_economic_roots,
+  EXPECT_EQ(publication.result().reimply_batch_hits + publication.result().reimply_economic_roots +
+                publication.result().reimply_cold_seed_hits,
             publication.result().reimply_batch_lanes);
   EXPECT_GT(publication.result().reimply_economic_roots, 0u);
   deam_iv_memo_clear();

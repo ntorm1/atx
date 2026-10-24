@@ -515,11 +515,25 @@ struct IvPreparedEconomic {
   double price_upper = std::numeric_limits<double>::quiet_NaN();
   double bound_price = std::numeric_limits<double>::infinity();
 };
+// Full cold price/floor/exercise/chord proof at the original solved lane sigma.
+// Separate from a bounded family interval and from strict K3 IV acceptance.
+struct IvPreparedColdSeed {
+  bool valid = false;
+  const AlSigmaQFamily *family = nullptr;
+  const ValidatedErrorEnvelope *envelope = nullptr;
+  std::uint64_t preparation_stamp = 0;
+  double target = 0.0, S = 0.0, K = 0.0, T = 0.0, r = 0.0, q = 0.0, tol = 0.0;
+  double budget = 0.0;
+  Side side = Side::Put;
+  std::optional<AlOpts> opts;
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+};
 struct IvPremiumPrepared {
   IvPreparedLane lane{};
   IvPreparedEnclosure enclosure{};
   IvPreparedConfirm confirm{};
   IvPreparedEconomic economic{};
+  IvPreparedColdSeed cold_seed{};
 };
 
 // One request of a work group: the arguments premium_root receives, and the native carry of
@@ -553,6 +567,11 @@ struct IvNativeBatchWork {
   std::uint64_t confirm_ns = 0;
   std::uint64_t economic_prices = 0; // separate from K3 enclosure prices
   std::uint64_t economic_ns = 0;
+  std::uint64_t cold_seed_attempts = 0;
+  std::uint64_t cold_seed_roots = 0;
+  std::uint64_t cold_seed_floor_preparations = 0;
+  std::uint64_t cold_seed_floor_hits = 0;
+  std::uint64_t cold_seed_ns = 0;
 };
 
 // Whether premium_root's family-native branch admits the price: finite inputs, strictly
@@ -606,6 +625,18 @@ void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnv
 
 // Exact request and prepared-state validation on consumption; no pricing work.
 [[nodiscard]] std::optional<double> iv_native_economic_candidate(
+    const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+    const IvNativeBatchRequest &request, double budget, const IvPremiumPrepared &prepared,
+    const std::optional<AlOpts> &opts) noexcept;
+
+// After economic preparation, try the unchanged full cold seed proof only for
+// eligible bounded refusals. The local floor cache owns all state and dies here.
+// Refusal leaves the caller's original strict K3/native route available.
+void iv_native_prepare_cold_seeds(const AlSigmaQFamily &f,
+    const ValidatedErrorEnvelope *env, std::span<const IvNativeBatchRequest> requests,
+    std::span<const double> budgets, std::span<IvPremiumPrepared> out,
+    const std::optional<AlOpts> &opts, bool timed, IvNativeBatchWork &work);
+[[nodiscard]] std::optional<double> iv_native_cold_seed_candidate(
     const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
     const IvNativeBatchRequest &request, double budget, const IvPremiumPrepared &prepared,
     const std::optional<AlOpts> &opts) noexcept;

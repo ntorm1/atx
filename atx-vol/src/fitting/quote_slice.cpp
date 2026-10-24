@@ -1394,13 +1394,17 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
           std::span<const IvNativeBatchRequest>(requests).first(native_count), budgets,
           std::span<IvPremiumPrepared>(part).first(native_count), fit.al_opts,
           counts != nullptr, work);
+      iv_native_prepare_cold_seeds(*family, envelope,
+          std::span<const IvNativeBatchRequest>(requests).first(native_count), budgets,
+          std::span<IvPremiumPrepared>(part).first(native_count), fit.al_opts,
+          counts != nullptr, work);
       // Stable compaction preserves the original strict requests and lane values
       // for every refusal. Dollar candidates spend no eager K3 enclosure/confirm.
       strict_requests.clear();
       strict_part.clear();
       strict_where.clear();
       for (std::size_t j = 0; j < native_count; ++j) {
-        if (part[j].economic.valid) continue;
+        if (part[j].economic.valid || part[j].cold_seed.valid) continue;
         strict_requests.push_back(requests[j]);
         strict_part.push_back(part[j]);
         strict_where.push_back(j);
@@ -1428,6 +1432,12 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
     counts->reimply_batch_confirm_ns += work.confirm_ns;
     counts->reimply_economic_attempts += ft::detail::saturate(work.economic_prices);
     counts->reimply_economic_ns += work.economic_ns;
+    counts->reimply_cold_seed_attempts += ft::detail::saturate(work.cold_seed_attempts);
+    counts->reimply_cold_seed_roots += ft::detail::saturate(work.cold_seed_roots);
+    counts->reimply_cold_seed_floor_preparations +=
+        ft::detail::saturate(work.cold_seed_floor_preparations);
+    counts->reimply_cold_seed_floor_hits += ft::detail::saturate(work.cold_seed_floor_hits);
+    counts->reimply_cold_seed_ns += work.cold_seed_ns;
   }
   return prepared;
 }
@@ -4142,7 +4152,8 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   opts.al_opts = fit.al_opts;
   opts.refuse_non_monotone = true;
   const auto budget = reimply_price_budget(fit, strike, side);
-  if (budget && *budget > 0.0 && prepared != nullptr && prepared->economic.valid &&
+  if (budget && *budget > 0.0 && prepared != nullptr &&
+      (prepared->economic.valid || prepared->cold_seed.valid) &&
       fit.reimply_context && fit.reimply_context->families) {
     // Budget lookup already matched the immutable pricing model. This distinct
     // monetary result is never reported as a strict native/K3 root acceptance.
@@ -4154,6 +4165,13 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
               request, *budget, *prepared, fit.al_opts)) {
         if (auto *const counts = counters::fit_timing::current_counts()) {
           ++counts->reimply_economic_roots;
+        }
+        return identified(*sigma);
+      }
+      if (const auto sigma = iv_native_cold_seed_candidate(*family, families.q_envelope(side),
+              request, *budget, *prepared, fit.al_opts)) {
+        if (auto *const counts = counters::fit_timing::current_counts()) {
+          ++counts->reimply_cold_seed_hits;
         }
         return identified(*sigma);
       }

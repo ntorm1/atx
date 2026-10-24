@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <new> // std::bad_alloc (the noexcept-boundary containment below)
 #include <optional>
 #include <span>
@@ -2909,9 +2910,57 @@ IvSearchResult american_implied_vol_search(double price, double S, double K, dou
   }
 }
 
+struct IvPriceSeedFloorCache::State {
+  double anchor = 0.0, T = 0.0, r = 0.0, q = 0.0;
+  Side side = Side::Put;
+  std::optional<AlOpts> opts;
+  AlExpiryGeometry geometry;
+  // Declared after geometry so the borrowed handle is destroyed first.
+  std::unique_ptr<AlBoundaryHandle> handle;
+};
+IvPriceSeedFloorCache::IvPriceSeedFloorCache() noexcept = default;
+IvPriceSeedFloorCache::~IvPriceSeedFloorCache() = default;
+std::optional<double> IvPriceSeedFloorCache::price(double S, double K, double T, double r,
+    double q, Side side, const std::optional<AlOpts> &opts) noexcept {
+  if (!(S > 0.0 && K > 0.0 && T > 0.0) || !std::isfinite(S) ||
+      !std::isfinite(K) || !std::isfinite(T) || !std::isfinite(r) || !std::isfinite(q) ||
+      (side != Side::Call && side != Side::Put)) return std::nullopt;
+  const double anchor = side == Side::Call ? S : K;
+  try {
+    if (state_ && same_bits(state_->anchor, anchor) && same_bits(state_->T, T) &&
+        same_bits(state_->r, r) && same_bits(state_->q, q) && state_->side == side &&
+        same_opts(state_->opts, opts)) {
+      const double value = state_->handle->price_from_boundary(S, K);
+      if (std::isfinite(value)) {
+        ++hits_;
+        return value;
+      }
+      return std::nullopt;
+    }
+    auto next = std::make_unique<State>();
+    next->anchor = anchor;
+    next->T = T;
+    next->r = r;
+    next->q = q;
+    next->side = side;
+    next->opts = opts;
+    next->geometry.prepare(T, r, q, opts);
+    next->handle = std::make_unique<AlBoundaryHandle>(next->geometry, side, anchor);
+    if (!next->handle->solve(kIvMin)) return std::nullopt;
+    const double value = next->handle->price_from_boundary(S, K);
+    if (!std::isfinite(value)) return std::nullopt;
+    state_ = std::move(next);
+    ++preparations_;
+    return value;
+  } catch (const std::bad_alloc &) {
+    return std::nullopt;
+  }
+}
+
 std::optional<double> american_implied_vol_price_seed(
     double price, double S, double K, double T, double r, double q, Side side,
-    const IvOpts &opts, double max_price_error, double sigma) noexcept {
+    const IvOpts &opts, double max_price_error, double sigma,
+    IvPriceSeedFloorCache *floor_cache) noexcept {
   if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
       opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
       opts.warm_start != 0.0 || opts.price_tol != 0.0 ||
@@ -2938,7 +2987,12 @@ std::optional<double> american_implied_vol_price_seed(
     // Near the money, P(kIvMin) can exceed the zero-volatility value materially.
     // A residual budget at the seed cannot prove that the target has an IV above
     // the reporting floor. Establish that range on the cold target map itself.
-    const auto floor = andersen_lake(S, K, T, kIvMin, r, q, side, opts.al_opts);
+    auto floor = floor_cache != nullptr
+        ? floor_cache->price(S, K, T, r, q, side, opts.al_opts) : std::nullopt;
+    if (!floor) {
+      const auto cold_floor = andersen_lake(S, K, T, kIvMin, r, q, side, opts.al_opts);
+      if (cold_floor) floor = *cold_floor;
+    }
     if (!floor || !std::isfinite(*floor) || !(price > *floor)) return std::nullopt;
     if (in_band(price, S, K, T, r, q, side, opts.al_opts)) {
       // A monetary budget does not make a flat IV identifiable. Retain the
@@ -3303,6 +3357,16 @@ bool economic_family_matches(const AlSigmaQFamily &f, const ValidatedErrorEnvelo
       iv_premium_native_window(rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.side, opts);
 }
 
+bool economic_lane_matches(const AlSigmaQFamily &f, const IvNativeBatchRequest &rq,
+                           const IvPreparedLane &lane) noexcept {
+  return lane.valid && lane.family == &f &&
+      lane.status == iv_batch::InverseStatus::Converged &&
+      same_bits(lane.S, rq.S) && same_bits(lane.K, rq.K) &&
+      same_bits(lane.target, rq.price) && same_bits(lane.q, rq.q) &&
+      same_bits(lane.tol, rq.tol) && std::isfinite(lane.vega) &&
+      lane.vega > iv_batch::kInverseVegaFloorRel * rq.K;
+}
+
 } // namespace
 
 void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
@@ -3324,12 +3388,7 @@ void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnv
     const double budget = budgets[i];
     if (!(budget > 0.0) || !std::isfinite(budget) ||
         !economic_family_matches(f, env, rq, opts) ||
-        !lane.valid || lane.family != &f ||
-        lane.status != iv_batch::InverseStatus::Converged ||
-        !same_bits(lane.S, rq.S) || !same_bits(lane.K, rq.K) ||
-        !same_bits(lane.target, rq.price) || !same_bits(lane.q, rq.q) ||
-        !same_bits(lane.tol, rq.tol) || !std::isfinite(lane.vega) ||
-        !(lane.vega > iv_batch::kInverseVegaFloorRel * rq.K)) continue;
+        !economic_lane_matches(f, rq, lane)) continue;
     // The tangent places a candidate, never an error or monotonicity proof.
     // Bias is intentional only under the explicit monetary policy. Requiring
     // the whole interval below target supplies a lower-vol price witness.
@@ -3366,6 +3425,64 @@ void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnv
         c.erequest[j].sigma, lower, upper, error};
   }
   if (timed) work.economic_ns += ns_since(t0);
+}
+
+void iv_native_prepare_cold_seeds(const AlSigmaQFamily &f,
+    const ValidatedErrorEnvelope *env, std::span<const IvNativeBatchRequest> requests,
+    std::span<const double> budgets, std::span<IvPremiumPrepared> out,
+    const std::optional<AlOpts> &opts, bool timed, IvNativeBatchWork &work) {
+  for (auto &p : out) p.cold_seed = IvPreparedColdSeed{};
+  if (requests.size() != out.size() || budgets.size() != out.size()) return;
+  const auto t0 = timed ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
+  IvPriceSeedFloorCache floor_cache;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    const auto &rq = requests[i];
+    const auto &lane = out[i].lane;
+    const double budget = budgets[i];
+    if (out[i].economic.valid || !(budget > 0.0) || !std::isfinite(budget) ||
+        !economic_family_matches(f, env, rq, opts) ||
+        !economic_lane_matches(f, rq, lane)) continue;
+    // Restrict this ordering change to proposals admitted to bounded economic
+    // pricing. The original lane, not the downward proposal, receives cold proof.
+    const double proposed = lane.sigma - (0.5 * budget) / lane.vega;
+    if (!(proposed > kIvMin && proposed < kSigmaHi && proposed < lane.sigma) ||
+        !(proposed >= f.sigma_lo() && proposed <= f.sigma_hi()) ||
+        !(lane.sigma > kIvMin && lane.sigma < kSigmaHi &&
+          lane.sigma >= f.sigma_lo() && lane.sigma <= f.sigma_hi())) continue;
+    IvOpts seed_opts;
+    seed_opts.method = AmericanMethod::AndersenLake;
+    seed_opts.tol = rq.tol;
+    seed_opts.al_opts = opts;
+    seed_opts.refuse_non_monotone = true;
+    ++work.cold_seed_attempts;
+    const auto sigma = american_implied_vol_price_seed(rq.price, rq.S, rq.K, rq.T,
+        rq.r, rq.q, rq.side, seed_opts, budget, lane.sigma, &floor_cache);
+    if (!sigma) continue;
+    out[i].cold_seed = IvPreparedColdSeed{true, &f, env, env->preparation_stamp,
+        rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.tol, budget, rq.side, opts, *sigma};
+    ++work.cold_seed_roots;
+  }
+  work.cold_seed_floor_preparations += floor_cache.preparations();
+  work.cold_seed_floor_hits += floor_cache.hits();
+  if (timed) work.cold_seed_ns += ns_since(t0);
+}
+
+std::optional<double> iv_native_cold_seed_candidate(const AlSigmaQFamily &f,
+    const ValidatedErrorEnvelope *env, const IvNativeBatchRequest &rq, double budget,
+    const IvPremiumPrepared &prepared, const std::optional<AlOpts> &opts) noexcept {
+  const auto &p = prepared.cold_seed;
+  if (!p.valid || !(budget > 0.0) || !std::isfinite(budget) ||
+      !economic_family_matches(f, env, rq, opts) ||
+      !economic_lane_matches(f, rq, prepared.lane) || p.family != &f || p.envelope != env ||
+      p.preparation_stamp != env->preparation_stamp ||
+      !same_bits(p.target, rq.price) || !same_bits(p.S, rq.S) || !same_bits(p.K, rq.K) ||
+      !same_bits(p.T, rq.T) || !same_bits(p.r, rq.r) || !same_bits(p.q, rq.q) ||
+      !same_bits(p.tol, rq.tol) || !same_bits(p.budget, budget) || p.side != rq.side ||
+      !same_opts(p.opts, opts) || !same_bits(p.sigma, prepared.lane.sigma) ||
+      !(p.sigma > kIvMin && p.sigma < kSigmaHi) ||
+      !(p.sigma >= f.sigma_lo() && p.sigma <= f.sigma_hi())) return std::nullopt;
+  return p.sigma;
 }
 
 std::optional<double> iv_native_economic_candidate(

@@ -1,10 +1,32 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 
 namespace atx::vol {
+
+// Preparation-local owner of one exact cold reporting-floor boundary. It is lazy:
+// a refused candidate never prepares a floor. No family approximation, rescaling,
+// external geometry lifetime, or cross-request global state is involved.
+class IvPriceSeedFloorCache {
+public:
+  IvPriceSeedFloorCache() noexcept;
+  ~IvPriceSeedFloorCache();
+  IvPriceSeedFloorCache(const IvPriceSeedFloorCache &) = delete;
+  IvPriceSeedFloorCache &operator=(const IvPriceSeedFloorCache &) = delete;
+  [[nodiscard]] std::optional<double> price(double S, double K, double T, double r,
+      double q, Side side, const std::optional<AlOpts> &opts) noexcept;
+  [[nodiscard]] std::uint64_t preparations() const noexcept { return preparations_; }
+  [[nodiscard]] std::uint64_t hits() const noexcept { return hits_; }
+private:
+  struct State;
+  std::unique_ptr<State> state_;
+  std::uint64_t preparations_ = 0;
+  std::uint64_t hits_ = 0;
+};
 
 // Internal Search result for PriceOnly classification. A rejected candidate is the
 // exact plain Search value discarded by the non-monotone gate, never an accepted IV.
@@ -56,6 +78,7 @@ enum class IvPriceProposalKernel { Fast, ScreenThenFast };
 // A seed is only a proposal; neither a family root nor its residual is trusted.
 [[nodiscard]] std::optional<double> american_implied_vol_price_seed(
     double price, double S, double K, double T, double r, double q, Side side,
-    const IvOpts &opts, double max_price_error, double sigma) noexcept;
+    const IvOpts &opts, double max_price_error, double sigma,
+    IvPriceSeedFloorCache *floor_cache = nullptr) noexcept;
 
 } // namespace atx::vol

@@ -1809,6 +1809,80 @@ TEST(AmericanIvNonMonotone, ExternalPriceSeedUsesColdChecksWithoutAnInverse) {
       10, 100, 100, 1, .04, .01, Side::Put, opts, 0, .3));
 }
 
+TEST(AmericanIvNonMonotone, ColdSeedFloorCacheUsesExactOwnedBoundaries) {
+  using namespace atx::vol;
+  for (const Side side : {Side::Call, Side::Put}) {
+    IvPriceSeedFloorCache cache;
+    for (const double variable : {90.0, 100.0, 110.0}) {
+      const double S = side == Side::Call ? 100.0 : variable;
+      const double K = side == Side::Call ? variable : 100.0;
+      const auto expected = andersen_lake(S, K, .5, kIvMin, .04, .01, side);
+      const auto actual = cache.price(S, K, .5, .04, .01, side, std::nullopt);
+      ASSERT_TRUE(expected && actual);
+      EXPECT_TRUE(same_double(*expected, *actual));
+    }
+    EXPECT_EQ(cache.preparations(), 1u);
+    EXPECT_EQ(cache.hits(), 2u);
+    // Changed model, orientation, anchor, or caller options must never reuse an
+    // unrelated boundary. Compare against the exact original cold map each time.
+    struct Model { double S, K, T, r, q; Side side; std::optional<AlOpts> opts; };
+    for (const Model &m : std::array<Model, 7>{{
+        {101, 101, .5, .04, .01, side, std::nullopt},
+        {101, 101, .6, .04, .01, side, std::nullopt},
+        {101, 101, .6, .05, .01, side, std::nullopt},
+        {101, 101, .6, .05, .02, side, std::nullopt},
+        {101, 101, .6, .05, .02, side, al_fast_profile(std::nullopt)},
+        {101, 101, .6, .05, .02, side == Side::Call ? Side::Put : Side::Call,
+         al_fast_profile(std::nullopt)},
+        {101, 101, .6, -.01, -.02, Side::Call, std::nullopt}}}) {
+      const auto before = cache.preparations();
+      const auto expected = andersen_lake(m.S, m.K, m.T, kIvMin, m.r, m.q, m.side, m.opts);
+      const auto actual = cache.price(m.S, m.K, m.T, m.r, m.q, m.side, m.opts);
+      ASSERT_TRUE(expected && actual);
+      EXPECT_TRUE(same_double(*expected, *actual));
+      EXPECT_EQ(cache.preparations(), before + 1u);
+    }
+    EXPECT_FALSE(cache.price(0, 100, .5, .04, .01, side, std::nullopt));
+    EXPECT_FALSE(cache.price(100, 100, .5, -.02, -.01, Side::Call, std::nullopt));
+    EXPECT_FALSE(cache.price(100, 100, .5, .04,
+        std::numeric_limits<double>::quiet_NaN(), side, std::nullopt));
+  }
+}
+
+TEST(AmericanIvNonMonotone, ColdSeedFloorCacheIsLazyAndPreservesHelperDecisions) {
+  using namespace atx::vol;
+  namespace led = counters::ledger;
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  IvPriceSeedFloorCache cache;
+  const double price = cold_al(100, 100, .5, .3, .04, .01, Side::Call);
+  EXPECT_FALSE(american_implied_vol_price_seed(price, 100, 100, .5, .04, .01,
+      Side::Call, opts, 0, .3, &cache));
+  EXPECT_FALSE(american_implied_vol_price_seed(price, 100, 100, .5, .04, .01,
+      Side::Call, opts, .001, .6, &cache));
+  EXPECT_EQ(cache.preparations(), 0u);
+  for (const double K : {90.0, 100.0, 110.0}) {
+    const double target = cold_al(100, K, .5, .3, .04, .01, Side::Call);
+    const auto original = american_implied_vol_price_seed(target, 100, K, .5,
+        .04, .01, Side::Call, opts, .001, .3);
+    const auto before = led::this_thread(led::Solve::AlBoundarySolves);
+    const auto reused = american_implied_vol_price_seed(target, 100, K, .5,
+        .04, .01, Side::Call, opts, .001, .3, &cache);
+    ASSERT_TRUE(original && reused);
+    EXPECT_TRUE(same_double(*original, *reused));
+    EXPECT_EQ(led::this_thread(led::Solve::AlBoundarySolves) - before, K == 90 ? 2u : 1u);
+  }
+  EXPECT_EQ(cache.preparations(), 1u);
+  EXPECT_EQ(cache.hits(), 2u);
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double floor = cold_al(100, 100, .5, kIvMin, .04, .01, side);
+    for (const double target : {floor, std::nextafter(floor, 0.0)}) {
+      EXPECT_FALSE(american_implied_vol_price_seed(target, 100, 100, .5,
+          .04, .01, side, opts, .001, .00501, &cache));
+    }
+  }
+}
+
 TEST(AmericanIvNonMonotone, PriceBudgetEarlyProposalCutsShortExpirySearchWork) {
   namespace led = atx::vol::counters::ledger;
   IvOpts opts;
@@ -3800,6 +3874,80 @@ TEST(AmericanIvPremium, EconomicFamilyCandidatesCarryColdPriceAndFloorEvidence) 
   EXPECT_GE(accepted, 12u);
 }
 
+TEST(AmericanIvPremium, ColdSeedWitnessReplacesWideEnvelopeWithFullColdProof) {
+  using namespace atx::vol;
+  auto geometry = prepare_al_geometry(.5, .04, .012);
+  AlSigmaQFamily family(geometry, Side::Call, 100);
+  ASSERT_TRUE(family.prepare(.05, .6, 16, .011, .013, 4));
+  auto envelope = build_family_error_envelope(family);
+  ASSERT_TRUE(envelope.covered());
+  // Widening a valid error envelope is conservative and guarantees that this
+  // test exercises the cold proof, independently of interpolation accuracy.
+  for (auto &bound : envelope.bound_y) bound = std::max(bound, 1.0);
+  std::vector<IvNativeBatchRequest> requests;
+  for (const double K : {90.0, 100.0, 110.0}) {
+    requests.push_back({cold_al(100, K, .5, .25, .04, .012, Side::Call),
+        100, K, .5, .04, .012, Side::Call, 1e-7});
+  }
+  std::vector<IvPremiumPrepared> prepared(requests.size());
+  const std::vector<double> budgets(requests.size(), .001);
+  IvNativeBatchWork work;
+  iv_native_prepare_lanes(family, nullptr, requests, prepared, false, work);
+  iv_native_prepare_economic(family, &envelope, requests, budgets, prepared,
+                             std::nullopt, false, work);
+  for (const auto &p : prepared) ASSERT_FALSE(p.economic.valid);
+  iv_native_prepare_cold_seeds(family, &envelope, requests, budgets, prepared,
+                              std::nullopt, false, work);
+  EXPECT_EQ(work.cold_seed_attempts, requests.size());
+  EXPECT_EQ(work.cold_seed_roots, requests.size());
+  EXPECT_EQ(work.cold_seed_floor_preparations, 1u);
+  EXPECT_EQ(work.cold_seed_floor_hits, requests.size() - 1u);
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const auto &rq = requests[i];
+    const auto sigma = iv_native_cold_seed_candidate(family, &envelope, rq,
+        budgets[i], prepared[i], std::nullopt);
+    ASSERT_TRUE(sigma);
+    EXPECT_TRUE(same_double(*sigma, prepared[i].lane.sigma));
+    EXPECT_FALSE(prepared[i].enclosure.valid);
+    EXPECT_FALSE(prepared[i].confirm.valid);
+    EXPECT_LE(std::abs(cold_al(rq.S, rq.K, rq.T, *sigma, rq.r, rq.q, rq.side) - rq.price),
+              budgets[i]);
+    EXPECT_GT(rq.price, cold_al(rq.S, rq.K, rq.T, kIvMin, rq.r, rq.q, rq.side));
+  }
+  const auto original = prepared;
+  for (int field = 0; field < 8; ++field) {
+    auto rq = requests[0];
+    switch (field) {
+    case 0: rq.S = std::nextafter(rq.S, 0.0); break;
+    case 1: rq.K = std::nextafter(rq.K, 0.0); break;
+    case 2: rq.T = std::nextafter(rq.T, 0.0); break;
+    case 3: rq.r = std::nextafter(rq.r, 0.0); break;
+    case 4: rq.q = std::nextafter(rq.q, 0.0); break;
+    case 5: rq.price = std::nextafter(rq.price, 0.0); break;
+    case 6: rq.tol *= 2; break;
+    default: rq.side = Side::Put; break;
+    }
+    EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, rq,
+        budgets[0], original[0], std::nullopt));
+  }
+  for (const double budget : {0.0, .0001, std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[0],
+        budget, original[0], std::nullopt));
+  }
+  EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[0],
+      budgets[0], original[0], al_fast_profile(std::nullopt)));
+  auto changed = original[0];
+  changed.lane.sigma = std::nextafter(changed.lane.sigma, 0.0);
+  EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[0],
+      budgets[0], changed, std::nullopt));
+  ASSERT_TRUE(family.prepare(.05, .6, 16, .011, .013, 4));
+  EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[0],
+      budgets[0], original[0], std::nullopt));
+  iv_native_prepare_cold_seeds(family, &envelope, requests, budgets, prepared,
+                              std::nullopt, false, work);
+  for (const auto &p : prepared) EXPECT_FALSE(p.cold_seed.valid);
+}
+
 TEST(AmericanIvPremium, EconomicFamilyCandidatesRejectStaleIdentityAndUnsafeProposals) {
   using namespace atx::vol;
   auto geometry = prepare_al_geometry(0.5, 0.04, 0.012);
@@ -3906,6 +4054,9 @@ TEST(AmericanIvPremium, EconomicFamilyCandidatesDoNotRelabelSubfloorOrPlateauTar
         iv_native_prepare_economic(family, &envelope, request, budget, prepared,
                                    std::nullopt, false, work);
         EXPECT_FALSE(prepared[0].economic.valid) << T << " " << K;
+        iv_native_prepare_cold_seeds(family, &envelope, request, budget, prepared,
+                                    std::nullopt, false, work);
+        EXPECT_FALSE(prepared[0].cold_seed.valid) << T << " " << K;
       }
     }
   }
