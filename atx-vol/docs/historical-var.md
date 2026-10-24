@@ -78,7 +78,15 @@ takes an evaluator that supplies the history in overlapping windows, so
 `dispersion_run_projected_var` loads each archive exactly once. Its loose TSV triple
 (`projected_var.tsv`, `projected_risk_scenarios.tsv` — one row per pair with the explain totals —
 and `projected_risk_legs.tsv` — the base-session resolutions) is recomputed bit-for-bit by
-`verify_projected_var_artifacts`.
+`verify_projected_var_artifacts`, which also requires `n_scenarios` = sessions − 1.
+`dispersion_run_projected_var` feeds overlapping 16-session windows, turns the family kernel's
+own fan-out off (`family.n_threads = 1`) and fans the scenarios over `fit.workers` instead.
+
+Compared with the deleted engine the numbers move on purpose: a scenario is now the one-period
+P&L of a pair (it was each set's value minus the LAST set's value), so N sets give N − 1
+scenarios, and the published reference value is the mean `pv_base` over the admitted pairs (it
+was the last scenario's value). The scenario table changed from 10 columns per session to 28 per
+pair; a run directory written by the old engine fails verification on that header.
 
 ## Migration from the deleted pipeline
 
@@ -90,3 +98,21 @@ and `projected_risk_legs.tsv` — the base-session resolutions) is recomputed bi
 | `PreparedHistoricalProjection` + `projected_historical_var` (reference = last scenario's value) | `historical_var` / `summarize_historical_var` (one-period pair P&L) |
 | `var_report` (per-scenario TSV, per-underlier rollup) | `ExplainResult::by_uid` per scenario via `explain`; no packaged report yet |
 | `var_validation` (Kupiec POF, Christoffersen) | not carried; a breach-sequence validator over `HistoricalVarFrame`s is a follow-up |
+| `bench/var_bench.cpp` (`var/prepared/…` rows of `atx-vol-projection-bench`), `bench/plot_var_scenario_pnl.py`, `bench/run_historical_projection_gate.ps1` | removed; the projection rows of `atx-vol-projection-bench` stay. No historical-VaR bench yet |
+| `docs/historical-var-engine-status.md` | this page |
+
+All of the deleted code was internal (`src/analytics/`); no api/ header and no Python binding
+went with it.
+
+## Tests
+
+- `tests/risk_historical_var_test.cpp`, ctest prefix `risk/HistoricalVar.`:
+  `FixedDeltaTemplatesReSolvePerScenario`, `FixedMoneynessTemplatesHoldK`, `SharesInScenarioPnl`,
+  `NearestRankQuantilesMatchHandComputation` (5 scenarios, VaR / ES at 0.6 and 0.8 by hand),
+  `TailMeanIsAttributionOfTail`, `UnresolvedTemplateIsCountedNotFatal`,
+  `NoSurfaceStateIsRefused`, `FamilyAndColdAgreeWithinTolerance` (|ΔVaR| ≤ 1e-6 · reference_pv on
+  a synthetic 3-state history), `DeterministicAcrossThreads`, `InvalidArgumentsAreRefused`.
+- Dispersion: `dispersion/ListedDispersionPipeline.*` (numeric pins of the pair P&L and VaR / ES),
+  `dispersion/DispersionRun*` and `dispersion/DispersionProjectedVar*` (artifact schema, verifier,
+  sessions − 1 rule). On the listed-pipeline 3-set fixture the family and cold kernels agree to
+  3e-10 on a 6.7e3 pv book; the pair P&Ls are −36.0787 / +74.7856, so VaR95 = ES95 = 36.0787.
