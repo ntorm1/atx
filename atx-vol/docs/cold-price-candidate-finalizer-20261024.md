@@ -74,3 +74,8 @@ candidate outcomes and direct70/61 work counts, exact prediction parity, the13
 scalar actual-API gates, an archived enabled ThinLTO binary and a valid quiet
 host comparison. No subsecond result, general vector error bound or production
 default promotion is established here.
+
+The subsequent [complete SPY result](cold-price-candidate-finalizer-result-20261024.md)
+passes all 13 actual-API gates with exact prediction parity and unchanged
+700/684/16 candidate and 70/61 direct-seed outcomes. It retains the charged
+28 additional boundary solves and the remaining ThinLTO/quiet-host timing gates.
