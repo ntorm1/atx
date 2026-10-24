@@ -1,4 +1,5 @@
 #include "fitting/raw_price_draft.hpp"
+#include "fitting/raw_price_targets.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -309,7 +310,7 @@ TEST(QuoteSliceFinalPrice, UsesProjectedPricesAndRefusesInsufficientFinalCurveEv
   EXPECT_FALSE(detail::finalize_raw_price_draft(std::move(insufficient), config));
 }
 
-TEST(QuoteSliceFinalPrice, ExternalNormalizedQuotesFinalizeEveryProjectedSlice) {
+void check_external_final_prices(detail::RawPriceDraftTarget target) {
   std::string path;
 #ifdef _WIN32
   std::size_t length = 0;
@@ -347,6 +348,7 @@ TEST(QuoteSliceFinalPrice, ExternalNormalizedQuotesFinalizeEveryProjectedSlice) 
     config.channel.deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
     auto draft = detail::make_raw_price_draft(market, quotes, config);
     ASSERT_TRUE(draft.draft) << draft.error;
+    ASSERT_TRUE(detail::select_raw_price_targets(*draft.draft, target));
     drafts.push_back(std::move(*draft.draft));
     configs.push_back(config);
   }
@@ -356,6 +358,8 @@ TEST(QuoteSliceFinalPrice, ExternalNormalizedQuotesFinalizeEveryProjectedSlice) 
   ASSERT_EQ(projected.outcome, JointProjectionOutcome::Feasible);
   const auto output_path = final_diagnostics_path();
   nlohmann::json diagnostic{{"schema", "raw-final-price-diagnostic-v1"},
+      {"target", target == detail::RawPriceDraftTarget::OriginalMid
+          ? "original_mid" : "feasible_box_mid"},
       {"input_sha256", fixture.at("input_sha256")},
       {"projection", {{"sweeps", projected.sweeps},
           {"primal_residual", projection.primal_residual},
@@ -436,8 +440,16 @@ TEST(QuoteSliceFinalPrice, ExternalNormalizedQuotesFinalizeEveryProjectedSlice) 
   }
   EXPECT_EQ(rows, 12866u);
   EXPECT_EQ(outside, 15u);
-  RecordProperty("identified_rows", static_cast<int>(identified));
+  ::testing::Test::RecordProperty("identified_rows", static_cast<int>(identified));
   EXPECT_GE(identified, 12183u);
+}
+
+TEST(QuoteSliceFinalPrice, ExternalNormalizedQuotesFinalizeEveryProjectedSlice) {
+  check_external_final_prices(detail::RawPriceDraftTarget::OriginalMid);
+}
+
+TEST(QuoteSliceFinalPrice, ExternalFeasibleBoxMidQuotesFinalizeEveryProjectedSlice) {
+  check_external_final_prices(detail::RawPriceDraftTarget::FeasibleBoxMid);
 }
 
 } // namespace

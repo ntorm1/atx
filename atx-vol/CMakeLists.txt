@@ -145,6 +145,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/inbox_projection.cpp
     src/fitting/joint_inbox_projection.cpp
     src/fitting/raw_price_draft.cpp
+    src/fitting/raw_price_targets.cpp
     src/fitting/deam_iv_cache.cpp
     src/fitting/quote_surface.cpp
     src/fitting/slice_channel.cpp

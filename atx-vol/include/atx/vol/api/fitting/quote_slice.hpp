@@ -1546,11 +1546,12 @@ enum class QuoteSurfacePublication : std::uint8_t { Off, Validate };
 
 [[nodiscard]] const char *to_string(QuoteSurfacePublication value) noexcept;
 
-// JointRawMid projects original paired quote midpoints jointly, then identifies
+// JointFeasibleMid centers each paired quote interval after intersecting its
+// lower edge with proven intrinsic/terminal floors, then projects jointly and identifies
 // final prices and fits a genuine final-price curve. It replaces the legacy
 // point/channel/prior objective. Failure anywhere falls back for the WHOLE
 // surface, retaining the existing policy's method/grade and a typed reason.
-enum class QuoteSurfaceColdFit : std::uint8_t { ExistingPolicy, JointRawMid };
+enum class QuoteSurfaceColdFit : std::uint8_t { ExistingPolicy, JointFeasibleMid };
 
 enum class QuoteSurfaceColdFitFallback : std::uint8_t {
   None, UnsupportedInput, ProjectionInfeasible, ProjectionNonConverged,
@@ -1607,7 +1608,7 @@ struct QuoteSurfaceConfig {
   bool rung_memo = false;
   // Opt-in publication validation (QuoteSurfacePublication, lane C2).
   QuoteSurfacePublication publication = QuoteSurfacePublication::Off;
-  // Explicit cold objective, default unchanged. JointRawMid always checks final
+  // Explicit cold objective, default unchanged. JointFeasibleMid always checks final
   // publication/identification and every original row; partial adoption is forbidden.
   // Requires PriceOnly classification and supported paired raw drafts; otherwise
   // the complete surface follows ExistingPolicy with a typed fallback reason.
@@ -1618,8 +1619,8 @@ struct QuoteSurfaceConfig {
 // point fitter (also the point repair rung), the pass-A term-prior-free channel
 // fit (a ChannelSpline profile's pass A, or the knot-first ladder's knot rung,
 // also its repair rung), or a channel refit (term prior or flat default shape:
-// B1, B2, the calendar retry), or the explicit JointRawMid final-price objective.
-enum class QuoteSurfaceMethod : std::uint8_t { Point, Channel, ChannelRefit, JointRawMid };
+// B1, B2, the calendar retry), or the explicit JointFeasibleMid final-price objective.
+enum class QuoteSurfaceMethod : std::uint8_t { Point, Channel, ChannelRefit, JointFeasibleMid };
 
 // Knot-first ladder only: why the knot rung does not serve the slice. None:
 // it does; or the knot slice certified inside the market but lacks the A
@@ -1691,8 +1692,8 @@ struct QuoteSurfaceSlice {
   // Fitter of the served (or last attempted) fit; filled with or without the
   // ladder (diagnostic).
   QuoteSurfaceMethod method = QuoteSurfaceMethod::Point;
-  // Common to every slot after a failed JointRawMid attempt; None on the
-  // unchanged default path or a completely validated JointRawMid publication.
+  // Common to every slot after a failed JointFeasibleMid attempt; None on the
+  // unchanged default path or a completely validated JointFeasibleMid publication.
   QuoteSurfaceColdFitFallback cold_fit_fallback = QuoteSurfaceColdFitFallback::None;
   // Knot-first ladder only (defaults otherwise): the knot rung's status and
   // error, why it does not serve, and the final served prices' share and count
@@ -1727,7 +1728,7 @@ struct QuoteSurfaceSlice {
   std::size_t joint_feasible = 0;
   std::size_t joint_infeasible = 0;
   std::size_t joint_nonconverged = 0;
-  // QuoteSurfacePublication::Validate or applied JointRawMid: mutations of this slice the
+  // QuoteSurfacePublication::Validate or applied JointFeasibleMid: mutations of this slice the
   // after-mutation validation checked and rolled back, the final pass's violations of
   // this slice it acted on (a structural one refuses it: refusal "publication_invalid";
   // a QuoteBox / Support one withholds its row), and the Identification findings of the

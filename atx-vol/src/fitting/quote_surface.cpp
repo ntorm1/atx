@@ -54,6 +54,7 @@
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only, clear_identification
 #include "fitting/raw_price_draft.hpp"
+#include "fitting/raw_price_targets.hpp"
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 #include "fitting/term_prior.hpp"
 
@@ -86,7 +87,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       (s.publication != QuoteSurfacePublication::Off &&
        s.publication != QuoteSurfacePublication::Validate) ||
       (s.cold_fit != QuoteSurfaceColdFit::ExistingPolicy &&
-       s.cold_fit != QuoteSurfaceColdFit::JointRawMid)) {
+       s.cold_fit != QuoteSurfaceColdFit::JointFeasibleMid)) {
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
   }
   return Ok();
@@ -238,7 +239,7 @@ public:
 
   [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>> run() {
     QuoteSurfaceColdFitFallback cold_fallback = QuoteSurfaceColdFitFallback::None;
-    if (surface_.cold_fit == QuoteSurfaceColdFit::JointRawMid) {
+    if (surface_.cold_fit == QuoteSurfaceColdFit::JointFeasibleMid) {
       cold_fallback = joint_raw_attempt();
       if (cold_fallback == QuoteSurfaceColdFitFallback::None) {
         publish_timing();
@@ -303,6 +304,12 @@ private:
         return raw.refusal == detail::RawPriceDraftRefusal::EmptyQuoteIntersection
             ? Fallback::ProjectionInfeasible : Fallback::UnsupportedInput;
       }
+      const auto targets = detail::select_raw_price_targets(
+          *raw.draft, detail::RawPriceDraftTarget::FeasibleBoxMid);
+      if (!targets) {
+        return targets.error().code() == ErrorCode::OutOfRange
+            ? Fallback::ProjectionInfeasible : Fallback::UnsupportedInput;
+      }
       drafts.push_back(std::move(*raw.draft));
     }
     {
@@ -331,7 +338,7 @@ private:
     if (!raw_publication(candidate)) return Fallback::PublicationFailed;
     for (auto &slice : candidate) {
       slice.grade = QuoteSliceGrade::B;
-      slice.method = QuoteSurfaceMethod::JointRawMid;
+      slice.method = QuoteSurfaceMethod::JointFeasibleMid;
     }
     out_ = std::move(candidate);
     return Fallback::None;
@@ -1903,8 +1910,8 @@ const char *to_string(QuoteSurfaceMethod value) noexcept {
     return "channel";
   case QuoteSurfaceMethod::ChannelRefit:
     return "channel_refit";
-  case QuoteSurfaceMethod::JointRawMid:
-    return "joint_raw_mid";
+  case QuoteSurfaceMethod::JointFeasibleMid:
+    return "joint_feasible_mid";
   }
   return "unknown";
 }
@@ -1912,7 +1919,7 @@ const char *to_string(QuoteSurfaceMethod value) noexcept {
 const char *to_string(QuoteSurfaceColdFit value) noexcept {
   switch (value) {
   case QuoteSurfaceColdFit::ExistingPolicy: return "existing_policy";
-  case QuoteSurfaceColdFit::JointRawMid: return "joint_raw_mid";
+  case QuoteSurfaceColdFit::JointFeasibleMid: return "joint_feasible_mid";
   }
   return "unknown";
 }

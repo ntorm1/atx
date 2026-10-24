@@ -4119,7 +4119,7 @@ void expect_same_raw_fallback(const std::vector<QuoteSurfaceSlice> &a,
   }
 }
 
-TEST(QuoteSurfaceJointRaw, DefaultRemainsTheExistingPolicy) {
+TEST(QuoteSurfaceJointFeasible, DefaultRemainsTheExistingPolicy) {
   const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.01)};
   QuoteSurfaceConfig explicit_default;
   EXPECT_EQ(explicit_default.cold_fit, QuoteSurfaceColdFit::ExistingPolicy);
@@ -4130,13 +4130,13 @@ TEST(QuoteSurfaceJointRaw, DefaultRemainsTheExistingPolicy) {
   EXPECT_EQ(named->front().cold_fit_fallback, QuoteSurfaceColdFitFallback::None);
 }
 
-TEST(QuoteSurfaceJointRaw, PublishesEveryFinalPriceWithTruthfulMethodAndGrade) {
+TEST(QuoteSurfaceJointFeasible, PublishesEveryFinalPriceWithTruthfulMethodAndGrade) {
   const std::vector<Chain> chains{chain(0.5, 0.24, -0.08, 0.02),
                                   chain(0.25, 0.22, -0.1, 0.02)};
   auto config = box_certificate_config(0.0);
   config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   auto inputs = expiries(chains);
   inputs[0].snapshot.quote_ns = 123456;
   inputs[0].snapshot.carry_version = 7;
@@ -4145,7 +4145,7 @@ TEST(QuoteSurfaceJointRaw, PublishesEveryFinalPriceWithTruthfulMethodAndGrade) {
   ASSERT_EQ(result->size(), chains.size());
   for (std::size_t i = 0; i < result->size(); ++i) {
     const auto &slice = (*result)[i];
-    EXPECT_EQ(slice.method, QuoteSurfaceMethod::JointRawMid);
+    EXPECT_EQ(slice.method, QuoteSurfaceMethod::JointFeasibleMid);
     EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::None);
     EXPECT_EQ(slice.grade, QuoteSliceGrade::B);
     ASSERT_EQ(slice.fit.fit_status, QuoteSliceFitStatus::Success);
@@ -4172,10 +4172,10 @@ TEST(QuoteSurfaceJointRaw, PublishesEveryFinalPriceWithTruthfulMethodAndGrade) {
   expect_calendar_consistent(*result);
   EXPECT_EQ(result->front().fit.snapshot.quote_ns, 123456);
   EXPECT_EQ(result->front().fit.snapshot.carry_version, 7u);
-  EXPECT_STREQ(to_string(result->front().method), "joint_raw_mid");
+  EXPECT_STREQ(to_string(result->front().method), "joint_feasible_mid");
 }
 
-TEST(QuoteSurfaceJointRaw, OneMissingSideFallsBackForTheWholeSurface) {
+TEST(QuoteSurfaceJointFeasible, OneMissingSideFallsBackForTheWholeSurface) {
   std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02),
                             chain(0.5, 0.24, -0.08, 0.02)};
   chains.back().quotes.erase(chains.back().quotes.begin());
@@ -4184,17 +4184,17 @@ TEST(QuoteSurfaceJointRaw, OneMissingSideFallsBackForTheWholeSurface) {
   const auto legacy = fit_quote_surface(expiries(chains), config);
   ASSERT_TRUE(legacy);
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   const auto result = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(result);
   expect_same_raw_fallback(*legacy, *result);
   for (const auto &slice : *result) {
     EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::UnsupportedInput);
-    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointRawMid);
+    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointFeasibleMid);
   }
 }
 
-TEST(QuoteSurfaceJointRaw, UnknownModeIsRejected) {
+TEST(QuoteSurfaceJointFeasible, UnknownModeIsRejected) {
   QuoteSurfaceConfig surface;
   surface.cold_fit = static_cast<QuoteSurfaceColdFit>(255);
   const auto result = fit_quote_surface({}, QuoteSliceConfig{}, surface);
@@ -4203,7 +4203,32 @@ TEST(QuoteSurfaceJointRaw, UnknownModeIsRejected) {
   EXPECT_STREQ(to_string(surface.cold_fit), "unknown");
 }
 
-TEST(QuoteSurfaceJointRaw, CalendarInfeasibilityKeepsTheWholeLegacyResult) {
+TEST(QuoteSurfaceJointFeasible, TargetsTheFloorIntersectedQuoteMidpointExplicitly) {
+  Chain c{{100, .5, .5, 0, 0, 0}, {}};
+  const std::array<double, 7> calls{30.5, 21, 12, 5, 2, 1, .5};
+  for (std::size_t i = 0; i < calls.size(); ++i) {
+    const double strike = 70.0 + 10.0 * static_cast<double>(i);
+    const double put = calls[i] + strike - 100.0;
+    c.quotes.push_back({strike, Side::Call, calls[i] - .25, calls[i] + .25});
+    c.quotes.push_back({strike, Side::Put, put - .25, put + .25});
+  }
+  c.quotes.front().bid = c.quotes.back().bid = 29;
+  c.quotes.front().ask = c.quotes.back().ask = 31;
+  const std::vector<Chain> chains{c};
+  auto config = box_certificate_config(0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  QuoteSurfaceConfig surface;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->front().method, QuoteSurfaceMethod::JointFeasibleMid);
+  EXPECT_DOUBLE_EQ(result->front().fit.rows.front().fitted_price, 30.5);
+  EXPECT_DOUBLE_EQ(result->front().fit.rows.back().fitted_price, 30.5);
+  EXPECT_EQ(c.quotes.front().bid, 29);
+  EXPECT_EQ(c.quotes.front().ask, 31);
+}
+
+TEST(QuoteSurfaceJointFeasible, CalendarInfeasibilityKeepsTheWholeLegacyResult) {
   const std::vector<Chain> chains{chain(0.25, 0.6, 0, 0.001),
                                   chain(0.5, 0.1, 0, 0.001)};
   QuoteSliceConfig config;
@@ -4211,7 +4236,7 @@ TEST(QuoteSurfaceJointRaw, CalendarInfeasibilityKeepsTheWholeLegacyResult) {
   const auto legacy = fit_quote_surface(expiries(chains), config);
   ASSERT_TRUE(legacy);
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   const auto result = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(result);
   expect_same_raw_fallback(*legacy, *result);
@@ -4220,7 +4245,7 @@ TEST(QuoteSurfaceJointRaw, CalendarInfeasibilityKeepsTheWholeLegacyResult) {
   }
 }
 
-TEST(QuoteSurfaceJointRaw, ProjectionExhaustionIsNotCalledInfeasible) {
+TEST(QuoteSurfaceJointFeasible, ProjectionExhaustionIsNotCalledInfeasible) {
   const Chain nonconvex{{100, .5, .5, 0, 0, 0},
       {{90, Side::Call, 6.75, 17.25}, {90, Side::Put, 0, 7.25},
        {100, Side::Call, 7, 13}, {100, Side::Put, 7, 13},
@@ -4232,7 +4257,7 @@ TEST(QuoteSurfaceJointRaw, ProjectionExhaustionIsNotCalledInfeasible) {
   const auto legacy = fit_quote_surface(expiries(chains), config);
   ASSERT_TRUE(legacy);
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   const auto result = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(result);
   expect_same_raw_fallback(*legacy, *result);
@@ -4240,7 +4265,7 @@ TEST(QuoteSurfaceJointRaw, ProjectionExhaustionIsNotCalledInfeasible) {
             QuoteSurfaceColdFitFallback::ProjectionNonConverged);
 }
 
-TEST(QuoteSurfaceJointRaw, FinalPublicationFailureDiscardsEveryPreparedExpiry) {
+TEST(QuoteSurfaceJointFeasible, FinalPublicationFailureDiscardsEveryPreparedExpiry) {
   const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02),
                                   chain(0.5, 0.24, -0.08, 0.02)};
   auto config = box_certificate_config(0.0);
@@ -4249,7 +4274,7 @@ TEST(QuoteSurfaceJointRaw, FinalPublicationFailureDiscardsEveryPreparedExpiry) {
   surface.publication = QuoteSurfacePublication::Validate;
   const auto legacy = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(legacy);
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   detail::PublicationInjection injection;
   injection.refuse_expiry = 1;
   const detail::ScopedPublicationInjection inject(injection);
@@ -4259,11 +4284,11 @@ TEST(QuoteSurfaceJointRaw, FinalPublicationFailureDiscardsEveryPreparedExpiry) {
   expect_same_raw_fallback(*legacy, *result);
   for (const auto &slice : *result) {
     EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::PublicationFailed);
-    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointRawMid);
+    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointFeasibleMid);
   }
 }
 
-TEST(QuoteSurfaceJointRaw, InsufficientFinalCurveEvidenceFallsBackAtomically) {
+TEST(QuoteSurfaceJointFeasible, InsufficientFinalCurveEvidenceFallsBackAtomically) {
   const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02),
                                   chain(0.5, 0.24, -0.08, 0.02, 95, 100, 5)};
   auto config = box_certificate_config(0);
@@ -4271,17 +4296,17 @@ TEST(QuoteSurfaceJointRaw, InsufficientFinalCurveEvidenceFallsBackAtomically) {
   const auto legacy = fit_quote_surface(expiries(chains), config);
   ASSERT_TRUE(legacy);
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   const auto result = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(result);
   expect_same_raw_fallback(*legacy, *result);
   for (const auto &slice : *result) {
     EXPECT_EQ(slice.cold_fit_fallback, QuoteSurfaceColdFitFallback::FinalizationFailed);
-    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointRawMid);
+    EXPECT_NE(slice.method, QuoteSurfaceMethod::JointFeasibleMid);
   }
 }
 
-TEST(QuoteSurfaceJointRaw, DuplicateRowsShareTheFinalIdentificationAndRawBudgets) {
+TEST(QuoteSurfaceJointFeasible, DuplicateRowsShareTheFinalIdentificationAndRawBudgets) {
   std::vector<Chain> chains{chain(0.5, 0.24, -0.08, 0.02)};
   const auto quote = chains[0].quotes[10];
   auto duplicate = quote;
@@ -4293,10 +4318,10 @@ TEST(QuoteSurfaceJointRaw, DuplicateRowsShareTheFinalIdentificationAndRawBudgets
   config.reimply_price_cap = .001;
   config.reimply_spread_fraction = .01;
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   const auto result = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(result);
-  ASSERT_EQ(result->front().method, QuoteSurfaceMethod::JointRawMid);
+  ASSERT_EQ(result->front().method, QuoteSurfaceMethod::JointFeasibleMid);
   const auto &rows = result->front().fit.rows;
   ASSERT_EQ(rows.size(), chains[0].quotes.size());
   EXPECT_DOUBLE_EQ(rows[10].fitted_price, rows.back().fitted_price);
@@ -4307,12 +4332,12 @@ TEST(QuoteSurfaceJointRaw, DuplicateRowsShareTheFinalIdentificationAndRawBudgets
   EXPECT_LE(rows.back().fitted_price, duplicate.ask);
 }
 
-TEST(QuoteSurfaceJointRaw, TracingCountsFinalWorkAndRetainsFailedAttemptCost) {
+TEST(QuoteSurfaceJointFeasible, TracingCountsFinalWorkAndRetainsFailedAttemptCost) {
   const std::vector<Chain> chains{chain(0.25, 0.22, -0.1, 0.02)};
   auto config = box_certificate_config(0);
   config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
   QuoteSurfaceConfig surface;
-  surface.cold_fit = QuoteSurfaceColdFit::JointRawMid;
+  surface.cold_fit = QuoteSurfaceColdFit::JointFeasibleMid;
   const auto untraced = fit_quote_surface(expiries(chains), config, surface);
   ASSERT_TRUE(untraced);
   ft::SurfaceTrace trace;

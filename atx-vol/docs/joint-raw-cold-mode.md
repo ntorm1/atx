@@ -1,12 +1,14 @@
 # Explicit joint raw-price cold fit
 
-`QuoteSurfaceConfig::cold_fit = QuoteSurfaceColdFit::JointRawMid` selects a new
+`QuoteSurfaceConfig::cold_fit = QuoteSurfaceColdFit::JointFeasibleMid` selects a new
 surface objective. The default `ExistingPolicy` retains the existing point,
 channel and term-prior ladder. This mode is an explicit change of fitting
 objective, not an acceleration claimed to reproduce that ladder's prices.
 
-The new path builds private drafts from every original quote, jointly projects
-their original midpoint targets onto the reviewed slice/calendar constraints,
+The new path builds private drafts from every original quote. Each target is
+the midpoint of its quote interval after the lower edge is intersected with
+proven intrinsic and terminal European floors (and any selected call floor).
+It jointly projects these targets onto the reviewed slice/calendar constraints,
 and identifies each final node side once. Its final curve is built from genuine
 identified OTM final-price observations. Original market-IV admission is not
 invented: rows retain their original quotes, have no market IV or admission,
@@ -17,8 +19,10 @@ explicit raw-price objective.
 
 All draft contracts in [raw-price-draft.md](raw-price-draft.md) apply: exact raw
 boxes, duplicate intersections, supplied carry, continuous or aggregate-PV cash
-model, all paired sides, PriceOnly classification, actual terminal floors and proved-floor-only
-ask recovery. The original raw spreads remain the monetary accuracy budgets.
+model, all paired sides, PriceOnly classification, actual terminal floors and
+optional proved-floor-only ask recovery. The original raw spreads remain the
+monetary accuracy budgets. Only the pre-existing explicit ask recovery may widen
+a contradictory ask; the target rule cannot widen a quote or enlarge a budget.
 The projection budget is `min(100, repair.joint_max_sweeps)`; budget exhaustion
 does not assert data infeasibility. The solver returns a certified feasible
 point guided by squared distance, not a proof of exact least-squares optimality.
@@ -30,7 +34,7 @@ of the legacy publication switch. Configured distance-to-market limits and,
 under the knot ladder, the channel containment limit remain acceptance gates.
 Failure of either gate rejects the whole attempted mode; it never withholds
 rows just to pass. Successful new-mode slices receive grade B and method
-`JointRawMid`, after all these checks. Legacy point/knot admission and refit
+`JointFeasibleMid`, after all these checks. Legacy point/knot admission and refit
 fields retain their defaults because those attempts did not occur.
 
 The surface is published atomically. Unsupported inputs, infeasible projection,
@@ -63,14 +67,16 @@ through archival; the owning archive layer must persist them or explicitly
 refuse unsupported records. This mode does not establish Greek accuracy or a
 subsecond complete-fit result. Those remain independent whole-fit gates.
 
-The ten orchestration regressions pass, together with the six finalizer
-component tests. Owning production/test translation units compile with PCH off.
 Tests cover default identity, actual final-price publication, snapshot metadata,
 duplicate rows, all-or-nothing unsupported/infeasible/nonconverged/finalizer/API
 fallback, and conservation of timing through a failed attempt.
 
-This original-midpoint mode is not qualified for SPY: its private all33-row smoke
-serves all 12,866 prices with 15 box departures, but identifies only 11,767 IVs
-and demotes 840 frozen-baseline identified rows. A separate private feasible-box
-target experiment is documented in `raw-price-target-experiment.md`; it is not
-silently selected by `JointRawMid`.
+The earlier original-midpoint experiment identified only 11,767 IVs and demoted
+840 baseline rows. The explicit feasible-midpoint objective identifies 12,850
+while preserving all 33 expiries, 12,866 rows and exactly 15 box departures in
+the private smoke. Two baseline identified rows become genuine PriceOnly under
+the new fitted targets. The strict no-demotion diagnostic remains failed;
+promotion requires independent API/accuracy validation and explicit review of
+those two classification transitions. See
+[raw-price-target-experiment.md](raw-price-target-experiment.md). No qualified
+complete-fit latency or Greek accuracy is established by these smoke results.
