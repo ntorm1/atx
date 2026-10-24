@@ -126,3 +126,8 @@ and four retain typed refusals at the original tolerance. Both coarse-time
 requests recover, but neither Greek is promoted. The
 [complete result](../../docs/independent-lcp-control-20261024.md) retains every
 outcome, actual work and four failed-stage arrays; no full144 run followed.
+
+The subsequent [saved-system residual audit](../../docs/independent-lcp-residual-diagnosis-20261024.md)
+checks all 65,532 rows at 100 digits and with exact rational arithmetic. All four
+remain over tolerance; no PDE or linear solve was run. Policy cycling remains
+unproven because the saved snapshots contain no iteration history.
