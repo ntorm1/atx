@@ -80,6 +80,76 @@ def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
     assert all(row["policy_source"] == "fixed-curve" for row in rows)
 
 
+def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded"}))
+    plain = invoke(binary, source, tmp_path / "plain.csv", "--policy", str(policy))
+    audited = invoke(binary, source, tmp_path / "audit.csv", "--policy", str(policy),
+                     "--acceptance-audit")
+    assert audited.returncode == plain.returncode == 0, audited.stderr
+    assert (tmp_path / "plain.csv").read_bytes() == (tmp_path / "audit.csv").read_bytes()
+    native = json.loads(audited.stdout)
+    block = native["graded_stats"]["acceptance_audit"]
+    assert block["timing_qualifying"] is False
+    assert block["representation"] == "certified_piecewise_linear"
+    assert "acceptance_audit" not in json.loads(plain.stdout)["graded_stats"]
+    (entry,) = block["snapshots"][0]
+    assert len(entry["nodes"]) >= 2
+    assert len(entry["queries"]) > 2 * len(entry["nodes"])
+    assert all(query["status"] in ("success", "price_only") for query in entry["queries"])
+
+
+def test_native_carry_normalization_policy_is_explicit_and_bounded(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    for snapshot, accepted in [
+            ({"one_spot": "nearest", "carry_price_tolerance": 1e-6}, True),
+            ({"one_spot": "off", "carry_price_tolerance": 1e-6}, False),
+            ({"one_spot": "nearest", "carry_price_tolerance": -1e-6}, False)]:
+        policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                      "snapshot": snapshot}))
+        native = invoke(binary, source, tmp_path / "predictions.csv", "--policy", str(policy))
+        assert (native.returncode == 0) == accepted, native.stderr
+        if accepted:
+            report = json.loads(native.stdout)
+            assert report["policy_definition"]["snapshot"]["carry_price_tolerance"] == 1e-6
+            assert report["one_spot"]["chains"][0]["carry_normalization"]["strikes_changed"] == 0
+
+
+def test_native_funding_carry_normalization_is_reported_and_material_conflicts_refuse(
+        binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        reader = csv.DictReader(stream)
+        fields, rows = reader.fieldnames, list(reader)
+    for row in rows:
+        row["ddiv_pv"] = "1.8"
+    put = dict(rows[12], row_id="999", is_call="0", bid="8.0", ask="8.1", sdiv="1e-10")
+    rows.append(put)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                  "snapshot": {"one_spot": "nearest",
+                                               "carry_price_tolerance": 1e-6}}))
+    for carry, expected in [("1e-10", "rebased"), ("0.01", "carry_conflict")]:
+        rows[-1]["sdiv"] = carry
+        with source.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        native = invoke(binary, source, tmp_path / "predictions.csv", "--policy", str(policy),
+                        "--dividends", "funding-pv")
+        assert native.returncode == 0, native.stderr
+        record = json.loads(native.stdout)["one_spot"]["chains"][0]
+        assert record["status"] == expected
+        if expected == "rebased":
+            assert record["carry_normalization"]["strikes_changed"] == 1
+            assert 0 < record["carry_normalization"]["max_price_change_bound"] < 1e-6
+
+
 def test_native_rejects_label_columns(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     make_quotes(source)

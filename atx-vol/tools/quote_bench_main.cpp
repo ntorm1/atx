@@ -17,6 +17,7 @@
 #include "quote_bench_common.hpp"
 #include "quote_bench_progress.hpp"
 #include "quote_bench_data.hpp"
+#include "quote_bench_acceptance.hpp"
 
 #include <algorithm>
 #include <array>
@@ -69,6 +70,7 @@ struct Arguments {
   bool help_requested{false};
   bool timing_detail{false}; // opt-in per-chain fit timing counters (graded admission)
   bool deam_audit{false};    // opt-in: every Premium de-Am inversion also runs Search (L2e)
+  bool acceptance_audit{false}; // offline actual-API proof; timings are not qualifying
   // Lane B0 benchmark harness (bench_clocks.hpp, docs/benchmark-clocks.md).
   std::size_t reps{1};              // in-process repetitions of the quote-slice run
   bool cold_reset{false};           // reset every market-dependent memo before each rep
@@ -127,6 +129,7 @@ Arguments arguments(int argc, char **argv) {
                    "[--max-weight 1000] [--timing-detail] [--deam-audit] [--reps 1] "
                    "[--cold-reset] [--affinity CPU [--require-pcore]] "
                    "[--inverse-replay auto|scalar|avx2]\n"
+                   "[--acceptance-audit] (offline final API proof; not a timing run)\n"
                    "Defaults: --policy auto --dividends funding-pv. "
                    "Quality/min-quotes flags require explicit --curve. "
                    "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
@@ -149,6 +152,10 @@ Arguments arguments(int argc, char **argv) {
     }
     if (key == "--timing-detail") {
       args.timing_detail = true;
+      continue;
+    }
+    if (key == "--acceptance-audit") {
+      args.acceptance_audit = true;
       continue;
     }
     if (key == "--deam-audit") {
@@ -200,6 +207,9 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.model == "quote-slice" && seen.contains("--common-policy")) {
     throw std::runtime_error("--common-policy requires --model common-markov");
+  }
+  if (args.acceptance_audit && (args.model != "quote-slice" || !args.curve.empty())) {
+    throw std::runtime_error("--acceptance-audit requires quote-slice graded policy");
   }
   if (args.timing_detail && args.model != "quote-slice") {
     throw std::runtime_error("--timing-detail requires --model quote-slice");
@@ -475,6 +485,7 @@ struct RunStatistics {
   bool graded_dominance{false};
   bool graded_ladder{false};
   Json graded_stats = Json::object();
+  bool acceptance_audit{false};
   // Opt-in policy key `price_only`: rows served as ok_price_only (never in `served`).
   bool price_only{false};
   std::size_t price_only_rows{};
@@ -737,13 +748,29 @@ std::string apply_one_spot(const SnapshotSpot &choice, QuoteSliceDividendModel m
     return "stale_spot";
   }
   const std::string status = stale ? "rebased_stale" : "rebased";
-  record["status"] = status;
-  stats.one_spot["chains"].push_back(std::move(record));
-  count_into(stats.one_spot["chain_status_counts"], status);
   chain.market = rebased->market;
   for (auto &quote : chain.quotes) {
     if (quote.continuous_yield) *quote.continuous_yield += rebased->yield_shift;
   }
+  if (stats.snapshot.carry_price_tolerance > 0.0) {
+    const auto normalized = coalesce_quote_slice_carry(
+        chain.market, chain.quotes, model, stats.snapshot.carry_price_tolerance);
+    if (!normalized) {
+      record["status"] = "carry_conflict";
+      record["error"] = normalized.error().to_string();
+      stats.one_spot["chains"].push_back(std::move(record));
+      count_into(stats.one_spot["chain_status_counts"], "carry_conflict");
+      return "carry_conflict";
+    }
+    record["carry_normalization"] = {
+        {"strikes_changed", normalized->strikes_changed},
+        {"max_abs_yield_change", normalized->max_abs_yield_change},
+        {"max_price_change_bound", normalized->max_price_change_bound},
+        {"price_tolerance", stats.snapshot.carry_price_tolerance}};
+  }
+  record["status"] = status;
+  stats.one_spot["chains"].push_back(std::move(record));
+  count_into(stats.one_spot["chain_status_counts"], status);
   QuoteSliceSnapshotInfo &info = chain.snapshot;
   info.underlying_ns = choice.underlying_ns;
   info.spot_version = 1U;
@@ -1394,6 +1421,13 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         stamp_metadata(fit, result, prepared.at(members[s]).snapshot, served, prediction);
       }
     }
+    if (stats.acceptance_audit && fitted) {
+      graded["acceptance_audit"]["schema"] = "atx-vol-final-api-audit-v1";
+      graded["acceptance_audit"]["timing_qualifying"] = false;
+      graded["acceptance_audit"]["representation"] = "certified_piecewise_linear";
+      graded["acceptance_audit"]["snapshots"].push_back(
+          quote_bench_acceptance::surface(*fitted, members));
+    }
   }
 }
 
@@ -1632,6 +1666,7 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
 
 std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &rows,
                             RunStatistics &stats) {
+  stats.acceptance_audit = args.acceptance_audit;
   const auto dividends = args.dividends == "funding-pv"
       ? QuoteSliceDividendModel::AggregateFundingPresentValue
       : args.dividends == "escrowed-pv" ? QuoteSliceDividendModel::AggregatePresentValue

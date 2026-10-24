@@ -1001,6 +1001,9 @@ struct SnapshotOptions {
   // spot_stale in the metadata) or refused (every row status stale_spot).
   double stale_spot_bps{5.0};
   bool refuse_stale{false};
+  // Explicit USD error budget for tiny same-strike carry discrepancies. Zero
+  // preserves strict historical behavior; applied after the common-spot rebase.
+  double carry_price_tolerance{0.0};
 };
 
 // Lane H1 (graded.serve_records, opt-in; graded.serve_record_profile): after each served
@@ -1090,7 +1093,7 @@ inline SnapshotOptions parse_snapshot(const Json &document) {
   SnapshotOptions out;
   if (!document.contains("snapshot")) return out;
   const auto &j = document.at("snapshot");
-  keys(j, {"one_spot", "stale_spot_bps", "stale_spot"});
+  keys(j, {"one_spot", "stale_spot_bps", "stale_spot", "carry_price_tolerance"});
   if (j.contains("one_spot")) {
     const auto mode = text(j.at("one_spot"));
     if (mode == "nearest") {
@@ -1106,6 +1109,10 @@ inline SnapshotOptions parse_snapshot(const Json &document) {
     throw std::runtime_error("Policy snapshot stale_spot keys require one_spot nearest or median");
   }
   numeric(j, "stale_spot_bps", out.stale_spot_bps, 0, 10000);
+  numeric(j, "carry_price_tolerance", out.carry_price_tolerance, 0, 0.001);
+  if (out.carry_price_tolerance > 0.0 && out.one_spot == OneSpot::Off) {
+    throw std::runtime_error("Policy snapshot carry_price_tolerance requires one_spot");
+  }
   if (j.contains("stale_spot")) {
     const auto mode = text(j.at("stale_spot"));
     if (mode == "refuse") {
@@ -1429,6 +1436,9 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     definition["snapshot"] = {{"one_spot", to_string(snapshot.one_spot)},
                               {"stale_spot_bps", snapshot.stale_spot_bps},
                               {"stale_spot", snapshot.refuse_stale ? "refuse" : "flag"}};
+    if (snapshot.carry_price_tolerance > 0.0) {
+      definition["snapshot"]["carry_price_tolerance"] = snapshot.carry_price_tolerance;
+    }
     // The rebase re-derives an aggregate carry; a dated-cash schedule would need its own.
     if (!routing.empty()) {
       throw std::runtime_error("Policy snapshot one_spot requires dividends aggregate "
