@@ -139,6 +139,15 @@ input, policy, and prediction hashes. Use `bench/run_cold_trials.ps1` on a clean
 count one, and `-RequireIdleSibling`. The `qualify` command inspects every native
 timing report and demands every observed cold-calibration time below 1.000 s:
 
+Qualification counts actual successful records and requires at least 100 distinct
+trial IDs, report files, report hashes, and kernel PID/creation-time identities.
+The launcher and native executable independently record each process identity.
+Each CSV is rehashed, each native clock must equal its launcher summary, and each
+native report must show exactly one initial repetition with an empty de-Am memo.
+Native affinity, worker count and sibling load are checked directly; sibling
+activity must be measured below 5%. Older manifests without process identities
+cannot qualify. Summary counters or an asserted idle-sibling flag are insufficient.
+
 ```powershell
 python atx-vol/bench/spy_acceptance.py qualify --input $inputCsv `
   --audit-dir $auditDir --cold-manifest 'C:/.../cold-100/manifest.json' `
@@ -150,6 +159,10 @@ CSV loading and process startup are separately reported. If a serving record is
 part of the selected API route, its construction must be included. An audit with
 no attached record only verifies the direct fitted-slice API, never the record
 or live-publication route.
+
+The correctness oracle also reconstructs the common spot, market clocks/rate/cash,
+per-strike normalized carry, and exercise-horizon bounds from frozen raw inputs.
+Exported bounds cannot redefine the constraints used to judge the exported prices.
 
 ## Limits and primary reference
 
@@ -191,10 +204,13 @@ terminal lower bounds at **every** projected node, while widening boxes only for
 the 15 direct input conflicts. The audit's approximately 144-second fit/reprice
 clock includes expensive validation calls and is **not a performance result**.
 
-Focused verification of the harness: 10 independent Python oracle tests pass;
+Focused verification of the harness: 20 independent Python oracle tests pass;
 seven native CLI tests covering the audit, normalization and existing common-spot
 behavior pass. The benchmark target builds with `vol-rel`. Negative cases include
 withheld-price leakage, between-node disagreement, missing union queries, false
 identified price-only volatility, nonadjacent calendar crossings, discounted
 terminal floors under nonzero carry, two workers, a multi-CPU process mask and
 an unexpected expiry fanout. ThinLTO performance qualification is still pending.
+Independent review found and reproduced a former qualification bug: one native
+50-second trial could pass under a summary claiming 100 trials of 0.5 seconds.
+The joined evidence checks above and adversarial regression now reject this case.

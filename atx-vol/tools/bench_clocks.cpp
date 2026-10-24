@@ -900,6 +900,18 @@ Json affinity_json(std::optional<unsigned> requested, bool require_pcore,
   return out;
 }
 
+Json process_identity_json() {
+#if defined(_WIN32)
+  FILETIME creation{}, exit_time{}, kernel{}, user{};
+  if (::GetProcessTimes(::GetCurrentProcess(), &creation, &exit_time, &kernel, &user)) {
+    const auto ticks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) |
+                       creation.dwLowDateTime;
+    return {{"pid", ::GetCurrentProcessId()}, {"creation_filetime", std::to_string(ticks)}};
+  }
+#endif
+  return nullptr;
+}
+
 double seconds_since_process_creation() noexcept {
   FILETIME creation{};
   FILETIME exit_time{};

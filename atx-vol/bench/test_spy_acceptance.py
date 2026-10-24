@@ -1,5 +1,8 @@
 """Adversarial tests of the acceptance oracle, independent of fitter internals."""
 import copy
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import spy_acceptance as audit
@@ -34,6 +37,39 @@ def document(*slices):
 
 
 class FinalApiOracleTests(unittest.TestCase):
+    def raw_fixture(self):
+        value = surface()
+        value["dividend_model"] = "aggregate_funding_pv_approximation"
+        value["carry_curve"] = [{"strike": node["strike"], "continuous_yield": 0.0}
+                                for node in value["nodes"]]
+        report = document(value)
+        report["policy_definition"] = {"snapshot": {"one_spot": "nearest",
+                                                   "carry_price_tolerance": 1e-6}}
+        rows = [{"chain_id": 1, "row_id": index, "strike": node["strike"], "bid": 0.0,
+                 "ask": 20.0, "spot": 100.0, "rate": 0.0, "sdiv": 0.0, "ddiv_pv": 0.0,
+                 "years": 1.0, "years_calendar": 1.0, "is_call": 1, "exercise": "American",
+                 "input_status": "ok", "snapshot_ns": 100, "observation_ns": 100}
+                for index, node in enumerate(value["nodes"])]
+        return report, rows, value
+
+    def test_raw_model_and_bounds_reconstruction_passes(self):
+        report, rows, _ = self.raw_fixture()
+        self.assertEqual(audit.raw_model_violations(report, rows), [])
+
+    def test_exported_looser_bounds_cannot_redefine_oracle(self):
+        report, rows, value = self.raw_fixture()
+        value["bounds"]["discount_max"] = 2.0
+        self.assertTrue(any(v["kind"] == "bounds_differ_from_raw"
+                            for v in audit.raw_model_violations(report, rows)))
+
+    def test_exported_carry_and_market_must_match_raw_normalization(self):
+        report, rows, value = self.raw_fixture()
+        value["market"]["rate"] = 0.1
+        value["carry_curve"][0]["continuous_yield"] = 0.1
+        kinds = {v["kind"] for v in audit.raw_model_violations(report, rows)}
+        self.assertIn("market_differs_from_raw", kinds)
+        self.assertIn("carry_differs_from_raw", kinds)
+
     def test_genuine_price_only_domain_passes(self):
         self.assertEqual(audit.api_violations(document(surface())), [])
 
@@ -92,6 +128,86 @@ class FinalApiOracleTests(unittest.TestCase):
 
 
 class ColdClockOracleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+
+    def timing_fixture(self, count=100, native_cold=0.5):
+        predictions = self.directory / "predictions.csv"
+        predictions.write_text("same actual predictions\n", encoding="utf-8")
+        prediction_hash = audit.sha256(predictions)
+        self.receipt = {"binary_sha256": "binary", "input_sha256": "input",
+                        "policy_sha256": "policy", "predictions_sha256": prediction_hash}
+        self.report = {"policy_definition": {"test_policy": True}}
+        manifest = {"binary": {"sha256": "binary"}, "input": {"sha256": "input"},
+                    "policy": {"sha256": "policy"}, "predictions_sha256": prediction_hash,
+                    "predictions_identical": True, "fast_math": False, "source": {"dirty": False},
+                    "trials_ok": 100, "trials_requested": 100, "trials": []}
+        for index in range(count):
+            identity = {"pid": index + 1, "creation_filetime": str(1000000000 + index)}
+            affinity = {"fit_workers": {"env_ATX_VOL_FIT_WORKERS": "1", "resolved_auto": 1},
+                        "pinned": True, "is_pcore": True, "requested_cpu": 6,
+                        "current_cpu_at_receipt": 6, "process_affinity_mask": "0x40",
+                        "nested_pools": {"surface_expiry_fanout": 1}, "smt_siblings": [7],
+                        "busy": {"smt_sibling_pct": [0.0]}}
+            native = {"policy_definition": self.report["policy_definition"], "bench": {
+                "process_identity": identity, "affinity": affinity, "reps": 1,
+                "build_info": {"fast_math": False}, "per_rep": [
+                    {"rep": 1, "cold_calibration_s": native_cold, "deam_memo_entries_at_start": 0}]}}
+            path = self.directory / f"trial-{index}.json"
+            path.write_text(json.dumps(native), encoding="utf-8")
+            launcher_affinity = copy.deepcopy(affinity)
+            launcher_affinity["smt_sibling_busy_pct"] = [0.0]
+            manifest["trials"].append({"trial": index + 1, "exit_code": 0,
+                "report": path.name, "report_sha256": audit.sha256(path),
+                "predictions": predictions.name, "predictions_sha256": prediction_hash,
+                "cold_calibration_s": 0.5, "affinity": launcher_affinity,
+                "process_identity": identity})
+        return manifest
+
+    def checks(self, manifest):
+        return audit.cold_timing_checks(manifest, self.directory, self.receipt, self.report)
+
+    def test_100_independently_joined_fresh_native_reports_pass(self):
+        checks = self.checks(self.timing_fixture())
+        self.assertTrue(all(checks.values()), checks)
+
+    def test_summary_cannot_turn_one_trial_into_100(self):
+        self.assertFalse(self.checks(self.timing_fixture(count=1))["at_least100_fresh_processes"])
+
+    def test_summary_cannot_hide_native_50second_clock(self):
+        self.assertFalse(self.checks(self.timing_fixture(native_cold=50.0))["all_cold_under1second"])
+
+    def test_duplicate_native_report_or_process_cannot_count_twice(self):
+        manifest = self.timing_fixture()
+        manifest["trials"][1] = copy.deepcopy(manifest["trials"][0])
+        manifest["trials"][1]["trial"] = 2
+        self.assertFalse(self.checks(manifest)["distinct_trial_report_process_evidence"])
+
+    def test_summary_cannot_hide_native_multi_cpu_affinity_or_busy_sibling(self):
+        manifest = self.timing_fixture()
+        trial = manifest["trials"][0]
+        path = self.directory / trial["report"]
+        native = audit.read_json(path)
+        native["bench"]["affinity"]["process_affinity_mask"] = "0xc0"
+        native["bench"]["affinity"]["busy"]["smt_sibling_pct"] = [70.0]
+        path.write_text(json.dumps(native), encoding="utf-8")
+        trial["report_sha256"] = audit.sha256(path)
+        checks = self.checks(manifest)
+        self.assertFalse(checks["one_pcore"])
+        self.assertFalse(checks["idle_sibling"])
+
+    def test_changed_prediction_file_cannot_pass_saved_hash(self):
+        manifest = self.timing_fixture()
+        (self.directory / "predictions.csv").write_text("changed\n", encoding="utf-8")
+        self.assertFalse(self.checks(manifest)["same_predictions"])
+
+    def test_process_launch_identity_must_match_native_kernel_identity(self):
+        manifest = self.timing_fixture()
+        manifest["trials"][0]["process_identity"] = {"pid": 999, "creation_filetime": "1"}
+        self.assertFalse(self.checks(manifest)["distinct_trial_report_process_evidence"])
+
     def test_native_worker_object_and_single_cpu_are_required(self):
         trial = {"affinity": {"fit_workers": {"env_ATX_VOL_FIT_WORKERS": "1", "resolved_auto": 1},
                               "pinned": True, "is_pcore": True, "requested_cpu": 6,

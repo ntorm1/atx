@@ -130,6 +130,10 @@ for ($t = 1; $t -le $Trials; ++$t) {
   $psi.EnvironmentVariables['ATX_VOL_FIT_WORKERS'] = '1'
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
   $proc = [System.Diagnostics.Process]::Start($psi)
+  $processIdentity = [ordered]@{
+    pid = $proc.Id
+    creation_filetime = $proc.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
+  }
   $outTask = $proc.StandardOutput.ReadToEndAsync()
   $errTask = $proc.StandardError.ReadToEndAsync()
   $proc.WaitForExit()
@@ -139,6 +143,7 @@ for ($t = 1; $t -le $Trials; ++$t) {
   $code = $proc.ExitCode
   $record = [ordered]@{
     trial = $t; exit_code = $code; launcher_wall_s = $watch.Elapsed.TotalSeconds
+    process_identity = $processIdentity
   }
   if ($code -ne 0 -or -not (Test-Path -LiteralPath $report)) {
     $record['stderr'] = $errTask.Result.Trim()
@@ -157,6 +162,7 @@ for ($t = 1; $t -le $Trials; ++$t) {
   $process += [double]$bench.clocks.process_wall_s.value
   $walls += $watch.Elapsed.TotalSeconds
   $record['report'] = "$name.json"
+  $record['predictions'] = "$name.csv"
   $record['report_sha256'] = Get-Sha256 $report
   $record['predictions_sha256'] = $predictionsSha
   $record['served_rows'] = $json.served_rows

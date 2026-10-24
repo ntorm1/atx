@@ -2734,6 +2734,7 @@ int main(int argc, char **argv) {
     bench_report["affinity"] =
         bench::affinity_json(args.affinity, args.require_pcore, cpus_before, cpus_after);
     bench_report["build_info"] = bench::build_info_json();
+    bench_report["process_identity"] = bench::process_identity_json();
     stats.bench = std::move(bench_report);
     write_report(std::cout, args, rows.size(), stats);
     if (!args.report.empty()) {

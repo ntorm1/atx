@@ -101,6 +101,30 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     assert all(query["status"] in ("success", "price_only") for query in entry["queries"])
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native/launcher process receipt")
+def test_native_cold_launcher_joins_distinct_kernel_process_identities(binary, tmp_path):
+    source, policy = tmp_path / "quotes.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded"}))
+    out = tmp_path / "trials"
+    launcher = Path(__file__).resolve().parents[2] / "bench" / "run_cold_trials.ps1"
+    result = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", str(launcher), "-Binary", str(binary.resolve()), "-InputCsv", str(source),
+        "-Policy", str(policy), "-OutDir", str(out), "-Trials", "2"],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8-sig"))
+    assert len(manifest["trials"]) == 2
+    identities = set()
+    for trial in manifest["trials"]:
+        native = json.loads((out / trial["report"]).read_text(encoding="utf-8-sig"))
+        identity = trial["process_identity"]
+        assert identity == native["bench"]["process_identity"]
+        identities.add((identity["pid"], identity["creation_filetime"]))
+        assert (out / trial["predictions"]).is_file()
+    assert len(identities) == 2
+
+
 def test_native_carry_normalization_policy_is_explicit_and_bounded(binary, tmp_path):
     source = tmp_path / "quotes.csv"
     make_quotes(source)

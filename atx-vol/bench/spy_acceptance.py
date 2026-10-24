@@ -586,6 +586,144 @@ def one_core_trial(trial):
             affinity.get("nested_pools", {}).get("surface_expiry_fanout") == 1)
 
 
+def cold_timing_checks(manifest, directory, receipt, audit_report):
+    """Join launcher records to independently hashed native reports and CSVs.
+
+    Summary counters are assertions to cross-check, never evidence of trials.
+    Kernel PID/creation identities are recorded independently by both processes.
+    """
+    trials = manifest.get("trials", [])
+    successful = [trial for trial in trials if trial.get("exit_code") == 0]
+    count = len(trials)
+    checks = {
+        "at_least100_fresh_processes": count >= 100 and len(successful) == count and
+            manifest.get("trials_ok") == count and manifest.get("trials_requested") == count,
+        "same_binary": manifest.get("binary", {}).get("sha256") == receipt["binary_sha256"],
+        "same_input": manifest.get("input", {}).get("sha256") == receipt["input_sha256"],
+        "same_policy": manifest.get("policy", {}).get("sha256") == receipt["policy_sha256"],
+        "same_predictions": manifest.get("predictions_identical") is True and
+            manifest.get("predictions_sha256") == receipt["predictions_sha256"],
+        "one_pcore": bool(trials), "idle_sibling": bool(trials),
+        "fast_math_off": manifest.get("fast_math") is False,
+        "all_cold_under1second": bool(trials), "native_reports_verified": bool(trials),
+        "distinct_trial_report_process_evidence": bool(trials),
+        "unaudited_timing_command": "--acceptance-audit" not in manifest.get("command_template", ""),
+        "source_clean": manifest.get("source", {}).get("dirty") is False,
+    }
+    trial_ids, report_paths, report_hashes, process_ids = set(), set(), set(), set()
+    for trial in trials:
+        try:
+            native_path = (directory / trial["report"]).resolve(strict=True)
+            prediction_path = (directory / trial["predictions"]).resolve(strict=True)
+            native = read_json(native_path)
+            bench = native["bench"]
+            reps = bench["per_rep"]
+            rep = reps[0]
+            cold = rep["cold_calibration_s"]
+            affinity = bench["affinity"]
+            identity = bench["process_identity"]
+            process_id = (identity["pid"], identity["creation_filetime"])
+            identity_valid = (isinstance(process_id[0], int) and process_id[0] > 0 and
+                              isinstance(process_id[1], str) and process_id[1].isdigit() and
+                              int(process_id[1]) > 0)
+            report_hash = sha256(native_path)
+            distinct = (trial["trial"] not in trial_ids and native_path not in report_paths and
+                        report_hash not in report_hashes and process_id not in process_ids)
+            checks["distinct_trial_report_process_evidence"] &= distinct and identity_valid and \
+                identity == trial.get("process_identity")
+            trial_ids.add(trial["trial"]); report_paths.add(native_path)
+            report_hashes.add(report_hash); process_ids.add(process_id)
+            checks["native_reports_verified"] &= (report_hash == trial.get("report_sha256") and
+                native.get("policy_definition") == audit_report.get("policy_definition") and
+                "acceptance_audit" not in native.get("graded_stats", {}) and
+                bench.get("reps") == 1 and len(reps) == 1 and rep.get("rep") == 1 and
+                rep.get("deam_memo_entries_at_start") == 0)
+            checks["all_cold_under1second"] &= (trial.get("exit_code") == 0 and
+                isinstance(cold, (int, float)) and math.isfinite(cold) and 0 < cold < 1 and
+                cold == trial.get("cold_calibration_s"))
+            checks["same_predictions"] &= (sha256(prediction_path) ==
+                trial.get("predictions_sha256") == receipt["predictions_sha256"])
+            checks["one_pcore"] &= one_core_trial({"affinity": affinity}) and all(
+                affinity.get(key) == trial.get("affinity", {}).get(key)
+                for key in ("requested_cpu", "pinned", "is_pcore", "current_cpu_at_receipt",
+                            "process_affinity_mask", "fit_workers", "nested_pools"))
+            siblings = affinity.get("smt_siblings", [])
+            busy = affinity.get("busy", {}).get("smt_sibling_pct", [])
+            checks["idle_sibling"] &= (len(siblings) == len(busy) and
+                (bool(siblings) or affinity.get("smt") is False) and
+                all(isinstance(value, (int, float)) and math.isfinite(value) and
+                    0 <= value < 5 for value in busy) and
+                busy == trial.get("affinity", {}).get("smt_sibling_busy_pct"))
+            checks["fast_math_off"] &= bench.get("build_info", {}).get("fast_math") is False
+        except (KeyError, TypeError, ValueError, OSError, IndexError):
+            checks["native_reports_verified"] = False
+            checks["distinct_trial_report_process_evidence"] = False
+    return checks
+
+
+def raw_model_violations(report, rows):
+    """SPY contract: independently reconstruct nearest-spot funding-PV inputs.
+
+    This prevents a fitter/exporter error from silently relaxing its own oracle.
+    The snapshot's per-strike carry is frozen from raw quotes before observing fits.
+    """
+    policy = report.get("policy_definition", {}).get("snapshot", {})
+    if policy.get("one_spot") != "nearest" or not \
+       0 <= policy.get("carry_price_tolerance", 0) <= 1e-6:
+        return [{"kind": "unsupported_snapshot_normalization"}]
+    eligible = [row for row in rows if invalid_reason(row) is None]
+    spot = snapshot_spot(eligible)
+    groups = defaultdict(list)
+    for row in eligible:
+        groups[row["chain_id"]].append(row)
+    problems = []
+    audit = report.get("graded_stats", {}).get("acceptance_audit", {})
+    for snapshot in audit.get("snapshots", []):
+        for entry in snapshot:
+            if entry.get("grade") not in ("A", "B"):
+                continue
+            chain = entry["chain_id"]
+            group = groups.get(chain)
+            if not group:
+                problems.append({"kind": "unfrozen_chain", "chain_id": chain})
+                continue
+            tc = statistics.median(row["years_calendar"] for row in group)
+            shift = math.log(spot / statistics.median(row["spot"] for row in group)) / tc
+            expected = {"spot": spot, "rate": statistics.median(row["rate"] for row in group),
+                "calendar_years": tc, "variance_years": statistics.median(row["years"] for row in group),
+                "dividend_pv": statistics.median(row["ddiv_pv"] for row in group),
+                "continuous_yield": statistics.median(row["sdiv"] for row in group) + shift}
+            if entry.get("dividend_model") != "aggregate_funding_pv_approximation" or any(
+                not isinstance(entry.get("market", {}).get(key), (int, float)) or
+                not math.isfinite(entry["market"][key]) or
+                not math.isclose(entry["market"][key], value, rel_tol=1e-13, abs_tol=1e-13)
+                for key, value in expected.items()):
+                problems.append({"kind": "market_differs_from_raw", "chain_id": chain})
+            local = defaultdict(list)
+            for row in group:
+                local[row["strike"]].append(row["sdiv"] + shift)
+            curve = {point["strike"]: point["continuous_yield"]
+                     for point in entry.get("carry_curve", [])}
+            canonical = {strike: 0.5 * (min(values) + max(values)) for strike, values in local.items()}
+            if len(curve) != len(entry.get("carry_curve", [])) or curve.keys() != canonical.keys() or any(
+                not isinstance(curve.get(strike), (int, float)) or
+                not math.isfinite(curve[strike]) or
+                not math.isclose(curve[strike], value, rel_tol=1e-13, abs_tol=1e-13)
+                for strike, value in canonical.items()):
+                problems.append({"kind": "carry_differs_from_raw", "chain_id": chain})
+            terminal = [spot * math.exp(-value * tc) - expected["dividend_pv"]
+                        for value in canonical.values()]
+            df = math.exp(-expected["rate"] * tc)
+            bounds = {"spot": spot, "discount_min": min(1.0, df), "discount_max": max(1.0, df),
+                      "prepaid_min": min(spot, min(terminal)), "prepaid_max": max(spot, max(terminal))}
+            if any(not isinstance(entry.get("bounds", {}).get(key), (int, float)) or
+                   not math.isfinite(entry["bounds"][key]) or entry["bounds"][key] <= 0 or
+                   not math.isclose(entry["bounds"][key], value, rel_tol=1e-12, abs_tol=1e-10)
+                   for key, value in bounds.items()):
+                problems.append({"kind": "bounds_differ_from_raw", "chain_id": chain})
+    return problems
+
+
 def verify(args, eligibility):
     rows = load_quotes(args.input)
     audit_dir = args.audit_dir
@@ -593,7 +731,7 @@ def verify(args, eligibility):
     receipt = read_json(audit_dir / "receipt.json")
     predictions = audit_dir / "predictions.csv"
     metrics = prediction_metrics(rows, predictions, eligibility)
-    violations = api_violations(report)
+    violations = api_violations(report) + raw_model_violations(report, rows)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
         "input_frozen": receipt["input_sha256"] == eligibility["input_sha256"],
@@ -640,32 +778,7 @@ def verify(args, eligibility):
                   "model-realizability, discrete-dividend model accuracy or live-tick claim."}
     if args.command == "qualify":
         manifest = read_json(args.cold_manifest)
-        trials = manifest.get("trials", [])
-        timing = {
-            "at_least100_fresh_processes": manifest.get("trials_ok", 0) >= 100,
-            "same_binary": manifest.get("binary", {}).get("sha256") == receipt["binary_sha256"],
-            "same_input": manifest.get("input", {}).get("sha256") == receipt["input_sha256"],
-            "same_policy": manifest.get("policy", {}).get("sha256") == receipt["policy_sha256"],
-            "same_predictions": manifest.get("predictions_identical") is True and
-                manifest.get("predictions_sha256") == receipt["predictions_sha256"],
-            "one_pcore": manifest.get("pcore_proof") is True and bool(trials) and
-                all(one_core_trial(trial) for trial in trials),
-            "idle_sibling": manifest.get("smt_sibling_idle_all_trials") is True,
-            "fast_math_off": manifest.get("fast_math") is False,
-            "all_cold_under1second": bool(trials) and all(
-                t.get("exit_code") == 0 and 0 < t.get("cold_calibration_s", math.inf) < 1
-                for t in trials),
-            "unaudited_timing_command": "--acceptance-audit" not in manifest.get("command_template", ""),
-            "source_clean": manifest.get("source", {}).get("dirty") is False,
-        }
-        # Inspect every native timing report, not only the launcher summary.
-        for trial in trials:
-            native_path = args.cold_manifest.parent / trial["report"]
-            native = read_json(native_path)
-            timing["native_reports_verified"] = timing.get("native_reports_verified", True) and \
-                sha256(native_path) == trial.get("report_sha256") and \
-                native.get("policy_definition") == report.get("policy_definition") and \
-                "acceptance_audit" not in native.get("graded_stats", {})
+        timing = cold_timing_checks(manifest, args.cold_manifest.parent, receipt, report)
         cache = args.build_cache.read_text(encoding="utf-8-sig") if args.build_cache else ""
         timing["thin_lto_build_evidence"] = any(
             line.startswith("CMAKE_INTERPROCEDURAL_OPTIMIZATION:") and line.endswith("=ON")

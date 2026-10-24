@@ -307,4 +307,8 @@ void pin_to_logical_cpu(unsigned cpu);
 // NaN when unavailable). Best effort: creation is stamped by the kernel at launch.
 [[nodiscard]] double seconds_since_process_creation() noexcept;
 
+// Kernel-stamped identity for joining native evidence to its fresh-process launcher.
+// Creation time is a decimal FILETIME string so JSON cannot lose integer precision.
+[[nodiscard]] Json process_identity_json();
+
 } // namespace atx::vol::bench
