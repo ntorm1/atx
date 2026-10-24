@@ -2,7 +2,9 @@
 #include "fitting/inbox_projection.hpp"
 
 #include <array>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -17,6 +19,48 @@ namespace atx::vol {
 namespace {
 
 constexpr AmericanPriceBounds kCarry{100.0, 1.0, 1.0, 98.0, 100.0};
+
+TEST(JointInboxProjection, OptionalProfilePreservesEveryPriceBitAndSolverDecision) {
+  const std::vector<AmericanPriceNode> original_near{{90, 12, 2}, {100, 7, 6}, {110, 2, 12}};
+  const std::vector<AmericanPriceNode> original_far{{90, 11, 3}, {100, 5, 6}, {110, 1, 13}};
+  const std::vector<AmericanPriceBox> boxes{{10.5, 13, 1.5, 4}, {4, 7, 4, 8},
+                                           {0.5, 3, 11.5, 14}};
+  for (const std::size_t budget : {1u, 100u}) {
+    auto plain_near = original_near;
+    auto plain_far = original_far;
+    auto profiled_near = original_near;
+    auto profiled_far = original_far;
+    const std::array<detail::JointInboxSlice, 2> plain{{
+        {plain_near, boxes, kCarry}, {plain_far, boxes, kCarry}}};
+    const std::array<detail::JointInboxSlice, 2> profiled{{
+        {profiled_near, boxes, kCarry}, {profiled_far, boxes, kCarry}}};
+    detail::JointInboxDiagnostics a, b;
+    detail::JointInboxProfile profile;
+    const auto first = detail::project_joint_in_box(plain, budget, &a);
+    const auto second = detail::project_joint_in_box(profiled, budget, &b, &profile);
+    EXPECT_EQ(first.outcome, second.outcome);
+    EXPECT_EQ(first.sweeps, second.sweeps);
+    EXPECT_EQ(a.primal_residual, b.primal_residual);
+    EXPECT_EQ(a.dual_residual, b.dual_residual);
+    EXPECT_EQ(a.duality_gap, b.duality_gap);
+    for (std::size_t s = 0; s < plain.size(); ++s) {
+      for (std::size_t i = 0; i < plain[s].nodes.size(); ++i) {
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(plain[s].nodes[i].call),
+                  std::bit_cast<std::uint64_t>(profiled[s].nodes[i].call));
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(plain[s].nodes[i].put),
+                  std::bit_cast<std::uint64_t>(profiled[s].nodes[i].put));
+      }
+    }
+    EXPECT_GT(profile.factorizations, 0u);
+    EXPECT_GT(profile.matrix_nonzeros, 0u);
+    EXPECT_GT(profile.factor_nonzeros, 0u);
+    EXPECT_EQ(profile.bound_rows, 2u * b.variables);
+    EXPECT_GT(profile.total_ns, 0u);
+    EXPECT_GE(profile.total_ns, profile.factor_ns);
+    EXPECT_GE(profile.total_ns, profile.certificate_ns);
+    EXPECT_EQ(b.certificate_passed, second.outcome == JointProjectionOutcome::Feasible);
+  }
+}
 
 TEST(JointInboxProjection, CrossingAndParityAreSolvedTogetherInsideExactBoxes) {
   std::vector<AmericanPriceNode> near{{90, 12, 2}, {100, 7, 6}, {110, 2, 12}};

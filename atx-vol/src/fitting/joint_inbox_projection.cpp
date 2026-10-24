@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
@@ -21,6 +22,26 @@ using Matrix = Eigen::SparseMatrix<double>;
 using Vector = Eigen::VectorXd;
 
 constexpr double kFeasibilityTolerance = 1.0e-10;
+
+class ProfileSpan {
+public:
+  explicit ProfileSpan(std::uint64_t *target) : target_(target) {
+    if (target_) start_ = Clock::now();
+  }
+  ~ProfileSpan() { finish(); }
+  ProfileSpan(const ProfileSpan &) = delete;
+  ProfileSpan &operator=(const ProfileSpan &) = delete;
+  void finish() {
+    if (!target_) return;
+    *target_ += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start_).count());
+    target_ = nullptr;
+  }
+private:
+  using Clock = std::chrono::steady_clock;
+  std::uint64_t *target_;
+  Clock::time_point start_{};
+};
 
 struct Row {
   std::array<int, 4> index{};
@@ -304,8 +325,10 @@ void add_calendars(Problem &p, std::span<const JointInboxSlice> slices) {
 // Reuses the symbolic structure and coefficient positions at each iteration.
 class NewtonSystem {
 public:
-  explicit NewtonSystem(const Problem &p) : p_(p), matrix_(static_cast<int>(p.target.size()),
-                                                         static_cast<int>(p.target.size())) {
+  NewtonSystem(const Problem &p, JointInboxProfile *profile)
+      : p_(p), profile_(profile), matrix_(static_cast<int>(p.target.size()),
+                                       static_cast<int>(p.target.size())) {
+    ProfileSpan timer(profile_ ? &profile_->symbolic_ns : nullptr);
     std::vector<Eigen::Triplet<double>> entries;
     for (int i = 0; i < matrix_.rows(); ++i) entries.emplace_back(i, i, 1.0);
     for (const Row &r : p.rows) {
@@ -328,9 +351,11 @@ public:
       }
     }
     factor_.analyzePattern(matrix_);
+    if (profile_) profile_->matrix_nonzeros = static_cast<std::size_t>(matrix_.nonZeros());
   }
 
   [[nodiscard]] bool factor(const Vector &s, const Vector &z) {
+    ProfileSpan assembly(profile_ ? &profile_->assembly_ns : nullptr);
     std::fill_n(matrix_.valuePtr(), matrix_.nonZeros(), 0.0);
     for (const int k : diagonal_) matrix_.valuePtr()[k] = 1.0;
     std::size_t t = 0;
@@ -342,13 +367,24 @@ public:
         matrix_.valuePtr()[terms_[t].position] += weight * terms_[t].value;
       }
     }
+    assembly.finish();
+    ProfileSpan numeric(profile_ ? &profile_->factor_ns : nullptr);
     factor_.factorize(matrix_);
+    if (profile_) {
+      ++profile_->factorizations;
+      if (factor_.info() == Eigen::Success) {
+        profile_->factor_nonzeros =
+            static_cast<std::size_t>(factor_.matrixL().nestedExpression().nonZeros());
+      }
+    }
     return factor_.info() == Eigen::Success;
   }
 
   [[nodiscard]] bool direction(const Vector &s, const Vector &z, const Vector &rp,
                                 const Vector &rd, const Vector &rc,
                                 Vector &dx, Vector &ds, Vector &dz) const {
+    ProfileSpan rhs_timer(profile_ ? &profile_->rhs_ns : nullptr);
+    if (profile_) ++profile_->directions;
     Vector rhs = -rd;
     for (std::size_t j = 0; j < p_.rows.size(); ++j) {
       const auto row = static_cast<Eigen::Index>(j);
@@ -356,8 +392,12 @@ public:
       const Row &r = p_.rows[j];
       for (std::size_t k = 0; k < r.count; ++k) rhs[r.index[k]] -= r.coef[k] * v;
     }
+    rhs_timer.finish();
+    ProfileSpan solve_timer(profile_ ? &profile_->linear_solve_ns : nullptr);
     dx = factor_.solve(rhs);
+    solve_timer.finish();
     if (!dx.allFinite()) return false;
+    ProfileSpan slack_timer(profile_ ? &profile_->slack_direction_ns : nullptr);
     for (std::size_t j = 0; j < p_.rows.size(); ++j) {
       const auto row = static_cast<Eigen::Index>(j);
       double d = rp[row];
@@ -379,6 +419,7 @@ private:
   }
   struct Term { int position; double value; };
   const Problem &p_;
+  JointInboxProfile *profile_;
   Matrix matrix_;
   Eigen::SimplicialLDLT<Matrix, Eigen::Lower> factor_;
   std::vector<int> diagonal_;
@@ -394,7 +435,7 @@ private:
 }
 
 [[nodiscard]] bool solve(const Problem &p, std::size_t budget, Vector &x, std::size_t &used,
-                         JointInboxDiagnostics &diagnostics) {
+                         JointInboxDiagnostics &diagnostics, JointInboxProfile *profile) {
   const auto n = static_cast<Eigen::Index>(p.target.size());
   const auto m = static_cast<Eigen::Index>(p.rows.size());
   x.resize(n);
@@ -413,8 +454,10 @@ private:
   for (Eigen::Index j = 0; j < m; ++j) {
     s[j] = std::max(1.0, p.rows[static_cast<std::size_t>(j)].value(x));
   }
-  NewtonSystem system(p);
+  NewtonSystem system(p, profile);
   for (std::size_t iteration = 0; iteration < budget; ++iteration) {
+    ProfileSpan iteration_timer(profile ? &profile->iteration_ns : nullptr);
+    ProfileSpan residual_timer(profile ? &profile->residual_ns : nullptr);
     used = iteration + 1u;
     for (Eigen::Index i = 0; i < n; ++i) rd[i] = x[i] - p.target[static_cast<std::size_t>(i)];
     double violation = 0.0;
@@ -430,6 +473,7 @@ private:
     diagnostics.primal_residual = std::max(violation, rp.lpNorm<Eigen::Infinity>());
     diagnostics.dual_residual = rd.lpNorm<Eigen::Infinity>();
     diagnostics.duality_gap = mu;
+    residual_timer.finish();
     // The production contract is a certified feasible price surface. Tracking the
     // target regularizes the search; proving the least-squares optimum is not
     // required, and forcing complementarity to zero at a boundary-only feasible
@@ -444,6 +488,7 @@ private:
     const double sigma = ratio * ratio * ratio;
     rc.array() += ds_aff.array() * dz_aff.array() - sigma * mu;
     if (!system.direction(s, z, rp, rd, rc, dx, ds, dz)) return false;
+    ProfileSpan update_timer(profile ? &profile->update_ns : nullptr);
     const double alpha_p = std::min(1.0, 0.995 * step_bound(s, ds));
     const double alpha_d = std::min(1.0, 0.995 * step_bound(z, dz));
     x += alpha_p * dx;
@@ -520,7 +565,11 @@ bool recover_terminal_floor_asks(const JointInboxSlice &slice,
 
 JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slices,
                                            std::size_t max_iterations,
-                                           JointInboxDiagnostics *diagnostics) {
+                                           JointInboxDiagnostics *diagnostics,
+                                           JointInboxProfile *profile) {
+  if (profile) *profile = {};
+  ProfileSpan total_timer(profile ? &profile->total_ns : nullptr);
+  ProfileSpan build_timer(profile ? &profile->build_ns : nullptr);
   JointProjectionResult result;
   JointInboxDiagnostics local;
   JointInboxDiagnostics &record = diagnostics ? *diagnostics : local;
@@ -556,10 +605,22 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
   std::vector<std::vector<AmericanPriceNode>> nodes;
   record.variables = p.target.size();
   record.constraints = p.rows.size();
-  if (!solve(p, max_iterations, x, result.sweeps, record) || !certify(slices, p, x, nodes)) {
+  if (profile) {
+    profile->bound_rows = 2u * p.target.size();
+    profile->row_storage_bytes = sizeof(Row) * p.rows.capacity();
+    for (const Row &row : p.rows) ++profile->row_arities[row.count];
+  }
+  build_timer.finish();
+  if (!solve(p, max_iterations, x, result.sweeps, record, profile)) {
     result.outcome = JointProjectionOutcome::NonConverged;
     return result;
   }
+  ProfileSpan certificate_timer(profile ? &profile->certificate_ns : nullptr);
+  if (!certify(slices, p, x, nodes)) {
+    result.outcome = JointProjectionOutcome::NonConverged;
+    return result;
+  }
+  certificate_timer.finish();
   record.certificate_passed = true;
   for (std::size_t s = 0; s < slices.size(); ++s) {
     std::copy(nodes[s].begin(), nodes[s].end(), slices[s].nodes.begin());

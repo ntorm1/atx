@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -33,6 +34,31 @@ struct JointInboxDiagnostics {
   bool certificate_passed = false;
 };
 
+// Optional observational profiling, never consulted by the solve. Null profile
+// performs no clock reads. Times are cumulative nanoseconds; iteration includes
+// residual/assembly/factor/direction/update, and total includes all stages.
+struct JointInboxProfile {
+  std::uint64_t total_ns = 0;
+  std::uint64_t build_ns = 0;
+  std::uint64_t symbolic_ns = 0;
+  std::uint64_t iteration_ns = 0;
+  std::uint64_t residual_ns = 0;
+  std::uint64_t assembly_ns = 0;
+  std::uint64_t factor_ns = 0;
+  std::uint64_t rhs_ns = 0;
+  std::uint64_t linear_solve_ns = 0;
+  std::uint64_t slack_direction_ns = 0;
+  std::uint64_t update_ns = 0;
+  std::uint64_t certificate_ns = 0;
+  std::array<std::size_t, 5> row_arities{};
+  std::size_t bound_rows = 0;
+  std::size_t row_storage_bytes = 0;
+  std::size_t matrix_nonzeros = 0;
+  std::size_t factor_nonzeros = 0; // strict lower L; D has one entry per variable
+  std::size_t factorizations = 0;
+  std::size_t directions = 0;
+};
+
 struct TerminalFloorRecovery {
   std::size_t raised_asks = 0;
   double max_ask_raise = 0.0;
@@ -57,6 +83,7 @@ struct TerminalFloorRecovery {
 [[nodiscard]] JointProjectionResult
 project_joint_in_box(std::span<const JointInboxSlice> slices,
                      std::size_t max_iterations = 100,
-                     JointInboxDiagnostics *diagnostics = nullptr);
+                     JointInboxDiagnostics *diagnostics = nullptr,
+                     JointInboxProfile *profile = nullptr);
 
 } // namespace atx::vol::detail

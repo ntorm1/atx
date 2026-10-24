@@ -1,10 +1,14 @@
 #include "fitting/raw_price_draft.hpp"
+#include "fitting/raw_price_targets.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <cstdint>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <utility>
 #include <span>
@@ -188,7 +192,7 @@ TEST(RawPriceDraft, SignedCarryUsesSharedActualTerminalBounds) {
   EXPECT_DOUBLE_EQ(draft.bounds.prepaid_min, draft.terminal_prepaid[0]);
 }
 
-TEST(RawPriceDraft, ExternalNormalizedQuotesProjectWithoutAnyInitialIvFit) {
+void check_external_draft_projection(bool feasible_mid) {
   std::string path;
 #ifdef _WIN32
   std::size_t length = 0;
@@ -227,6 +231,10 @@ TEST(RawPriceDraft, ExternalNormalizedQuotesProjectWithoutAnyInitialIvFit) {
     config.repair.terminal_floor_recovery = true;
     auto result = detail::make_raw_price_draft(market, quotes, config);
     ASSERT_TRUE(result.draft) << result.error;
+    if (feasible_mid) {
+      ASSERT_TRUE(detail::select_raw_price_targets(
+          *result.draft, detail::RawPriceDraftTarget::FeasibleBoxMid));
+    }
     rows += quotes.size();
     raised += result.draft->recovery.raised_asks;
     drafts.push_back(std::move(*result.draft));
@@ -234,14 +242,27 @@ TEST(RawPriceDraft, ExternalNormalizedQuotesProjectWithoutAnyInitialIvFit) {
   ASSERT_EQ(drafts.size(), 33u);
   ASSERT_EQ(rows, 12866u);
   EXPECT_EQ(raised, 15u);
-  const auto projected = detail::project_raw_price_drafts(drafts);
+  detail::JointInboxDiagnostics diagnostics;
+  detail::JointInboxProfile profile;
+  const auto projected = detail::project_raw_price_drafts(
+      drafts, 100, &diagnostics, feasible_mid ? &profile : nullptr);
   ASSERT_EQ(projected.outcome, JointProjectionOutcome::Feasible);
-  RecordProperty("projection_sweeps", static_cast<int>(projected.sweeps));
+  ::testing::Test::RecordProperty("projection_sweeps", static_cast<int>(projected.sweeps));
   std::size_t outside = 0;
+  std::uint64_t fingerprint = 14695981039346656037ULL;
   for (const auto &draft : drafts) {
     ASSERT_TRUE(draft.projected);
     EXPECT_FALSE(draft.prepared.curve || draft.prepared.prices);
     EXPECT_NE(draft.prepared.fit_status, QuoteSliceFitStatus::Success);
+    for (const auto &node : draft.nodes) {
+      for (const double value : {node.strike, node.call, node.put}) {
+        const auto bits = std::bit_cast<std::uint64_t>(value);
+        for (unsigned shift = 0; shift < 64u; shift += 8u) {
+          fingerprint ^= (bits >> shift) & 0xffu;
+          fingerprint *= 1099511628211ULL;
+        }
+      }
+    }
     for (const auto &q : draft.original_quotes) {
       const auto price = draft.projected->price(q.strike, q.side);
       ASSERT_TRUE(price);
@@ -251,6 +272,33 @@ TEST(RawPriceDraft, ExternalNormalizedQuotesProjectWithoutAnyInitialIvFit) {
   EXPECT_EQ(outside, 15u);
   EXPECT_EQ(ledger::this_thread(ledger::Solve::AlBoundarySolves), initial_al);
   EXPECT_EQ(ledger::this_thread(ledger::Solve::IvNewtonIters), initial_iv);
+  if (feasible_mid) {
+    const nlohmann::json result{{"schema", "joint-qp-profile-v1"},
+        {"input_sha256", fixture.at("input_sha256")}, {"target", "feasible_box_mid"},
+        {"price_bits_fnv1a64", std::to_string(fingerprint)},
+        {"variables", diagnostics.variables}, {"constraints", diagnostics.constraints},
+        {"sweeps", projected.sweeps}, {"primal_residual", diagnostics.primal_residual},
+        {"dual_residual", diagnostics.dual_residual}, {"duality_gap", diagnostics.duality_gap},
+        {"total_ns", profile.total_ns}, {"build_ns", profile.build_ns},
+        {"symbolic_ns", profile.symbolic_ns}, {"iteration_ns", profile.iteration_ns},
+        {"residual_ns", profile.residual_ns}, {"assembly_ns", profile.assembly_ns},
+        {"factor_ns", profile.factor_ns}, {"rhs_ns", profile.rhs_ns},
+        {"linear_solve_ns", profile.linear_solve_ns},
+        {"slack_direction_ns", profile.slack_direction_ns}, {"update_ns", profile.update_ns},
+        {"certificate_ns", profile.certificate_ns}, {"row_arities", profile.row_arities},
+        {"bound_rows", profile.bound_rows}, {"row_storage_bytes", profile.row_storage_bytes},
+        {"matrix_nonzeros", profile.matrix_nonzeros}, {"factor_nonzeros", profile.factor_nonzeros},
+        {"factorizations", profile.factorizations}, {"directions", profile.directions}};
+    std::cout << "joint-qp-profile " << result.dump() << '\n';
+  }
+}
+
+TEST(RawPriceDraft, ExternalNormalizedQuotesProjectWithoutAnyInitialIvFit) {
+  check_external_draft_projection(false);
+}
+
+TEST(RawPriceDraft, ExternalFeasibleMidProjectionProfileWithoutAnyInitialIvFit) {
+  check_external_draft_projection(true);
 }
 
 } // namespace

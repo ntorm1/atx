@@ -118,8 +118,9 @@ RawPriceDraftResult make_raw_price_draft(const QuoteSliceMarket &market,
 }
 
 JointProjectionResult project_raw_price_drafts(std::span<RawPriceDraft> drafts,
-    std::size_t max_iterations, JointInboxDiagnostics *diagnostics) {
+    std::size_t max_iterations, JointInboxDiagnostics *diagnostics, JointInboxProfile *profile) {
   if (diagnostics != nullptr) *diagnostics = {};
+  if (profile != nullptr) *profile = {};
   if (drafts.empty()) return {};
   std::vector<std::size_t> order(drafts.size());
   std::iota(order.begin(), order.end(), 0u);
@@ -137,7 +138,7 @@ JointProjectionResult project_raw_price_drafts(std::span<RawPriceDraft> drafts,
     slices.push_back({nodes[s], draft.boxes, draft.bounds,
                      draft.prepared.diagnostics.discount, draft.terminal_prepaid});
   }
-  auto result = project_joint_in_box(slices, max_iterations, diagnostics);
+  auto result = project_joint_in_box(slices, max_iterations, diagnostics, profile);
   if (result.outcome != JointProjectionOutcome::Feasible) return result;
   std::vector<AmericanPriceSlice> certified;
   certified.reserve(drafts.size());
