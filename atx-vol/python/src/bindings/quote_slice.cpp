@@ -114,8 +114,57 @@ void bind_enums(py::module_ &m) {
   py::enum_<QuoteSliceCallFloor>(m, "QuoteSliceCallFloor")
       .value("LEGACY", QuoteSliceCallFloor::Legacy)
       .value("DISCOUNTED_INTRINSIC", QuoteSliceCallFloor::DiscountedIntrinsic);
+  // The repair / box-certificate sub-config (QuoteSliceRepairConfig) and what its rungs
+  // did (QuoteSliceRepairRecord), including lane C4's exact in-box projection.
+  py::enum_<QuoteSliceRepairMode>(m, "QuoteSliceRepairMode")
+      .value("OFF", QuoteSliceRepairMode::Off)
+      .value("CHANNEL", QuoteSliceRepairMode::Channel);
+  py::enum_<QuoteSliceCertificate>(m, "QuoteSliceCertificate")
+      .value("EXACT", QuoteSliceCertificate::Exact)
+      .value("BOX", QuoteSliceCertificate::Box);
+  py::enum_<QuoteSliceWingMultSource>(m, "QuoteSliceWingMultSource")
+      .value("POLICY", QuoteSliceWingMultSource::Policy)
+      .value("MARKET", QuoteSliceWingMultSource::Market);
+  py::enum_<QuoteSliceMarketDistance>(m, "QuoteSliceMarketDistance")
+      .value("OFF", QuoteSliceMarketDistance::Off)
+      .value("GATE", QuoteSliceMarketDistance::Gate)
+      .value("REPAIR", QuoteSliceMarketDistance::Repair);
+  py::enum_<QuoteSliceRepairOutcome>(m, "QuoteSliceRepairOutcome")
+      .value("NOT_ATTEMPTED", QuoteSliceRepairOutcome::NotAttempted)
+      .value("APPLIED", QuoteSliceRepairOutcome::Applied)
+      .value("NO_MOVE", QuoteSliceRepairOutcome::NoMove)
+      .value("INFEASIBLE", QuoteSliceRepairOutcome::Infeasible)
+      .value("LEFT_CHANNEL", QuoteSliceRepairOutcome::LeftChannel)
+      .value("NODE_BUDGET", QuoteSliceRepairOutcome::NodeBudget)
+      .value("VOL_BUDGET", QuoteSliceRepairOutcome::VolBudget)
+      .value("NOT_CERTIFIED", QuoteSliceRepairOutcome::NotCertified)
+      .value("NON_CONVERGED", QuoteSliceRepairOutcome::NonConverged);
+  py::enum_<QuoteSliceInboxOutcome>(m, "QuoteSliceInboxOutcome")
+      .value("NOT_ATTEMPTED", QuoteSliceInboxOutcome::NotAttempted)
+      .value("APPLIED", QuoteSliceInboxOutcome::Applied)
+      .value("INFEASIBLE_DATA", QuoteSliceInboxOutcome::InfeasibleData)
+      .value("NON_CONVERGED", QuoteSliceInboxOutcome::NonConverged)
+      .value("NOT_CERTIFIED", QuoteSliceInboxOutcome::NotCertified)
+      .value("INVALID_INPUT", QuoteSliceInboxOutcome::InvalidInput);
+  py::enum_<QuoteSliceInboxConflict>(m, "QuoteSliceInboxConflict")
+      .value("NONE", QuoteSliceInboxConflict::None)
+      .value("EMPTY_BOX", QuoteSliceInboxConflict::EmptyBox)
+      .value("NO_CONVEX_CURVE", QuoteSliceInboxConflict::NoConvexCurve)
+      .value("AFFINE_BOX", QuoteSliceInboxConflict::AffineBox)
+      .value("COUPLED", QuoteSliceInboxConflict::Coupled);
+  py::enum_<QuoteSliceBoxRefusal>(m, "QuoteSliceBoxRefusal")
+      .value("NONE", QuoteSliceBoxRefusal::None)
+      .value("EXERCISE_BOUNDS", QuoteSliceBoxRefusal::ExerciseBounds)
+      .value("NO_CONVEX_CURVE", QuoteSliceBoxRefusal::NoConvexCurve)
+      .value("NOT_SETTLED", QuoteSliceBoxRefusal::NotSettled)
+      .value("CERTIFICATE_REFUSED", QuoteSliceBoxRefusal::CertificateRefused)
+      .value("OTHER", QuoteSliceBoxRefusal::Other);
 
   // Reflection (common.hpp): every quote-slice enum with a C++ to_string.
+  atxvol::python::register_enum_names<QuoteSliceRepairOutcome>("QuoteSliceRepairOutcome");
+  atxvol::python::register_enum_names<QuoteSliceInboxOutcome>("QuoteSliceInboxOutcome");
+  atxvol::python::register_enum_names<QuoteSliceInboxConflict>("QuoteSliceInboxConflict");
+  atxvol::python::register_enum_names<QuoteSliceBoxRefusal>("QuoteSliceBoxRefusal");
   namespace pyx = atxvol::python;
   pyx::register_enum_names<QuoteSliceDividendModel>("QuoteSliceDividendModel");
   pyx::register_enum_names<QuoteSliceQuoteStatus>("QuoteSliceQuoteStatus");
@@ -170,8 +219,32 @@ void bind_inputs(py::module_ &m) {
       .def_readwrite("spot", &QuoteSliceCallFloorLine::spot)
       .def_readwrite("discount", &QuoteSliceCallFloorLine::discount);
 
+  py::class_<QuoteSliceRepairConfig>(m, "QuoteSliceRepairConfig")
+      .def(py::init<>())
+      .def_readwrite("mode", &QuoteSliceRepairConfig::mode)
+      .def_readwrite("max_nodes", &QuoteSliceRepairConfig::max_nodes)
+      .def_readwrite("max_vol_move", &QuoteSliceRepairConfig::max_vol_move)
+      .def_readwrite("immaterial_price_move", &QuoteSliceRepairConfig::immaterial_price_move)
+      .def_readwrite("certificate", &QuoteSliceRepairConfig::certificate)
+      .def_readwrite("box_half_ticks", &QuoteSliceRepairConfig::box_half_ticks)
+      .def_readwrite("box_tick", &QuoteSliceRepairConfig::box_tick)
+      // Lane C4 (opt-in, inert under certificate EXACT): the exact in-box projection rung.
+      .def_readwrite("inbox_projection", &QuoteSliceRepairConfig::inbox_projection)
+      .def_readwrite("wing_mult_source", &QuoteSliceRepairConfig::wing_mult_source)
+      .def_readwrite("market_distance", &QuoteSliceRepairConfig::market_distance)
+      .def_readwrite("market_distance_spreads", &QuoteSliceRepairConfig::market_distance_spreads)
+      .def_readwrite("joint_max_sweeps", &QuoteSliceRepairConfig::joint_max_sweeps)
+      .def_readwrite("calendar_parity_clamp", &QuoteSliceRepairConfig::calendar_parity_clamp);
+  m.def(
+      "validate_quote_slice_repair",
+      [](const QuoteSliceRepairConfig &c) { atxvol::python::unwrap(validate_quote_slice_repair(c)); },
+      py::arg("config"), "Raises AtxError(INVALID_ARGUMENT) for an unknown mode or a bad bound.");
+
   py::class_<QuoteSliceConfig>(m, "QuoteSliceConfig")
       .def(py::init<>())
+      // The repair / box-certificate sub-config: a reference into this config
+      // (def_readwrite's reference_internal), so `config.repair.inbox_projection = True` sticks.
+      .def_readwrite("repair", &QuoteSliceConfig::repair)
       // Lane C3's served call floor (opt-in): the mode and the shared lines.
       .def_property(
           "call_floor_mode", [](const QuoteSliceConfig &c) { return c.call_floor.mode; },
@@ -262,6 +335,12 @@ void bind_results(py::module_ &m) {
                              [](const QuoteSliceFit &fit) {
                                return fit.diagnostics.call_floor_refused;
                              })
+      // Copies of QuoteSliceDiagnostics::repair / ::box (the latter carries lane C4's
+      // in-box projection record as `.inbox`).
+      .def_property_readonly("repair_record",
+                             [](const QuoteSliceFit &fit) { return fit.diagnostics.repair; })
+      .def_property_readonly("box_record",
+                             [](const QuoteSliceFit &fit) { return fit.diagnostics.box; })
       .def_property_readonly("node_strikes", &node_strikes)
       .def_property_readonly("model_kind",
                              [](const QuoteSliceFit &fit) { return model_kind(fit); })
@@ -285,6 +364,47 @@ void bind_results(py::module_ &m) {
       .def_readonly("market", &QuoteSliceSpotRebase::market)
       .def_readonly("yield_shift", &QuoteSliceSpotRebase::yield_shift)
       .def_readonly("forward", &QuoteSliceSpotRebase::forward);
+
+  // What the repair rungs did: QuoteSliceFit.repair_record (channel repair) and
+  // QuoteSliceFit.box_record (box certificate, with lane C4's in-box projection `inbox`).
+  py::class_<QuoteSliceInboxRecord>(m, "QuoteSliceInboxRecord")
+      .def_readonly("outcome", &QuoteSliceInboxRecord::outcome)
+      .def_readonly("box_refusal", &QuoteSliceInboxRecord::box_refusal)
+      .def_readonly("conflict", &QuoteSliceInboxRecord::conflict)
+      .def_readonly("conflict_side", &QuoteSliceInboxRecord::conflict_side)
+      .def_readonly("conflict_node", &QuoteSliceInboxRecord::conflict_node)
+      .def_readonly("conflict_strike", &QuoteSliceInboxRecord::conflict_strike)
+      .def_readonly("conflict_excess", &QuoteSliceInboxRecord::conflict_excess)
+      .def_readonly("free_sides", &QuoteSliceInboxRecord::free_sides)
+      .def_readonly("fitted_outside", &QuoteSliceInboxRecord::fitted_outside)
+      .def_readonly("constraints", &QuoteSliceInboxRecord::constraints)
+      .def_readonly("phase1_steps", &QuoteSliceInboxRecord::phase1_steps)
+      .def_readonly("phase2_steps", &QuoteSliceInboxRecord::phase2_steps)
+      .def_readonly("max_move_half_spreads", &QuoteSliceInboxRecord::max_move_half_spreads)
+      .def_readonly("max_mid_half_spreads", &QuoteSliceInboxRecord::max_mid_half_spreads)
+      .def_readonly("elapsed_us", &QuoteSliceInboxRecord::elapsed_us);
+  py::class_<QuoteSliceRepairRecord>(m, "QuoteSliceRepairRecord")
+      .def_readonly("outcome", &QuoteSliceRepairRecord::outcome)
+      .def_readonly("nodes", &QuoteSliceRepairRecord::nodes)
+      .def_readonly("material_nodes", &QuoteSliceRepairRecord::material_nodes)
+      .def_readonly("max_price_move", &QuoteSliceRepairRecord::max_price_move)
+      .def_readonly("max_vol_move", &QuoteSliceRepairRecord::max_vol_move)
+      .def_readonly("max_unquoted_vol_move", &QuoteSliceRepairRecord::max_unquoted_vol_move)
+      .def_readonly("unidentified", &QuoteSliceRepairRecord::unidentified)
+      .def_readonly("sweeps", &QuoteSliceRepairRecord::sweeps)
+      // JointConflictKind has no binding: the kind is its integer value.
+      .def_property_readonly("conflict",
+                             [](const QuoteSliceRepairRecord &r) {
+                               py::dict d;
+                               d["kind"] = static_cast<int>(r.conflict.kind);
+                               d["slice"] = r.conflict.slice;
+                               d["node"] = r.conflict.node;
+                               d["other"] = r.conflict.other;
+                               d["strike"] = r.conflict.strike;
+                               d["excess"] = r.conflict.excess;
+                               return d;
+                             })
+      .def_readonly("inbox", &QuoteSliceRepairRecord::inbox);
 
   // Lane C2: a withheld (side, node segment) of the served representation.
   py::class_<QuoteSliceGap>(m, "QuoteSliceGap")

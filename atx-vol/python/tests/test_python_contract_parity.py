@@ -250,9 +250,13 @@ def test_region_and_discrete_dividend_batch_surface_is_complete():
 
 def test_quote_slice_r5_r6_deltas_are_bound():
     assert {"withheld_nodes", "calendar_parity_clamp", "carry_curve", "serve_record",
-            "call_floor_lines", "call_floor_lifted",
-            "call_floor_refused"} <= _public_members(av.QuoteSliceFit)
-    assert {"call_floor_mode", "call_floor_lines"} <= _public_members(av.QuoteSliceConfig)
+            "call_floor_lines", "call_floor_lifted", "call_floor_refused", "repair_record",
+            "box_record"} <= _public_members(av.QuoteSliceFit)
+    assert {"call_floor_mode", "call_floor_lines",
+            "repair"} <= _public_members(av.QuoteSliceConfig)
+    # Lane C4's in-box projection: the config key and the rung record.
+    assert "inbox_projection" in _public_members(av.QuoteSliceRepairConfig)
+    assert "inbox" in _public_members(av.QuoteSliceRepairRecord)
     assert "grid_bound_usd" in _public_members(av.QuoteSliceRow)
     for name in ("served_quote_slice_price", "quote_slice_gaps"):
         assert callable(getattr(av, name)), name
