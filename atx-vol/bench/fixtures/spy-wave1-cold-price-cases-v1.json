@@ -1,0 +1,331 @@
+{
+  "schema": "atx-vol-cold-price-regression-cases-v1",
+  "source_commit": "47b2037572690d60ce87113c37340c75ac129913",
+  "input_sha256": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+  "native_report_sha256": "72fe8d747a724bf92817733fe308d6a4fc91b90796f27daecad21476c58de3e7",
+  "selected_rows": [
+    26827828,
+    27423846
+  ],
+  "scope": "Actual wave1 identified-node cold evidence. Four original rows; numerical acceptance regression only, not an entire surface or performance result.",
+  "report": {
+    "graded_stats": {
+      "acceptance_audit": {
+        "snapshots": [
+          [
+            {
+              "chain_id": 7725046261110430488,
+              "grade": "B",
+              "market": {
+                "calendar_years": 0.9224853515625,
+                "continuous_yield": -0.0019257119105107587,
+                "dividend_pv": 7.127279281616211,
+                "rate": 0.04965313524007797,
+                "spot": 773.0,
+                "variance_years": 0.9224853515625
+              },
+              "dividend_model": "aggregate_funding_pv_approximation",
+              "al_options": {
+                "explicit": false,
+                "max_newton_iter": 6,
+                "n_collocation": 12,
+                "n_quad_price": 48,
+                "n_quadrature": 24,
+                "profile": 0,
+                "tol": 1e-10
+              },
+              "nodes": [
+                {
+                  "call": 708.0004269712528,
+                  "put": 0.022381056795502608,
+                  "strike": 65.0
+                }
+              ],
+              "queries": [
+                {
+                  "cold_node": {
+                    "calendar_yield": -0.0019257119105107587,
+                    "effective_rate": 0.04965313524007797,
+                    "effective_yield": 0.008097793258072,
+                    "model": "andersen_lake",
+                    "options": {
+                      "explicit": false,
+                      "max_newton_iter": 6,
+                      "n_collocation": 12,
+                      "n_quad_price": 48,
+                      "n_quadrature": 24,
+                      "profile": 0,
+                      "tol": 1e-10
+                    },
+                    "price_center": 708.0002395766172,
+                    "price_lower": 708.0002395655987,
+                    "price_upper": 708.000239587636,
+                    "radius": 1e-07,
+                    "sigma_center": 0.9155513278096201,
+                    "sigma_lower": 0.9155512278096202,
+                    "sigma_upper": 0.9155514278096201,
+                    "spot": 773.0,
+                    "status": "evaluated",
+                    "strike": 65.0,
+                    "variance_years": 0.9224853515625
+                  },
+                  "iv_lower": null,
+                  "iv_upper": null,
+                  "price": 708.0004269712528,
+                  "reason": "none",
+                  "served_price": 708.0004269712528,
+                  "side": "call",
+                  "status": "success",
+                  "strike": 65.0,
+                  "vol_convention": "reimplied_repaired",
+                  "volatility": 0.9155513278096201
+                },
+                {
+                  "cold_node": {
+                    "calendar_yield": -0.0019257119105107587,
+                    "effective_rate": 0.04965313524007797,
+                    "effective_yield": 0.008097793258072,
+                    "model": "andersen_lake",
+                    "options": {
+                      "explicit": false,
+                      "max_newton_iter": 6,
+                      "n_collocation": 12,
+                      "n_quad_price": 48,
+                      "n_quadrature": 24,
+                      "profile": 0,
+                      "tol": 1e-10
+                    },
+                    "price_center": 0.022381056795498712,
+                    "price_lower": 0.022381019802857196,
+                    "price_upper": 0.022381093788188807,
+                    "radius": 1e-07,
+                    "sigma_center": 0.8001787435515468,
+                    "sigma_lower": 0.8001786435515469,
+                    "sigma_upper": 0.8001788435515468,
+                    "spot": 773.0,
+                    "status": "evaluated",
+                    "strike": 65.0,
+                    "variance_years": 0.9224853515625
+                  },
+                  "iv_lower": null,
+                  "iv_upper": null,
+                  "price": 0.022381056795502608,
+                  "reason": "none",
+                  "served_price": 0.022381056795502608,
+                  "side": "put",
+                  "status": "success",
+                  "strike": 65.0,
+                  "vol_convention": "reimplied_repaired",
+                  "volatility": 0.8001787435515468
+                }
+              ],
+              "carry_curve": [
+                {
+                  "continuous_yield": -0.0019257119105107587,
+                  "strike": 65.0
+                }
+              ]
+            },
+            {
+              "chain_id": 9021385734418239560,
+              "grade": "B",
+              "market": {
+                "calendar_years": 2.257885694503784,
+                "continuous_yield": -0.0021653110161423683,
+                "dividend_pv": 13.88219165802002,
+                "rate": 0.0515890046954155,
+                "spot": 773.0,
+                "variance_years": 2.257885694503784
+              },
+              "dividend_model": "aggregate_funding_pv_approximation",
+              "al_options": {
+                "explicit": false,
+                "max_newton_iter": 6,
+                "n_collocation": 12,
+                "n_quad_price": 48,
+                "n_quadrature": 24,
+                "profile": 0,
+                "tol": 1e-10
+              },
+              "nodes": [
+                {
+                  "call": 47.35605668117158,
+                  "put": 152.01331004092836,
+                  "strike": 925.0
+                }
+              ],
+              "queries": [
+                {
+                  "cold_node": {
+                    "calendar_yield": -0.0021653110161423683,
+                    "effective_rate": 0.0515890046954155,
+                    "effective_yield": 0.00582131263777355,
+                    "model": "andersen_lake",
+                    "options": {
+                      "explicit": false,
+                      "max_newton_iter": 6,
+                      "n_collocation": 12,
+                      "n_quad_price": 48,
+                      "n_quadrature": 24,
+                      "profile": 0,
+                      "tol": 1e-10
+                    },
+                    "price_center": 47.35605668117118,
+                    "price_lower": 47.35601194233932,
+                    "price_upper": 47.356101420005835,
+                    "radius": 1e-07,
+                    "sigma_center": 0.1553250125345659,
+                    "sigma_lower": 0.1553249125345659,
+                    "sigma_upper": 0.1553251125345659,
+                    "spot": 773.0,
+                    "status": "evaluated",
+                    "strike": 925.0,
+                    "variance_years": 2.257885694503784
+                  },
+                  "iv_lower": null,
+                  "iv_upper": null,
+                  "price": 47.35605668117158,
+                  "reason": "none",
+                  "served_price": 47.35605668117158,
+                  "side": "call",
+                  "status": "success",
+                  "strike": 925.0,
+                  "vol_convention": "reimplied_repaired",
+                  "volatility": 0.1553250125345659
+                },
+                {
+                  "cold_node": {
+                    "calendar_yield": -0.0021653110161423683,
+                    "effective_rate": 0.0515890046954155,
+                    "effective_yield": 0.00582131263777355,
+                    "model": "andersen_lake",
+                    "options": {
+                      "explicit": false,
+                      "max_newton_iter": 6,
+                      "n_collocation": 12,
+                      "n_quad_price": 48,
+                      "n_quadrature": 24,
+                      "profile": 0,
+                      "tol": 1e-10
+                    },
+                    "price_center": 152.01401964625205,
+                    "price_lower": 152.01401795023781,
+                    "price_upper": 152.01402134237577,
+                    "radius": 1e-07,
+                    "sigma_center": 0.15536841118444722,
+                    "sigma_lower": 0.15536831118444722,
+                    "sigma_upper": 0.15536851118444722,
+                    "spot": 773.0,
+                    "status": "evaluated",
+                    "strike": 925.0,
+                    "variance_years": 2.257885694503784
+                  },
+                  "iv_lower": null,
+                  "iv_upper": null,
+                  "price": 152.01331004092836,
+                  "reason": "none",
+                  "served_price": 152.01331004092836,
+                  "side": "put",
+                  "status": "success",
+                  "strike": 925.0,
+                  "vol_convention": "reimplied_repaired",
+                  "volatility": 0.15536841118444722
+                }
+              ],
+              "carry_curve": [
+                {
+                  "continuous_yield": -0.0021653110161423683,
+                  "strike": 925.0
+                }
+              ]
+            }
+          ]
+        ]
+      }
+    }
+  },
+  "raw_rows": [
+    {
+      "strike": 65.0,
+      "bid": 706.0,
+      "ask": 710.9600219726562,
+      "spot": 772.989990234375,
+      "rate": 0.04965313524007797,
+      "sdiv": -0.0019397493451833725,
+      "ddiv_pv": 7.127279281616211,
+      "years": 0.9224853515625,
+      "years_calendar": 0.9224853515625,
+      "chain_id": 7725046261110430488,
+      "row_id": 26827828,
+      "expiry_days": 21078,
+      "is_call": 1,
+      "exercise": "American",
+      "input_status": "ok",
+      "snapshot_ns": 1791988200000000000,
+      "observation_ns": 1791988205912632000
+    },
+    {
+      "strike": 65.0,
+      "bid": 0.019999999552965164,
+      "ask": 0.029999999329447746,
+      "spot": 772.989990234375,
+      "rate": 0.04965313524007797,
+      "sdiv": -0.0019397493451833725,
+      "ddiv_pv": 7.127279281616211,
+      "years": 0.9224853515625,
+      "years_calendar": 0.9224853515625,
+      "chain_id": 7725046261110430488,
+      "row_id": 26827847,
+      "expiry_days": 21078,
+      "is_call": 0,
+      "exercise": "American",
+      "input_status": "ok",
+      "snapshot_ns": 1791988200000000000,
+      "observation_ns": 1791988205912632000
+    },
+    {
+      "strike": 925.0,
+      "bid": 46.790000915527344,
+      "ask": 47.900001525878906,
+      "spot": 773.0,
+      "rate": 0.0515890046954155,
+      "sdiv": -0.0021653110161423683,
+      "ddiv_pv": 13.88219165802002,
+      "years": 2.257885694503784,
+      "years_calendar": 2.257885694503784,
+      "chain_id": 9021385734418239560,
+      "row_id": 27423827,
+      "expiry_days": 21568,
+      "is_call": 1,
+      "exercise": "American",
+      "input_status": "ok",
+      "snapshot_ns": 1791988200000000000,
+      "observation_ns": 1791988205890628000
+    },
+    {
+      "strike": 925.0,
+      "bid": 150.5,
+      "ask": 154.5,
+      "spot": 773.0,
+      "rate": 0.0515890046954155,
+      "sdiv": -0.0021653110161423683,
+      "ddiv_pv": 13.88219165802002,
+      "years": 2.257885694503784,
+      "years_calendar": 2.257885694503784,
+      "chain_id": 9021385734418239560,
+      "row_id": 27423846,
+      "expiry_days": 21568,
+      "is_call": 0,
+      "exercise": "American",
+      "input_status": "ok",
+      "snapshot_ns": 1791988200000000000,
+      "observation_ns": 1791988205890628000
+    }
+  ],
+  "expected": {
+    "price_accuracy_passed": true,
+    "identified_rows_checked": 4,
+    "price_only_rows": 0,
+    "strict_iv_failures": 2
+  }
+}

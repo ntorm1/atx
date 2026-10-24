@@ -1,6 +1,6 @@
 # SPY cold-fit acceptance and independent feasibility evidence
 
-Date: 2026-10-23 (America/New_York). Starting local main:
+Updated: 2026-10-24 (America/New_York). Starting local main:
 `a53c48c4a3c404fe63e24f07f1d574a2a015ed38`. Acceptance branch:
 `feat/vol-r7-acceptance-20261023`, pool-33. This document records a development
 oracle and reproducible gates, **not an achieved subsecond fit**.
@@ -126,6 +126,7 @@ $auditDir = 'C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/candidate-au
 python atx-vol/bench/spy_acceptance.py run-audit --input $inputCsv `
   --binary build-vol-rel/bin/atx-vol-quote-bench.exe --policy $candidate --out $auditDir
 python atx-vol/bench/spy_acceptance.py verify --input $inputCsv `
+  --accuracy-contract raw-spread-price-v1 `
   --audit-dir $auditDir --out "$auditDir/verification.json"
 ```
 
@@ -159,6 +160,7 @@ cannot qualify. Summary counters or an asserted idle-sibling flag are insufficie
 
 ```powershell
 python atx-vol/bench/spy_acceptance.py qualify --input $inputCsv `
+  --accuracy-contract raw-spread-price-v1 `
   --audit-dir $auditDir --cold-manifest 'C:/.../cold-100/manifest.json' `
   --build-cache build-vol-rel-avx2/CMakeCache.txt --out 'C:/.../acceptance.json'
 ```
@@ -183,17 +185,42 @@ Every identified actual API node also receives three independent cold
 Andersen-Lake forward evaluations at its reported volatility and exactly
 `sigma - 1e-7`, `sigma + 1e-7`. The export includes evaluated sigmas, model,
 effective carry and all kernel options. The verifier independently reconstructs
-the carry, checks Reference-profile pricing, and requires a strict price straddle
-for every identified node. `cold-roots` writes complete failure contexts and raw
-row IDs. Roundoff-only or flat cases are reported separately and do not satisfy
-the strict accuracy gate; the diagnostic price allowance is
+the carry and checks Reference-profile pricing. `cold-roots` retains the strict
+price-straddle diagnostic for every identified node, including complete failure
+contexts and raw row IDs. Roundoff-only or flat cases are reported separately and
+do not satisfy the historical strict IV gate; its diagnostic price allowance is
 `32 * epsilon * max(1, S, K, abs(target), abs(cold prices))`, never an enlarged
 IV tolerance. Price-only rows are counted separately without invented IVs.
 These calls occur only inside the explicitly nonqualifying audit run.
 
+The user approved the economically meaningful price contract on 2026-10-24:
+`abs(cold Reference price at published IV - actual API price)` must not exceed
+`min($0.001/share, 0.01 * (original ask - original bid))`. Select it explicitly with
+`--accuracy-contract raw-spread-price-v1`. Results use acceptance schema v2 and
+embed the selected contract and constants. Omitting the flag preserves the
+historical `strict-iv-v1` gate; prior reports are not silently reinterpreted.
+
+The budget comes from each original eligible row, never normalized/repaired or
+exporter-supplied boxes. Duplicate contracts must satisfy every original row,
+equivalent to using the tightest budget. A locked quote has zero economic budget.
+Only the separately reported `32*epsilon*max(1,S,K,abs(target),abs(cold center))`
+roundoff allowance remains; no minimum spread or budget floor is introduced.
+Crossed/nonfinite boxes are invalid raw inputs under the existing frozen rules;
+the budget function rejects them. Genuine price-only rows remain served and make
+no point-IV claim. All serving, containment, model, metadata and price-arbitrage
+gates are unchanged. Missing original budgets or missing cold contracts fail.
+
+The original +/-1e-7 IV results are diagnostics under this version, including
+local finite-difference vega, residual/vega and budget/vega estimates. Those local
+ratios are not root-error bounds or certified uncertainty intervals. This price
+contract does **not** establish Greek accuracy. `cold-prices` saves the complete
+raw-row join, per-row budgets and these diagnostics:
+
 ```powershell
 python atx-vol/bench/spy_acceptance.py cold-roots --input $inputCsv `
   --audit-dir $auditDir --out 'C:/.../cold-node-roots.json'
+python atx-vol/bench/spy_acceptance.py cold-prices --input $inputCsv `
+  --audit-dir $auditDir --out 'C:/.../cold-node-prices.json'
 ```
 
 ## Limits and primary reference
@@ -250,7 +277,7 @@ The joined evidence checks above and adversarial regression now reject this case
 
 ## Integrated full-surface correctness result
 
-Root commit `2362f6aa` passes the independent actual-API correctness gate in
+Root commit `2362f6aa` passes the then-current, narrower actual-API correctness gate in
 `acceptance/integrated-full-v1-audit/verification.json`: all 33 valid expiries and
 12,866 eligible rows are served, with 12,851 inside the original boxes
 (99.88341365%). The 15 departures are exactly the previously proved direct
@@ -271,3 +298,60 @@ The prediction bytes match the unaudited development profile exactly. Its
 21.217-second development cold clock is not a qualifying ThinLTO performance
 result; the audit's approximately 60.3-second clock includes expensive query
 verification. The sub-second goal remains unachieved.
+
+## Wave1 full audit and authorized economic price contract
+
+Source `47b2037572690d60ce87113c37340c75ac129913` was audited in
+`acceptance/integrated-full-wave1-audit/`. The native binary SHA256 is
+`ee32307bdd29ef4a302364ddba520d148e5c1a126209dc3e8ccdffd6f8fc01da`;
+native report SHA256 is
+`72fe8d747a724bf92817733fe308d6a4fc91b90796f27daecad21476c58de3e7`.
+Prediction SHA256 `681c3b44e3edbd799b90b03ccfaad2564d98a580085ae4131093cf749e08a8cf`
+matches the separate unaudited development profile byte for byte.
+
+All 33 valid expiries and 12,866 eligible rows are served; 12,851 prices remain
+inside the original quotes (99.88341365%). All actual API shape/parity/calendar,
+analytical between-node floors, independent raw carry/bounds, and exact CSV/API
+metadata checks pass. The expanded audit checks all 12,183 identified final node
+volatilities and leaves 683 genuine price-only rows without invented point IVs.
+
+The original strict result remains preserved in `verification.json` and
+`cold-node-roots.json`: 11,157 strict straddles and **1,026 failures** of the
+unchanged +/-1e-7 IV diagnostic (979 puts, 47 calls), with no roundoff-only cases.
+This was an accuracy blocker under the earlier contract, not a successful strict
+IV fit. The earlier `2362f6aa` binary did not export these cold prices; its narrow
+API pass is not evidence that those IVs satisfied the strict target.
+
+Re-evaluating the same immutable wave1 evidence under the explicitly authorized
+`raw-spread-price-v1` contract yields **zero price-budget failures** across all
+12,183 identified nodes. `cold-node-prices-v2.json` contains every raw row/budget,
+input/report hash receipt, and `verification-economic-v2.json` passes all correctness checks. No fit was
+rerun and no price, quote box, IV, classification or denominator was changed.
+No row needs the separate roundoff allowance. Maximum absolute residual is
+**$0.0007096053/share**, using 70.9605% of that row's $0.001 budget: expiry 21568,
+put strike 925, row 27423846, original bid/ask 150.5/154.5. Median residual is
+`4.83169e-13`, p95 `6.44746e-7`, and p99 `9.43202e-5` USD. The cap binds on 6,327
+rows; the raw spread fraction binds on the other 5,856. The smallest budget is
+`9.9997520e-5` USD because the raw cent spread is represented in binary floats.
+
+Low-vega diagnostics remain economically relevant. The largest local
+`abs(residual/vega)` estimate is 0.001700705 IV units: expiry 21078, call strike 65,
+row 26827828, cold price residual $0.0001873946 and local vega 0.1101864. This is
+a local estimate, not an independently solved root error. Budget/vega exceeds
+0.001 IV units on 1,068 identified nodes and 0.01 on 164; its maximum 8.25924 is
+too large for a local linear approximation to establish meaningful IV uncertainty.
+The reported point IVs must not be used to imply certified hedge Greeks.
+
+The two representative worst-price/low-vega contracts, including their opposite
+sides and all four original raw boxes, are frozen in
+`bench/fixtures/spy-wave1-cold-price-cases-v1.json`. Their numerical regression
+passes the economic contract, preserves two strict-IV failures, and fails when
+an original box is made genuinely tighter. The 37-test independent oracle suite
+also exercises explicit version selection, duplicate-row budgets, locked/crossed
+spreads, nonfinite evidence and the unchanged timing protections. The native CLI
+fixture checks both sides against independent Black-Scholes cold prices and
+passes the versioned economic oracle with original input boxes.
+
+The separate development cold fit was **22.1222 seconds**, with 8.57% measured
+SMT-sibling activity. It is neither a quiet latency qualification nor a subsecond
+result. The expensive API/cold-reference audit is correctness evidence only.

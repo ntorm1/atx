@@ -23,6 +23,30 @@ INPUT_SHA256 = "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e
 SERVED = {"ok", "ok_price_only"}
 NUMERIC = ("strike", "bid", "ask", "spot", "rate", "sdiv", "ddiv_pv", "years",
            "years_calendar")
+STRICT_IV_CONTRACT = "strict-iv-v1"
+RAW_SPREAD_PRICE_CONTRACT = "raw-spread-price-v1"
+
+
+def accuracy_contract(version):
+    if version == STRICT_IV_CONTRACT:
+        return {"version": version, "gate": "strict cold +/-1e-7 IV straddle"}
+    if version != RAW_SPREAD_PRICE_CONTRACT:
+        raise ValueError("unknown accuracy contract")
+    return {"version": version, "gate": "cold Reference price residual at published IV",
+            "price_cap_usd_per_share": 0.001, "raw_spread_fraction": 0.01,
+            "budget": "min(price_cap_usd_per_share, raw_spread_fraction * (raw ask - raw bid))",
+            "zero_spread_budget_usd": 0.0,
+            "roundoff_allowance": "32*epsilon*max(1,S,K,abs(target),abs(cold center price))",
+            "raw_boxes_modified": False, "strict_iv_is_diagnostic": True,
+            "greek_accuracy_established": False}
+
+
+def raw_price_budget(row):
+    bid, ask = row["bid"], row["ask"]
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or
+           not math.isfinite(value) for value in (bid, ask)) or bid < 0 or ask < bid:
+        raise ValueError("economic accuracy requires a finite original noncrossed quote box")
+    return min(0.001, 0.01 * (ask - bid))
 
 
 def sha256(path):
@@ -595,6 +619,118 @@ def cold_root_audit(report, rows=()):
             "failures": failures, "roundoff_only": roundoff}
 
 
+def cold_price_audit(report, rows, roots=None):
+    """Versioned raw-spread budget; price-only rows make no point-IV claim.
+
+    The original row join supplies the budget, never exported/repaired boxes.
+    Duplicate contracts must satisfy every valid row. IV conditioning estimates
+    are local finite-difference diagnostics, not root-error or Greek guarantees.
+    """
+    roots = cold_root_audit(report, rows) if roots is None else roots
+    diagnostic_only = {"cold_root_outside_1e7_bracket", "cold_forward_nonmonotone"}
+    failures = [dict(failure) for failure in roots["failures"]
+                if failure["kind"] not in diagnostic_only]
+    invalid_contracts = {(failure.get("chain_id"), failure.get("strike"), failure.get("side"))
+                         for failure in failures}
+    raw = defaultdict(list)
+    eligible = [row for row in rows if invalid_reason(row) is None]
+    row_ids = [row["row_id"] for row in eligible]
+    if len(set(row_ids)) != len(row_ids):
+        failures.append({"kind": "duplicate_raw_row_id"})
+    for row in eligible:
+        raw[row["chain_id"], row["strike"], "call" if row["is_call"] else "put"].append(row)
+    observations, matched, seen = [], set(), set()
+    price_only_rows = checked_rows = zero_budget_rows = roundoff_rows = 0
+    for snapshot in report.get("graded_stats", {}).get("acceptance_audit", {}).get("snapshots", []):
+        for entry in snapshot:
+            if entry.get("grade") not in ("A", "B"):
+                continue
+            queries = {(q["strike"], q["side"]): q for q in entry.get("queries", [])}
+            if len(queries) != len(entry.get("queries", [])):
+                failures.append({"kind": "duplicate_query", "chain_id": entry["chain_id"]})
+            for node in entry.get("nodes", []):
+                for side in ("call", "put"):
+                    key = (entry["chain_id"], node["strike"], side)
+                    context = {"chain_id": key[0], "strike": key[1], "side": side}
+                    if key in seen:
+                        failures.append(dict(context, kind="duplicate_published_node"))
+                        continue
+                    seen.add(key)
+                    group = raw.get(key, [])
+                    if not group:
+                        failures.append(dict(context, kind="missing_original_quote_budget"))
+                        continue
+                    matched.update(row["row_id"] for row in group)
+                    query = queries.get((key[1], side), {})
+                    if not valid_query_metadata(query):
+                        failures.append(dict(context, kind="invalid_query_metadata"))
+                        continue
+                    if query["status"] == "price_only":
+                        price_only_rows += len(group)
+                        continue
+                    if key in invalid_contracts:
+                        continue
+                    cold = query["cold_node"]
+                    target, center = query["price"], cold["price_center"]
+                    residual = abs(center - target)
+                    allowance = 32 * math.ulp(1.0) * max(1.0, cold["spot"], key[1],
+                                                       abs(target), abs(center))
+                    vega = (cold["price_upper"] - cold["price_lower"]) / \
+                           (cold["sigma_upper"] - cold["sigma_lower"])
+                    budgets = [{"row_id": row["row_id"], "bid": row["bid"], "ask": row["ask"],
+                                "spread_usd": row["ask"] - row["bid"],
+                                "economic_budget_usd": raw_price_budget(row)} for row in group]
+                    budget = min(item["economic_budget_usd"] for item in budgets)
+                    observation = dict(context, row_ids=[row["row_id"] for row in group],
+                        volatility=query["volatility"], target_price=target, cold_price=center,
+                        abs_residual_usd=residual, economic_budget_usd=budget,
+                        roundoff_allowance_usd=allowance, raw_budgets=budgets,
+                        passes_economic_budget=residual <= budget,
+                        passes_with_roundoff=residual <= budget + allowance,
+                        cold_finite_difference_vega=vega,
+                        local_iv_error_estimate=(center - target) / vega if vega > 0 else None,
+                        local_iv_budget_estimate=budget / vega if vega > 0 else None)
+                    observations.append(observation)
+                    for item in budgets:
+                        checked_rows += 1
+                        row_budget = item["economic_budget_usd"]
+                        zero_budget_rows += row_budget == 0
+                        roundoff_rows += row_budget < residual <= row_budget + allowance
+                        if residual > row_budget + allowance:
+                            failures.append(dict(observation, kind="cold_price_exceeds_raw_budget",
+                                                 failing_row_id=item["row_id"]))
+    missing = sorted(set(row_ids) - matched)
+    if missing:
+        failures.append({"kind": "eligible_rows_missing_from_price_audit", "row_ids": missing})
+    # Keep full local estimates in a separate artifact; qualification embeds only
+    # summaries and failures, avoiding a second copy of every successful query.
+    return {"schema": "atx-vol-cold-node-price-audit-v1",
+            "accuracy_contract": accuracy_contract(RAW_SPREAD_PRICE_CONTRACT),
+            "eligible_rows": len(eligible), "identified_rows_checked": checked_rows,
+            "price_only_rows": price_only_rows, "zero_budget_rows": zero_budget_rows,
+            "roundoff_only_rows": roundoff_rows, "failure_count": len(failures),
+            "price_accuracy_passed": bool(eligible) and not failures and
+                checked_rows + price_only_rows == len(eligible),
+            "max_center_residual_usd": max((o["abs_residual_usd"] for o in observations), default=0.0),
+            "max_budget_utilization": max((o["abs_residual_usd"] / o["economic_budget_usd"]
+                for o in observations if o["economic_budget_usd"] > 0), default=0.0),
+            "conditioning": {
+                "nonpositive_local_vega_nodes": sum(o["cold_finite_difference_vega"] <= 0
+                                                     for o in observations),
+                "local_budget_iv_estimate_above_1e_minus7_nodes": sum(
+                    o["local_iv_budget_estimate"] is not None and o["local_iv_budget_estimate"] > 1e-7
+                    for o in observations),
+                "max_abs_local_iv_error_estimate": max((abs(o["local_iv_error_estimate"])
+                    for o in observations if o["local_iv_error_estimate"] is not None), default=0.0),
+                "max_local_iv_budget_estimate": max((o["local_iv_budget_estimate"]
+                    for o in observations if o["local_iv_budget_estimate"] is not None), default=0.0),
+                "scope": "Local cold finite differences only; not root-error bounds, identified "
+                         "intervals, or evidence of Greek accuracy."},
+            "strict_iv_diagnostic": {key: roots[key] for key in
+                ("strict_accuracy_passed", "strict_straddles", "roundoff_only_count", "failure_count")},
+            "failures": failures, "observations": observations}
+
+
 def prediction_metadata_matches(query, prediction):
     if not valid_query_metadata(query):
         return False
@@ -898,6 +1034,8 @@ def verify(args, eligibility):
     metrics = prediction_metrics(rows, predictions, eligibility)
     violations = api_violations(report) + raw_model_violations(report, rows)
     roots = cold_root_audit(report, rows)
+    contract = accuracy_contract(getattr(args, "accuracy_contract", STRICT_IV_CONTRACT))
+    prices = cold_price_audit(report, rows, roots)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
         "input_frozen": receipt["input_sha256"] == eligibility["input_sha256"],
@@ -907,8 +1045,11 @@ def verify(args, eligibility):
         "all_valid_slices_fully_served": metrics["fully_served_slices"] == eligibility["required_slices"],
         "containment_995": metrics["containment_of_served"] >= eligibility["containment_min"],
         "actual_api_shape_parity_calendar": not violations,
-        "identified_node_cold_root_accuracy": roots["strict_accuracy_passed"],
     }
+    if contract["version"] == RAW_SPREAD_PRICE_CONTRACT:
+        checks["identified_node_cold_reference_price_accuracy"] = prices["price_accuracy_passed"]
+    else:
+        checks["identified_node_cold_root_accuracy"] = roots["strict_accuracy_passed"]
     audit = report.get("graded_stats", {}).get("acceptance_audit", {})
     slices = {entry["chain_id"]: entry for snapshot in audit.get("snapshots", []) for entry in snapshot}
     with predictions.open(newline="", encoding="utf-8-sig") as stream:
@@ -937,7 +1078,7 @@ def verify(args, eligibility):
             metadata_failures.append({"row_id": row["row_id"], "kind": "metadata_not_actual_api"})
     checks["every_eligible_prediction_matches_actual_api"] = not row_failures
     checks["every_eligible_metadata_matches_actual_api"] = not metadata_failures
-    result = {"schema": "atx-vol-spy-acceptance-v1", "checks": checks,
+    result = {"schema": "atx-vol-spy-acceptance-v2", "accuracy_contract": contract, "checks": checks,
               "correctness_passed": all(checks.values()), "goal_achieved": False,
               "metrics": metrics, "api_violation_count": len(violations),
               "api_violations_first100": violations[:100], "row_failure_count": len(row_failures),
@@ -945,12 +1086,15 @@ def verify(args, eligibility):
               "metadata_failure_count": len(metadata_failures),
               "metadata_failures_first100": metadata_failures[:100],
               "cold_root_audit": roots,
+              "cold_price_audit": {key: value for key, value in prices.items() if key != "observations"},
               "eligibility_sha256": hashlib.sha256(json.dumps(eligibility, sort_keys=True).encode()).hexdigest(),
               "evidence_scope": "Static American node bounds, all-pair vertical spreads, global "
                   "convex envelopes, affine call-put, strike-specific terminal European lower "
                   "bounds including analytical between-node extrema, and all-pair calendar on actual queried PWL "
                   "domain. Between-knot preservation follows PWL linearity. No extrapolation, "
-                  "model-realizability, discrete-dividend model accuracy or live-tick claim."}
+                  "model-realizability, discrete-dividend model accuracy, Greek accuracy or live-tick claim. "
+                  "Cold Reference price accuracy uses the explicitly versioned contract; local IV "
+                  "conditioning estimates do not establish root-error bounds."}
     if args.command == "qualify":
         manifest = read_json(args.cold_manifest)
         timing = cold_timing_checks(manifest, args.cold_manifest.parent, receipt, report)
@@ -966,7 +1110,7 @@ def verify(args, eligibility):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("freeze", "feasibility", "predictions", "run-audit",
-                                            "verify", "qualify", "cold-roots"))
+                                            "verify", "qualify", "cold-roots", "cold-prices"))
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--predictions", type=Path)
@@ -978,6 +1122,9 @@ def main():
     parser.add_argument("--audit-dir", type=Path)
     parser.add_argument("--cold-manifest", type=Path)
     parser.add_argument("--build-cache", type=Path)
+    parser.add_argument("--accuracy-contract", choices=(STRICT_IV_CONTRACT, RAW_SPREAD_PRICE_CONTRACT),
+                        default=STRICT_IV_CONTRACT,
+                        help="Explicit promotion contract; historical strict IV gate remains the default.")
     args = parser.parse_args()
     eligibility = freeze(args.input)
     if args.command == "run-audit":
@@ -985,14 +1132,19 @@ def main():
         return
     if args.command in ("verify", "qualify"):
         result = verify(args, eligibility)
-    elif args.command == "cold-roots":
+    elif args.command in ("cold-roots", "cold-prices"):
         report = read_json(args.audit_dir / "native.json")
         receipt = read_json(args.audit_dir / "receipt.json")
         rows = load_quotes(args.input)
-        result = cold_root_audit(report, rows)
+        result = cold_root_audit(report, rows) if args.command == "cold-roots" else cold_price_audit(report, rows)
         result["raw_model_failures"] = raw_model_violations(report, rows)
-        result["report_hash_verified"] = sha256(args.audit_dir / "native.json") == receipt["report_sha256"]
-        result["strict_accuracy_passed"] &= not result["raw_model_failures"] and result["report_hash_verified"]
+        result["input_sha256"] = sha256(args.input)
+        result["native_report_sha256"] = sha256(args.audit_dir / "native.json")
+        result["input_hash_verified"] = result["input_sha256"] == receipt["input_sha256"]
+        result["report_hash_verified"] = result["native_report_sha256"] == receipt["report_sha256"]
+        gate = "strict_accuracy_passed" if args.command == "cold-roots" else "price_accuracy_passed"
+        result[gate] &= not result["raw_model_failures"] and result["report_hash_verified"] and \
+            result["input_hash_verified"]
     elif args.command == "freeze":
         result = eligibility
     elif args.command == "predictions":
@@ -1015,8 +1167,8 @@ def main():
     print(json.dumps({key: value for key, value in result.items()
                       if key not in ("chains", "eligible_row_ids", "metrics",
                                      "api_violations_first100", "row_failures_first100",
-                                     "metadata_failures_first100", "cold_root_audit",
-                                     "failures", "roundoff_only")}, indent=2))
+                                     "metadata_failures_first100", "cold_root_audit", "cold_price_audit",
+                                     "failures", "roundoff_only", "observations")}, indent=2))
     if args.command == "verify" and not result["correctness_passed"]:
         raise SystemExit(2)
     if args.command == "qualify" and not result["goal_achieved"]:

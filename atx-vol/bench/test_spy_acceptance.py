@@ -1,8 +1,10 @@
 """Adversarial tests of the acceptance oracle, independent of fitter internals."""
 import copy
+import csv
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import spy_acceptance as audit
@@ -225,6 +227,183 @@ class ColdNodeRootOracleTests(unittest.TestCase):
         report, query = self.fixture()
         del query["cold_node"]
         self.assertEqual(audit.cold_root_audit(report)["failure_count"], 1)
+
+
+class ColdNodePriceOracleTests(unittest.TestCase):
+    def fixture(self):
+        report, query = ColdNodeRootOracleTests.fixture(self)
+        value = report["graded_stats"]["acceptance_audit"]["snapshots"][0][0]
+        rows = []
+        for node in value["nodes"]:
+            for side in ("call", "put"):
+                rows.append({"chain_id": 1, "row_id": len(rows), "strike": node["strike"],
+                    "bid": node[side] - 0.1, "ask": node[side] + 0.1, "spot": 100.0,
+                    "rate": 0.0, "sdiv": 0.0, "ddiv_pv": 0.0, "years": 1.0,
+                    "years_calendar": 1.0, "is_call": side == "call", "exercise": "American",
+                    "input_status": "ok"})
+        return report, query, rows
+
+    @staticmethod
+    def residual(query, error, half_width=1e-5):
+        cold = query["cold_node"]
+        cold["price_lower"] = query["price"] + error - half_width
+        cold["price_center"] = query["price"] + error
+        cold["price_upper"] = query["price"] + error + half_width
+
+    def test_economic_contract_is_versioned_and_strict_iv_is_only_diagnostic(self):
+        report, query, rows = self.fixture()
+        self.residual(query, 0.0005)
+        result = audit.cold_price_audit(report, rows)
+        self.assertTrue(result["price_accuracy_passed"])
+        self.assertFalse(result["strict_iv_diagnostic"]["strict_accuracy_passed"])
+        self.assertEqual(result["accuracy_contract"]["version"], "raw-spread-price-v1")
+        self.assertFalse(result["accuracy_contract"]["greek_accuracy_established"])
+        self.assertEqual(result["identified_rows_checked"], 6)
+        self.assertEqual(audit.accuracy_contract("strict-iv-v1")["version"], "strict-iv-v1")
+        with self.assertRaises(ValueError):
+            audit.accuracy_contract("unversioned")
+
+    def test_price_cap_and_original_tight_spread_both_bind(self):
+        report, query, rows = self.fixture()
+        self.residual(query, 0.0011)
+        self.assertFalse(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+        self.residual(query, 0.0002)
+        rows[0].update(bid=11.99, ask=12.0)
+        result = audit.cold_price_audit(report, rows)
+        self.assertFalse(result["price_accuracy_passed"])
+        failure = result["failures"][0]
+        self.assertEqual(failure["failing_row_id"], rows[0]["row_id"])
+        self.assertAlmostEqual(failure["economic_budget_usd"], 0.0001)
+        self.assertEqual(failure["raw_budgets"][0]["ask"], 12.0)
+
+    def test_locked_quote_has_zero_economic_budget_with_separate_roundoff(self):
+        report, query, rows = self.fixture()
+        rows[0].update(bid=12.0, ask=12.0)
+        self.assertTrue(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+        self.residual(query, 1e-13)
+        result = audit.cold_price_audit(report, rows)
+        self.assertTrue(result["price_accuracy_passed"])
+        self.assertEqual(result["roundoff_only_rows"], 1)
+        self.assertEqual(result["zero_budget_rows"], 1)
+        self.assertEqual(result["observations"][0]["economic_budget_usd"], 0.0)
+        self.residual(query, 1e-8)
+        self.assertFalse(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+
+    def test_crossed_nonfinite_or_boolean_box_is_never_widened(self):
+        for row in ({"bid": 1, "ask": 0}, {"bid": 1, "ask": float("nan")},
+                    {"bid": True, "ask": 1}, {"bid": -1, "ask": 1}):
+            with self.assertRaises(ValueError):
+                audit.raw_price_budget(row)
+        report, _, rows = self.fixture()
+        rows[0].update(bid=12, ask=11)
+        result = audit.cold_price_audit(report, rows)
+        self.assertFalse(result["price_accuracy_passed"])
+        self.assertTrue(any(f["kind"] == "missing_original_quote_budget" for f in result["failures"]))
+
+    def test_duplicate_contract_uses_every_original_row_not_a_wider_merged_box(self):
+        report, query, rows = self.fixture()
+        rows.append(dict(rows[0], row_id=100, bid=11.99, ask=12.0))
+        self.residual(query, 0.0002)
+        result = audit.cold_price_audit(report, rows)
+        self.assertFalse(result["price_accuracy_passed"])
+        self.assertEqual(result["identified_rows_checked"], 7)
+        self.assertEqual([f["failing_row_id"] for f in result["failures"]], [100])
+
+    def test_missing_raw_row_and_invalid_cold_contract_fail_closed(self):
+        for mutate in (lambda q: q["cold_node"].update(effective_yield=0.1),
+                       lambda q: q["cold_node"].update(price_center=float("nan"))):
+            report, query, rows = self.fixture()
+            mutate(query)
+            self.assertFalse(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+        report, _, rows = self.fixture()
+        self.assertFalse(audit.cold_price_audit(report, rows[1:])["price_accuracy_passed"])
+
+    def test_price_only_stays_in_denominator_without_invented_point_volatility(self):
+        report, query, rows = self.fixture()
+        query.update(status="price_only", volatility=None, reason="low_vega", vol_convention="none")
+        result = audit.cold_price_audit(report, rows)
+        self.assertTrue(result["price_accuracy_passed"])
+        self.assertEqual(result["identified_rows_checked"], 5)
+        self.assertEqual(result["price_only_rows"], 1)
+        query["volatility"] = 0.2
+        self.assertFalse(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+
+    def test_low_vega_estimate_is_separate_and_does_not_relax_price_gate(self):
+        report, query, rows = self.fixture()
+        self.residual(query, 0.0005, half_width=1e-10)
+        result = audit.cold_price_audit(report, rows)
+        self.assertTrue(result["price_accuracy_passed"])
+        self.assertGreater(result["conditioning"]["max_abs_local_iv_error_estimate"], 0.1)
+        self.assertIn("not root-error bounds", result["conditioning"]["scope"])
+        self.residual(query, 0.002, half_width=1e-10)
+        self.assertFalse(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+
+    def test_verify_requires_explicit_version_to_change_promotion_gate(self):
+        report, query, rows = self.fixture()
+        self.residual(query, 0.0005)
+        entry = report["graded_stats"]["acceptance_audit"]["snapshots"][0][0]
+        entry["dividend_model"] = "aggregate_funding_pv_approximation"
+        entry["carry_curve"] = [{"strike": n["strike"], "continuous_yield": 0.0}
+                                for n in entry["nodes"]]
+        report["policy_definition"] = {"snapshot": {"one_spot": "nearest",
+                                                   "carry_price_tolerance": 1e-6}}
+        queries = {(q["strike"], q["side"]): q for q in entry["queries"]}
+        predictions = []
+        for row in rows:
+            row.update(is_call=int(row["is_call"]), expiry_days=21000,
+                       snapshot_ns=100, observation_ns=100)
+            q = queries[row["strike"], "call" if row["is_call"] else "put"]
+            predictions.append({"row_id": row["row_id"], "status": "ok",
+                "predicted_price": q["price"], "predicted_vol": q["volatility"],
+                "price_only_reason": "none", "vol_convention": q["vol_convention"],
+                "iv_lower": "", "iv_upper": ""})
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            for filename, data in (("input.csv", rows), ("predictions.csv", predictions)):
+                with (directory / filename).open("w", newline="") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=list(data[0]))
+                    writer.writeheader()
+                    writer.writerows(data)
+            audit.write_json(directory / "native.json", report)
+            receipt = {"exit_code": 0, "input_sha256": audit.sha256(directory / "input.csv"),
+                "report_sha256": audit.sha256(directory / "native.json"),
+                "predictions_sha256": audit.sha256(directory / "predictions.csv")}
+            audit.write_json(directory / "receipt.json", receipt)
+            eligibility = {"input_sha256": receipt["input_sha256"], "eligible_rows": 6,
+                "required_slices": 1, "containment_min": .995,
+                "eligible_row_ids": [row["row_id"] for row in rows]}
+            args = SimpleNamespace(input=directory / "input.csv", audit_dir=directory,
+                                   command="verify")
+            legacy = audit.verify(args, eligibility)
+            self.assertFalse(legacy["correctness_passed"])
+            self.assertFalse(legacy["checks"]["identified_node_cold_root_accuracy"])
+            args.accuracy_contract = "raw-spread-price-v1"
+            economic = audit.verify(args, eligibility)
+            self.assertTrue(economic["correctness_passed"], economic["checks"])
+            self.assertNotIn("identified_node_cold_root_accuracy", economic["checks"])
+            self.assertFalse(economic["cold_root_audit"]["strict_accuracy_passed"])
+            self.assertFalse(economic["goal_achieved"])
+
+    def test_frozen_spy_price_and_low_vega_cases_preserve_both_contract_results(self):
+        fixture = audit.read_json(Path(__file__).with_name("fixtures") /
+                                  "spy-wave1-cold-price-cases-v1.json")
+        result = audit.cold_price_audit(fixture["report"], fixture["raw_rows"])
+        self.assertTrue(result["price_accuracy_passed"])
+        self.assertEqual(result["identified_rows_checked"], fixture["expected"]["identified_rows_checked"])
+        self.assertEqual(result["price_only_rows"], fixture["expected"]["price_only_rows"])
+        self.assertEqual(result["strict_iv_diagnostic"]["failure_count"],
+                         fixture["expected"]["strict_iv_failures"])
+        self.assertAlmostEqual(result["max_center_residual_usd"], 0.0007096053236921307)
+        self.assertAlmostEqual(result["conditioning"]["max_abs_local_iv_error_estimate"],
+                               0.0017007053632673893)
+        # The same saved prices fail a genuinely tighter original market;
+        # changing their cold diagnostics or widening a projection box cannot
+        # silently substitute for the original row used to set the budget.
+        for row in fixture["raw_rows"]:
+            if row["row_id"] == 27423846:
+                row["ask"] = row["bid"] + 0.01
+        self.assertFalse(audit.cold_price_audit(fixture["report"], fixture["raw_rows"])
+                         ["price_accuracy_passed"])
 
 
 class ColdClockOracleTests(unittest.TestCase):

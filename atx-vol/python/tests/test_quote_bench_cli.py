@@ -83,6 +83,20 @@ def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
 def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     source = tmp_path / "quotes.csv"
     make_quotes(source)
+    # Both sides have original boxes so the independent economic oracle can
+    # audit every published node without inventing a spread for a synthetic put.
+    with source.open(newline="") as stream:
+        originals = list(csv.DictReader(stream))
+    fields = list(originals[0]) + ["observation_ns"]
+    for row in originals:
+        row["observation_ns"] = "1"
+    puts = [dict(row, row_id=str(int(row["row_id"]) + 1000), is_call="0",
+                 bid=str(float(row["bid"]) + float(row["strike"]) - 100),
+                 ask=str(float(row["ask"]) + float(row["strike"]) - 100)) for row in originals]
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(originals + puts)
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
                                   "serve": {"metadata": True, "floor_price_only": True}}))
@@ -136,6 +150,11 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     root_audit = verifier.cold_root_audit(native)
     assert root_audit["strict_accuracy_passed"], root_audit
     assert root_audit["identified_nodes"] == checked
+    economic_audit = verifier.cold_price_audit(native, verifier.load_quotes(source))
+    assert economic_audit["price_accuracy_passed"], economic_audit
+    assert economic_audit["identified_rows_checked"] == checked
+    assert economic_audit["accuracy_contract"]["version"] == "raw-spread-price-v1"
+    assert economic_audit["accuracy_contract"]["raw_boxes_modified"] is False
     with (tmp_path / "audit.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
     by_contract = {(query["strike"], query["side"]): query for query in entry["queries"]}
