@@ -320,3 +320,52 @@ permits a 1e-4 Newton correction within its band, while the acceptance target is
 1e-7. Warm-boundary Search drift must also be checked outside that band. No speed
 claim closes this correctness blocker, and no full accurate-fit latency has yet
 been established.
+
+## Economic candidate audit and next measured bottleneck
+
+The user-approved `raw-spread-price-v1` contract supersedes strict +/-1e-7 IV
+straddling as the promotion gate; the historical strict-IV failures above remain
+diagnostics. Frozen source `0a5b2bc1` passes all 12 independent correctness gates:
+33/33 valid expiries, 12,866/12,866 eligible rows served, 12,851 inside original
+quotes (99.88341365%), 12,430 identified IVs and 436 explicit PriceOnly rows.
+No previously identified row was demoted; 247 were recovered. Prices are unchanged
+from wave1. All identified IVs meet the original-row monetary budget, with maximum
+cold Reference error $0.0007096053236/share. Strict-IV failures number 1,271 and
+are not hidden; Greek accuracy is still unqualified.
+
+The same binary took 13.0317839 seconds in one fresh development run on P-core 6,
+one fit worker, 3.42385% measured sibling activity. This is not a ThinLTO/100-trial
+qualification. Exact source/binary/policy/prediction hashes and test receipts are
+in `docs/spy-cold-acceptance-r7.md`; evidence is `economic-v1-profile/` and
+`acceptance/integrated-economic-v1-audit/` under the r7 evidence root.
+
+| Repaired-price stage | Calls | Seconds | Disposition |
+|---|---:|---:|---|
+| Fast Search candidate plus cold check | 4,912 | 6.1814 | 4,189 accepted; still iterative |
+| Historical typed Search fallback | 723 | 3.2821 | Remaining hard/flat cases |
+| Native acceptance | 21,066 | 0.2816 | 20,818 native roots |
+| Native monetary-budget verification | 20,818 | 0.4115 | 855 required cold prices |
+| Plateau classification | 1,998 | 0.2907 | Includes 51 edge searches |
+| Batched family preparation | 122 batches | 0.3765 | Separate from native acceptance |
+
+Initial endpoint work is 0.2065 seconds; family build/validation is 0.2789 seconds.
+The 25,730 uncached reconstruction requests include intermediate slice and final
+joint projection. Global calendar work is charged to the first recorder, so its
+large time is not the cost of that expiry alone.
+
+Execution order now:
+
+1. Project original paired quote prices jointly before IV fitting. The reviewed
+   private draft already projects all 33/12,866 rows with exactly 15 unavoidable
+   terminal-floor departures, in 40/100 bounded iterations and no American IV or
+   price calls. It does not yet publish a successful fit.
+2. Classify each final unique node side once, build the genuine final OTM IV curve,
+   retain exact query identities, and atomically publish only after all final checks.
+   Any unsupported/failed attempt falls back for the whole requested surface with
+   an explicit reason. Raw quotes remain unadmitted midpoint observations.
+3. Replace expensive candidate Search where a batched family seed passes the same
+   cold price/exercise/slope checks. This is a separate monetary-budget route; do
+   not widen the existing strict native root certificate by assertion.
+4. Repeat the complete economic/API/no-demotion audit and profile the resulting
+   candidate. Qualify 100 quiet fresh one-core ThinLTO runs only after the measured
+   complete fit is below one second. None of these steps is a promised speedup.
