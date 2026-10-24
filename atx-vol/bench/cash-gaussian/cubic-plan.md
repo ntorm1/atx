@@ -111,7 +111,11 @@ Required controls, with actual failed executions retained:
 1. Constants and linear functions, plus degree-2/3 monomials and signed finite
    polynomial pieces. Compare full and truncated moments with an independent
    high-precision calculation. Global polynomial tails may be used only in
-   primitive moment tests; option-owner tails remain affine.
+   primitive moment tests; option-owner tails remain affine. Check both one-step
+   and repeated propagation against
+   `S^k*exp((k*(r-q)+k*(k-1)*sigma^2/2-r)*T)` and its analytic Delta for k=0..3.
+   Sum a partition's moments over the full domain and compare with these known
+   full moments; price/Delta conservation cannot omit either tail.
 2. Independent one-step European call/put price and Delta across the existing
    324 model controls, including tails, both carry signs and negative rates.
    Include the exact initial payoff kink rather than smoothing it.
@@ -119,8 +123,11 @@ Required controls, with actual failed executions retained:
    subnormal tails and the actual A1p tail operands. Retain absolute component
    sums/conditioning diagnostics; loss of supported arithmetic returns a typed
    numerical refusal. Finite output alone is not an accuracy test.
-4. Zero stock/time/volatility, derivative-kink conventions, malformed intervals,
-   nonfinite coefficients and overflow. Own input/grid storage; exercise the
+4. Zero stock/time/volatility and strictly positive near-zero dt, including
+   subnormal inputs, derivative-kink conventions, malformed intervals,
+   nonfinite coefficients and overflow. A positive stochastic interval that
+   cannot be resolved numerically must refuse rather than silently become a
+   deterministic step. Own input/grid storage; exercise the
    consumed-value/borrowed-grid alias case that affected the prior helper.
 5. Exact work and reset behavior, caller resource exhaustion and no partial
    public price/Delta on failure. Check that omitted diagnostic observers cause
@@ -131,6 +138,10 @@ by a control, record their version and numerical settings. Do not add a new
 production dependency or use the existing PDE/jump code as the independent
 moment oracle. Stop for review if the stable moment formula cannot meet its
 independent controls; do not hide cancellation behind a monetary tolerance.
+Before running the 18 controls, freeze and review the actual local-coordinate
+or equivalent stable basis/moment construction and its numerical-admission
+criteria. Merely evaluating global-power coefficients with a compensated final
+sum does not recover digits already lost inside a narrow-cell moment difference.
 
 ## Stage B: fixed multi-step and cash representation controls
 
