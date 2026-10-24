@@ -315,8 +315,9 @@ void summarize(RiskBenchReport &report);
 //            per uid, eligible rows have |vendor_delta| in [0.05, 0.95], sigma in
 //            (0.01, 3.0] (the licensed drop carries penny-name srVol >= 5 rows) and a
 //            two-sided quote (bid > 0, ask >= bid); picks go round-robin over the
-//            uid's expiries (starting at an rng-chosen one), alternating sides, each
-//            pick the unused contract nearest a cycling |delta| target grid;
+//            uid's expiries (starting at an rng-chosen one), sides alternating across
+//            the uid's picks, each pick the unused contract nearest a cycling |delta|
+//            target grid;
 //            qty uniform in {-10..-1, 1..10}, multiplier 100, ids 1..n;
 //   shares   one leg per uid for the first min(args.shares, n_uids) uids, qty =
 //            -round(sum(qty * 100 * vendor_delta) / 100) * 100 (100 when that is 0),

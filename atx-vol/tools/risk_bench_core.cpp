@@ -580,10 +580,11 @@ struct ExpiryPool {
   return pools;
 }
 
-// One pick from `pool` (alternating sides, nearest unused to the cycling |delta|
-// target, lowest strike on ties); nullopt when the pool is exhausted.
-[[nodiscard]] std::optional<std::size_t> pick_one(const SpiderRockBucket &b, ExpiryPool &pool) {
-  const std::size_t preferred = pool.picks % 2;
+// One pick from `pool`: side `preferred` (0 = call) when it has an unused contract,
+// else the other side; the unused contract nearest the pool's cycling |delta| target,
+// lowest strike on ties. nullopt when the pool is exhausted.
+[[nodiscard]] std::optional<std::size_t> pick_one(const SpiderRockBucket &b, ExpiryPool &pool,
+                                                  std::size_t preferred) {
   const double target = kDeltaTargets[(pool.picks / 2) % kDeltaTargets.size()];
   for (const std::size_t s : {preferred, 1 - preferred}) {
     std::optional<std::size_t> best;
@@ -625,8 +626,11 @@ struct ExpiryPool {
   }
   const std::size_t start = static_cast<std::size_t>(rng() % pools.size());
   const std::size_t bound = pools.size() * (run.end - run.begin + 1);
+  // Sides alternate across the uid's picks (not per expiry), so even a quota no larger
+  // than the expiry count holds both calls and puts.
   for (std::size_t iter = 0; picked.size() < quota && iter < bound; ++iter) {
-    if (const auto r = pick_one(b, pools[(start + iter) % pools.size()]); r.has_value()) {
+    ExpiryPool &pool = pools[(start + iter) % pools.size()];
+    if (const auto r = pick_one(b, pool, picked.size() % 2); r.has_value()) {
       picked.push_back(*r);
     }
   }

@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -209,6 +211,14 @@ TEST_F(RiskBenchBook, SelectsRequestedCounts) {
   EXPECT_EQ(uneven->uids.size(), 6u);
   EXPECT_EQ(uneven->options.size(), 13u);
   EXPECT_TRUE(uneven->shares.empty());
+  // A quota equal to the expiry count (8) still spans both sides: sides alternate
+  // across a uid's picks, not per expiry.
+  std::mt19937_64 rng3{5};
+  const auto thin = rb::select_bench_book(*bucket_, args(6, 48, 0), rng3);
+  ASSERT_TRUE(thin.has_value());
+  EXPECT_EQ(thin->options.size(), 48u);
+  EXPECT_EQ(thin->uids_with_both_sides, 6u);
+  EXPECT_GE(thin->min_expiries_per_uid, 4u);
 }
 
 TEST_F(RiskBenchBook, SharesHedgeVendorDelta) {
@@ -247,6 +257,57 @@ TEST_F(RiskBenchBook, DeterministicBySeed) {
   EXPECT_EQ(ba->options, bb->options);
   EXPECT_EQ(ba->shares, bb->shares);
   EXPECT_NE(ba->options, bc->options);
+}
+
+// The licensed store root from ATX_VOL_SPIDERROCK_STORE; empty when unset.
+[[nodiscard]] std::string real_store_root() {
+#if defined(_WIN32)
+  char *value = nullptr;
+  std::size_t size = 0U;
+  std::string root;
+  if (::_dupenv_s(&value, &size, "ATX_VOL_SPIDERROCK_STORE") == 0 && value != nullptr) {
+    root = value;
+  }
+  std::free(value);
+  return root;
+#else
+  const char *value = std::getenv("ATX_VOL_SPIDERROCK_STORE");
+  return value != nullptr ? std::string(value) : std::string();
+#endif
+}
+
+// The full benchmark book (100 underliers x 10,000 options + 100 shares) on bucket
+// 1000 of the licensed 2026-10-14 store. Env-gated like SpiderRockStoreReal.
+TEST(RiskBenchBookReal, SelectsFullBookOnBucket1000) {
+  const std::string root = real_store_root();
+  if (root.empty()) {
+    GTEST_SKIP() << "ATX_VOL_SPIDERROCK_STORE unset (licensed store not configured)";
+  }
+  atx::vol::SpiderRockStoreSpec spec;
+  spec.store_root = root;
+  spec.date = "2026-10-14";
+  spec.max_underliers = 100;
+  atx::vol::UnderlierTable table;
+  const auto bucket = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+  ASSERT_TRUE(bucket.has_value()) << bucket.error().to_string();
+  rb::RiskBenchArgs a;
+  a.store = root;
+  std::mt19937_64 rng{a.seed};
+  const auto book = rb::select_bench_book(*bucket, a, rng);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  std::printf("[real book 1000] uids=%zu options=%zu shares=%zu candidates=%zu shortfall=%zu "
+              "min_expiries=%zu both_sides=%zu\n",
+              book->uids.size(), book->options.size(), book->shares.size(), book->n_candidates,
+              book->shortfall, book->min_expiries_per_uid, book->uids_with_both_sides);
+  EXPECT_EQ(book->uids.size(), 100u);
+  EXPECT_EQ(book->options.size(), 10000u);
+  EXPECT_EQ(book->shares.size(), 100u);
+  EXPECT_EQ(book->shortfall, 0u);
+  EXPECT_GE(book->min_expiries_per_uid, 4u);
+  EXPECT_EQ(book->uids_with_both_sides, 100u);
+  for (const std::string &tk : {"SPX", "NDX", "XSP", "RUT"}) {
+    EXPECT_EQ(table.find(tk), 0u) << tk << " is European: american_only keeps it out";
+  }
 }
 
 // ── RiskBenchStats (engine-free statistics) ─────────────────────────────────
