@@ -25,6 +25,15 @@
 # Those lanes get a `FAIL_REGULAR_EXPRESSION` instead — see each one.
 set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 
+option(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH "Build independent stock-state Gaussian controls" OFF)
+if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
+    set(CASH_GAUSSIAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-gaussian")
+    add_executable(atx-vol-cash-gaussian-research-tests
+        ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp ${CASH_GAUSSIAN_DIR}/stock_pwl_test.cpp)
+    target_link_libraries(atx-vol-cash-gaussian-research-tests PRIVATE
+        atx::vol atx::core atx_warnings GTest::gtest_main)
+endif()
+
 # Explicit private research target; no kernel is linked into the production library.
 option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
 if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
