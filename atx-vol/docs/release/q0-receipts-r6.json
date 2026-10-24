@@ -1,0 +1,2129 @@
+{
+ "schema": "atx-vol-q0-scorecard-receipt-v1",
+ "fields": [
+  "source_sha",
+  "source_dirty",
+  "binary_sha256",
+  "compiler",
+  "flags",
+  "isa",
+  "policy_sha256",
+  "input_sha256",
+  "reference_sha",
+  "eligibility_version",
+  "cpu_model",
+  "core_type",
+  "affinity",
+  "smt_state",
+  "nested_workers",
+  "load",
+  "clock_state",
+  "clock_scope",
+  "cold_state_reset",
+  "reps",
+  "min",
+  "median",
+  "p95",
+  "p99",
+  "max",
+  "stage_seconds",
+  "boundary_solves",
+  "family_builds",
+  "family_prices",
+  "inverse_iterations",
+  "confirmed_roots",
+  "skipped_roots_by_error_class",
+  "reference_fallbacks_by_reason",
+  "input_rows",
+  "eligible_price_rows",
+  "identifiable_iv_rows",
+  "served_price_rows",
+  "served_iv_rows",
+  "price_only_rows",
+  "refused_rows_by_reason",
+  "complete_expiries",
+  "price_residual_usd",
+  "independent_iv_error",
+  "greek_errors",
+  "reference_uncertainty",
+  "containment",
+  "mae_usd",
+  "mae_spread",
+  "iv_bp_quantiles",
+  "shape_violations",
+  "paired_set_metrics",
+  "gained_set_metrics",
+  "lost_set_metrics",
+  "per_class_metrics",
+  "published_bytes",
+  "peak_memory",
+  "allocations_hot",
+  "version_race_failures",
+  "commands",
+  "exit_codes",
+  "artifact_manifest",
+  "reviewer_sha",
+  "decision"
+ ],
+ "milestones": {
+  "G0": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "atx-vol-quote-bench (vol-rel)": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+    "atx-vol-serve-record-bench (vol-rel-avx2)": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "atx-vol-served-analytics-bench (vol-rel-avx2)": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": {
+    "graded-v1 (default)": "d7f89d13640f4589bc24f9f7a48e8c2dac48b5165ab50ed0f00989e57a7d6844",
+    "k4-native-route": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+    "k4b-batch": "31228cb2b7608f49eb787ba11d57dbcf6b586f37364e529f3f8e9c7ed0314665",
+    "c3-combined-h0": "217722f63516d1972cbd2ec98cae6cab6c10975f3b7da55e960f4593e7dbd74d",
+    "c3-cf-graded-v1-serve": "a2030a0f53622d0d1421df9b5df66a8f5b7f94abc68799c77a41499eca7aa2d4",
+    "c4-inbox-h0": "718f0c0a8118fd26f7e6ccded1ee339b7758ed5823de0f550c822f8851708aa4"
+   },
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "affinity": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "smt_state": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "nested_workers": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "load": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "clock_state": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "clock_scope": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "cold_state_reset": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "reps": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "min": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "median": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "p95": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "p99": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "max": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "stage_seconds": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "boundary_solves": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "family_builds": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "family_prices": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "inverse_iterations": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "confirmed_roots": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "input_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "eligible_price_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "served_price_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "served_iv_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "price_only_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "complete_expiries": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "price_residual_usd": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "independent_iv_error": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "greek_errors": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "reference_uncertainty": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "containment": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "mae_usd": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "mae_spread": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "shape_violations": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "paired_set_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "gained_set_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "lost_set_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "per_class_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "published_bytes": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "peak_memory": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "allocations_hot": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "version_race_failures": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "commands": [
+    "bash scripts/build_all.sh 1 0",
+    "bash scripts/run_full_label.sh 6 900 64",
+    "bash scripts/run_rows.sh <bin> parity scripts/jobs-defaults-9.txt",
+    "... parity-w1 ...-w1.txt",
+    "ATX_VOL_FIT_WORKERS=3 B NAMESET_CTEST -Ctest -Preset vol-rel -R ^(pricing|simd)/"
+   ],
+   "exit_codes": {
+    "build steps": "75 / 75 exit 0",
+    "full-label chunks": "fast 6 x 8, slow 0/8/8/8/0, idx1 0 (failures classified)",
+    "DEFAULTS_W2_RUNNER_EXIT": 0,
+    "DEFAULTS_W1_RUNNER_EXIT": 0,
+    "NAMESET_CTEST_EXIT": 8
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/build-progress.txt": "c281b423e405bc6b7c042e353e315e20f450d46e75b578498082eba82c16c4a9",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/parity/sha256sum-c-defaults-w2.log": "564bc3429c0155f0a7ad0d32653719346cf20c854e7a72e71dc4086586e67378",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/parity-w1/sha256sum-c-defaults-w1.log": "fa5f5b6c0c48dafc5fa96d7c44d37c99bdbca3225469be97647c7659a01cb3cc",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/names-final-e5438aa5-cap3.txt": "52324ef86de571d800eb81487c7baa081ba573a6b864e878f4b79402b645fdcd",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/label-account.txt": "f6e4e7557cd3d12ac034ab3959d0f8e5bd81057c0a29514b3238cd46afd81625",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/failure-table.md": "20f2d2e8a2de2005c29b27b5d7cf41d29b34add14635aa7953f5d44cf3ff6e2d",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/oldbin/classification.txt": "5357382f4bdb00178a3c640b234e3ca9098ec43c7647760108fa7aff61d9967d"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "PASS (9 / 9 at workers 2 and 1; fingerprint 53c4df68; name set 52324ef8); full labels: 48 pre-existing failures outside the ignore list"
+  },
+  "G1": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "atx-vol-quote-bench (vol-rel)": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+    "atx-vol-serve-record-bench (vol-rel-avx2)": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "atx-vol-served-analytics-bench (vol-rel-avx2)": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": {
+    "graded-v1 (default)": "d7f89d13640f4589bc24f9f7a48e8c2dac48b5165ab50ed0f00989e57a7d6844",
+    "k4-native-route": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+    "k4b-batch": "31228cb2b7608f49eb787ba11d57dbcf6b586f37364e529f3f8e9c7ed0314665",
+    "c3-combined-h0": "217722f63516d1972cbd2ec98cae6cab6c10975f3b7da55e960f4593e7dbd74d",
+    "c3-cf-graded-v1-serve": "a2030a0f53622d0d1421df9b5df66a8f5b7f94abc68799c77a41499eca7aa2d4",
+    "c4-inbox-h0": "718f0c0a8118fd26f7e6ccded1ee339b7758ed5823de0f550c822f8851708aa4"
+   },
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "affinity": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "smt_state": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "nested_workers": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "load": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "clock_state": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "clock_scope": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "cold_state_reset": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "reps": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "min": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "median": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "p95": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "p99": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "max": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "stage_seconds": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "boundary_solves": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "family_builds": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "family_prices": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "inverse_iterations": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "confirmed_roots": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "input_rows": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "eligible_price_rows": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "served_price_rows": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "served_iv_rows": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "price_only_rows": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "complete_expiries": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "price_residual_usd": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "independent_iv_error": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "greek_errors": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "reference_uncertainty": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "containment": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "mae_usd": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "mae_spread": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "shape_violations": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "paired_set_metrics": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "gained_set_metrics": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "lost_set_metrics": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "per_class_metrics": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "published_bytes": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "peak_memory": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "allocations_hot": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "version_race_failures": {
+    "not_measured": "G1 is B0's harness gate; Q0 used the harness (see G3)"
+   },
+   "commands": [
+    "(B0's run_cold_trials.ps1, via run_g3.ps1)"
+   ],
+   "exit_codes": {
+    "G3_RUNNER_EXIT": 0
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/g3-e5438aa5-10a/manifest.json": "b30c5fa05266471e3037b254170a5e418dbdf7f4b459849bd91078d2f7b92b50"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "PASS-with-named-gaps (B0's deferred minors)"
+  },
+  "G2": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "atx-vol-quote-bench (vol-rel)": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+    "atx-vol-serve-record-bench (vol-rel-avx2)": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "atx-vol-served-analytics-bench (vol-rel-avx2)": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "affinity": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "smt_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "nested_workers": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "load": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "clock_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "clock_scope": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "cold_state_reset": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reps": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "min": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "median": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "p95": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "p99": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "max": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "stage_seconds": {
+    "quiet G3 sub-clocks (ms)": {
+     "family_side": 662.4,
+     "confirm": 232.2,
+     "confirm_amortised_us": 41.2,
+     "final_grid": 512.1,
+     "endpoints": 340.0
+    }
+   },
+   "boundary_solves": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_builds": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_prices": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "inverse_iterations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "confirmed_roots": {
+    "spy": 3486,
+    "cohort5": 12424,
+    "dev200": 79433,
+    "dev200b": 60765
+   },
+   "skipped_roots_by_error_class": {
+    "spy": 25925,
+    "cohort5": 29057,
+    "dev200": 12391,
+    "dev200b": 826,
+    "class": "family_enclosure / refinement_validated"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "input_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "eligible_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_only_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "complete_expiries": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_residual_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "independent_iv_error": {
+    "criterion": "|served - accurate-map root| <= 1e-7",
+    "violations": {
+     "spy": 0,
+     "cohort5": 0,
+     "dev200": 0,
+     "dev200b": 0
+    },
+    "unresolved": {
+     "spy": 0,
+     "cohort5": 0,
+     "dev200": 0,
+     "dev200b": 0
+    },
+    "max_err_confirmed": 7.813e-10,
+    "max_err_skipped": {
+     "spy": 6.25e-09,
+     "cohort5": 6.25e-09,
+     "dev200": 3.125e-09,
+     "dev200b": 1.562e-09
+    }
+   },
+   "greek_errors": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reference_uncertainty": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "containment": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_spread": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "shape_violations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "paired_set_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "gained_set_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "lost_set_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "per_class_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "published_bytes": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "peak_memory": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "allocations_hot": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "version_race_failures": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "commands": [
+    "bash scripts/run_rows.sh <bin> audit-runs scripts/jobs-audit-4cohort.txt",
+    "python -I scripts/k4-roots_summary.py <cohort> <roots.csv> (x4)",
+    "ATX_VOL_AL_FINGERPRINT=... atx-vol-al-preset-ladder-bench --benchmark_filter=american/ladder_fingerprint"
+   ],
+   "exit_codes": {
+    "AUDIT_RUNNER_EXIT": 0,
+    "ROOTS_SUMMARY x4": 0,
+    "FP_EXIT": 0
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/audit/roots-summary-spy.txt": "ab89257185601b8999d671a9fd92f95608fba8eb3b7540740a9cddb9181df9a7",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/audit/roots-summary-cohort5.txt": "7a22974c97725b0e58fc94f3879c5d6ce518e06dab7f98a8129bc47108a86171",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/audit/roots-summary-dev200.txt": "da2dc14fb63fa8bd753c96bcef4192e63ffb6fa28c6f49bfa6e60c86a17570ad",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/audit/roots-summary-dev200b.txt": "cf61cfbf0998a1daad65f93499ecb2cce03ccf843406e8414d0df38cfb0cb398",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/audit-runs/runs.log": "1210a39a2f686cfdad5d98ff668365d6e29292b0938071c82d12556e7c501912",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/fingerprint/final-e5438aa5-avx2.bin": "53c4df681f70d5906856211f5a35454b12686c657bfd7f37cf7ff1adca18dcea"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "PASS-with-named-gaps: error control 0 / 0 on four cohorts, fingerprint 53c4df68; kernel speed bars family side / grid / endpoints MISS on the quiet row"
+  },
+  "G3": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": "31228cb2b7608f49eb787ba11d57dbcf6b586f37364e529f3f8e9c7ed0314665",
+   "input_sha256": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": "P core (efficiency_class 1, pcore_proof True)",
+   "affinity": "CPU 6 (mask 0x40)",
+   "smt_state": "SMT on; sibling CPU 7 idle in 10 / 10 trials (busy <= 10 %)",
+   "nested_workers": "ATX_VOL_FIT_WORKERS=1; surface_expiry_fanout 1; pricing executor not on the route",
+   "load": "QUIET: only the Q0 lease alive; cpu_load 2 % before / 15 % after",
+   "clock_state": "Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (High performance); cpu_mhz {'cpu': 6, 'current': 2100, 'limit': 2100, 'max': 2100}",
+   "clock_scope": "cold_calibration_s (resident snapshot -> validated surface + predictions published; excludes file I/O and policy load)",
+   "cold_state_reset": "a fresh process per trial (B0 runner); no in-process repetition (bench.reps=1)",
+   "reps": 10,
+   "min": 2.4329464,
+   "median": 2.47273785,
+   "p95": 2.6372423599999997,
+   "p99": 2.740133672,
+   "max": 2.7658565,
+   "stage_seconds": {
+    "curve_repair": 0.096383,
+    "endpoints": 0.33995,
+    "family_build_validation": 0.197387,
+    "final_grid_validation": 0.512063,
+    "fit_other": 0.002479,
+    "inverses": 0.999841,
+    "normalization": 0.004856,
+    "publication": 0.008029,
+    "reference_exceptions": 0.298647
+   },
+   "boundary_solves": 27796,
+   "family_builds": {
+    "attempted": 62,
+    "built": 59,
+    "refused_by_reason": {
+     "call_no_carry": 1,
+     "invalid_carry": 0,
+     "no_continuous_model": 0,
+     "not_offered": 0,
+     "prepare_refused": 0,
+     "short_expiry": 2,
+     "uncertified": 0
+    }
+   },
+   "family_prices": {
+    "iterate": 138914,
+    "grid": 24194
+   },
+   "inverse_iterations": {
+    "iv_newton_iters": 13385,
+    "inversions": 29725,
+    "inversion_al_solves": 12651
+   },
+   "confirmed_roots": 3486,
+   "skipped_roots_by_error_class": {
+    "family_enclosure (refinement_validated)": 25925
+   },
+   "reference_fallbacks_by_reason": {
+    "reference_requests": 546,
+    "reference_evaluations": 6118,
+    "budget_refused": 0
+   },
+   "input_rows": 13168,
+   "eligible_price_rows": 12866,
+   "identifiable_iv_rows": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "served_price_rows": 1410,
+   "served_iv_rows": 1410,
+   "price_only_rows": 0,
+   "refused_rows_by_reason": {
+    "arbitrage_failure": 9958,
+    "calendar_arbitrage": 1204,
+    "input_rejected": 302,
+    "invalid_market": 294,
+    "ok": 1410
+   },
+   "complete_expiries": {
+    "fitted_chains": 4,
+    "chains": 33
+   },
+   "price_residual_usd": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "independent_iv_error": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "greek_errors": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "reference_uncertainty": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "containment": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "mae_usd": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "mae_spread": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "shape_violations": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "paired_set_metrics": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "gained_set_metrics": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "lost_set_metrics": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "per_class_metrics": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "published_bytes": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "peak_memory": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "allocations_hot": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "version_race_failures": {
+    "not_measured": "not applicable to the G3 serial row"
+   },
+   "commands": [
+    "powershell -NoProfile -File scripts/run_g3.ps1 -Tag a",
+    "python -I scripts/k4b-g3_summary.py timing/g3-e5438aa5-10a q0"
+   ],
+   "exit_codes": {
+    "G3_RUNNER_EXIT": 0,
+    "trial exit codes": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "G3_SUMMARY_EXIT": 0
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/g3-e5438aa5-10a/manifest.json": "b30c5fa05266471e3037b254170a5e418dbdf7f4b459849bd91078d2f7b92b50",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/g3-stage-medians.txt": "0863d6cd647dbcaea9e233c737f9051302ddb711126f70f037d2c09abbaff1b0",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/g3-console-a.txt": "2069d291f70258c9677c68b53543d183497d2708cda54abb4182deced33854fb",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/rows.log": "f2d600fe51536f8e6aa88b318160da3e45baf4aaefa1e45d63c4c114ec6f3f78"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "MISS: quiet median 2.473 s vs < 1.000 s; no trial under the bar; dominating stage inverses 1.000 s"
+  },
+  "G4": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "atx-vol-quote-bench (vol-rel)": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+    "atx-vol-serve-record-bench (vol-rel-avx2)": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "atx-vol-served-analytics-bench (vol-rel-avx2)": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": {
+    "c3-combined-h0": "217722f63516d1972cbd2ec98cae6cab6c10975f3b7da55e960f4593e7dbd74d",
+    "c3-cf-graded-v1-serve": "a2030a0f53622d0d1421df9b5df66a8f5b7f94abc68799c77a41499eca7aa2d4",
+    "c4-inbox-h0": "718f0c0a8118fd26f7e6ccded1ee339b7758ed5823de0f550c822f8851708aa4"
+   },
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "affinity": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "smt_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "nested_workers": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "load": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "clock_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "clock_scope": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "cold_state_reset": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reps": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "min": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "median": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "p95": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "p99": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "max": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "stage_seconds": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "boundary_solves": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_builds": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_prices": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "inverse_iterations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "confirmed_roots": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "input_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "eligible_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_only_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "complete_expiries": {
+    "SPY served / LP denominator (C4 row)": "26 / 33"
+   },
+   "price_residual_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "independent_iv_error": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "greek_errors": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reference_uncertainty": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "containment": {
+    "SPY (C4 row, W2c-m on the code-identical binary)": 0.995
+   },
+   "mae_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_spread": {
+    "SPY (C4 row)": 0.215
+   },
+   "iv_bp_quantiles": {
+    "SPY median (C4 row)": 9.0
+   },
+   "shape_violations": {
+    "served, all_rows, 51 matrix cells": 0
+   },
+   "paired_set_metrics": {
+    "51 C3 matrix cells vs C3's recorded cells": "51 / 51 predictions byte-identical"
+   },
+   "gained_set_metrics": {
+    "51 C3 matrix cells": "0 (byte-identical)"
+   },
+   "lost_set_metrics": {
+    "51 C3 matrix cells": "0 (byte-identical)"
+   },
+   "per_class_metrics": {
+    "combined-h0 x cohort5": {
+     "eligible_price_coverage": 0.6007754054496806,
+     "containment": 0.9749136520632612,
+     "mae_usd": 0.13569705817913963,
+     "mae_spread": 0.17058083957305908,
+     "iv_median_bp": 17.27551970045316,
+     "price_only_rows": 48
+    },
+    "combined-h0 x dev200b": {
+     "eligible_price_coverage": 0.9368436242363994,
+     "containment": 0.9903303097723772,
+     "mae_usd": 0.23779927612527443,
+     "mae_spread": 0.11470270571678956,
+     "iv_median_bp": 179.6167624859553,
+     "price_only_rows": 942
+    },
+    "combined-h0 x dev200": {
+     "eligible_price_coverage": 0.8833317694160333,
+     "containment": 0.9897489465670479,
+     "mae_usd": 0.23137816207581804,
+     "mae_spread": 0.12232693097405091,
+     "iv_median_bp": 172.33666337959806,
+     "price_only_rows": 1124
+    },
+    "cf-graded-v1-serve x cohort5": {
+     "eligible_price_coverage": 0.33817506689237153,
+     "containment": 0.8995640238979493,
+     "mae_usd": 0.10059511160723841,
+     "mae_spread": 0.25299954558221494,
+     "iv_median_bp": 26.149616785295926,
+     "price_only_rows": 3
+    },
+    "cf-graded-v1-serve x dev200b": {
+     "eligible_price_coverage": 0.88200869021469,
+     "containment": 0.9882748591165242,
+     "mae_usd": 0.23877237190531014,
+     "mae_spread": 0.11630642072681317,
+     "iv_median_bp": 174.8962813443322,
+     "price_only_rows": 621
+    },
+    "cf-graded-v1-serve x dev200": {
+     "eligible_price_coverage": 0.7989740702511651,
+     "containment": 0.9883142812402129,
+     "mae_usd": 0.23456453479308068,
+     "mae_spread": 0.10818368256820195,
+     "iv_median_bp": 175.43852246372782,
+     "price_only_rows": 779
+    },
+    "cf-h0-repair-validate-serve x cohort5": {
+     "eligible_price_coverage": 0.4766013214656255,
+     "containment": 0.980980751604033,
+     "mae_usd": 0.10871342914716417,
+     "mae_spread": 0.1342697172023856,
+     "iv_median_bp": 24.017998602017393,
+     "price_only_rows": 200
+    },
+    "cf-h0-repair-validate-serve x dev200b": {
+     "eligible_price_coverage": 0.9368436242363994,
+     "containment": 0.9903303097723772,
+     "mae_usd": 0.23779927612527443,
+     "mae_spread": 0.11470270571678956,
+     "iv_median_bp": 179.6167624859553,
+     "price_only_rows": 942
+    },
+    "cf-h0-repair-validate-serve x dev200": {
+     "eligible_price_coverage": 0.8833317694160333,
+     "containment": 0.9897489465670479,
+     "mae_usd": 0.2307631641769207,
+     "mae_spread": 0.12222023615928636,
+     "iv_median_bp": 172.33666337959806,
+     "price_only_rows": 1123
+    }
+   },
+   "published_bytes": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "peak_memory": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "allocations_hot": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "version_race_failures": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "commands": [
+    "bash scripts/run_matrix_chunk.sh <chunk> (x9)",
+    "python -I scripts/matrix_compare.py"
+   ],
+   "exit_codes": {
+    "MATRIX chunks": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "COMPARE_EXIT": 0
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix/compare-c3-vs-q0.md": "f765763e6aae4263a066037577cb6d4872fd9346048ad44eba1563a0fef18405",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-00\\table.json": "f2ce08c0e89baa54b051fa9fb60380c3e17b3ecb424bea1ad4dfea813633ce76",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-01\\table.json": "ff6df6daff7627175c3be3786ecb53e8388f8ceb49d24c6172d3ea59dfe6f31c",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-02\\table.json": "16687ea9575c09d8e0f29bcf40455521de7e67cb0b33b1694200a23e1e5f9800",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-03\\table.json": "b2a9f191ec3137221fcd6213a068e09fa8b076f3971b2504e43dd1aa7f44a0ef",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-04\\table.json": "f9b36a441558ed387056af730bb64eb0584a1328cccb136c86ac7b70537f7de0",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-05\\table.json": "8211adbe77c81c6e9ee463534fb4865e4e742bc82e7436c7f52a6ce8a370978f",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-c3b-06\\table.json": "0bcae247e47a1edfc9d9fd78b55f7cc12880627060decae10702cf2adb768dbd",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-extra-00\\table.json": "d41d1315c9e241faa116436ddaa8d408d362e7525ae1894f2fc5ab71e834a601",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/matrix\\matrix-extra-01\\table.json": "d2b24799fecdabb3bba6a5b1864c356e5e73678720a65b7e11f89b66565e5feb"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "MISS: C1 PASS; C2 / C3 MISS; F2 not met"
+  },
+  "G5": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "atx-vol-quote-bench (vol-rel)": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+    "atx-vol-serve-record-bench (vol-rel-avx2)": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "atx-vol-served-analytics-bench (vol-rel-avx2)": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": {
+    "graded-v1 (default)": "d7f89d13640f4589bc24f9f7a48e8c2dac48b5165ab50ed0f00989e57a7d6844",
+    "k4-native-route": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+    "k4b-batch": "31228cb2b7608f49eb787ba11d57dbcf6b586f37364e529f3f8e9c7ed0314665",
+    "c3-combined-h0": "217722f63516d1972cbd2ec98cae6cab6c10975f3b7da55e960f4593e7dbd74d",
+    "c3-cf-graded-v1-serve": "a2030a0f53622d0d1421df9b5df66a8f5b7f94abc68799c77a41499eca7aa2d4",
+    "c4-inbox-h0": "718f0c0a8118fd26f7e6ccded1ee339b7758ed5823de0f550c822f8851708aa4"
+   },
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "affinity": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "smt_state": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "nested_workers": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "load": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "clock_state": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "clock_scope": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "cold_state_reset": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "reps": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "min": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "median": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "p95": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "p99": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "max": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "stage_seconds": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "boundary_solves": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "family_builds": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "family_prices": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "inverse_iterations": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "confirmed_roots": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "input_rows": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "eligible_price_rows": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "served_price_rows": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "served_iv_rows": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "price_only_rows": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "complete_expiries": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "price_residual_usd": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "independent_iv_error": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "greek_errors": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "reference_uncertainty": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "containment": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "mae_usd": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "mae_spread": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "shape_violations": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "paired_set_metrics": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "gained_set_metrics": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "lost_set_metrics": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "per_class_metrics": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "published_bytes": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "peak_memory": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "allocations_hot": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "version_race_failures": {
+    "not_measured": "G5 rests on D0 / D1 lane evidence; Q0 re-ran only the discrete-div test executables in the label run"
+   },
+   "commands": [
+    "(label run) atx-vol-discrete-div-* ctests incl. -reference-matrix and -production-matrix"
+   ],
+   "exit_codes": {
+    "discrete-div ctests": "all Passed"
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/label-account.txt": "f6e4e7557cd3d12ac034ab3959d0f8e5bd81057c0a29514b3238cd46afd81625"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "PASS-with-named-gaps (accuracy class per ruling); drift within u NOT met; cash latency budgets MISS"
+  },
+  "G6": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "serve-record bench": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "served-analytics bench": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": {
+    "graded-v1 (default)": "d7f89d13640f4589bc24f9f7a48e8c2dac48b5165ab50ed0f00989e57a7d6844",
+    "k4-native-route": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+    "k4b-batch": "31228cb2b7608f49eb787ba11d57dbcf6b586f37364e529f3f8e9c7ed0314665",
+    "c3-combined-h0": "217722f63516d1972cbd2ec98cae6cab6c10975f3b7da55e960f4593e7dbd74d",
+    "c3-cf-graded-v1-serve": "a2030a0f53622d0d1421df9b5df66a8f5b7f94abc68799c77a41499eca7aa2d4",
+    "c4-inbox-h0": "718f0c0a8118fd26f7e6ccded1ee339b7758ed5823de0f550c822f8851708aa4"
+   },
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": "one pinned thread (atx_main_pinned=1)",
+   "affinity": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "smt_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "nested_workers": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "load": "QUIET: only the Q0 lease alive; cpu 7 % / 7 % (H1), 40 % / 10 % (A1)",
+   "clock_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "clock_scope": "hot query (TSC 0.4006 ns per tick, timer overhead 13.2 ns subtracted per the bench); A1 per contract",
+   "cold_state_reset": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reps": 5,
+   "min": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "median": {
+    "H1 record tier0 p50/p99 ns": {
+     "spy23": [
+      83.73,
+      99.36
+     ],
+     "spy23_tick": [
+      93.35,
+      111.0
+     ],
+     "SPY": [
+      100.2,
+      129.4
+     ],
+     "SPY_tick": [
+      110.6,
+      146.2
+     ]
+    },
+    "H1 book hit0 steady p50/p99 ns": {
+     "spy23": [
+      122.6,
+      158.7
+     ],
+     "spy23_tick": [
+      134.2,
+      189.5
+     ],
+     "SPY": [
+      126.2,
+      205.9
+     ],
+     "SPY_tick": [
+      149.4,
+      314.9
+     ]
+    },
+    "H1 book hit0 under publication p50/p99 ns": {
+     "spy23": [
+      283.3,
+      488
+     ],
+     "spy23_tick": [
+      253.2,
+      551.7
+     ],
+     "SPY": [
+      258.8,
+      524
+     ],
+     "SPY_tick": [
+      298.1,
+      536.1
+     ]
+    },
+    "H2 iv_record p50/p99 ns": {
+     "spy23": [
+      198.3,
+      283.3
+     ],
+     "spy23_tick": [
+      193.9,
+      260.4
+     ],
+     "SPY": [
+      197.5,
+      280.8
+     ],
+     "SPY_tick": [
+      214.3,
+      284.9
+     ]
+    },
+    "H2 chain300 tier0 p50 us": {
+     "spy23": 13.72,
+     "spy23_tick": 17.21,
+     "SPY": 14.47,
+     "SPY_tick": 18.66
+    },
+    "H2 chain300 book mixed p50/p99 us": {
+     "spy23": [
+      266.8,
+      294.6
+     ],
+     "spy23_tick": [
+      215.8,
+      237.9
+     ],
+     "SPY": [
+      211.2,
+      233.9
+     ],
+     "SPY_tick": [
+      141.1,
+      160.7
+     ]
+    }
+   },
+   "p95": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "p99": "in median (pairs p50 / p99)",
+   "max": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "stage_seconds": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "boundary_solves": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_builds": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_prices": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "inverse_iterations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "confirmed_roots": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "input_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "eligible_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_only_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "complete_expiries": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_residual_usd": {
+    "tier0 err max vs andersen_lake": {
+     "SPY default": 9.463e-05,
+     "SPY tick": 2.228e-08,
+     "spy23": 3.489e-05,
+     "spy23 tick": 4.915e-10
+    },
+    "tier1 err max": 0.0001578
+   },
+   "independent_iv_error": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "greek_errors": {
+    "A1 Taylor vs exact per share (chain)": {
+     "spot_only p99": 0.7198,
+     "vol_only p99": 0.08174,
+     "time_only p99": 0.002039,
+     "mixed p99": 0.7915
+    }
+   },
+   "reference_uncertainty": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "containment": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_spread": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "shape_violations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "paired_set_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "gained_set_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "lost_set_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "per_class_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "published_bytes": {
+    "SPY per symbol default": 2913000.0,
+    "SPY per symbol tick": 3036000.0,
+    "spy23": 713900.0
+   },
+   "peak_memory": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "allocations_hot": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "version_race_failures": {
+    "torn": 0,
+    "source": "LivePublication suite green in the label run (serve-record 62 / 62)"
+   },
+   "commands": [
+    "powershell -File scripts/run_srbench.ps1 full-1 \"\" atx-vol-serve-record-bench-e5438aa5.exe",
+    "python -I scripts/srbench_table.py timing/srbench-full-1/serve-record.json",
+    "powershell -File scripts/run_a1bench.ps1 row atx-vol-served-analytics-bench-e5438aa5.exe"
+   ],
+   "exit_codes": {
+    "SRBENCH_EXIT": 0,
+    "SRBENCH_TABLE_EXIT": 0,
+    "A1BENCH_EXIT": 0
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/srbench-full-1/serve-record.json": "2e5aa182d5ca8c1e72a817769ff7bf7c0da86e1179e70e8d7f3b7698986d8c27",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/srbench-table.txt": "cc3917ba43ea9c3aa5ca328dca6edc6fb053f24d942016c39873f20841de07c0",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/a1-row/a1.json": "47d3360ed3b317f3e148fc61b155d2681a81dc2114ecedc71c9ddd13c62497e3",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/rows.log": "f2d600fe51536f8e6aa88b318160da3e45baf4aaefa1e45d63c4c114ec6f3f78"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "MISS (H2 mixed 300-chain 141-267 us vs 100 us); H1 record + book p50 MET quiet; H3 reported; A1 row measured"
+  },
+  "G7": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": "all 16 logical CPUs (4 P x 2 SMT + 8 E)",
+   "affinity": "mask 0xffff",
+   "smt_state": "SMT on, used",
+   "nested_workers": "ATX_VOL_FIT_WORKERS=16 (P0 scheduler)",
+   "load": "QUIET: only the Q0 lease alive; per-trial load_before 11,17,2,6,6,6,6,4,54,38",
+   "clock_state": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "clock_scope": "cold_calibration_s per fresh process (P0 f3_trials.py)",
+   "cold_state_reset": "a fresh process per trial",
+   "reps": 10,
+   "min": 0.7610155,
+   "median": 0.7774095,
+   "p95": 0.810641635,
+   "p99": {
+    "not_measured": "10 trials do not support a p99"
+   },
+   "max": 0.8176543,
+   "stage_seconds": {
+    "sum_chain_s_median": 6.277067000000001,
+    "surface_s_median": 0.7635653,
+    "longest_chain_s_median": 0.447287
+   },
+   "boundary_solves": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_builds": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "family_prices": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "inverse_iterations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "confirmed_roots": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "input_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "eligible_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_price_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "served_iv_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_only_rows": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "complete_expiries": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "price_residual_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "independent_iv_error": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "greek_errors": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "reference_uncertainty": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "containment": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_usd": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "mae_spread": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "shape_violations": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "paired_set_metrics": {
+    "U0 sample Q0 S1 vs Q0 S2": "72 / 72 jobs hash-equal, served 60,158 = 60,158, status changes 0"
+   },
+   "gained_set_metrics": {
+    "U0 sample U0-S1 (989e7e96) vs Q0-S1": "gained 0"
+   },
+   "lost_set_metrics": {
+    "U0 sample U0-S1 (989e7e96) vs Q0-S1": "lost 0 (prices differ in 6 / 72 jobs by design)"
+   },
+   "per_class_metrics": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "published_bytes": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "peak_memory": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "allocations_hot": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "version_race_failures": {
+    "not_measured": "not measured by Q0 for this milestone (light ruling / dispatch list)"
+   },
+   "commands": [
+    "python -I scripts/f3_trials.py <bin> quotes-SPY.csv <K4 policy> timing/f3-spy-k4-all16 10 16 FFFF",
+    "bash scripts/run_chunk.sh <U0 plan> u0/s1-k4arm-D-e5438aa5 <K4 policy> 2 4 600",
+    "bash scripts/run_chunk.sh <U0 plan> u0/s2-k4arm-D-e5438aa5-detrerun <K4 policy> 2 4 600",
+    "universe_census.py compare (x2)",
+    "python -I scripts/recheck_reproducers.py"
+   ],
+   "exit_codes": {
+    "F3_EXIT": 0,
+    "U0_SAMPLE_RUN_EXIT": 0,
+    "U0_SAMPLE_RERUN_EXIT": 0,
+    "DET_EXIT": 0,
+    "COMPARE_EXIT": 0,
+    "RECHECK_EXIT": 0
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/f3-spy-k4-all16/summary.json": "e8afd3ef650d5af74ea5b0e25f6cb8ed4553fa525f72ba92595a047b0d21c23c",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/timing/f3-console.txt": "0a4ad7d542a6e127bb2e9f987dcee5e7c9c9f2a2aaefb922f9eb0bb9b29fbe27",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/u0/compare-q0s1-vs-q0s2.json": "10a3b668cee5e72df5243f46c46bf377b54902f0c096c1bf1e54912595f3db86",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/u0/compare-u0s1-vs-q0.json": "4229c8e78ddb4ffba0f8761e4fcb98941a1a174c3b6f83679d3a81922046888e",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/u0/combined-hashes.txt": "9606eb4990af5eccc34484bd89d5412347fa85f937a61b5452ff3e00955bedce",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/u0/routing-recheck.txt": "557df3977c8a3f6d51aeb95430f6947d04d3811ba8d6a9d48b090e7d9da4cd80"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "MISS: F3 quiet median 0.777 s vs 150 ms; F4 / F5 MISS on P0 dev rows (not re-run); universe sample deterministic; R1-R3 open"
+  },
+  "Q0": {
+   "source_sha": "e5438aa5d406f5ae28b21f59ee1fcc15cc4ae782",
+   "source_dirty": {
+    "value": false,
+    "note": "git status --porcelain 0 lines at freeze and at every build; the timing manifest counts 1 untracked folder (atx-vol/docs/release/, this lane's docs, no code)"
+   },
+   "binary_sha256": {
+    "atx-vol-quote-bench (vol-rel)": "ea3534b1c12f1d4f1bd9af78346da3293f52e4828518a1bffd1efbcd692bc5ff",
+    "atx-vol-serve-record-bench (vol-rel-avx2)": "d6f18277f21240d5a8f10caf31691e2bf45946c67dc20b89b0a6f8fdbfa6f883",
+    "atx-vol-served-analytics-bench (vol-rel-avx2)": "9a5872dd9a20cdf1d511fc763a19cbd2e76a7d8fb4bf8a13730106de89c85666"
+   },
+   "compiler": "clang-cl 18.1.8 (VS 2022 LLVM), lld",
+   "flags": {
+    "vol-rel": "/arch:AVX2 /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG, PCH ON, IPO OFF, EIGEN_NO_CPUID + pinned L1/L2/L3",
+    "vol-rel-avx2": "same + ThinLTO (IPO ON)"
+   },
+   "isa": "AVX2 (/arch:AVX2 build; runtime SIMD dispatch AVX2); fast_math false",
+   "policy_sha256": {
+    "graded-v1 (default)": "d7f89d13640f4589bc24f9f7a48e8c2dac48b5165ab50ed0f00989e57a7d6844",
+    "k4-native-route": "1a488f48d5cc18a997612d1edcef70210b8d72354ff81eab21505095bbf57180",
+    "k4b-batch": "31228cb2b7608f49eb787ba11d57dbcf6b586f37364e529f3f8e9c7ed0314665",
+    "c3-combined-h0": "217722f63516d1972cbd2ec98cae6cab6c10975f3b7da55e960f4593e7dbd74d",
+    "c3-cf-graded-v1-serve": "a2030a0f53622d0d1421df9b5df66a8f5b7f94abc68799c77a41499eca7aa2d4",
+    "c4-inbox-h0": "718f0c0a8118fd26f7e6ccded1ee339b7758ed5823de0f550c822f8851708aa4"
+   },
+   "input_sha256": {
+    "quotes-SPY.csv": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+    "spy23-quotes.csv": "0c68bb7608de5b24f5ac605c3f6b3ca9a47b878ec74f76b59fa8555e345f76e9",
+    "dev200/quotes.csv": "c585a9f70523731fb54618d6549b55aeaa31bd9b39a5688fe3e690d0bce564f5",
+    "dev200b/quotes.csv": "f9776cb6fb6cf1a39b71f094e0b21addb4b5b4215b73d12f990c366acee4949f",
+    "cohort5/quotes.csv": "0d6bd8fa491615818a9f9cefc349ce2c748a7da390f91536c43adc10bca75b02"
+   },
+   "reference_sha": {
+    "D0-20261022-matrix/sha256.txt": "36521ba893760f2e98e668f8a5c51dbeced352652fa19afb04aa0039e3e25576",
+    "B0-20261022-comparator/sha256.txt": "a8aec3c11c683b094662d592538218b37f32d60cb5ebedf68713aa9f99653355",
+    "K3-20261022-envelope/sha256.txt": "e14f1ff797be6e1008c8640ee073b92758e3fbdf572f4b2bf986e73668f50601",
+    "K3-20261023-fix1/sha256.txt": "e3f0ae07ba5a0471464e985586ac5f35b143e226fd31ab35a5fa66f161436abb"
+   },
+   "eligibility_version": {
+    "quote_benchmark.py blob": "9c1f873dff03a08be483b2187a9acf102b355c6a",
+    "shape_matrix.py blob": "d953c26334bc8a72685a2b151a56571a7ab51e08",
+    "class manifest sha256": "ad323ccb3ba6362ac709b634cb62905021e8128232b0352e4fa096246299b18f"
+   },
+   "cpu_model": "12th Gen Intel(R) Core(TM) i7-1260P",
+   "core_type": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "affinity": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "smt_state": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "nested_workers": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "load": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "clock_state": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "clock_scope": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "cold_state_reset": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "reps": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "min": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "median": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "p95": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "p99": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "max": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "stage_seconds": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "boundary_solves": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "family_builds": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "family_prices": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "inverse_iterations": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "confirmed_roots": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "skipped_roots_by_error_class": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "reference_fallbacks_by_reason": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "input_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "eligible_price_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "identifiable_iv_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "served_price_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "served_iv_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "price_only_rows": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "refused_rows_by_reason": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "complete_expiries": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "price_residual_usd": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "independent_iv_error": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "greek_errors": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "reference_uncertainty": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "containment": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "mae_usd": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "mae_spread": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "iv_bp_quantiles": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "shape_violations": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "paired_set_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "gained_set_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "lost_set_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "per_class_metrics": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "published_bytes": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "peak_memory": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "allocations_hot": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "version_race_failures": {
+    "not_measured": "G0 is a reconciliation gate: no timing or accuracy population"
+   },
+   "commands": [
+    "bash scripts/build_all.sh 1 0",
+    "bash scripts/run_full_label.sh 6 900 64",
+    "bash scripts/run_rows.sh <bin> parity scripts/jobs-defaults-9.txt",
+    "... parity-w1 ...-w1.txt",
+    "ATX_VOL_FIT_WORKERS=3 B NAMESET_CTEST -Ctest -Preset vol-rel -R ^(pricing|simd)/"
+   ],
+   "exit_codes": {
+    "build steps": "75 / 75 exit 0",
+    "full-label chunks": "fast 6 x 8, slow 0/8/8/8/0, idx1 0 (failures classified)",
+    "DEFAULTS_W2_RUNNER_EXIT": 0,
+    "DEFAULTS_W1_RUNNER_EXIT": 0,
+    "NAMESET_CTEST_EXIT": 8
+   },
+   "artifact_manifest": {
+    "evidence_manifest": "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/sha256.txt",
+    "cited": {
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/build-progress.txt": "c281b423e405bc6b7c042e353e315e20f450d46e75b578498082eba82c16c4a9",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/parity/sha256sum-c-defaults-w2.log": "564bc3429c0155f0a7ad0d32653719346cf20c854e7a72e71dc4086586e67378",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/parity-w1/sha256sum-c-defaults-w1.log": "fa5f5b6c0c48dafc5fa96d7c44d37c99bdbca3225469be97647c7659a01cb3cc",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/names-final-e5438aa5-cap3.txt": "52324ef86de571d800eb81487c7baa081ba573a6b864e878f4b79402b645fdcd",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/label-account.txt": "f6e4e7557cd3d12ac034ab3959d0f8e5bd81057c0a29514b3238cd46afd81625",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/gates/failure-table.md": "20f2d2e8a2de2005c29b27b5d7cf41d29b34add14635aa7953f5d44cf3ff6e2d",
+     "C:/atx-cache/quote-benchmark/Q0-20261023-qualification/oldbin/classification.txt": "5357382f4bdb00178a3c640b234e3ca9098ec43c7647760108fa7aff61d9967d"
+    },
+    "missing": []
+   },
+   "reviewer_sha": {
+    "value": "e5438aa5",
+    "note": "review-FINAL reviewed this root (pool-3, released ~23:39Z); its verdict is reported to the PM, not to Q0"
+   },
+   "decision": "DONE with findings: 48 non-ignore full-label failures (pre-existing before the plan base); G3 / G4 / G6 / G7 MISS; nothing promoted"
+  }
+ }
+}
