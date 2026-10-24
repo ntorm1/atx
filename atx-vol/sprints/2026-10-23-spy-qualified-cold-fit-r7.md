@@ -177,3 +177,63 @@ commits, tests, full SPY oracle result, before/after stage and solve counters,
 quiet one-core timings, and outstanding general-product limitations. A goal pass
 requires all four acceptance conditions in one candidate; a speed improvement
 alone does not close this sprint.
+
+## Complete-fit baseline at 2362f6aa
+
+Both development and ThinLTO actual-API audits pass on the frozen SPY input:
+33/33 valid expiries, 12,866/12,866 eligible rows served, 12,851 inside the original
+boxes (99.88341365%). The 15 departures are exactly the independently established
+terminal-floor conflicts. The audit checks 6,433 price nodes and 62,494 actual
+queries, with zero shape, parity, calendar, raw-model or between-node terminal
+floor violations. This certifies the declared finite-domain PWL price surface;
+it is not a proof of a full continuous-time arbitrage-free American option model.
+
+The exact release binary is
+`876a4cf8bbd6ce57b31039e36574051a93853f81e634c476020dcd6b8334eafa`.
+Its predictions match the development audit byte for byte:
+`2be0eb424dbd04e0a9173c7f5997d6e5b7c67e8c8d2435f54792af75878568fc`.
+Evidence root: `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/`;
+the release audit is `acceptance/integrated-full-v1-lto-audit/verification.json`.
+
+Three fresh-process `vol-rel-avx2` trials, pinned to P-core CPU 6 with one fit
+worker, measured 22.3678407, 22.9317113 and 20.7058787 seconds. SMT sibling busy
+fractions were 13.2774%, 4.5455% and 0.5963%; the first exceeds the 5% limit, so
+the three-run set fails the quiet-run gate. The manifest is
+`integrated-v1-lto-3/manifest.json`. These establish an approximately 21-23 second
+complete-fit baseline, not a qualified latency distribution or a sub-second pass.
+The independent actual-query audit is intentionally outside timed calibration.
+
+For comparison, the old 2.4727-second median served only 4/33 expiries; the old
+53.310-second best C4 trial served 26/33. Neither is a complete-fit baseline.
+The launcher report's legacy `served_rows=12183` counts identified-vol rows only:
+the independent acceptance denominator includes the additional 683 explicitly
+typed PriceOnly rows. PriceOnly counts are 16 floor, 610 low-vega and 57
+unidentified-interval rows, with no fabricated point volatility.
+
+The development profile (`integrated-v1-profile/trial-001.json`) attributes
+9.645 seconds to per-slice certification and 8.775 seconds to global calendar
+processing, predominantly repaired-price identification. It records 21,066
+native repair attempts, 20,818 accepted roots, 248 native fallbacks and 48,341
+Andersen-Lake price calls. Its 12,805,296 premium evaluations are quadrature
+evaluations, not that many complete American prices. This profile guides work;
+its non-LTO timings are not performance qualification.
+
+The next implementation wave is therefore:
+
+1. Batch repaired-price lane preparation and acceptance, retaining every native
+   bracket/error test and typed fallback, and serialize separate timing counters.
+2. Fuse bounded-family price/envelope evaluation and expose a reusable batch
+   interface, with stale-envelope identity checks and scalar retry on uncertain
+   decisions. Measure the actual reduction before claiming SIMD gains.
+3. Prepare bid/ask inverse lanes only when a channel solve requests a band.
+   The baseline performs 31,874 prepared lanes despite zero channel solves;
+   midpoint results and the original carry used to seed edges must be preserved.
+4. Evaluate Fast confirms under their existing explicit price-error bound and
+   avoid identifying prices that an imminent global projection will replace.
+   These remain hypotheses until implemented, independently reviewed and audited.
+
+Every optimization must retain all 33 slices, the immutable quote denominator,
+the containment threshold and the actual-query constraints. The remaining
+performance gap is over twentyfold; no measured result yet supports a claim
+that these changes alone will close it. All 100 required quiet cold trials must
+pass on one reviewed candidate before the goal can be marked complete.
