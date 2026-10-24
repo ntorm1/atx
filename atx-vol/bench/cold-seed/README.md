@@ -172,3 +172,11 @@ The focused 29-test selection passes, both build modes pass native provenance
 checks, and the five owning translation units pass PCH-off checks. These are
 implementation checks; the enabled full-SPY scalar actual-API audit is a separate
 required receipt before any workload promotion or latency claim.
+
+The archived enabled build now passes that separate full-SPY scalar actual-API
+audit with all 13 gates and byte-identical predictions. See
+`docs/cold-seed-vector-spy-audit-20261024.md` for complete hashes, canonical policy
+bytes, all-row counts and retained strict-IV diagnostics. This is workload
+correctness evidence only; no qualified latency or generic vector bound is
+claimed. The next proposal/proof attribution design is frozen separately in
+`docs/cold-price-candidate-attribution-design-20261024.md`.
