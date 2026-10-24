@@ -28,7 +28,7 @@
 # target_compile_definitions() call on atx-vol-tests has already run.
 
 set(ATX_VOL_SLICES core pricing simd fitting marketdata storage analytics backtest
-    dispersion oracle risk misc)
+    dispersion oracle risk persist misc)
 
 # Stems owned by a pre-existing focused exe: skipped here.
 set(ATX_VOL_SLICE_OWNED_ELSEWHERE
@@ -103,6 +103,11 @@ set(ATX_VOL_SLICE_risk_STEMS
     risk_market_state risk_book risk_kernel risk_pnl_explain risk_stream
     risk_strike_coord risk_theo_contract risk_historical_var
     priced_surface_shape_blend spiderrock_store risk_bench)
+# Wave-3 lane P (binary persistence): every persist_*_test.cpp. Lane loop: build
+# atx-vol-persist-slice, -Ctest -R "^persist/<Suite>\."
+set(ATX_VOL_SLICE_persist_STEMS
+    persist_file persist_state_archive persist_state_store persist_surface_timeline
+    persist_risk_run)
 
 # Fallback for stems added after this table was written: first matching prefix
 # wins, then `misc`.
@@ -115,7 +120,7 @@ set(ATX_VOL_SLICE_PREFIX_RULES
     "analytics_=analytics" "earnings_=analytics"
     "opra_=marketdata" "listed_=marketdata" "spy_=marketdata"
     "curve_=fitting" "essvi_=fitting" "cstar_=fitting" "c8_=fitting" "surface_=fitting"
-    "oracle_=oracle")
+    "oracle_=oracle" "persist_=persist")
 
 get_target_property(_atx_vol_mono_sources atx-vol-tests SOURCES)
 get_target_property(_atx_vol_mono_defs atx-vol-tests COMPILE_DEFINITIONS)

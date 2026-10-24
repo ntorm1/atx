@@ -40,9 +40,11 @@
 
 namespace atx::vol::riskbench {
 
-inline constexpr int kReportSchemaVersion = 1;
+// v2 (follow-up 2): inputs.time / inputs.carry_mode and the BucketLoad framework-filter and
+// implied-carry fields; the reader requires every v2 field and refuses v1.
+inline constexpr int kReportSchemaVersion = 2;
 inline constexpr std::size_t kRouteCount = 7; // RiskRoute::None .. RiskRoute::Refused
-inline constexpr std::size_t kFlagCount = 11; // RiskFlag bits 0 .. 10
+inline constexpr std::size_t kFlagCount = 13; // RiskFlag bits 0 .. 12
 inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // ═══ CLI ═════════════════════════════════════════════════════════════════════
@@ -69,6 +71,23 @@ struct RiskBenchArgs {
   std::size_t dump_steps{1};    // --dump-steps N: dump the first N steps (0 = every step)
   std::uint64_t seed{1};
   bool help{false};             // --help / -h
+  // ── Follow-up 2 additions (appended) ──
+  // --time voltime|calendar365: the clock every state (and so the kernel) measures T on.
+  // Calendar365 under both stores: VolTime reproduces SpiderRock's `years` only up to the
+  // first NYSE early close (docs/risk-bench.md "Clock"), and the synthetic store's vendor
+  // columns are priced on the calendar clock.
+  TimeConvention time{TimeConvention::Calendar365};
+
+  // ── Lane A2: family-kernel policy overrides (unset = FamilyKernelPolicy's default; the
+  // kernel validates the ranges, so a bad value fails the run, not the parse) ──
+  std::optional<std::uint16_t> n_sigma;        // --n-sigma N: node ceiling
+  std::optional<std::uint16_t> n_sigma_min;    // --n-sigma-min N: adaptive node floor
+  std::optional<double> sigma_box_pad;         // --sigma-box-pad X
+  std::optional<double> sigma_node_spacing;    // --sigma-node-spacing X (log sigma)
+  std::optional<bool> family_economics;        // --family-economics on|off
+  std::optional<double> family_node_cost_us;   // --family-node-cost-us X
+  std::optional<double> cold_lane_cost_us;     // --cold-lane-cost-us X
+  std::optional<bool> family_dynamic_schedule; // --family-schedule static|dynamic
 
   // The store the run reads: the synthetic dir when set, else --store.
   [[nodiscard]] const std::string &store_root() const noexcept {
@@ -82,6 +101,14 @@ struct RiskBenchArgs {
 [[nodiscard]] Result<RiskBenchArgs> parse_risk_bench_args(std::span<const char *const> argv);
 [[nodiscard]] std::string risk_bench_usage();
 [[nodiscard]] const char *to_string(BenchKernel kernel) noexcept;
+// "calendar365" | "voltime" (the --time spelling).
+[[nodiscard]] const char *time_name(TimeConvention time) noexcept;
+// "published" | "implied_from_calls".
+[[nodiscard]] const char *carry_mode_name(SpiderRockCarryMode mode) noexcept;
+// The carry mode a run builds its states with (no flag): Published under --synthetic (its
+// vendor columns are priced on exactly the D4 carry, design D20), ImpliedFromCalls under
+// --store (SpiderRock's escrow horizon is not a column; spiderrock_store.hpp).
+[[nodiscard]] SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept;
 
 // ═══ Report ══════════════════════════════════════════════════════════════════
 
@@ -131,6 +158,9 @@ struct ColdComparison {
   double max_abs_volga{kNaN};
   double max_abs_charm{kNaN};
   double max_abs_pnl_total{kNaN}; // per leg, legs Ok in both explains
+  // Lane A2: the family-vs-cold price gate, max |dprice| / |cold price| over the rows the
+  // main frame served from a family (NaN when none).
+  double max_rel_price_family{kNaN};
 };
 
 // One explain step (bucket k-1 -> bucket k).
@@ -154,6 +184,7 @@ struct StepReport {
   std::uint64_t cold_rows{0};
   std::uint64_t exercised_rows{0};
   std::uint64_t refused_rows{0};
+  std::uint64_t family_nodes{0}; // lane A2: sigma nodes over the families built
   std::array<std::uint32_t, kRouteCount> routes{}; // per unique option, by RiskRoute
   std::array<std::uint32_t, kFlagCount> flags{};   // unique options with each flag bit
   // Explain counts.
@@ -222,6 +253,15 @@ struct BucketLoad {
   std::size_t n_marks{0};
   std::size_t n_uids_with_divs{0};
   double max_ddiv_spread{0.0};
+  // ── Follow-up 2 additions (appended; schema v2) ──
+  std::int64_t dropped_forward_framework{0};
+  bool pv_divs_from_ddiv_pv{false}; // BucketStateReport::pv_divs_from_ddiv_pv
+  // BucketStateReport's carry accounting (n_expiries_implied + n_expiries_published ==
+  // the ExpiryCarry rows; max_forward_gap_rel = max_implied_vs_published_forward_rel).
+  std::size_t n_expiries_implied{0};
+  std::size_t n_expiries_published{0};
+  double max_forward_gap_rel{0.0};
+  double implied_carry_seconds{0.0};
 };
 
 struct RiskBenchReport {
@@ -243,6 +283,9 @@ struct RiskBenchReport {
   std::size_t requested_options{0};
   std::size_t requested_shares{0};
   unsigned host_threads{0};
+  std::string time;       // time_name(args.time)
+  std::string carry_mode; // carry_mode_name(bench_carry_mode(args))
+  std::string family_policy; // lane A2: the effective FamilyKernelPolicy (engine side)
   // Synthetic store preparation.
   bool synthetic_generated{false};
   double synthetic_seconds{0.0};
@@ -361,8 +404,9 @@ inline constexpr double kParityVegaFloor = 1e-3;
 // MarketState precedence, market_state.hpp):
 //   TermCarry        the uid's ExpiryCarry row with the contract's exact expiry_ns
 //   Flat             no row: flat_rate / flat_q, no cash dividends (pv_divs = 0)
-//   FlatCurveOrDivs  no row, and a yield curve or cash dividends apply: the rate /
-//                    pv_divs the engine derived are not reproduced (empty cells; the
+//   FlatCurveOrDivs  no row, and a yield curve or cash dividends apply: carry_rate =
+//                    flat_rate when no yield curve applies (empty under a curve);
+//                    pv_divs empty (the engine's cash-dividend PV is not reproduced; the
 //                    frame's rate / q_eff columns are what the kernel used)
 //   Surface          CarryFrom::Surface (carry read from the uid's surface)
 //   Absent           the uid is not in the base state
@@ -399,6 +443,13 @@ struct LegDumpRow {
   double carry_rate{kNaN};     // the ExpiryCarry row's rate (Flat: flat_rate)
   double carry_q{kNaN};        // the row's q (Flat: flat_q)
   double pv_divs{kNaN};        // the row's pv_divs (Flat: 0)
+  // The base state's basis for the contract's (uid, expiry) (SpiderRockExpiryForward):
+  // carry_mode_name of the row's mode ("" when the state has no row), the median
+  // call-implied forward (set even when the guards rejected it) and the Published row's
+  // forward on the state's clock.
+  std::string carry_mode;
+  double implied_forward{kNaN};
+  double published_forward{kNaN};
   std::string route;           // to_string(RiskRoute) of the base frame row
   std::string flags;           // to_string(RiskFlag) names of the set bits, '|'-joined
   std::string status;          // to_string(RiskLaneStatus) of the base frame row
@@ -424,6 +475,7 @@ struct LegDumpRow {
   double sr_th{kNaN};
   double sr_years{kNaN};
   double sr_uprc{kNaN};
+  double sr_synspot{kNaN};     // synSpot (NaN when the store has no such column)
   double sr_rate{kNaN};
   double sr_sdiv{kNaN};
   double sr_ddiv{kNaN};

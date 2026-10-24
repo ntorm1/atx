@@ -19,6 +19,7 @@
 #include <optional>
 #include <ostream>
 #include <random>
+#include <sstream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -56,6 +57,7 @@ struct Snapshot {
   MarketStateStorage storage;
   std::optional<MarketState> state;
   BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards; // per ExpiryCarry row, (uid, expiry) order
   double load_seconds{0.0};
   double state_seconds{0.0};
 };
@@ -68,7 +70,8 @@ struct Snapshot {
   ATX_TRY(snap->bucket, load_spiderrock_bucket(spec, bucket_et, table));
   snap->load_seconds = seconds_since(t0);
   const Clock::time_point t1 = Clock::now();
-  ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report));
+  ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report,
+                                                  &snap->forwards));
   ATX_TRY(MarketState state, make_market_state(snap->storage));
   snap->state.emplace(std::move(state));
   snap->state_seconds = seconds_since(t1);
@@ -85,6 +88,12 @@ struct Snapshot {
   b.rows_not_selected = s.bucket.rows_not_selected;
   b.dropped_non_american = s.bucket.dropped_non_american;
   b.dropped_nonstandard_root = s.bucket.dropped_nonstandard_root;
+  b.dropped_forward_framework = s.bucket.dropped_forward_framework;
+  b.pv_divs_from_ddiv_pv = s.report.pv_divs_from_ddiv_pv;
+  b.n_expiries_implied = s.report.n_expiries_implied;
+  b.n_expiries_published = s.report.n_expiries_published;
+  b.max_forward_gap_rel = s.report.max_implied_vs_published_forward_rel;
+  b.implied_carry_seconds = s.report.implied_carry_seconds;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;
@@ -93,15 +102,39 @@ struct Snapshot {
   return b;
 }
 
-[[nodiscard]] RiskKernel make_kernel(bool cold, unsigned threads) {
+// Lane A2: FamilyKernelPolicy with the CLI's overrides applied (its defaults otherwise).
+[[nodiscard]] FamilyKernelPolicy family_policy(const RiskBenchArgs &args, unsigned threads) {
+  FamilyKernelPolicy p;
+  p.n_threads = threads;
+  p.n_sigma = args.n_sigma.value_or(p.n_sigma);
+  p.n_sigma_min = args.n_sigma_min.value_or(p.n_sigma_min);
+  p.sigma_box_pad = args.sigma_box_pad.value_or(p.sigma_box_pad);
+  p.sigma_node_spacing = args.sigma_node_spacing.value_or(p.sigma_node_spacing);
+  p.family_economics = args.family_economics.value_or(p.family_economics);
+  p.family_node_cost_us = args.family_node_cost_us.value_or(p.family_node_cost_us);
+  p.cold_lane_cost_us = args.cold_lane_cost_us.value_or(p.cold_lane_cost_us);
+  p.dynamic_schedule = args.family_dynamic_schedule.value_or(p.dynamic_schedule);
+  return p;
+}
+
+// The report's one-line echo of the effective family policy.
+[[nodiscard]] std::string describe(const FamilyKernelPolicy &p) {
+  std::ostringstream s;
+  s << "n_sigma " << p.n_sigma << ", n_sigma_min " << p.n_sigma_min << ", sigma_box_pad "
+    << p.sigma_box_pad << ", sigma_node_spacing " << p.sigma_node_spacing << ", economics "
+    << (p.family_economics ? "on" : "off") << " (node " << p.family_node_cost_us
+    << " us, cold lane " << p.cold_lane_cost_us << " us), schedule "
+    << (p.dynamic_schedule ? "dynamic" : "static");
+  return s.str();
+}
+
+[[nodiscard]] RiskKernel make_kernel(bool cold, unsigned threads, const RiskBenchArgs &args) {
   if (cold) {
     ColdKernelPolicy p;
     p.n_threads = threads;
     return RiskKernel::cold(p);
   }
-  FamilyKernelPolicy p;
-  p.n_threads = threads;
-  return RiskKernel::family(p);
+  return RiskKernel::family(family_policy(args, threads));
 }
 
 // The main stream plus the optional shadows, all over one book.
@@ -119,14 +152,14 @@ struct Streams {
   opts.n_threads = args.threads;
   const bool main_cold = args.kernel == BenchKernel::Cold;
   Streams s;
-  s.main.emplace(book, make_kernel(main_cold, args.threads), needs, opts);
+  s.main.emplace(book, make_kernel(main_cold, args.threads, args), needs, opts);
   if (args.determinism) {
     ExplainOptions serial = opts;
     serial.n_threads = 1;
-    s.shadow.emplace(book, make_kernel(main_cold, 1), needs, serial);
+    s.shadow.emplace(book, make_kernel(main_cold, 1, args), needs, serial);
   }
   if (args.kernel == BenchKernel::Both) {
-    s.cold.emplace(book, make_kernel(true, args.threads), needs, opts);
+    s.cold.emplace(book, make_kernel(true, args.threads, args), needs, opts);
   }
   return s;
 }
@@ -142,6 +175,7 @@ void fill_frame(StepReport &t, const RiskFrame &f) {
   t.cold_rows = f.counters.cold_rows;
   t.exercised_rows = f.counters.exercised_rows;
   t.refused_rows = f.counters.refused_rows;
+  t.family_nodes = f.counters.family_nodes;
   for (const RiskRoute r : f.route) {
     const auto i = static_cast<std::size_t>(r);
     t.routes[std::min(i, kRouteCount - 1)] += 1;
@@ -333,6 +367,16 @@ void fill_cold(ColdComparison &c, const RiskFrame &m, const RiskFrame &k, const 
   c.max_abs_vanna = max_abs_diff(m.vanna, k.vanna, ok);
   c.max_abs_volga = max_abs_diff(m.volga, k.volga, ok);
   c.max_abs_charm = max_abs_diff(m.charm, k.charm, ok);
+  // Lane A2: the price gate over the family-served rows (relative to the cold price).
+  bool any_family = false;
+  double max_rel = 0.0;
+  for (std::size_t r = 0; r < ok.size(); ++r) {
+    if (ok[r] != 0 && m.route[r] == RiskRoute::Family) {
+      max_rel = std::max(max_rel, std::abs(m.price[r] - k.price[r]) / std::abs(k.price[r]));
+      any_family = true;
+    }
+  }
+  c.max_rel_price_family = any_family ? max_rel : kNaN;
   std::vector<std::uint8_t> legs_ok(std::min(mx.size(), kx.size()));
   for (std::size_t i = 0; i < legs_ok.size(); ++i) {
     legs_ok[i] = (mx.status[i] == RiskLaneStatus::Ok && kx.status[i] == RiskLaneStatus::Ok);
@@ -416,6 +460,18 @@ struct CarryUsed {
   return CarryUsed{CarrySource::Flat, u->flat_rate, u->flat_q, 0.0};
 }
 
+// The base state's basis for (uid, expiry); nullptr when it wrote no such row.
+[[nodiscard]] const SpiderRockExpiryForward *expiry_forward(const Snapshot &s, std::uint32_t uid,
+                                                            std::int64_t expiry_ns) noexcept {
+  const auto it = std::lower_bound(
+      s.forwards.begin(), s.forwards.end(), std::pair{uid, expiry_ns},
+      [](const SpiderRockExpiryForward &f, const std::pair<std::uint32_t, std::int64_t> &key) {
+        return std::pair{f.uid, f.expiry_ns} < key;
+      });
+  return it != s.forwards.end() && it->uid == uid && it->expiry_ns == expiry_ns ? &*it
+                                                                                : nullptr;
+}
+
 // The to_string(RiskFlag) names of the set bits, lowest first, '|'-joined.
 [[nodiscard]] std::string flag_names(RiskFlags bits) {
   std::string s;
@@ -446,6 +502,11 @@ void fill_dump_model(LegDumpRow &row, const RiskFrame &f, std::uint32_t r, const
   row.carry_rate = c.rate;
   row.carry_q = c.q;
   row.pv_divs = c.pv_divs;
+  if (const SpiderRockExpiryForward *fw = expiry_forward(base, row.uid, row.expiry_ns)) {
+    row.carry_mode = carry_mode_name(fw->mode);
+    row.implied_forward = fw->implied_forward;
+    row.published_forward = fw->published_forward;
+  }
   row.route = to_string(f.route[r]);
   row.flags = flag_names(f.flags[r]);
   row.status = to_string(f.status[r]);
@@ -586,6 +647,9 @@ void log_step(std::ostream &log, const StepReport &t) {
 
 Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &log) {
   RiskBenchReport rep = report_skeleton(args);
+  if (args.kernel != BenchKernel::Cold) {
+    rep.family_policy = describe(family_policy(args, args.threads));
+  }
   ATX_TRY_VOID(prepare_synthetic_store(args, rep, log));
   ATX_TRY(const std::vector<std::string> all,
           list_spiderrock_buckets(args.store_root(), args.date));
@@ -598,6 +662,8 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.store_root = args.store_root();
   spec.date = args.date;
   spec.max_underliers = args.underliers;
+  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it
+  spec.carry_mode = bench_carry_mode(args);
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
   ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));
