@@ -59,3 +59,27 @@ Unary bound specialization and a reusable direction RHS can follow if measured
 worthwhile. They affect roughly 100 ms of scans/solves, while the factorization
 accounts for about 200 ms; removing only row allocation would miss the dominant
 cost. No optimization implementation is included in this observational change.
+
+## Compact row follow-up
+
+The stored numeric row now occupies64 bytes instead of112. Its48-byte conflict
+descriptor was only used while adding an impossible constraint and never read
+from stored feasible rows. Passing that descriptor separately to `add_row`
+preserves the same early typed contradiction and largest-excess selection.
+Calendar contradictions still carry the exact near/far expiry and strike.
+All indices, coefficients, bounds, normalization, row ordering, Eigen factors,
+stopping rules and final certificates remain unchanged.
+
+The SPY row capacity falls from6,882,064 to3,932,608 bytes (42.86%). All31 scoped
+solver/draft/target tests pass, including both complete external SPY fixtures.
+The feasible-midpoint fingerprint remains `8251046449056129050`, with the same36
+sweeps and identical residual/gap values. Focused PCH-off production and owning
+test compiles pass. Latency benefit awaits the integrated whole-fit measurement;
+the smaller footprint alone is not a timing claim.
+
+The separate cached/packed LDLT prototype was rejected: factor timing overlapped
+Eigen, despite exact factor/direction/output parity. Its source and diagnostics
+remain frozen at `55d6403c` on branch
+`feat/vol-r7-cached-ldlt-experiment-20261024`, outside this implementation. Its
+per-iterate certificate replay found first feasibility at sweep35 of36, so no
+substantial late optimization tail or new stopping policy was justified.

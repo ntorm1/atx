@@ -48,7 +48,6 @@ struct Row {
   std::array<double, 4> coef{};
   std::size_t count = 0;
   double b = 0.0;
-  JointProjectionConflict conflict{JointConflictKind::LinearConstraint};
 
   void term(int i, double a) {
     if (a == 0.0) return;
@@ -65,6 +64,11 @@ struct Row {
     return v;
   }
 };
+
+// Feasible rows need only numerical data in every residual/direction scan.
+// Contradiction provenance belongs to the temporary add_row input, not this
+// repeatedly streamed storage. Preserve the coefficient and accumulation order.
+static_assert(sizeof(Row) == 64u);
 
 struct Problem {
   std::vector<std::size_t> offsets;
@@ -93,7 +97,8 @@ struct Problem {
 
 // Substitute fixed coordinates, then discard constraints implied by the boxes.
 // Directly contradictory boxes/constant rows are a genuine infeasibility witness.
-void add_row(Problem &p, const Row &original) {
+void add_row(Problem &p, const Row &original,
+             const JointProjectionConflict &conflict = {JointConflictKind::LinearConstraint}) {
   Row row;
   row.b = original.b;
   for (std::size_t k = 0; k < original.count; ++k) {
@@ -114,7 +119,7 @@ void add_row(Problem &p, const Row &original) {
   if (high < -kFeasibilityTolerance) {
     p.infeasible = true;
     if (-high > p.conflict.excess) {
-      p.conflict = original.conflict;
+      p.conflict = conflict;
       p.conflict.excess = -high;
     }
   }
@@ -303,10 +308,9 @@ void add_calendars(Problem &p, std::span<const JointInboxSlice> slices) {
         if (k < low || k > high || (b > a + 1u && k >= bridge_low && k <= bridge_high)) return;
         for (const bool call : {true, false}) {
           Row row;
-          row.conflict = {JointConflictKind::CalendarBox, a, 0, b, k, 0.0};
           add_interpolated(row, far, p.offsets[b], call, k, 1.0);
           add_interpolated(row, near, p.offsets[a], call, k, -1.0);
-          add_row(p, row);
+          add_row(p, row, {JointConflictKind::CalendarBox, a, 0, b, k, 0.0});
         }
       };
       std::size_t i = 0;

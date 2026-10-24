@@ -118,7 +118,14 @@ TEST(JointInboxProjection, ContradictoryCalendarBoxesAreTypedInfeasible) {
   const std::vector<AmericanPriceBox> far_boxes{{11, 11, 2, 2}, {6, 6, 7, 7}, {1, 1, 12, 12}};
   const std::array<detail::JointInboxSlice, 2> input{{{near, near_boxes, kCarry},
                                                     {far, far_boxes, kCarry}}};
-  EXPECT_EQ(detail::project_joint_in_box(input).outcome, JointProjectionOutcome::InfeasibleData);
+  const auto result = detail::project_joint_in_box(input);
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::InfeasibleData);
+  EXPECT_EQ(result.sweeps, 0u);
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::CalendarBox);
+  EXPECT_EQ(result.conflict.slice, 0u);
+  EXPECT_EQ(result.conflict.other, 1u);
+  EXPECT_DOUBLE_EQ(result.conflict.strike, 90.0);
+  EXPECT_DOUBLE_EQ(result.conflict.excess, 1.0);
 }
 
 TEST(JointInboxProjection, PositiveWidthZeroBidWingsCanHaveBoundaryOnlyFeasibility) {
@@ -208,8 +215,11 @@ TEST(JointInboxProjection, FloorRecoveryDoesNotRelaxAMaterialConvexityConflict) 
   const detail::JointInboxSlice slice{nodes, boxes, bounds, .9, prepaid};
   detail::TerminalFloorRecovery recovery;
   ASSERT_TRUE(detail::recover_terminal_floor_asks(slice, quoted, boxes, recovery));
-  EXPECT_EQ(detail::project_joint_in_box(std::span(&slice, 1)).outcome,
-            JointProjectionOutcome::InfeasibleData);
+  const auto result = detail::project_joint_in_box(std::span(&slice, 1));
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::InfeasibleData);
+  EXPECT_EQ(result.sweeps, 0u);
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::LinearConstraint);
+  EXPECT_GT(result.conflict.excess, 0.0);
 }
 
 TEST(JointInboxProjection, ExistingInboxRungRecoversAZeroInteriorFeasibleSlice) {
