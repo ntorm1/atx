@@ -26,7 +26,9 @@ project_series(spec, refs, ts, policy, out);   // == the same call over owned su
 ```
 
 Rebuilding a period merges its previous generation (a re-written partition replaces its snapshot);
-a corrupted record is refused on `view()` (`SectionChecksum`), never served.
+a corrupted record is refused on `view()` (`SectionChecksum`), never served. `open` refuses a manifest
+row whose header CRC, file CRC or instant range differs from the period file it names
+(`SegmentMismatch`), so a forged or stale row can neither serve a file nor mis-route a query.
 
 Accepted deviations from the design (ruling 2026-10-24):
 
@@ -74,13 +76,28 @@ manifest, under the directory's writer lock. A reader never sees a partial file,
 between leaves an orphan, never a dangling entry.
 
 - `Publish` — no flush. A process crash loses nothing that was sealed. A power loss before the
-  OS writes the pages back can tear a segment, and `open` then refuses it by CRC.
+  OS writes the pages back can tear a segment. Open at Full / Paranoid refuses it by CRC; at
+  Lazy (the default) a torn column is found on first touch: `frame()` / `explain()` return an
+  empty span (as for an absent column; `step_info` and `materialize_*`, which says
+  `SectionChecksum`, tell the two apart).
 - `Flush` — FlushFileBuffers on the segment and the manifest before their renames: that seal
-  survives a power loss. It does not reach back to earlier `Publish` segments (durable once
-  written back by the OS); set `seal_durability = Flush` when every segment must be.
+  survives a power loss. A `Flush` `finish()` first flushes every segment the writer sealed at
+  `Publish`, so once it returns the whole run is durable. That flush needs write access to the
+  files: while a reader holds one mapped, `finish()` returns `Busy`, changes nothing and can be
+  retried.
 
 The writer never starts a thread. A caller that wants a `Flush` seal off its hot path runs the
 appends (or `finish()`) on its own thread.
+
+### Single writer
+
+A run directory has one writer, enforced through the manifest. `create` refuses a directory that
+already lists a run (`AlreadyExists`, under the writer lock). Each seal publishes only if the
+manifest still ends with the row this writer published last, or is empty for its first segment.
+Otherwise it refuses with `SegmentMismatch`; a listed key is never replaced (`DuplicateKey`). From
+then on every append and `finish()` returns that refusal and the writer's unsealed steps are lost,
+while the run stays openable on what the manifest lists. A second writer on one directory is
+therefore refused at its first seal instead of splicing its segments into the run.
 
 ### Compaction contract
 
@@ -88,7 +105,9 @@ appends (or `finish()`) on its own thread.
 fully verified into memory (no mapping is held on files the manifest stops naming), publishes the
 merged segment under a fresh name, then, under the writer lock, re-reads the manifest. It replaces
 the manifest with one naming only the merged segment, or refuses with `SegmentMismatch` when
-anything was published since the run was read (every entry's seq and file CRC are compared). The
+anything was published since the run was read (every entry's seq and file CRC are compared).
+Compact finished runs only: a compaction that lands under a live writer makes that writer's next
+seal refuse (see Single writer), losing its unsealed steps. The
 manifest write lives in this lane (`risk_run_archive_publish.cpp`, byte-compatible with
 PersistDirectory's) because `PersistDirectory::publish` can add or replace only one key;
 `PersistDirectory::replace_all` was deferred (ruling 2026-10-24). Superseded files stay on disk

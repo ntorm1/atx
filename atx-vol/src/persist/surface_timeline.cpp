@@ -600,25 +600,51 @@ std::span<const TimelineEntry> SurfaceTimeline::range(std::uint32_t uid, std::in
   return range_of(impl_->core, uid, from_ns, to_ns);
 }
 
-PersistResult<PricedSurfaceView> SurfaceTimeline::view(const TimelineEntry &entry) const {
-  if (!impl_) return persist_error(S::InvalidArgument);
-  auto rec = verified_record(impl_->core, entry);
+namespace {
+
+// Verify the record CRC, then a zero-copy view over the record.
+[[nodiscard]] PersistResult<PricedSurfaceView> view_of(const TimelineCore &c,
+                                                       const TimelineEntry &entry) {
+  auto rec = verified_record(c, entry);
   if (!rec) return tl::unexpected(rec.error());
   auto v = PricedSurfaceView::create_over_record(*rec);
   if (!v) return persist_error(S::RecordInvalid, kRecordsSection, entry.record_offset);
   return std::move(*v);
 }
 
+} // namespace
+
+PersistResult<PricedSurfaceView> SurfaceTimeline::view(const TimelineEntry &entry) const {
+  if (!impl_) return persist_error(S::InvalidArgument);
+  return view_of(impl_->core, entry);
+}
+
 // ── SurfaceTimelineStore ──────────────────────────────────────────────────────
 
 namespace {
 
+// One period of an open store: its key, its instants (the file header's, which the
+// manifest row must agree with) and the opened period file.
 struct Period {
   std::string key;
   std::int64_t ts_min_ns{0};
   std::int64_t ts_max_ns{0};
-  SurfaceTimeline timeline;
+  TimelineCore core;
 };
+
+// A manifest row must describe the file it names: same header and whole-file CRC (as
+// RiskRun's open_segment checks) and the same instant range, or the row is forged /
+// stale and the store refuses (SegmentMismatch, detail = the row's seq) rather than
+// serve or mis-route a period.
+[[nodiscard]] PersistOutcome check_row(const PersistManifestEntry &e,
+                                       const PersistFile &f) noexcept {
+  const PersistHeader &h = f.header();
+  if (h.header_crc32c != e.header_crc32c || f.footer().file_crc32c != e.file_crc32c ||
+      h.ts_min_ns != e.ts_min_ns || h.ts_max_ns != e.ts_max_ns) {
+    return persist_error(S::SegmentMismatch, kPersistNone, e.seq);
+  }
+  return {};
+}
 
 // The partition file of a SurfaceDb key: the db's public layout
 // (<root>/partitions/<CANONICAL KEY>.atxvsa, surface_db.hpp kSurfaceDbPartition*), for
@@ -729,10 +755,12 @@ PersistResult<SurfaceTimelineStore> SurfaceTimelineStore::open(std::string_view 
     }
     PersistOpenOptions o;
     o.expected_size = e.file_size;
-    auto tl = SurfaceTimeline::open(dir->path(e), o);
-    if (!tl) return tl::unexpected(tl.error());
-    impl->periods.push_back(Period{std::string(e.key.data()), e.ts_min_ns, e.ts_max_ns,
-                                   std::move(*tl)});
+    auto core = open_core(dir->path(e), o);
+    if (!core) return tl::unexpected(core.error());
+    if (PersistOutcome ok = check_row(e, core->file); !ok) return tl::unexpected(ok.error());
+    const PersistHeader &h = core->file.header();
+    impl->periods.push_back(Period{std::string(e.key.data()), h.ts_min_ns, h.ts_max_ns,
+                                   std::move(*core)});
   }
   std::sort(impl->periods.begin(), impl->periods.end(),
             [](const Period &a, const Period &b) { return a.ts_min_ns < b.ts_min_ns; });
@@ -777,7 +805,7 @@ PersistResult<std::size_t> SurfaceTimelineStore::collect(std::uint32_t uid, std:
   };
   std::size_t n = 0;
   for (const Period &p : impl_->periods) {
-    if (overlaps(p)) n += p.timeline.range(uid, from_ns, to_ns).size();
+    if (overlaps(p)) n += range_of(p.core, uid, from_ns, to_ns).size();
   }
   if (n == 0) return std::size_t{0};
 
@@ -803,8 +831,8 @@ PersistResult<std::size_t> SurfaceTimelineStore::collect(std::uint32_t uid, std:
   ts.reserve(ts0 + n);
   for (const Period &p : impl_->periods) {
     if (!overlaps(p)) continue;
-    for (const TimelineEntry &e : p.timeline.range(uid, from_ns, to_ns)) {
-      auto v = p.timeline.view(e);
+    for (const TimelineEntry &e : range_of(p.core, uid, from_ns, to_ns)) {
+      auto v = view_of(p.core, e);
       if (!v) {
         views.erase(views.begin() + static_cast<std::ptrdiff_t>(views0), views.end());
         refs.resize(refs0);

@@ -36,11 +36,19 @@
 #include "atx/vol/api/risk/pnl_explain.hpp"
 #include "atx/vol/api/risk/risk_book.hpp"
 #include "atx/vol/api/risk/risk_kernel.hpp"
+#include "persist/risk_run_archive_publish.hpp"
 #include "persist/risk_run_format.hpp"
 #include "support/risk_synthetic_market.hpp"
 
 #if defined(_WIN32)
 #include <process.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #else
 #include <unistd.h>
 #endif
@@ -849,11 +857,21 @@ TEST(PersistRiskRun, CompactionRefusesAStaleManifest) {
   std::vector<std::byte> image(raw.size());
   std::memcpy(image.data(), raw.data(), raw.size());
 
-  // A late seal lands after the compactor read the manifest.
-  ASSERT_TRUE(
-      rr::publish_segment(dir.string(), rr::segment_key(99), image, 1, SealDurability::Publish)
-          .has_value());
+  // A late seal (by the run's writer: the manifest still ends with its last row) lands
+  // after the compactor read the manifest.
+  const PersistManifestEntry &newest = seen->entries().back();
+  const std::optional<rr::WriterTail> tail = rr::WriterTail{newest.seq, newest.file_crc32c};
+  auto late = rr::publish_writer_segment(dir.string(), rr::segment_key(99), image, 1,
+                                         SealDurability::Publish, tail);
+  ASSERT_TRUE(late.has_value()) << to_string(late.error().status);
   EXPECT_EQ(manifest_size(dir), 5u);
+  // A listed key is never replaced, even by its owner.
+  const std::optional<rr::WriterTail> tail2 = rr::WriterTail{late->seq, late->file_crc32c};
+  EXPECT_EQ(rr::publish_writer_segment(dir.string(), rr::segment_key(99), image, 1,
+                                       SealDurability::Publish, tail2)
+                .error()
+                .status,
+            PersistStatus::DuplicateKey);
   const auto refused =
       rr::publish_compacted(dir.string(), seen->entries(), image, 1, SealDurability::Flush);
   ASSERT_FALSE(refused.has_value());
@@ -867,4 +885,253 @@ TEST(PersistRiskRun, CompactionRefusesAStaleManifest) {
       rr::publish_compacted(dir.string(), now->entries(), image, 1, SealDurability::Publish)
           .has_value());
   EXPECT_EQ(manifest_size(dir), 1u);
+}
+
+namespace {
+
+// Re-frame the run's only segment with section `type` replaced by `bytes` and publish
+// it as the run's only segment: a crafted but correctly sealed file (build_persist_file
+// recomputes every section / table / header / file CRC, publish_compacted writes the
+// matching manifest row), the shape a resealing adversary produces.
+void reseal_section(const fs::path &dir, std::uint32_t type, std::span<const std::byte> bytes) {
+  auto d = PersistDirectory::open(dir.string());
+  ASSERT_TRUE(d.has_value());
+  ASSERT_EQ(d->entries().size(), 1u);
+  auto f = PersistFile::open(d->path(d->entries().front()), PersistKind::RiskRun,
+                             risk_run_fingerprint(),
+                             PersistOpenOptions{false, PersistVerify::Full, false, 0});
+  ASSERT_TRUE(f.has_value()) << to_string(f.error().status);
+  std::vector<PersistSectionInput> in;
+  for (const PersistSectionEntry &e : f->sections()) {
+    auto b = f->section(e.type);
+    ASSERT_TRUE(b.has_value());
+    in.push_back(PersistSectionInput{e.type, e.type_major, e.type_minor,
+                                     static_cast<PersistDType>(e.dtype), e.element_stride, true,
+                                     PersistCodec::None, PersistFilter::None, 3,
+                                     e.type == type ? bytes : *b});
+  }
+  PersistFileInfo info;
+  info.kind = PersistKind::RiskRun;
+  info.schema_fingerprint = f->header().schema_fingerprint;
+  info.ts_min_ns = f->header().ts_min_ns;
+  info.ts_max_ns = f->header().ts_max_ns;
+  auto image = build_persist_file(in, info);
+  ASSERT_TRUE(image.has_value()) << to_string(image.error().status);
+  ASSERT_TRUE(rr::publish_compacted(dir.string(), d->entries(), *image,
+                                    d->entries().front().records, SealDurability::Flush)
+                  .has_value());
+}
+
+// Every way a run is opened: the four verify levels mapped, and Read mode at Full.
+[[nodiscard]] std::vector<PersistOpenOptions> every_open() {
+  std::vector<PersistOpenOptions> out;
+  for (const PersistVerify v : {PersistVerify::Framing, PersistVerify::Lazy, PersistVerify::Full,
+                                PersistVerify::Paranoid}) {
+    PersistOpenOptions o;
+    o.verify = v;
+    out.push_back(o);
+  }
+  PersistOpenOptions read;
+  read.mapped = false;
+  read.verify = PersistVerify::Full;
+  out.push_back(read);
+  return out;
+}
+
+} // namespace
+
+TEST(PersistRiskRun, RefusesWrappingVarIndex) {
+  // A resealed VarIndex whose middle count wraps the running u64 sum back to the start
+  // ({0, n}, {n, 2^64 - n}, {0, n}) tiles the column by addition. It must be refused at
+  // open (IndexBounds) at every level and in Read mode, and no exception may escape.
+  const Market market = make_market(1);
+  const std::uint32_t vidx = rr::type_of(rr::Section::VarIndex);
+  for (const bool points : {false, true}) {
+    const fs::path dir = fresh_dir(points ? "var-wrap-points" : "var-wrap-frames");
+    RiskStream stream(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+    {
+      auto w = RiskRunWriter::create(dir.string(), stream.prepared(), RiskRunOptions{});
+      ASSERT_TRUE(w.has_value());
+      for (int k = 0; k < 3; ++k) ASSERT_TRUE(w->append_var(sample_var(k + 1, 2)).has_value());
+      ASSERT_TRUE(w->finish().has_value());
+    }
+    std::vector<rr::RiskRunVar> rows;
+    {
+      auto reader =
+          rr::Reader::open(dir.string(), PersistOpenOptions{false, PersistVerify::Full, false, 0});
+      ASSERT_TRUE(reader.has_value());
+      auto t = reader->segment(0).typed<rr::RiskRunVar>(vidx);
+      ASSERT_TRUE(t.has_value());
+      rows.assign(t->begin(), t->end());
+    }
+    ASSERT_EQ(rows.size(), 3u);
+    // Control: the same rows re-framed untouched open and serve every result.
+    reseal_section(dir, vidx, std::as_bytes(std::span{rows}));
+    {
+      auto a = RiskRunArchive::open(dir.string());
+      ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+      ASSERT_EQ(a->n_var(), 3u);
+      for (std::size_t i = 0; i < 3; ++i) EXPECT_TRUE(a->var(i).has_value()) << i;
+    }
+    std::uint64_t rr::RiskRunVar::*begin =
+        points ? &rr::RiskRunVar::point_begin : &rr::RiskRunVar::frame_begin;
+    std::uint64_t rr::RiskRunVar::*count =
+        points ? &rr::RiskRunVar::point_count : &rr::RiskRunVar::frame_count;
+    std::uint64_t total = 0;
+    for (const rr::RiskRunVar &r : rows) total += r.*count;
+    ASSERT_GT(total, 0u);
+    rows[0].*begin = 0;
+    rows[0].*count = total;
+    rows[1].*begin = total;
+    rows[1].*count = std::numeric_limits<std::uint64_t>::max() - total + 1; // 2^64 - total
+    rows[2].*begin = 0;
+    rows[2].*count = total;
+    reseal_section(dir, vidx, std::as_bytes(std::span{rows}));
+    for (const PersistOpenOptions &o : every_open()) {
+      EXPECT_NO_THROW({
+        auto a = RiskRunArchive::open(dir.string(), o);
+        EXPECT_FALSE(a.has_value()) << "verify " << static_cast<int>(o.verify);
+        if (!a) EXPECT_EQ(a.error().status, PersistStatus::IndexBounds);
+      });
+    }
+  }
+}
+
+TEST(PersistRiskRun, SecondWriterOnOneDirectoryIsRefused) {
+  const Market market = make_market(3);
+  const fs::path dir = fresh_dir("two-writers");
+  RiskStream sa(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  RiskStream sb(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  RiskRunOptions one;
+  one.segment_bytes = 1;
+  // Both created before either sealed: create() cannot tell them apart yet.
+  auto wa = RiskRunWriter::create(dir.string(), sa.prepared(), one);
+  auto wb = RiskRunWriter::create(dir.string(), sb.prepared(), one);
+  ASSERT_TRUE(wa.has_value());
+  ASSERT_TRUE(wb.has_value());
+  Recorded rec;
+  ASSERT_TRUE(sa.start(market.states[0]->state).has_value());
+  ASSERT_TRUE(sb.start(market.states[0]->state).has_value());
+  ASSERT_TRUE(wa->append_frame(sa.current()).has_value());
+  ASSERT_TRUE(wb->append_frame(sb.current()).has_value());
+  rec.frames.push_back(sa.current());
+  // a seals first (its second step seals its first segment)...
+  auto ra = sa.step(market.states[1]->state);
+  ASSERT_TRUE(ra.has_value());
+  ASSERT_TRUE(wa->append_frame(sa.current()).has_value());
+  ASSERT_TRUE(wa->append_explain(**ra).has_value());
+  rec.frames.push_back(sa.current());
+  rec.explains.push_back(**ra);
+  // ... so b's first seal finds a run it did not write: refused, and b is done.
+  auto rb = sb.step(market.states[1]->state);
+  ASSERT_TRUE(rb.has_value());
+  const auto refused = wb->append_frame(sb.current());
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().status, PersistStatus::SegmentMismatch);
+  EXPECT_EQ(wb->append_explain(**rb).error().status, PersistStatus::SegmentMismatch);
+  EXPECT_EQ(wb->finish().error().status, PersistStatus::SegmentMismatch);
+  // a carries on and finishes; the run holds a's steps only.
+  auto rc = sa.step(market.states[2]->state);
+  ASSERT_TRUE(rc.has_value());
+  ASSERT_TRUE(wa->append_frame(sa.current()).has_value());
+  ASSERT_TRUE(wa->append_explain(**rc).has_value());
+  rec.frames.push_back(sa.current());
+  rec.explains.push_back(**rc);
+  rec.leg_ids = rec.explains.front().id;
+  ASSERT_TRUE(wa->finish().has_value());
+  auto a = RiskRunArchive::open(dir.string());
+  ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+  expect_archive_matches(*a, rec);
+  // A third writer on the now-listed run is refused at create().
+  RiskStream sc(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  EXPECT_EQ(RiskRunWriter::create(dir.string(), sc.prepared(), one).error().status,
+            PersistStatus::AlreadyExists);
+}
+
+TEST(PersistRiskRun, CompactionUnderALiveWriterRefusesTheWriter) {
+  const Market market = make_market(4);
+  const fs::path dir = fresh_dir("compact-live");
+  RiskStream stream(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  RiskRunOptions one;
+  one.segment_bytes = 1;
+  auto w = RiskRunWriter::create(dir.string(), stream.prepared(), one);
+  ASSERT_TRUE(w.has_value());
+  Recorded rec;
+  ASSERT_TRUE(stream.start(market.states[0]->state).has_value());
+  ASSERT_TRUE(w->append_frame(stream.current()).has_value());
+  rec.frames.push_back(stream.current());
+  for (std::size_t k = 1; k < 3; ++k) {
+    auto r = stream.step(market.states[k]->state);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(w->append_frame(stream.current()).has_value());
+    ASSERT_TRUE(w->append_explain(**r).has_value());
+    if (k < 2) {
+      rec.frames.push_back(stream.current());
+      rec.explains.push_back(**r);
+    }
+  }
+  ASSERT_EQ(manifest_size(dir), 2u); // steps 0 and 1 sealed, step 2 staged
+  ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::None, 0).value(), 2u);
+  // The writer's next seal finds the compacted manifest: refused, and the writer is done.
+  auto r3 = stream.step(market.states[3]->state);
+  ASSERT_TRUE(r3.has_value());
+  const auto refused = w->append_frame(stream.current());
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().status, PersistStatus::SegmentMismatch);
+  EXPECT_EQ(w->finish().error().status, PersistStatus::SegmentMismatch);
+  // The run still opens on the compacted manifest: the sealed steps, bit-exact.
+  EXPECT_EQ(manifest_size(dir), 1u);
+  rec.leg_ids = rec.explains.front().id;
+  auto a = RiskRunArchive::open(dir.string());
+  ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+  expect_archive_matches(*a, rec);
+}
+
+TEST(PersistRiskRun, FlushFinishFlushesEarlierPublishSegments) {
+  // Defaults: segment seals at Publish, finish() at Flush. finish() flushes the
+  // writer's Publish segments before its last seal, so a power loss after it returns
+  // cannot leave the flushed manifest naming an unflushed segment.
+  const Market market = make_market(4);
+  const fs::path dir = fresh_dir("flush-finish");
+  RiskStream stream(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  RiskRunOptions one;
+  one.segment_bytes = 1;
+  auto w = RiskRunWriter::create(dir.string(), stream.prepared(), one);
+  ASSERT_TRUE(w.has_value());
+  Recorded rec;
+  ASSERT_TRUE(stream.start(market.states[0]->state).has_value());
+  ASSERT_TRUE(w->append_frame(stream.current()).has_value());
+  rec.frames.push_back(stream.current());
+  for (std::size_t k = 1; k < market.states.size(); ++k) {
+    auto r = stream.step(market.states[k]->state);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(w->append_frame(stream.current()).has_value());
+    ASSERT_TRUE(w->append_explain(**r).has_value());
+    rec.frames.push_back(stream.current());
+    rec.explains.push_back(**r);
+  }
+  rec.leg_ids = rec.explains.front().id;
+  ASSERT_EQ(manifest_size(dir), 3u); // three Publish seals, the last step staged
+#if defined(_WIN32)
+  {
+    // A handle denying write sharing on a Publish segment (what a mapped reader holds):
+    // finish() cannot flush it, says Busy and changes nothing; a retry completes.
+    auto d = PersistDirectory::open(dir.string());
+    ASSERT_TRUE(d.has_value());
+    const std::wstring held = fs::path{d->path(d->entries().front())}.wstring();
+    HANDLE h = ::CreateFileW(held.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(h, INVALID_HANDLE_VALUE);
+    const auto busy = w->finish();
+    ::CloseHandle(h);
+    ASSERT_FALSE(busy.has_value());
+    EXPECT_EQ(busy.error().status, PersistStatus::Busy);
+    EXPECT_EQ(manifest_size(dir), 3u);
+  }
+#endif
+  ASSERT_TRUE(w->finish().has_value());
+  EXPECT_EQ(manifest_size(dir), 4u);
+  auto a = RiskRunArchive::open(dir.string());
+  ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+  expect_archive_matches(*a, rec);
 }
