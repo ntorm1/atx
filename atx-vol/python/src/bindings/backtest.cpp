@@ -200,7 +200,8 @@ void bind_backtest(py::module_ &m) {
   py::enum_<FrictionModel::SpreadKind>(frictions, "SpreadKind")
       .value("NONE", FrictionModel::SpreadKind::None)
       .value("PRICE_BPS", FrictionModel::SpreadKind::PriceBps)
-      .value("VOL_TICKS", FrictionModel::SpreadKind::VolTicks);
+      .value("VOL_TICKS", FrictionModel::SpreadKind::VolTicks)
+      .value("QUOTE_SIDE", FrictionModel::SpreadKind::QuoteSide);
   frictions.def(py::init<>())
       .def_readwrite("spread_kind", &FrictionModel::spread_kind)
       .def_readwrite("half_spread_bps", &FrictionModel::half_spread_bps)

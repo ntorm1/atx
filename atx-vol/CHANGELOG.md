@@ -41,6 +41,33 @@ retry budget under a two-thread point-read loop; pinned by
 it onto the stored 32-char record sharing its prefix
 (`SurfaceDbManifest.OverLongQueryDoesNotAliasATruncatedRecord`).
 
+### NEW — Python bindings current with r5/r6, gated in-tree (lane PY)
+
+`atx-vol/python` had not compiled or run in any gate for weeks: the `atx-vol-python` ctest
+skipped (77) in every tree because nothing the monorepo built produced `_core`. Configure
+with `-DATX_VOL_PYTHON=ON` (default OFF; nothing changes otherwise) and target
+`atx-vol-python-core` builds the extension from the TU list it shares with the wheel
+(`python/cmake/atxvol_core.cmake`). The ctest then runs the suite with `--expect-core`, so a
+missing or stale module fails instead of skipping. The suite runs in two processes because
+vcpkg Arrow 24 and pyarrow 18 cannot share one (README "Known limitation").
+
+New bindings, per header, in `python/docs/binding-coverage.md` (109 public headers:
+36 bound, 9 newly bound, 9 partial, 29 missing-product, 25 missing-internal, 1 n/a):
+`fit_archive.cpp` (ATXVFA reader / writer / series, zero-copy numpy views,
+`FitArchiveError` with the typed `ArchiveStatus`), `serve.cpp` (serving records, the serve
+book, `serve_chain` columns with every `ServedChainStatement` field), `served_analytics.cpp`
+(A1 hedge Greeks, scenarios, attribution, dated-cash scenarios with their declarations,
+`ServedSession` over a `PricedSurface`),
+`region.cpp` (exercise-region classifier, classified Andersen-Lake, D1 `DiscreteDivBatch`),
+and the `quote_slice.cpp` r5/r6 deltas (including `QuoteSliceConfig.repair` and the
+repair / box records with lane C4's in-box projection record). Every bound enum lists every
+enumerator (`ErrorCode` gained `CANCELLED` / `SWAP_FIXING_SCHEDULE_VIOLATION`, `SpreadKind`
+`QUOTE_SIDE`, `Holding` `FIXED_EXPIRY_RESTRIKE`), pinned by
+`tests/test_binding_enum_parity.py` (static, 98 enums) and the reflection gate in
+`tests/test_python_contract_parity.py`. No library file changed. The wheel recipe builds
+and imports at `1.1.0` (the DLL closure now installs beside `_core`). Sprint note
+`sprints/2026-10-23-PY-bindings-sprint.md`.
+
 ### FIXED — family enclosure: the computed bracket meets the width (lane K5)
 
 `family_enclosure` (`src/pricing/american_iv.cpp`, the Skipped rule of K3's family-route root

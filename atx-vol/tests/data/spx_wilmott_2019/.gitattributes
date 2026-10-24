@@ -1,0 +1,8 @@
+# These TSVs are byte-exact golden artefacts: figure1_digitization.json records
+# their sha256, and python/tests/test_digitize_spx_wilmott.py asserts both that
+# digest and that the digitizer regenerates the exact committed bytes. The repo
+# has core.autocrlf=true, which hands a fresh checkout CRLF copies whose digests
+# match nothing -- found the first time the atx-vol Python suite ran gated
+# (lane PY, 2026-10-23). `-text` stores and restores them verbatim, exactly as
+# atx-vol/tests/data/nav-sections-rel-avx2/.gitattributes does for its dumps.
+*.tsv -text

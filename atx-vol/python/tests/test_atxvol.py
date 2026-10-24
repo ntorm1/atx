@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import math
+import os
 import threading
 
 import numpy as np
@@ -10,7 +11,27 @@ import pytest
 import atxvol
 
 
-def test_version_and_black76_iv_roundtrip() -> None:
+def _metadata_of_imported_atxvol() -> importlib.metadata.Distribution | None:
+    """The installed distribution that OWNS the imported ``atxvol``, or None.
+
+    ``importlib.metadata.version("atxvol")`` answers for the first ``atxvol``
+    distribution on ``sys.path``, which need not be the package that was
+    imported: under the in-tree build (``ATX_VOL_PYTHON=ON``) the suite imports
+    this tree's ``src/atxvol``, which carries no ``.dist-info`` at all, while the
+    user site still holds whatever editable/wheel metadata was installed last --
+    on the development box a stale ``atxvol-0.1.0`` -- and comparing against
+    that would fail for a reason unrelated to the mirror. A distribution owns the
+    imported package only when its own ``atxvol/__init__.py`` IS the imported file.
+    """
+    imported = os.path.realpath(atxvol.__file__)
+    for dist in importlib.metadata.distributions(name="atxvol"):
+        located = os.fspath(dist.locate_file("atxvol/__init__.py"))
+        if os.path.isfile(located) and os.path.realpath(located) == imported:
+            return dist
+    return None
+
+
+def test_version_mirrors_the_wheel_metadata() -> None:
     # `atxvol.__version__` is the COMPILED `atx::vol::version()`, which plan 5.3
     # single-sources from `project(atx VERSION ...)`. Assert it against the wheel's
     # declared metadata rather than a literal, so this line can never become one
@@ -22,12 +43,22 @@ def test_version_and_black76_iv_roundtrip() -> None:
     # 1.0.0 through the 1.1.0 bump with an otherwise green tree. If this fires,
     # the configure-time guard was bypassed (a pre-built wheel, say), so the
     # message names the file to edit rather than leaving a bare inequality.
-    declared = importlib.metadata.version("atxvol")
+    dist = _metadata_of_imported_atxvol()
+    if dist is None:
+        pytest.skip(
+            f"no installed wheel metadata owns the imported {atxvol.__file__} "
+            "(in-tree/source build); the configure-time guard in "
+            "atx-vol/python/CMakeLists.txt checks the mirror for such builds"
+        )
+    declared = dist.version
     assert atxvol.__version__ == declared, (
         f"version mirror drifted: the compiled library reports {atxvol.__version__} but the "
         f"wheel metadata declares {declared}. Bump the 'version =' line in "
         f"atx-vol/python/pyproject.toml to {atxvol.__version__}."
     )
+
+
+def test_black76_iv_roundtrip() -> None:
     f, k, t, sigma, r = 102.0, 100.0, 0.5, 0.27, 0.04
     df = math.exp(-r * t)
     price = atxvol.black76_price(f, k, t, sigma, df, atxvol.Side.CALL)

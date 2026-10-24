@@ -1,8 +1,12 @@
 #include <exception>
+#include <string>
+#include <vector>
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include "atx/vol/api/core/version.hpp"
+#include "common.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;
@@ -16,6 +20,10 @@ void bind_analytics(py::module_ &m);
 void bind_dispersion(py::module_ &m);
 void bind_fit(py::module_ &m);
 void bind_quote_slice(py::module_ &m);
+void bind_fit_archive(py::module_ &m);
+void bind_region(py::module_ &m);
+void bind_serve(py::module_ &m);
+void bind_served_analytics(py::module_ &m);
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
@@ -64,4 +72,29 @@ PYBIND11_MODULE(_core, m) {
   // The quote-slice fit, typed query and one-spot rebase (lane C0). Its call signatures
   // take Side, which `bind_pricing` registers.
   bind_quote_slice(m);
+  // Lane PY (2026-10-23). After quote_slice: the archive decodes QuoteSliceFit and reads
+  // its enums; FitArchiveError subclasses the AtxError registered above.
+  bind_fit_archive(m);
+  // The exercise-region classifier and the D1 discrete-dividend batch (numpy batches).
+  bind_region(m);
+  // Serving records and the live book; reuses FittedVolCurve from bind_fit_archive.
+  bind_serve(m);
+  // A1 served analytics over a ServeBook (needs the serve types above).
+  bind_served_analytics(m);
+
+  // Reflection for the enum-completeness tests (common.hpp): {value: C++ name}.
+  m.def(
+      "_enum_names",
+      [](const std::string &name) {
+        const auto &registry = atxvol::python::enum_name_registry();
+        const auto it = registry.find(name);
+        if (it == registry.end()) throw py::key_error(name);
+        return it->second();
+      },
+      py::arg("name"));
+  m.def("_enum_name_registry", [] {
+    std::vector<std::string> names;
+    for (const auto &entry : atxvol::python::enum_name_registry()) names.push_back(entry.first);
+    return names;
+  });
 }
