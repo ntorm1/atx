@@ -305,6 +305,7 @@ set(ATX_VOL_RISK_SOURCES
     src/risk/american_delta_solve.cpp
     src/risk/strike_coord.cpp
     src/risk/theo_contract.cpp
+    src/risk/historical_var.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES

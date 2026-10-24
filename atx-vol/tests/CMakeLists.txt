@@ -423,6 +423,7 @@ add_executable(atx-vol-tests
     test_paths_test.cpp
     arb_test.cpp
     risk_book_test.cpp
+    risk_historical_var_test.cpp
     risk_kernel_test.cpp
     risk_market_state_test.cpp
     risk_pnl_explain_test.cpp
