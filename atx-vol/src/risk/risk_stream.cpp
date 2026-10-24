@@ -7,6 +7,12 @@
 // InvalidArgument until the next successful `start`. The header's LIFETIME note lets
 // the caller release s_{k-1} as soon as `step(s_k)` returns, failed or not; keeping
 // the pointer across a failure would hand the next step a dangling state.
+// `start` and `step` COMMIT ON SUCCESS: they disarm the stream (started = false,
+// previous_state = nullptr) before any fallible call and re-arm it only once every
+// call has succeeded. So an exception from start/step (std::bad_alloc while sizing a
+// frame, the workspace, the result or the explain scratch) leaves the stream
+// requiring a new start; no pointer to a caller-owned state survives. The frames are
+// then owned values of unspecified content (safe to read by their own sizes).
 //
 // PIMPL RULE (every class of the risk lane). An accessor on a moved-from (or, where
 // one exists, default-constructed) object never dereferences the null Impl: it
@@ -96,6 +102,9 @@ Status RiskStream::start(const MarketState &s0) {
   if (!m.prepare_status.has_value()) {
     return m.prepare_status;
   }
+  // Commit on success (FAILURE RULE): disarmed before the fallible evaluate.
+  m.started = false;
+  m.previous_state = nullptr;
   m.current = 0;
   m.rho_next = false;
   if (Status st = m.kernel.evaluate(m.prepared, s0, m.needs, m.frames[0], m.ws); !st.has_value()) {
@@ -119,14 +128,19 @@ Result<const ExplainResult *> RiskStream::step(const MarketState &s1) {
   RiskNeeds needs = m.needs;
   needs.rho = needs.rho || m.rho_next;
   const std::size_t next = 1u - m.current;
-  // Every failure path below invalidates the stream before returning (FAILURE RULE).
+  // Commit on success (FAILURE RULE): the base state is held in a local and the
+  // stream is disarmed before the fallible calls, so neither a returned error nor an
+  // exception leaves a pointer to it behind. Every returned failure also invalidates.
+  const MarketState *const base_state = m.previous_state;
+  m.started = false;
+  m.previous_state = nullptr;
   if (Status st = m.kernel.evaluate(m.prepared, s1, needs, m.frames[next], m.ws);
       !st.has_value()) {
     m.invalidate();
     return Err(st.error());
   }
   ++m.n_evaluations;
-  if (Status st = explain_into(m.prepared, *m.previous_state, m.frames[m.current], s1,
+  if (Status st = explain_into(m.prepared, *base_state, m.frames[m.current], s1,
                                m.frames[next], m.opts, m.result);
       !st.has_value()) {
     m.invalidate();
@@ -139,7 +153,8 @@ Result<const ExplainResult *> RiskStream::step(const MarketState &s1) {
   }
   m.rho_next = rate_moved;
   m.current = next;
-  m.previous_state = &s1;
+  m.previous_state = &s1; // re-armed: every fallible call succeeded
+  m.started = true;
   return &m.result;
 }
 
