@@ -779,8 +779,8 @@ Result<double> DeAmIvView::mid_iv(std::size_t i) {
 }
 
 // K4 native fit route: the band-edge comparisons decided by the model's validated edge
-// bounds (DeAmEdgeBounds) without pricing an edge. Every comparison must be decided: a
-// comparison a bound leaves open makes the band price its edges as on the other routes.
+// bounds (DeAmEdgeBounds) without pricing an edge. Retain a proven cap when a floor
+// comparison remains open, so the fallback only prices the uncertain endpoint.
 bool DeAmIvView::bound_edges(const QuoteSliceQuote &quote, const DeAmQuoteIv &entry,
                              EdgeDecision &out) {
   ensure_families(); // the floor's family bound reads the chain's families
@@ -791,6 +791,7 @@ bool DeAmIvView::bound_edges(const QuoteSliceQuote &quote, const DeAmQuoteIv &en
     timing->deam_family_prices += b.family_prices;
   }
   const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
+  out.cap_bounded = quote.bid < b.cap_lo && quote.ask < b.cap_lo && mid < b.cap_lo;
   // cap_lo <= A(kIvMax): x < cap_lo decides x < cap. floor_lo <= A(kIvMin) <= floor_hi:
   // x > floor_hi decides x > floor, x <= floor_lo decides !(x > floor). NaN decides nothing.
   if (!(quote.bid < b.cap_lo) || !(quote.ask > b.floor_hi)) {
@@ -849,12 +850,15 @@ bool DeAmIvView::band_edges(const QuoteSliceQuote &quote, DeAmQuoteIv &filled,
       ++work_.edges_priced;
     }
     const DeAmKernel k = kernel();
+    const bool cap_bounded = edges.cap_bounded;
     const std::uint64_t al0 = al_solves(timing);
     const auto floor_price = model_.price(quote, kIvMin, filled.q_effective, k);
-    const auto cap_price = model_.price(quote, kIvMax, filled.q_effective, k);
+    const auto cap_price = cap_bounded ? Ok(std::numeric_limits<double>::quiet_NaN())
+                                      : model_.price(quote, kIvMax, filled.q_effective, k);
     charge_reason(timing, ft::DeamReason::RangeEdge, al_solves(timing) - al0);
-    cache_.model_prices += 2;
-    work_.model_prices += 2;
+    const std::size_t prices = cap_bounded ? 1u : 2u;
+    cache_.model_prices += prices;
+    work_.model_prices += prices;
     if (!floor_price || !cap_price) {
       stop_endpoints();
       return false;
@@ -868,16 +872,18 @@ bool DeAmIvView::band_edges(const QuoteSliceQuote &quote, DeAmQuoteIv &filled,
     // accurate and Fast kernels every edge is decided as priced: the historical path.
     const bool decided = k != DeAmKernel::Screen;
     Edge floor_edge{*floor_price, kIvMin, decided};
-    Edge cap_edge{*cap_price, kIvMax, decided};
+    Edge cap_edge{*cap_price, kIvMax, decided || cap_bounded};
     bool failed = false;
     const double q_eff = filled.q_effective;
-    edges.bid_below_cap = quote.bid < settle(cap_edge, quote.bid, quote, q_eff, failed);
+    edges.bid_below_cap =
+        cap_bounded || quote.bid < settle(cap_edge, quote.bid, quote, q_eff, failed);
     edges.ask_above_floor = quote.ask > settle(floor_edge, quote.ask, quote, q_eff, failed);
     edges.bid_above_floor = quote.bid > settle(floor_edge, quote.bid, quote, q_eff, failed);
-    edges.ask_below_cap = quote.ask < settle(cap_edge, quote.ask, quote, q_eff, failed);
+    edges.ask_below_cap =
+        cap_bounded || quote.ask < settle(cap_edge, quote.ask, quote, q_eff, failed);
     const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
     edges.mid_inside = quote.bid > 0.0 && mid > settle(floor_edge, mid, quote, q_eff, failed) &&
-                       mid < settle(cap_edge, mid, quote, q_eff, failed);
+                       (cap_bounded || mid < settle(cap_edge, mid, quote, q_eff, failed));
     stop_endpoints();
     if (failed) {
       return false; // an accurate edge re-price erred: the band stays undecided

@@ -73,7 +73,8 @@ struct DeAmQuoteIv {
   // the variance clock and the contract's local forward.
   double q_effective = std::numeric_limits<double>::quiet_NaN();
   double local_forward = std::numeric_limits<double>::quiet_NaN();
-  // Model prices at kIvMin and kIvMax: the identifiable price range.
+  // Model prices at kIvMin and kIvMax: the identifiable price range. On the native
+  // route an unpriced, bound-decided endpoint stays NaN independently of the other.
   double floor_price = std::numeric_limits<double>::quiet_NaN();
   double cap_price = std::numeric_limits<double>::quiet_NaN();
   double bid_iv = 0.0; // 0: the bid carries no lower information
@@ -90,7 +91,7 @@ struct DeAmQuoteIv {
   // outcome carries one (C0's iv_lower / iv_upper; NaN: unknown), and whether the mid lies
   // strictly inside the identifiable range (the band edges' decision, by validated bound or
   // by price; what the channel builder reads on that route instead of floor/cap_price,
-  // which stay NaN when no edge was priced).
+  // which individually stay NaN when their comparisons needed no endpoint price).
   IvRouteOutcome mid_route = IvRouteOutcome::None;
   IvRouteOutcome bid_route = IvRouteOutcome::None;
   IvRouteOutcome ask_route = IvRouteOutcome::None;
@@ -524,13 +525,14 @@ private:
   [[nodiscard]] bool native() const noexcept;
   // The band-edge comparisons of the native route decided by validated bounds before any
   // edge is priced (deam_iv_cache.cpp bound_edges has the bounds); false when one of them
-  // is not decided that way (the edges are then priced as on the other routes).
+  // is not decided that way. A proven cap is retained when only the floor needs pricing.
   struct EdgeDecision {
     bool bid_below_cap = false;
     bool ask_above_floor = false;
     bool bid_above_floor = false;
     bool ask_below_cap = false;
     bool mid_inside = false;
+    bool cap_bounded = false; // bid, ask and their midpoint are all below the cap
   };
   [[nodiscard]] bool bound_edges(const QuoteSliceQuote &quote, const DeAmQuoteIv &entry,
                                  EdgeDecision &out);

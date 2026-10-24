@@ -320,12 +320,37 @@ public:
   };
   std::vector<Script> scripts;
   mutable std::vector<Call> calls;
+  double cap_lower = kNaN;
+  double floor_price = 0.01;
+  double screen_floor_offset = 0.0;
+  double screen_bound = 0.0;
+  bool fail_floor = false;
+  bool fail_accurate_floor = false;
+  bool fail_cap = false;
+  mutable std::uint32_t floor_prices = 0;
+  mutable std::uint32_t cap_prices = 0;
 
   double effective_yield_of(double calendar_yield) const override { return calendar_yield; }
   double local_forward_of(double, double) const override { return 100.0; }
   double reference_yield() const override { return 0.0; }
-  Result<double> price(const QuoteSliceQuote &, double sigma, double, DeAmKernel) const override {
-    return Ok(sigma == kIvMin ? 0.01 : 1.0e3);
+  Result<double> price(const QuoteSliceQuote &, double sigma, double,
+                       DeAmKernel kernel) const override {
+    if (sigma == kIvMin) {
+      ++floor_prices;
+      if (fail_floor || (fail_accurate_floor && kernel == DeAmKernel::Accurate)) {
+        return Err(ErrorCode::Unavailable, "scripted floor failure");
+      }
+      return Ok(floor_price + (kernel == DeAmKernel::Screen ? screen_floor_offset : 0.0));
+    }
+    ++cap_prices;
+    if (fail_cap) return Err(ErrorCode::Unavailable, "scripted cap failure");
+    return Ok(1.0e3);
+  }
+  DeAmEdgeBounds edge_bounds(const QuoteSliceQuote &, double,
+                             const DeAmSigmaFamilies *) const override {
+    DeAmEdgeBounds out;
+    out.cap_lo = cap_lower;
+    return out;
   }
   Result<double> implied_vol(const QuoteSliceQuote &, double, double, DeAmKernel) const override {
     return Err(ErrorCode::Unavailable, "the native route never runs Search");
@@ -358,7 +383,9 @@ public:
   }
   bool has_fast_kernel() const override { return true; }
   bool has_screen_kernel() const override { return true; }
-  double seed_price_bound(double, DeAmKernel) const override { return 0.0; }
+  double seed_price_bound(double, DeAmKernel kernel) const override {
+    return kernel == DeAmKernel::Screen ? screen_bound : 0.0;
+  }
   double black_vega(const QuoteSliceQuote &, double, double) const override { return 1.0; }
 };
 
@@ -371,6 +398,120 @@ DeAmConfirmControls native_controls(bool native) {
   c.reference_max_calls = 16;
   c.reference_max_evaluations = 256;
   return c;
+}
+
+TEST(FitNativeRoute, PartialCapBoundSkipsOnlyStrictlyDecidedEndpointPrices) {
+  for (const Side side : {Side::Call, Side::Put}) {
+    const std::vector<QuoteSliceQuote> quotes = {{100.0, side, 1.0, 1.2}};
+    for (const double lower : {2.0, 1.2, 1.1, kNaN}) {
+      SCOPED_TRACE(::testing::Message() << "side " << static_cast<int>(side)
+                                      << " cap lower " << lower);
+      RouteModel model;
+      model.cap_lower = lower;
+      model.scripts = {{1.1, IvRouteOutcome::ReferenceRoot, 0.25},
+                       {1.0, IvRouteOutcome::ReferenceRoot, 0.20},
+                       {1.2, IvRouteOutcome::ReferenceRoot, 0.30}};
+      DeAmIvCache cache;
+      cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+      QuoteSliceDeamDiagnostics work;
+      DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Screen, work,
+                      QuoteSliceDeamInversion::Premium, native_controls(true));
+      const auto &band = view.band(0);
+      ASSERT_TRUE(band.well_posed);
+      EXPECT_DOUBLE_EQ(band.floor_price, model.floor_price);
+      EXPECT_EQ(std::isnan(band.cap_price), lower > quotes[0].ask);
+      EXPECT_TRUE(band.mid_inside);
+      EXPECT_DOUBLE_EQ(band.bid_iv, 0.20);
+      EXPECT_DOUBLE_EQ(band.mid_iv, 0.25);
+      EXPECT_DOUBLE_EQ(band.ask_iv, 0.30);
+      EXPECT_EQ(model.floor_prices, 1u);
+      EXPECT_EQ(model.cap_prices, lower > quotes[0].ask ? 0u : 1u);
+      EXPECT_EQ(work.model_prices, model.floor_prices + model.cap_prices);
+      EXPECT_EQ(cache.model_prices, work.model_prices);
+      const auto calls = work.model_prices;
+      EXPECT_EQ(&view.band(0), &band);
+      EXPECT_EQ(work.model_prices, calls);
+    }
+  }
+}
+
+TEST(FitNativeRoute, PartialCapBoundStillSettlesAnAmbiguousFloorAccurately) {
+  for (const bool fail_accurate : {false, true}) {
+    const std::vector<QuoteSliceQuote> quotes = {{100.0, Side::Put, 1.0, 1.2}};
+    RouteModel model;
+    model.cap_lower = 2.0;
+    model.floor_price = 1.05;
+    model.screen_floor_offset = -0.05;
+    model.screen_bound = 0.1;
+    model.fail_accurate_floor = fail_accurate;
+    model.scripts = {{1.1, IvRouteOutcome::ReferenceRoot, 0.25},
+                     {1.2, IvRouteOutcome::ReferenceRoot, 0.30}};
+    DeAmIvCache cache;
+    cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+    QuoteSliceDeamDiagnostics work;
+    DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Screen, work,
+                    QuoteSliceDeamInversion::Premium, native_controls(true));
+    const auto &band = view.band(0);
+    EXPECT_EQ(band.well_posed, !fail_accurate);
+    EXPECT_EQ(model.floor_prices, 2u);
+    EXPECT_EQ(model.cap_prices, 0u);
+    EXPECT_EQ(work.model_prices, 2u);
+    EXPECT_EQ(work.ambiguous_edges, 1u);
+    EXPECT_EQ(band.bid_route, IvRouteOutcome::None);
+    EXPECT_TRUE(std::isnan(band.cap_price));
+    if (fail_accurate) {
+      EXPECT_TRUE(model.calls.empty());
+      EXPECT_TRUE(std::isnan(band.floor_price));
+    } else {
+      EXPECT_DOUBLE_EQ(band.floor_price, model.floor_price);
+      EXPECT_TRUE(band.mid_inside);
+      EXPECT_DOUBLE_EQ(band.mid_iv, 0.25);
+      EXPECT_DOUBLE_EQ(band.ask_iv, 0.30);
+    }
+  }
+}
+
+TEST(FitNativeRoute, PartialCapBoundKeepsRequiredEndpointFailuresTyped) {
+  for (const bool cap_decided : {false, true}) {
+    const std::vector<QuoteSliceQuote> quotes = {{100.0, Side::Call, 1.0, 1.2}};
+    RouteModel model;
+    model.cap_lower = cap_decided ? 2.0 : kNaN;
+    model.fail_floor = cap_decided;
+    model.fail_cap = !cap_decided;
+    DeAmIvCache cache;
+    cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+    QuoteSliceDeamDiagnostics work;
+    DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Screen, work,
+                    QuoteSliceDeamInversion::Premium, native_controls(true));
+    const auto &band = view.band(0);
+    EXPECT_FALSE(band.well_posed);
+    EXPECT_TRUE(model.calls.empty());
+    EXPECT_TRUE(std::isnan(band.floor_price));
+    EXPECT_TRUE(std::isnan(band.cap_price));
+    EXPECT_EQ(model.floor_prices, 1u);
+    EXPECT_EQ(model.cap_prices, cap_decided ? 0u : 1u);
+  }
+}
+
+TEST(FitNativeRoute, PartialCapBoundDoesNotChangeTheNonNativeRoute) {
+  const std::vector<QuoteSliceQuote> quotes = {{100.0, Side::Call, 1.0, 1.2}};
+  RouteModel model;
+  model.cap_lower = 2.0;
+  model.scripts = {{1.1, IvRouteOutcome::ReferenceRoot, 0.25},
+                   {1.0, IvRouteOutcome::ReferenceRoot, 0.20},
+                   {1.2, IvRouteOutcome::ReferenceRoot, 0.30}};
+  DeAmIvCache cache;
+  cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+  QuoteSliceDeamDiagnostics work;
+  DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Screen, work,
+                  QuoteSliceDeamInversion::Premium, native_controls(false));
+  const auto &band = view.band(0);
+  EXPECT_TRUE(band.well_posed);
+  EXPECT_DOUBLE_EQ(band.floor_price, model.floor_price);
+  EXPECT_DOUBLE_EQ(band.cap_price, 1.0e3);
+  EXPECT_EQ(model.floor_prices, 1u);
+  EXPECT_EQ(model.cap_prices, 1u);
+  EXPECT_EQ(work.model_prices, 2u);
 }
 
 // (5) review-K2 MJ1: the mid's native attempt wrote a carry and no seed-leg point; on the
@@ -595,10 +736,12 @@ TEST(FitNativeRoute, BoundDecidedEdgesAgreeWithTheAccurateEdgePrices) {
       deam_iv_memo(deam_iv_key(*fit, c.quotes, config), c.quotes.size(), reused);
   ASSERT_TRUE(reused);
   std::size_t checked = 0;
+  std::size_t partial = 0;
   for (std::size_t i = 0; i < c.quotes.size(); ++i) {
     const QuoteSliceQuote &quote = c.quotes[i];
     const DeAmQuoteIv &e = cache->ivs[i];
-    if ((e.computed & DeAmQuoteIv::kBand) == 0u || !std::isnan(e.floor_price)) continue;
+    if ((e.computed & DeAmQuoteIv::kBand) == 0u ||
+        (!std::isnan(e.floor_price) && !std::isnan(e.cap_price))) continue;
     const auto floor = andersen_lake(c.market.spot, quote.strike, c.market.variance_years, kIvMin,
                                      fit->diagnostics.effective_rate, e.q_effective, quote.side);
     const auto cap = andersen_lake(c.market.spot, quote.strike, c.market.variance_years, kIvMax,
@@ -609,12 +752,14 @@ TEST(FitNativeRoute, BoundDecidedEdgesAgreeWithTheAccurateEdgePrices) {
     EXPECT_EQ(e.mid_inside, quote.bid > 0.0 && mid > *floor && mid < *cap) << i;
     EXPECT_EQ(e.bid_route != IvRouteOutcome::None, gates && quote.bid > *floor) << i;
     EXPECT_EQ(e.ask_route != IvRouteOutcome::None, gates && quote.ask < *cap) << i;
+    if (std::isfinite(e.floor_price) && std::isnan(e.cap_price)) ++partial;
     ++checked;
   }
   deam_iv_memo_clear();
-  std::printf("[K4 edges] %zu bound-decided bands checked against the accurate edges\n",
-              checked);
+  std::printf("[K4 edges] %zu bound-decided bands, %zu partial, checked against accurate edges\n",
+              checked, partial);
   EXPECT_GT(checked, 0u);
+  EXPECT_GT(partial, 0u);
 }
 
 TEST(FitNativeRoute, IntrinsicBidDecidesTheFloorWithoutAnEndpointSolve) {
