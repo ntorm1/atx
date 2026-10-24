@@ -927,6 +927,70 @@ TEST(RiskKernel, FamilyEconomicsRoutesSmallGroupsCold) {
   }
 }
 
+// Lane A2 lever 3. Below the family's tau floor (kAlSigmaFamilyMinTau = 3 / 365) no family
+// exists: those lanes are priced cold and flagged ShortTenor | ColdFallback (counted apart
+// from FamilyUneconomic), and every cold-routed lane of the family kernel -- short tenor,
+// near edge -- is the cold kernel's row bit for bit, though it is priced on the block's
+// prepared geometry. With no cold route the short-tenor lanes stay Refused and keep
+// ShortTenor.
+TEST(RiskKernel, ShortTenorFlaggedAndCounted) {
+  const auto owned = rt::make_state(rt::StateMove{}); // the shifted state rolls 1-day legs
+  std::vector<OptionLeg> legs = edge_sweep_legs(); // one 1-day put + a 3-week put sweep
+  std::uint64_t id = 1000;
+  const std::int64_t one_day = rt::instant_ns(rt::kDayUnits);
+  for (const double K : {96.0, 98.0, 100.0, 102.0, 104.0}) {
+    legs.push_back(OptionLeg{id++, 1u, K, one_day, Side::Call, 1.0, 100.0});
+    legs.push_back(OptionLeg{id++, 1u, K, one_day, Side::Put, -1.0, 100.0});
+  }
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  for (const bool rho : {false, true}) {
+    RiskNeeds needs;
+    needs.rho = rho;
+    const RiskFrame f = evaluate_or_die(RiskKernel::family(), prep, owned->state, needs);
+    const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, needs);
+    std::size_t short_rows = 0;
+    std::size_t cold_routed = 0;
+    for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+      ASSERT_EQ(f.status[r], RiskLaneStatus::Ok) << r;
+      const bool is_short = f.T[r] < kAlSigmaFamilyMinTau;
+      EXPECT_EQ(has_flag(f.flags[r], RiskFlag::ShortTenor), is_short) << r;
+      if (is_short) {
+        EXPECT_EQ(f.route[r], RiskRoute::ColdAnalytic) << r;
+        EXPECT_TRUE(has_flag(f.flags[r], RiskFlag::ColdFallback)) << r;
+        EXPECT_FALSE(has_flag(f.flags[r], RiskFlag::FamilyUneconomic)) << r;
+        ++short_rows;
+      }
+      if (f.route[r] == RiskRoute::ColdAnalytic) {
+        EXPECT_TRUE(row_bits_equal(f, cold, r)) << "row " << r << " must be the cold kernel's";
+        ++cold_routed;
+      }
+    }
+    std::cout << "[RiskKernel] short tenor (rho " << rho << "): short rows=" << short_rows
+              << " cold-routed rows=" << cold_routed << "\n";
+    EXPECT_EQ(short_rows, 11u);
+    EXPECT_GT(cold_routed, short_rows) << "the 3-week sweep's near-edge lanes go cold too";
+    EXPECT_EQ(f.counters.short_tenor_rows, short_rows);
+    EXPECT_EQ(f.counters.uneconomic_rows, 0u);
+  }
+
+  FamilyKernelPolicy no_fallback;
+  no_fallback.cold_fallback = false;
+  const RiskFrame off =
+      evaluate_or_die(RiskKernel::family(no_fallback), prep, owned->state, RiskNeeds{});
+  std::size_t refused_short = 0;
+  for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+    if (!has_flag(off.flags[r], RiskFlag::ShortTenor)) {
+      continue;
+    }
+    EXPECT_EQ(off.status[r], RiskLaneStatus::Refused) << r;
+    EXPECT_FALSE(has_flag(off.flags[r], RiskFlag::ColdFallback)) << r;
+    ++refused_short;
+  }
+  EXPECT_EQ(refused_short, 11u);
+  EXPECT_EQ(off.counters.short_tenor_rows, 11u);
+}
+
 namespace {
 
 // The licensed-shaped book: per (uid, expiry, side) THREE strikes at 0.98 / 1.00 / 1.02

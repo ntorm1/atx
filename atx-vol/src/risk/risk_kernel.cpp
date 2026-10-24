@@ -92,7 +92,7 @@ void write_refused(RiskFrame &f, std::size_t r, RiskLaneStatus status) noexcept 
 }
 
 void cold_row(RiskFrame &f, std::size_t r, double S, double K, Side side, const AlOpts &opts,
-              bool analytic, RiskNeeds needs) {
+              bool analytic, RiskNeeds needs, const AlExpiryGeometry *geometry) {
   const double T = f.T[r];
   const double sigma = f.sigma[r];
   const double rate = f.rate[r];
@@ -100,10 +100,13 @@ void cold_row(RiskFrame &f, std::size_t r, double S, double K, Side side, const 
   const std::optional<AlOpts> o{opts};
   // need_vega stays on: vega is always served, and vanna / volga ride its sigma solves.
   const Result<AmericanGreeks> res =
-      analytic ? american_greeks_al(S, K, T, sigma, rate, q, side, o, /*need_vega=*/true,
-                                    needs.rho, needs.charm)
-               : american_greeks_fd(S, K, T, sigma, rate, q, side, AmericanMethod::AndersenLake,
-                                    o);
+      !analytic ? american_greeks_fd(S, K, T, sigma, rate, q, side, AmericanMethod::AndersenLake,
+                                     o)
+      : geometry != nullptr
+          ? american_greeks_al(*geometry, S, K, sigma, side, /*need_vega=*/true, needs.rho,
+                               needs.charm)
+          : american_greeks_al(S, K, T, sigma, rate, q, side, o, /*need_vega=*/true, needs.rho,
+                               needs.charm);
   if (!res.has_value()) {
     write_refused(f, r, RiskLaneStatus::NumericError);
     return;
@@ -139,8 +142,8 @@ void cold_row(RiskFrame &f, std::size_t r, double S, double K, Side side, const 
   // NearExerciseEdge refusal). Lanes sent cold BEFORE a family answer -- T below
   // kAlSigmaFamilyMinTau, a failed family prepare or carry set, a lane off the block
   // geometry, a group wholly below the sigma floor, a SigmaOutsideBox /
-  // SigmaBelowGuard status, a FamilyUneconomic group -- carry only this narrow bit,
-  // like every pure-cold row.
+  // SigmaBelowGuard status, a FamilyUneconomic group, a ShortTenor block -- carry only
+  // this narrow bit, like every pure-cold row.
   const double intrinsic = side == Side::Put ? K - S : S - K;
   if (intrinsic > 0.0 && g.price <= intrinsic + kIntrinsicTolPerStrike * K) {
     f.flags[r] |= RiskFlag::NearExerciseEdge;
@@ -238,6 +241,7 @@ void tally_rows(RiskFrame &out) noexcept {
   for (std::size_t r = 0; r < out.size(); ++r) {
     ++c.status_count[static_cast<std::size_t>(out.status[r])];
     c.uneconomic_rows += has_flag(out.flags[r], RiskFlag::FamilyUneconomic) ? 1u : 0u;
+    c.short_tenor_rows += has_flag(out.flags[r], RiskFlag::ShortTenor) ? 1u : 0u;
     switch (out.route[r]) {
     case RiskRoute::Family:
       ++c.family_rows;

@@ -5,7 +5,10 @@
 // (outside the box, tau below the family floor, near the exercise edge, a refused
 // requested Greek) are priced cold in a second pass over the same block, and so is
 // every lane of a group whose family would cost more than pricing its lanes cold
-// (FamilyKernelPolicy "FAMILY ECONOMICS"; flagged FamilyUneconomic).
+// (FamilyKernelPolicy "FAMILY ECONOMICS"; flagged FamilyUneconomic). Every block prepares
+// its geometry, also below the family's tau floor (no family there: ShortTenor), and the
+// cold pass prices a lane ON it when the lane's carry is the block's -- bit-identical to
+// the fresh american_greeks_al (LEDGER 2026-10-19), minus the per-lane setup.
 
 #include <algorithm>
 #include <bit>
@@ -159,8 +162,15 @@ struct BlockCarry {
   double T{0.0};
   double rate{0.0};
   double q_eff{0.0};
-  bool geometry_ok{false};
+  bool geometry_ok{false}; // T >= kAlSigmaFamilyMinTau: a family may be built on it
 };
+
+// Whether row `r` resolved to exactly the block's carry (it may then use the geometry).
+[[nodiscard]] bool on_block_carry(const RiskFrame &f, std::size_t r,
+                                  const BlockCarry &carry) noexcept {
+  return same_bits(f.T[r], carry.T) && same_bits(f.rate[r], carry.rate) &&
+         same_bits(f.q_eff[r], carry.q_eff);
+}
 
 [[nodiscard]] bool eligible(const BlockCtx &c, std::size_t r) noexcept {
   return c.out.status[r] == RiskLaneStatus::Ok && c.ws.cold[r] == 0u;
@@ -214,10 +224,13 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
     if (f.status[r] != RiskLaneStatus::Ok) {
       continue;
     }
-    const bool on_geometry = carry.geometry_ok && same_bits(f.T[r], carry.T) &&
-                             same_bits(f.rate[r], carry.rate) && same_bits(f.q_eff[r], carry.q_eff);
-    if (!on_geometry) {
-      send_cold(c, r, static_cast<RiskFlags>(RiskFlag::ColdFallback));
+    if (!(carry.geometry_ok && on_block_carry(f, r, carry))) {
+      // No family can serve it: below the family's tau floor (ShortTenor), or off the
+      // block's geometry.
+      const RiskFlags why = f.T[r] < kAlSigmaFamilyMinTau
+                                ? RiskFlag::ColdFallback | RiskFlag::ShortTenor
+                                : static_cast<RiskFlags>(RiskFlag::ColdFallback);
+      send_cold(c, r, why);
       continue;
     }
     smin = std::min(smin, f.sigma[r]);
@@ -362,11 +375,13 @@ void process_block(const BlockCtx &c, std::size_t b) {
   const double S = c.state.underlier(uid)->spot; // an Ok lane implies the underlier
   const AlOpts opts = resolve_al_opts(c.policy.al_opts, c.state, uid);
 
-  // 2. One geometry per (uid, expiry), prepared in place (no allocation once warm).
+  // 2. One geometry per (uid, expiry), prepared in place (no allocation once warm). Also
+  // below the family's tau floor (~4 us), where it serves the cold pass alone; only the
+  // family-capable blocks bill it to family_build_seconds.
   carry.geometry_ok = carry.T >= kAlSigmaFamilyMinTau;
+  const Clock::time_point t0 = Clock::now();
+  c.ws.geometry[b].prepare(carry.T, carry.rate, carry.q_eff, std::optional<AlOpts>{opts});
   if (carry.geometry_ok) {
-    const Clock::time_point t0 = Clock::now();
-    c.ws.geometry[b].prepare(carry.T, carry.rate, carry.q_eff, std::optional<AlOpts>{opts});
     bc.family_build_seconds += seconds_since(t0);
   }
 
@@ -375,12 +390,15 @@ void process_block(const BlockCtx &c, std::size_t b) {
     family_group(c, b, gi, carry, S, bc);
   }
 
-  // 4. Second pass: the block's cold list on the resolved inputs.
+  // 4. Second pass: the block's cold list on the resolved inputs, on the block geometry
+  // when the lane's carry is the block's.
+  const AlExpiryGeometry &geometry = c.ws.geometry[b];
   for (std::uint32_t gi = blk.group_begin; gi < blk.group_end; ++gi) {
     const RiskGroup &grp = groups[gi];
     for (std::uint32_t r = grp.begin; r < grp.end; ++r) {
       if (c.ws.cold[r] != 0u) {
-        cold_row(c.out, r, S, strike[r], grp.side, opts, c.policy.analytic_cold, c.needs);
+        const AlExpiryGeometry *geo = on_block_carry(c.out, r, carry) ? &geometry : nullptr;
+        cold_row(c.out, r, S, strike[r], grp.side, opts, c.policy.analytic_cold, c.needs, geo);
       }
     }
   }
