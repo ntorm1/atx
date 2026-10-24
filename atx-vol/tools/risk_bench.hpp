@@ -426,6 +426,13 @@ struct LegDumpRow {
   double carry_rate{kNaN};     // the ExpiryCarry row's rate (Flat: flat_rate)
   double carry_q{kNaN};        // the row's q (Flat: flat_q)
   double pv_divs{kNaN};        // the row's pv_divs (Flat: 0)
+  // The base state's basis for the contract's (uid, expiry) (SpiderRockExpiryForward):
+  // carry_mode_name of the row's mode ("" when the state has no row), the median
+  // call-implied forward (set even when the guards rejected it) and the Published row's
+  // forward on the state's clock.
+  std::string carry_mode;
+  double implied_forward{kNaN};
+  double published_forward{kNaN};
   std::string route;           // to_string(RiskRoute) of the base frame row
   std::string flags;           // to_string(RiskFlag) names of the set bits, '|'-joined
   std::string status;          // to_string(RiskLaneStatus) of the base frame row
@@ -451,6 +458,7 @@ struct LegDumpRow {
   double sr_th{kNaN};
   double sr_years{kNaN};
   double sr_uprc{kNaN};
+  double sr_synspot{kNaN};     // synSpot (NaN when the store has no such column)
   double sr_rate{kNaN};
   double sr_sdiv{kNaN};
   double sr_ddiv{kNaN};

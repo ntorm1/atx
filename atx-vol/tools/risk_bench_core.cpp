@@ -1845,20 +1845,24 @@ static_assert(static_cast<std::size_t>(CarrySource::Absent) + 1 == kCarrySourceN
               "kCarrySourceNames must cover every CarrySource");
 
 // The columns in write order: append_leg_dump_csv writes exactly these, one cell each.
-constexpr std::array<std::string_view, 63> kLegDumpColumns{
-    "step",          "leg_index",     "leg_id",       "prepared_row", "ticker",
-    "uid",           "uid_slot",      "strike",       "expiry",       "side",
-    "qty",           "multiplier",    "T",            "sigma",        "spot",
-    "forward",       "rate",          "q_eff",        "carry_source", "carry_rate",
-    "carry_q",       "pv_divs",       "q_eff_d4",     "route",        "flags",
-    "status",        "leg_status",    "price",        "delta",        "gamma",
-    "vega",          "theta",         "vanna",        "volga",        "charm",
-    "vendor_price",  "vendor_delta",  "vendor_vega",  "vendor_theta", "price_abs_err",
-    "price_sym_rel", "sr_prc",        "sr_de",        "sr_ga",        "sr_ve",
-    "sr_th",         "sr_years",      "sr_uprc",      "sr_rate",      "sr_sdiv",
-    "sr_ddiv",       "sr_bid",        "sr_ask",       "pnl_total",    "pnl_delta",
-    "pnl_gamma",     "pnl_vega",      "pnl_volga",    "pnl_vanna",    "pnl_theta",
-    "pnl_rho",       "pnl_charm",     "pnl_unexplained"};
+constexpr std::array<std::string_view, 67> kLegDumpColumns{
+    "step",            "leg_index",         "leg_id",       "prepared_row",
+    "ticker",          "uid",               "uid_slot",     "strike",
+    "expiry",          "side",              "qty",          "multiplier",
+    "T",               "sigma",             "spot",         "forward",
+    "rate",            "q_eff",             "carry_source", "carry_rate",
+    "carry_q",         "pv_divs",           "q_eff_d4",     "carry_mode",
+    "implied_forward", "published_forward", "route",        "flags",
+    "status",          "leg_status",        "price",        "delta",
+    "gamma",           "vega",              "theta",        "vanna",
+    "volga",           "charm",             "vendor_price", "vendor_delta",
+    "vendor_vega",     "vendor_theta",      "price_abs_err", "price_sym_rel",
+    "sr_prc",          "sr_de",             "sr_ga",        "sr_ve",
+    "sr_th",           "sr_years",          "sr_uprc",      "sr_synspot",
+    "sr_rate",         "sr_sdiv",           "sr_ddiv",      "sr_bid",
+    "sr_ask",          "pnl_total",         "pnl_delta",    "pnl_gamma",
+    "pnl_vega",        "pnl_volga",         "pnl_vanna",    "pnl_theta",
+    "pnl_rho",         "pnl_charm",         "pnl_unexplained"};
 
 // One CSV line under construction: every cell call writes the separator first.
 class CsvLine {
@@ -1938,6 +1942,7 @@ void set_leg_dump_vendor(LegDumpRow &row, const SpiderRockBucket &b, std::size_t
   row.sr_th = cell_at(b.vendor_theta, r);
   row.sr_years = cell_at(b.vendor_T, r);
   row.sr_uprc = cell_at(b.uprc, r);
+  row.sr_synspot = cell_at(b.syn_spot, r);
   row.sr_rate = cell_at(b.rate, r);
   row.sr_sdiv = cell_at(b.sdiv, r);
   row.sr_ddiv = cell_at(b.ddiv, r);
@@ -1988,6 +1993,9 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
   line.number(row.carry_q);
   line.number(row.pv_divs);
   line.number(q_eff_d4);
+  line.text(row.carry_mode);
+  line.number(row.implied_forward);
+  line.number(row.published_forward);
   line.text(row.route);
   line.text(row.flags);
   line.text(row.status);
@@ -2001,8 +2009,8 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
   line.number(abs_err);
   line.number(sym_rel);
   for (const double v : {row.sr_prc, row.sr_de, row.sr_ga, row.sr_ve, row.sr_th, row.sr_years,
-                         row.sr_uprc, row.sr_rate, row.sr_sdiv, row.sr_ddiv, row.sr_bid,
-                         row.sr_ask}) {
+                         row.sr_uprc, row.sr_synspot, row.sr_rate, row.sr_sdiv, row.sr_ddiv,
+                         row.sr_bid, row.sr_ask}) {
     line.number(v);
   }
   for (const double v : {row.pnl_total, row.pnl_delta, row.pnl_gamma, row.pnl_vega,

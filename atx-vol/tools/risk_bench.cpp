@@ -56,6 +56,7 @@ struct Snapshot {
   MarketStateStorage storage;
   std::optional<MarketState> state;
   BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards; // per ExpiryCarry row, (uid, expiry) order
   double load_seconds{0.0};
   double state_seconds{0.0};
 };
@@ -68,7 +69,8 @@ struct Snapshot {
   ATX_TRY(snap->bucket, load_spiderrock_bucket(spec, bucket_et, table));
   snap->load_seconds = seconds_since(t0);
   const Clock::time_point t1 = Clock::now();
-  ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report));
+  ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report,
+                                                  &snap->forwards));
   ATX_TRY(MarketState state, make_market_state(snap->storage));
   snap->state.emplace(std::move(state));
   snap->state_seconds = seconds_since(t1);
@@ -422,6 +424,18 @@ struct CarryUsed {
   return CarryUsed{CarrySource::Flat, u->flat_rate, u->flat_q, 0.0};
 }
 
+// The base state's basis for (uid, expiry); nullptr when it wrote no such row.
+[[nodiscard]] const SpiderRockExpiryForward *expiry_forward(const Snapshot &s, std::uint32_t uid,
+                                                            std::int64_t expiry_ns) noexcept {
+  const auto it = std::lower_bound(
+      s.forwards.begin(), s.forwards.end(), std::pair{uid, expiry_ns},
+      [](const SpiderRockExpiryForward &f, const std::pair<std::uint32_t, std::int64_t> &key) {
+        return std::pair{f.uid, f.expiry_ns} < key;
+      });
+  return it != s.forwards.end() && it->uid == uid && it->expiry_ns == expiry_ns ? &*it
+                                                                                : nullptr;
+}
+
 // The to_string(RiskFlag) names of the set bits, lowest first, '|'-joined.
 [[nodiscard]] std::string flag_names(RiskFlags bits) {
   std::string s;
@@ -452,6 +466,11 @@ void fill_dump_model(LegDumpRow &row, const RiskFrame &f, std::uint32_t r, const
   row.carry_rate = c.rate;
   row.carry_q = c.q;
   row.pv_divs = c.pv_divs;
+  if (const SpiderRockExpiryForward *fw = expiry_forward(base, row.uid, row.expiry_ns)) {
+    row.carry_mode = carry_mode_name(fw->mode);
+    row.implied_forward = fw->implied_forward;
+    row.published_forward = fw->published_forward;
+  }
   row.route = to_string(f.route[r]);
   row.flags = flag_names(f.flags[r]);
   row.status = to_string(f.status[r]);

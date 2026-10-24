@@ -26,6 +26,8 @@
 //            revised, the `Published` carry mode): the forward
 //            F = (S - pv_divs) e^{(r - q) T}; `cash_divs` stays EMPTY. The remaining gap
 //            to the vendor's discrete-dividend lattice is visible through vendor_price.
+//            The loader's default mode, ImpliedFromCalls, replaces an expiry's row by
+//            the forward the vendor's own OTM calls imply (SpiderRockCarryMode).
 //   expiry = okey_yr/mn/dy at 16:00 ET (PM settlement) via expiry_instant_ns
 //   years  = SpiderRock's hybrid vol-time year fraction: kept as `vendor_T`
 //   sigma  = srVol (decimal). bidIV / askIV / error -99 sentinels are NULL in the

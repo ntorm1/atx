@@ -661,6 +661,7 @@ TEST(RiskBenchReport, MarkdownListsFrameCountsPerStep) {
   b.ddiv = {1.5};
   b.bid = {10.4};
   b.ask = {10.6};
+  b.syn_spot = {455.25};
   return b;
 }
 
@@ -699,6 +700,9 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   row.carry_rate = 0.04;
   row.carry_q = 0.01;
   row.pv_divs = 1.5;
+  row.carry_mode = "implied_from_calls";
+  row.implied_forward = 455.5;
+  row.published_forward = 454.25;
   row.route = "Family";
   row.flags = "VendorParityAvailable|ColdFallback";
   row.status = "Ok";
@@ -747,6 +751,11 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("q_eff"), "0.02");
   EXPECT_EQ(cell("carry_source"), "term_carry");
   EXPECT_EQ(cell("pv_divs"), "1.5");
+  EXPECT_EQ(cell("carry_mode"), "implied_from_calls");
+  EXPECT_EQ(cell("implied_forward"), "455.5");
+  EXPECT_EQ(cell("published_forward"), "454.25");
+  EXPECT_EQ(cell("sr_synspot"), "455.25");
+  EXPECT_EQ(names.size(), 67u);
   EXPECT_EQ(cell("route"), "Family");
   EXPECT_EQ(cell("flags"), "VendorParityAvailable|ColdFallback");
   EXPECT_EQ(cell("status"), "Ok");
@@ -779,10 +788,16 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("pnl_gamma"), "");
   EXPECT_EQ(cell("pnl_unexplained"), "0.25");
 
-  // No vendor mark => no price error; flat carry labelled as such.
+  // No vendor mark => no price error; flat carry labelled as such; a store without
+  // synSpot and a uid without a carry row leave those cells empty.
   row.vendor_price = std::numeric_limits<double>::quiet_NaN();
   row.carry_source = rb::CarrySource::Flat;
   row.ticker = "SPY";
+  row.carry_mode.clear();
+  row.implied_forward = std::numeric_limits<double>::quiet_NaN();
+  atx::vol::SpiderRockBucket no_syn = one_row_bucket(*expiry);
+  no_syn.syn_spot.clear();
+  rb::set_leg_dump_vendor(row, no_syn, 0);
   std::string flat;
   rb::append_leg_dump_csv(flat, row);
   const std::vector<std::string> fc = csv_line_cells(flat);
@@ -794,6 +809,9 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(at("price_abs_err"), "");
   EXPECT_EQ(at("price_sym_rel"), "");
   EXPECT_EQ(at("carry_source"), "flat");
+  EXPECT_EQ(at("carry_mode"), "");
+  EXPECT_EQ(at("implied_forward"), "");
+  EXPECT_EQ(at("sr_synspot"), "");
   EXPECT_EQ(flat.find('"'), std::string::npos);
 
   // Prepared-row order (ties by leg index) and the --dump-steps selection.
