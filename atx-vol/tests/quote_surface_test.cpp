@@ -1653,6 +1653,40 @@ TEST(QuoteSurface, NativeCalendarTrialPreservesTheQualifiedInverseAndPublicAnswe
   }
 }
 
+TEST(QuoteSurface, CalendarTrialRetainsTheExplicitRepricingBudget) {
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  auto config = native_repair_config();
+  config.reimply_price_cap = 0.001;
+  config.reimply_spread_fraction = 0.01;
+  QuoteSurfaceConfig surface;
+  surface.calendar_repair_half_spreads = 1.0;
+  const auto repaired = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(repaired);
+  const auto &fixed = (*repaired)[1];
+  ASSERT_TRUE(fixed.calendar_repaired) << fixed.refusal << " " << fixed.error;
+  EXPECT_DOUBLE_EQ(fixed.fit.reimply_price_cap, config.reimply_price_cap);
+  EXPECT_DOUBLE_EQ(fixed.fit.reimply_spread_fraction, config.reimply_spread_fraction);
+  expect_calendar_consistent(*repaired);
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder queries;
+  {
+    const timing::ChainScope scope(&queries);
+    for (std::size_t i = 0; i < chains[1].quotes.size(); ++i) {
+      const auto &q = chains[1].quotes[i];
+      const auto answer = query_quote_slice(fixed.fit, q.strike, q.side);
+      ASSERT_TRUE(answer);
+      EXPECT_EQ(answer->price, fixed.fit.rows[i].fitted_price) << i;
+      EXPECT_EQ(answer->status, fixed.fit.rows[i].evaluation_status) << i;
+      if (answer->status == QuoteSliceEvaluationStatus::Success) {
+        EXPECT_EQ(answer->volatility, fixed.fit.rows[i].fitted_iv) << i;
+      }
+    }
+  }
+  EXPECT_EQ(queries.result().iv_newton_iters, 0u);
+  EXPECT_EQ(queries.result().al_price_calls, 0u);
+}
+
 TEST(QuoteSliceChannel, NativeRepairedNodeQueriesReusePublishedIdentification) {
   const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
   auto fit = fit_quote_slice(c.market, c.quotes, native_repair_config());

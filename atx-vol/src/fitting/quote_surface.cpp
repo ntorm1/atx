@@ -1694,6 +1694,8 @@ private:
     trial.calendar_parity_clamp = fit.calendar_parity_clamp;
     trial.reimply_context = fit.reimply_context;
     trial.terminal_floor_recovery = fit.terminal_floor_recovery;
+    trial.reimply_price_cap = fit.reimply_price_cap;
+    trial.reimply_spread_fraction = fit.reimply_spread_fraction;
     trial.snapshot = fit.snapshot;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;
@@ -1701,6 +1703,8 @@ private:
 
   static void commit(QuoteSliceFit &fit, QuoteSliceFit &trial) {
     fit.terminal_floor_recovery = trial.terminal_floor_recovery;
+    fit.reimply_price_cap = trial.reimply_price_cap;
+    fit.reimply_spread_fraction = trial.reimply_spread_fraction;
     fit.prices = std::move(trial.prices);
     fit.moved_nodes = std::move(trial.moved_nodes);
     fit.price_only_nodes = std::move(trial.price_only_nodes);

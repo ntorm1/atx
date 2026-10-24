@@ -240,6 +240,40 @@ def test_native_terminal_floor_recovery_policy_is_explicit_and_reports_counts(bi
                 assert entry["inbox_projection"]["terminal_floor_max_ask_raise"] == 0
 
 
+@pytest.mark.parametrize("budget,price_only,accepted", [
+    ({"reimply_price_cap": 0.001, "reimply_spread_fraction": 0.01}, True, True),
+    ({"reimply_price_cap": 0.0, "reimply_spread_fraction": 0.0}, False, True),
+    ({"reimply_price_cap": 0.001}, True, False),
+    ({"reimply_spread_fraction": 0.01}, True, False),
+    ({"reimply_price_cap": -0.001, "reimply_spread_fraction": 0.01}, True, False),
+    ({"reimply_price_cap": "0.001", "reimply_spread_fraction": 0.01}, True, False),
+    ({"reimply_price_cap": 0.001, "reimply_spread_fraction": 0.01}, False, False),
+])
+def test_native_reimply_price_budget_is_opt_in_and_has_exact_provenance(
+        binary, tmp_path, budget, price_only, accepted):
+    source, output, policy = tmp_path / "quotes.csv", tmp_path / "out.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    policy.write_text(json.dumps({
+        "schema_version": 1, "admission": "graded",
+        "serve": {"floor_price_only": price_only, "metadata": True},
+        "profiles": [{"name": name, "base": name, **budget}
+                     for name in ["dense", "ordinary", "sparse"]],
+    }))
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert (result.returncode == 0) == accepted, result.stderr
+    if not accepted:
+        assert not output.exists()
+        return
+    report = json.loads(result.stdout)
+    for profile in report["policy_definition"]["profiles"]:
+        if budget["reimply_price_cap"] > 0:
+            assert profile["reimply_price_cap"] == 0.001
+            assert profile["reimply_spread_fraction"] == 0.01
+        else:
+            assert "reimply_price_cap" not in profile
+            assert "reimply_spread_fraction" not in profile
+
+
 def test_native_funding_carry_normalization_is_reported_and_material_conflicts_refuse(
         binary, tmp_path):
     source = tmp_path / "quotes.csv"

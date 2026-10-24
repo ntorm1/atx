@@ -67,6 +67,41 @@ TEST(FitArchiveRecords, UnpersistedTerminalFloorPolicyIsExplicitlyRefused) {
   EXPECT_EQ(grouped_read->fits().size(), surface.slices.size());
 }
 
+TEST(FitArchiveRecords, UnpersistedRepricingBudgetIsRefusedAndBothWritersRollBack) {
+  const std::array<std::array<double, 2>, 3> budgets{{
+      {0.001, 0.01}, {0.001, 0.0}, {0.0, 0.01}}};
+  for (const auto &budget : budgets) {
+    auto surface = testkit::synthetic_surface();
+    ASSERT_GT(surface.slices.size(), 1u);
+    auto &slice = surface.slices[1].fit;
+    slice.reimply_price_cap = budget[0];
+    slice.reimply_spread_fraction = budget[1];
+    FitArchiveWriter standalone;
+    const auto fit = standalone.add_fit({"SPY", kSnapshot, 20800, 0, &slice});
+    ASSERT_FALSE(fit);
+    EXPECT_EQ(fit.error().status, ArchiveStatus::UnsupportedRecordVersion);
+    EXPECT_EQ(fit.error().section, static_cast<std::uint32_t>(Type::FitRecords));
+    FitArchiveWriter grouped;
+    const auto all = grouped.add_surface({"SPY", kSnapshot, surface.slices,
+                                         surface.expiry_days, surface.config, {}, "", ""});
+    ASSERT_FALSE(all);
+    EXPECT_EQ(all.error().status, ArchiveStatus::UnsupportedRecordVersion);
+    slice.reimply_price_cap = 0.0;
+    slice.reimply_spread_fraction = 0.0;
+    ASSERT_TRUE(standalone.add_fit({"SPY", kSnapshot, 20800, 0, &slice}));
+    ASSERT_TRUE(grouped.add_surface({"SPY", kSnapshot, surface.slices,
+                                    surface.expiry_days, surface.config, {}, "", ""}));
+    const auto one = standalone.finish();
+    const auto many = grouped.finish();
+    ASSERT_TRUE(one && many);
+    const auto one_read = FitArchive::open_copy(*one);
+    const auto many_read = FitArchive::open_copy(*many);
+    ASSERT_TRUE(one_read && many_read);
+    EXPECT_EQ(one_read->fits().size(), 1u);
+    EXPECT_EQ(many_read->fits().size(), surface.slices.size());
+  }
+}
+
 std::array<std::uint8_t, 32> digest() {
   std::array<std::uint8_t, 32> d{};
   for (std::size_t i = 0; i < d.size(); ++i) d[i] = static_cast<std::uint8_t>(0xd7 ^ i);

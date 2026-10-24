@@ -239,7 +239,8 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
                           std::vector<double> &spline_grid) {
   keys(entry, {"name", "base", "curve", "min_quotes", "quality", "parametric", "convex",
                "spline", "side_policy", "atm_log_band", "spread_floor", "min_time_value",
-               "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward",
+               "iv_tolerance", "max_iv_iterations", "reimply_price_cap",
+               "reimply_spread_fraction", "carry_mode", "implied_forward",
                "channel", "dividends", "dividend_lattice", "dividend_lattice_steps"});
   profile.name = text(entry.at("name"), true);
   auto &cfg = profile.config;
@@ -308,6 +309,8 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
   numeric(entry, "spread_floor", cfg.spread_floor, 1.0e-12, 1.0e6);
   numeric(entry, "min_time_value", cfg.min_time_value, 0, 1.0e9);
   numeric(entry, "iv_tolerance", cfg.iv_tolerance, 1.0e-12, 1.0e-3);
+  numeric(entry, "reimply_price_cap", cfg.reimply_price_cap, 0, 1.0e3);
+  numeric(entry, "reimply_spread_fraction", cfg.reimply_spread_fraction, 0, 1);
   numeric(entry, "max_iv_iterations", cfg.max_iv_iterations, 1, 512);
   if (entry.contains("side_policy")) {
     const auto side = text(entry.at("side_policy"));
@@ -495,6 +498,10 @@ inline Json profile_json(const QuoteFitProfile &profile) {
   // Emitted only when opted in, so the historical lattice provenance is unchanged.
   if (c.discrete_div_scheme != DiscreteDivScheme::SplicedCrr) {
     out["dividend_lattice"] = to_string(c.discrete_div_scheme);
+  }
+  if (c.reimply_price_cap > 0.0 || c.reimply_spread_fraction > 0.0) {
+    out["reimply_price_cap"] = c.reimply_price_cap;
+    out["reimply_spread_fraction"] = c.reimply_spread_fraction;
   }
   return out;
 }
