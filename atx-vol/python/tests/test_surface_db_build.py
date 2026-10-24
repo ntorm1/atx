@@ -237,9 +237,13 @@ def test_failed_cells_carry_the_fitters_own_detail(tmp_path) -> None:
         # --report CSV's `code` column holds.
         assert isinstance(cell["code"], str) and cell["code"]
         # The load-bearing field: the fitter's own message, not a restatement of
-        # the code. Without it a failure is un-diagnosable from Python.
+        # the code. Without it a failure is un-diagnosable from Python. The build
+        # path's fitter is `run_surface_parity` now (it used to surface
+        # `fit_curve_surface`'s text), and its message carries the per-stage
+        # tallies that say WHY -- here every chain failed carry at r = 50%.
         assert isinstance(cell["detail"], str)
-        assert "fit_curve_surface" in cell["detail"], cell
+        assert "run_surface_parity" in cell["detail"], cell
+        assert "carry_failed=" in cell["detail"], cell
 
     # The C++ side guarantees (date, symbol) ascending for any fit_workers, and
     # the binding copies that order through rather than re-sorting it.
@@ -273,11 +277,25 @@ def test_production_knobs_reach_the_hive_spec(tmp_path) -> None:
         assert report["coverage"]["cells_ok"] == 1, report["coverage"]
         return _sample(db_root, date, "AAA")
 
-    # The snapshot stamp sets the observation time, which sets every tenor — a
-    # different suffix must move the fit.
+    # The snapshot stamp sets the observation time, which sets every tenor -- a
+    # different stamp must move the fit. Since the opra_panel stamp check, an
+    # INSTANT stamp must agree with the file's own `ts` (the fixture's is 19:55Z),
+    # so the knob is observed through the one other value it accepts: a bare date
+    # (`snapshot_suffix=""`), the legacy midnight-UTC valuation convention.
     default_stamp = build(tmp_path / "db_snap_default")
-    open_stamp = build(tmp_path / "db_snap_open", snapshot_suffix="T00:00:00Z")
+    open_stamp = build(tmp_path / "db_snap_open", snapshot_suffix="")
     assert all(abs(a - b) > 1e-6 for a, b in zip(default_stamp, open_stamp))
+    # ...and a well-formed instant that disagrees with the file is refused at
+    # load, not silently re-timed: the date never reaches the fitter.
+    refused = atxvol.build_surface_db(
+        db_root=str(tmp_path / "db_snap_wrong_instant"),
+        hive_root=str(hive_root),
+        date_lo=date,
+        date_hi=date,
+        snapshot_suffix="T00:00:00Z",
+    )
+    assert refused["n_load_errors"] == 1, refused
+    assert refused["coverage"]["cells_ok"] == 0, refused["coverage"]
 
     # Two flat pillars at 4.3% must reproduce the flat r = 0.043 build, and both
     # must differ from the r = 0 build above.

@@ -149,9 +149,12 @@ STRATEGY_SIGNAL_COLUMNS = [
     "skipped_restrikes", "skipped_swaps",
 ]
 
-_HEADER = _ATX_VOL_ROOT / "include" / "atx" / "vol" / "backtest.hpp"
+# Paths follow the 2026-08-14 api/ restructure (public headers under api/<module>/,
+# sources under src/<module>/); the flat paths this module was written against
+# no longer exist, which failed its collection the first time the suite ran gated.
+_HEADER = _ATX_VOL_ROOT / "include" / "atx" / "vol" / "api" / "backtest" / "backtest.hpp"
 _EXAMPLE = _ATX_VOL_ROOT / "examples" / "varswap_compare_example.cpp"
-_ROSTER = _ATX_VOL_ROOT / "src" / "backtest.cpp"
+_ROSTER = _ATX_VOL_ROOT / "src" / "backtest" / "backtest.cpp"
 
 _EXPLAIN_PREFIX = "swap_explain_"
 
