@@ -253,7 +253,7 @@ lanes; `SpiderRockStoreReal.LoadsBucket1000`, env `ATX_VOL_SPIDERROCK_STORE`):
 | top-100 | 1.9–3.3 s (+ state build 40–100 ms incl. the implied carry) | 365,600 (= marks) | non-selected 1,566,662; 1,913 ExpiryCarry rows (1,758 implied); 26 uids with pv_divs > 0 |
 
 (Ranges over runs on the shared host.) The full benchmark book selects on this bucket
-with no shortfall: 100 underliers, 10,000 option legs (204,339 eligible contracts),
+with no shortfall: 100 underliers, 10,000 option legs (202,936 eligible contracts),
 100 share legs, ≥ 8 expiries and both sides per underlier
 (`RiskBenchBookReal.SelectsFullBookOnBucket1000`).
 
