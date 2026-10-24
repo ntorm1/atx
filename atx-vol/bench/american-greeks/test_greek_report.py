@@ -133,6 +133,7 @@ class Receipt(unittest.TestCase):
         self.assertEqual(summary['totals']['cold_al']['delta']['compared'], 1)
         mutations = [lambda e:(e['native_reasons'].__setitem__(3, 'NotRequested'),
                                e['fields']['theta'].update(reason='NotRequested')),
+                     lambda e:e['fields']['phi'].update(supported=True, value=123.),
                      lambda e:e.update(native_supported_mask=True),
                      lambda e:e.update(native_requested_mask=510),
                      lambda e:e.update(

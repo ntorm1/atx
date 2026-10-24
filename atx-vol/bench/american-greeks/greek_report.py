@@ -194,9 +194,11 @@ def validate_cold_metadata(engine):
     require((engine['price_status'] == 'success') == bool(supported & (1 << 8)),
             'native cold price availability')
     for field, index in zip(FIELDS, [0, 1, 2, 3, 4, None, 5, 6, 7]):
-        if index is None:
-            continue  # phi is outside AmericanGreeks, retained as NotInApi
         entry = engine['fields'][field]
+        if index is None:
+            require(entry['supported'] is False and entry['value'] is None and
+                    entry['reason'] == 'NotInApi', 'cold phi is outside AmericanGreeks')
+            continue
         require(entry['supported'] == bool(supported & (1 << index)) and
                 entry['reason'] == (reasons[index] if result else 'ApiRefused'),
                 'native cold field availability')
