@@ -164,9 +164,13 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
 [[nodiscard]] Status parse_choice(ArgCursor &c, std::string_view flag, RiskBenchArgs &a) {
   const std::optional<std::string_view> v = c.value();
   if (flag == "--time") {
-    if (!v.has_value() || (*v != "voltime" && *v != "calendar365")) {
-      return Err(usage_error("--time must be voltime|calendar365"));
+    if (!v.has_value() || (*v != "vendor" && *v != "voltime" && *v != "calendar365")) {
+      return Err(usage_error("--time must be vendor|voltime|calendar365"));
     }
+    a.time_choice = *v == "vendor"    ? BenchTime::Vendor
+                    : *v == "voltime" ? BenchTime::VolTime
+                                      : BenchTime::Calendar365;
+    // The TimeSpec under the vendor clock is Calendar365 (BenchTime in risk_bench.hpp).
     a.time = *v == "voltime" ? TimeConvention::VolTime : TimeConvention::Calendar365;
     return Ok();
   }
@@ -286,6 +290,9 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
   if (flag == "--kernel" || flag == "--needs" || flag == "--time") {
     return parse_choice(c, flag, a);
   }
+  if (flag == "--sticky-carry") {
+    return set_switch(c, flag, "on", "off", a.sticky_carry);
+  }
   return Err(usage_error("unknown flag: " + std::string{flag}));
 }
 
@@ -340,8 +347,13 @@ std::string risk_bench_usage() {
          "  --kernel K           family | cold | both (family)\n"
          "  --threads N          kernel / explain fan-out degree, 0 = auto (8)\n"
          "  --needs rho|none     evaluate the rho axis (none)\n"
-         "  --time voltime|calendar365\n"
-         "                       the clock T is measured on (calendar365)\n"
+         "  --time vendor|voltime|calendar365\n"
+         "                       the clock every expiry is priced on: vendor = the\n"
+         "                       vendor's per-expiry years (default under --store),\n"
+         "                       calendar365 (default under --synthetic) or voltime\n"
+         "  --sticky-carry on|off  carry mode sticky across buckets: an implied expiry\n"
+         "                       holds to 3x the IQR guard, a published one enters at\n"
+         "                       half of it (default on under --store, off --synthetic)\n"
          "  --trapezoid          trapezoid second-order explain terms\n"
          "  --determinism        shadow threads=1 stream; totals must be bit-equal\n"
          "  --out <file>         JSON report (stdout when absent)\n"
@@ -387,6 +399,29 @@ const char *time_name(TimeConvention time) noexcept {
   return "calendar365";
 }
 
+BenchTime bench_time(const RiskBenchArgs &args) noexcept {
+  if (args.time_choice.has_value()) {
+    return *args.time_choice;
+  }
+  // A caller that set the TimeSpec to VolTime directly (the pre-v3 spelling) meant that clock.
+  if (args.time == TimeConvention::VolTime) {
+    return BenchTime::VolTime;
+  }
+  return args.synthetic_dir.empty() ? BenchTime::Vendor : BenchTime::Calendar365;
+}
+
+const char *bench_time_name(BenchTime time) noexcept {
+  switch (time) {
+  case BenchTime::Vendor:
+    return "vendor";
+  case BenchTime::VolTime:
+    return "voltime";
+  case BenchTime::Calendar365:
+    return "calendar365";
+  }
+  return "calendar365";
+}
+
 const char *carry_mode_name(SpiderRockCarryMode mode) noexcept {
   switch (mode) {
   case SpiderRockCarryMode::Published:
@@ -400,6 +435,10 @@ const char *carry_mode_name(SpiderRockCarryMode mode) noexcept {
 SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept {
   return args.synthetic_dir.empty() ? SpiderRockCarryMode::ImpliedFromCalls
                                     : SpiderRockCarryMode::Published;
+}
+
+bool bench_sticky_carry(const RiskBenchArgs &args) noexcept {
+  return args.sticky_carry.value_or(args.synthetic_dir.empty());
 }
 
 const char *to_string(PlaZone zone) noexcept {
@@ -573,6 +612,26 @@ double nearest_rank(std::span<const double> values, double q) {
 }
 
 // ═══ Data selection ══════════════════════════════════════════════════════════
+
+std::size_t mode_flips(std::span<const SpiderRockExpiryForward> prev,
+                       std::span<const SpiderRockExpiryForward> cur,
+                       std::vector<std::pair<std::uint32_t, std::int64_t>> &flipped) {
+  std::size_t n = 0;
+  std::size_t i = 0; // merge walk: both tables ascend in (uid, expiry)
+  for (const SpiderRockExpiryForward &c : cur) {
+    const auto key = std::pair{c.uid, c.expiry_ns};
+    while (i < prev.size() && std::pair{prev[i].uid, prev[i].expiry_ns} < key) {
+      ++i;
+    }
+    const bool same_key =
+        i < prev.size() && prev[i].uid == c.uid && prev[i].expiry_ns == c.expiry_ns;
+    if (same_key && prev[i].mode != c.mode) {
+      ++n;
+      flipped.push_back(key);
+    }
+  }
+  return n;
+}
 
 std::vector<std::string> select_buckets(std::span<const std::string> all, std::string_view from,
                                         std::string_view to) {
@@ -851,8 +910,9 @@ RiskBenchReport report_skeleton(const RiskBenchArgs &args) {
   r.requested_options = args.options;
   r.requested_shares = args.shares;
   r.host_threads = std::thread::hardware_concurrency();
-  r.time = time_name(args.time);
+  r.time = bench_time_name(bench_time(args));
   r.carry_mode = carry_mode_name(bench_carry_mode(args));
+  r.sticky_carry = bench_sticky_carry(args);
   return r;
 }
 
@@ -1386,7 +1446,7 @@ struct AxisField {
   const char *name;
   double AxisTotals::*field;
 };
-constexpr std::array<AxisField, 14> kAxisFields{{{"delta", &AxisTotals::delta},
+constexpr std::array<AxisField, 15> kAxisFields{{{"delta", &AxisTotals::delta},
                                                  {"gamma", &AxisTotals::gamma},
                                                  {"vega", &AxisTotals::vega},
                                                  {"volga", &AxisTotals::volga},
@@ -1399,7 +1459,8 @@ constexpr std::array<AxisField, 14> kAxisFields{{{"delta", &AxisTotals::delta},
                                                  {"vol_skew", &AxisTotals::vol_skew},
                                                  {"vol_curv", &AxisTotals::vol_curv},
                                                  {"vol_resid", &AxisTotals::vol_resid},
-                                                 {"shares", &AxisTotals::shares}}};
+                                                 {"shares", &AxisTotals::shares},
+                                                 {"carry", &AxisTotals::carry}}};
 
 [[nodiscard]] Json axes_json(const AxisTotals &a) {
   Json o = obj({});
@@ -1653,7 +1714,11 @@ void explain_from(const Fields &e, StepReport &t) {
               {"n_expiries_implied", jnumber(b.n_expiries_implied)},
               {"n_expiries_published", jnumber(b.n_expiries_published)},
               {"max_forward_gap_rel", num(b.max_forward_gap_rel)},
-              {"implied_carry_seconds", num(b.implied_carry_seconds)}});
+              {"implied_carry_seconds", num(b.implied_carry_seconds)},
+              {"n_expiries_vendor_T", jnumber(b.n_expiries_vendor_T)},
+              {"n_expiries_sticky_implied", jnumber(b.n_expiries_sticky_implied)},
+              {"n_expiries_sticky_published", jnumber(b.n_expiries_sticky_published)},
+              {"n_mode_flips", jnumber(b.n_mode_flips)}});
 }
 
 [[nodiscard]] BucketLoad bucket_load_from(const Fields &o) {
@@ -1677,6 +1742,10 @@ void explain_from(const Fields &e, StepReport &t) {
   b.n_expiries_published = o.integer<std::size_t>("n_expiries_published");
   b.max_forward_gap_rel = o.num("max_forward_gap_rel");
   b.implied_carry_seconds = o.num("implied_carry_seconds");
+  b.n_expiries_vendor_T = o.integer<std::size_t>("n_expiries_vendor_T");
+  b.n_expiries_sticky_implied = o.integer<std::size_t>("n_expiries_sticky_implied");
+  b.n_expiries_sticky_published = o.integer<std::size_t>("n_expiries_sticky_published");
+  b.n_mode_flips = o.integer<std::size_t>("n_mode_flips");
   return b;
 }
 
@@ -1698,7 +1767,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"host_threads", jnumber(r.host_threads)},
               {"time", jstr(r.time)},
               {"carry_mode", jstr(r.carry_mode)},
-              {"family_policy", jstr(r.family_policy)}});
+              {"family_policy", jstr(r.family_policy)},
+              {"sticky_carry", jbool(r.sticky_carry)}});
 }
 
 void inputs_from(const Fields &o, RiskBenchReport &r) {
@@ -1720,6 +1790,7 @@ void inputs_from(const Fields &o, RiskBenchReport &r) {
   r.time = o.text("time");
   r.carry_mode = o.text("carry_mode");
   r.family_policy = o.text("family_policy");
+  r.sticky_carry = o.boolean("sticky_carry");
 }
 
 void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
@@ -1754,6 +1825,7 @@ void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {
     r.steps.push_back(step_from(j.element(steps[i], i)));
   }
   r.summary = summary_from(j.object("summary"));
+  r.n_expiries_mode_flipped = j.integer<std::size_t>("n_expiries_mode_flipped");
   return r;
 }
 
@@ -1785,6 +1857,7 @@ std::string report_to_json(const RiskBenchReport &r) {
                                     {"shortfall", jnumber(r.book_shortfall)}})},
                       {"buckets", buckets},
                       {"bucket_loads", loads},
+                      {"n_expiries_mode_flipped", jnumber(r.n_expiries_mode_flipped)},
                       {"start", obj({{"state_seconds", num(r.start_state_seconds)},
                                      {"evaluate_seconds", num(r.start_evaluate_seconds)}})},
                       {"steps", steps},
@@ -1939,7 +2012,7 @@ static_assert(static_cast<std::size_t>(CarrySource::Absent) + 1 == kCarrySourceN
               "kCarrySourceNames must cover every CarrySource");
 
 // The columns in write order: append_leg_dump_csv writes exactly these, one cell each.
-constexpr std::array<std::string_view, 67> kLegDumpColumns{
+constexpr std::array<std::string_view, 69> kLegDumpColumns{
     "step",            "leg_index",         "leg_id",       "prepared_row",
     "ticker",          "uid",               "uid_slot",     "strike",
     "expiry",          "side",              "qty",          "multiplier",
@@ -1956,7 +2029,8 @@ constexpr std::array<std::string_view, 67> kLegDumpColumns{
     "sr_rate",         "sr_sdiv",           "sr_ddiv",      "sr_bid",
     "sr_ask",          "pnl_total",         "pnl_delta",    "pnl_gamma",
     "pnl_vega",        "pnl_volga",         "pnl_vanna",    "pnl_theta",
-    "pnl_rho",         "pnl_charm",         "pnl_unexplained"};
+    "pnl_rho",         "pnl_charm",         "pnl_unexplained", "T_vendor",
+    "pnl_carry"};
 
 // One CSV line under construction: every cell call writes the separator first.
 class CsvLine {
@@ -2112,6 +2186,9 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
                          row.pnl_unexplained}) {
     line.number(v);
   }
+  // Lane E: appended, so the earlier columns keep their positions.
+  line.number(row.T_vendor);
+  line.number(row.pnl_carry);
   line.end();
 }
 

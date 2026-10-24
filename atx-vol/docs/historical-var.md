@@ -94,8 +94,9 @@ own fan-out off (`family.n_threads = 1`) and fans the scenarios over `fit.worker
 Compared with the deleted engine the numbers move on purpose: a scenario is now the one-period
 P&L of a pair (it was each set's value minus the LAST set's value), so N sets give N − 1
 scenarios, and the published reference value is the mean `pv_base` over the admitted pairs (it
-was the last scenario's value). The scenario table changed from 10 columns per session to 28 per
-pair; a run directory written by the old engine fails verification on that header.
+was the last scenario's value). The scenario table changed from 10 columns per session to 29 per
+pair (28 before lane E's `pnl_carry` column, which follows `excluded_premium`); a run directory
+written before either change fails verification on that header.
 
 ## Migration from the deleted pipeline
 

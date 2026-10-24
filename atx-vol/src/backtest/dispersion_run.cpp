@@ -2122,8 +2122,11 @@ constexpr std::string_view kProjectedScenarioHeader =
     "base_date\tbase_ts_ns\tshifted_date\tshifted_ts_ns\tpv_base\tpv_target\tpnl_total\t"
     "pnl_delta\tpnl_gamma\tpnl_vega\tpnl_volga\tpnl_vanna\tpnl_theta\tpnl_rho\tpnl_charm\t"
     "pnl_unexplained\tvol_level\tvol_skew\tvol_curv\tvol_resid\tshares_pnl\tn_ok\tn_excluded\t"
-    "excluded_premium\tn_legs_resolved\tn_legs_unresolved\tadmitted\tdefinition_fingerprint";
-constexpr std::size_t kProjectedScenarioFields = 28u;
+    "excluded_premium\tpnl_carry\tn_legs_resolved\tn_legs_unresolved\tadmitted\t"
+    "definition_fingerprint";
+// 29 since lane E's carry axis (ExplainTotals::pnl_carry, after excluded_premium in struct
+// order): a 28-column file of an earlier run fails the header check (regenerate it).
+constexpr std::size_t kProjectedScenarioFields = 29u;
 // One row per (pair, template): the template resolved on the pair's BASE session (`date`).
 constexpr std::string_view kProjectedLegHeader =
     "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
@@ -2291,7 +2294,8 @@ read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &sum
     const std::vector<std::string_view> f = split(line, '\t');
     if (f.size() != kProjectedScenarioFields) {
       return Err(ErrorCode::ParseError,
-                 path.filename().string() + " row does not have 28 fields");
+                 path.filename().string() + " row does not have " +
+                     std::to_string(kProjectedScenarioFields) + " fields");
     }
     ProjectedScenarioRow row;
     row.base_date = f[0];
@@ -2311,8 +2315,9 @@ read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &sum
         !parse_double(f[18], t.vol_curv) || !parse_double(f[19], t.vol_resid) ||
         !parse_double(f[20], t.shares_pnl) || !parse_number(f[21], t.n_ok) ||
         !parse_number(f[22], t.n_excluded) || !parse_double(f[23], t.excluded_premium) ||
-        !parse_number(f[24], fr.n_legs_resolved) || !parse_number(f[25], fr.n_legs_unresolved) ||
-        !parse_number(f[26], admitted) || !parse_number(f[27], row.definition_fingerprint)) {
+        !parse_double(f[24], t.pnl_carry) || !parse_number(f[25], fr.n_legs_resolved) ||
+        !parse_number(f[26], fr.n_legs_unresolved) || !parse_number(f[27], admitted) ||
+        !parse_number(f[28], row.definition_fingerprint)) {
       return Err(ErrorCode::ParseError,
                  path.filename().string() + " row contains invalid or trailing input");
     }
@@ -3306,7 +3311,8 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
                 << t.pnl_rho << '\t' << t.pnl_charm << '\t' << t.pnl_unexplained << '\t'
                 << t.vol_level << '\t' << t.vol_skew << '\t' << t.vol_curv << '\t'
                 << t.vol_resid << '\t' << t.shares_pnl << '\t' << t.n_ok << '\t'
-                << t.n_excluded << '\t' << t.excluded_premium << '\t' << frame.n_legs_resolved
+                << t.n_excluded << '\t' << t.excluded_premium << '\t' << t.pnl_carry << '\t'
+                << frame.n_legs_resolved
                 << '\t' << frame.n_legs_unresolved << '\t' << (frame.admitted ? 1 : 0) << '\t'
                 << finish_definition_fingerprint(folded) << '\n';
       // The seam builds one template per book position IN ORDER, so leg `i` is book

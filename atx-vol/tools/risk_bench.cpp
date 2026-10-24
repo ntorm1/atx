@@ -62,16 +62,18 @@ struct Snapshot {
   double state_seconds{0.0};
 };
 
-[[nodiscard]] Result<std::unique_ptr<Snapshot>> load_snapshot(const SpiderRockStoreSpec &spec,
-                                                               const std::string &bucket_et,
-                                                               UnderlierTable &table) {
+// `previous` (design D23b): the previous bucket's forwards table when the carry mode is
+// sticky, else null.
+[[nodiscard]] Result<std::unique_ptr<Snapshot>>
+load_snapshot(const SpiderRockStoreSpec &spec, const std::string &bucket_et, UnderlierTable &table,
+              const std::vector<SpiderRockExpiryForward> *previous) {
   auto snap = std::make_unique<Snapshot>();
   const Clock::time_point t0 = Clock::now();
   ATX_TRY(snap->bucket, load_spiderrock_bucket(spec, bucket_et, table));
   snap->load_seconds = seconds_since(t0);
   const Clock::time_point t1 = Clock::now();
   ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report,
-                                                  &snap->forwards));
+                                                  &snap->forwards, previous));
   ATX_TRY(MarketState state, make_market_state(snap->storage));
   snap->state.emplace(std::move(state));
   snap->state_seconds = seconds_since(t1);
@@ -94,6 +96,9 @@ struct Snapshot {
   b.n_expiries_published = s.report.n_expiries_published;
   b.max_forward_gap_rel = s.report.max_implied_vs_published_forward_rel;
   b.implied_carry_seconds = s.report.implied_carry_seconds;
+  b.n_expiries_vendor_T = s.report.n_expiries_vendor_T;
+  b.n_expiries_sticky_implied = s.report.n_expiries_sticky_implied;
+  b.n_expiries_sticky_published = s.report.n_expiries_sticky_published;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;
@@ -206,15 +211,17 @@ void fill_frame(StepReport &t, const RiskFrame &f) {
   a.vol_curv = x.vol_curv;
   a.vol_resid = x.vol_resid;
   a.shares = x.shares_pnl;
+  a.carry = x.pnl_carry;
   return a;
 }
 
-// Each Greek axis (and the remainder) as a fraction of the sum of their magnitudes;
-// the vega split pieces as fractions of the same denominator.
+// Each Greek axis, the carry axis and the remainder as a fraction of the sum of their
+// magnitudes; the vega split pieces as fractions of the same denominator.
 [[nodiscard]] AxisTotals axis_shares(const AxisTotals &a) noexcept {
   const double denom = std::abs(a.delta) + std::abs(a.gamma) + std::abs(a.vega) +
                        std::abs(a.volga) + std::abs(a.vanna) + std::abs(a.theta) +
-                       std::abs(a.rho) + std::abs(a.charm) + std::abs(a.unexplained);
+                       std::abs(a.rho) + std::abs(a.charm) + std::abs(a.carry) +
+                       std::abs(a.unexplained);
   if (!(denom > 0.0)) {
     return AxisTotals{};
   }
@@ -233,6 +240,7 @@ void fill_frame(StepReport &t, const RiskFrame &f) {
   s.vol_curv = a.vol_curv / denom;
   s.vol_resid = a.vol_resid / denom;
   s.shares = a.shares / denom;
+  s.carry = a.carry / denom;
   return s;
 }
 
@@ -322,7 +330,8 @@ void fill_parity(StepReport &t, const RiskFrame &f, const PreparedRiskBook &pb,
          bits_equal(x.charm, y.charm) && bits_equal(x.unexplained, y.unexplained) &&
          bits_equal(x.vol_level, y.vol_level) && bits_equal(x.vol_skew, y.vol_skew) &&
          bits_equal(x.vol_curv, y.vol_curv) && bits_equal(x.vol_resid, y.vol_resid) &&
-         bits_equal(x.shares, y.shares) && a.n_ok == b.n_ok && a.n_excluded == b.n_excluded &&
+         bits_equal(x.shares, y.shares) && bits_equal(x.carry, y.carry) && a.n_ok == b.n_ok &&
+         a.n_excluded == b.n_excluded &&
          bits_equal(a.excluded_premium, b.excluded_premium);
 }
 
@@ -332,6 +341,7 @@ void fill_parity(StepReport &t, const RiskFrame &f, const PreparedRiskBook &pb,
                                  const ExplainResult &b, const RiskFrame &fb) noexcept {
   return totals_equal(a.total, b.total) && columns_equal(a.pnl_total, b.pnl_total) &&
          columns_equal(a.pnl_unexplained, b.pnl_unexplained) &&
+         columns_equal(a.pnl_carry, b.pnl_carry) &&
          columns_equal(fa.price, fb.price) && columns_equal(fa.delta, fb.delta) &&
          columns_equal(fa.gamma, fb.gamma) && columns_equal(fa.vega, fb.vega) &&
          columns_equal(fa.theta, fb.theta);
@@ -510,6 +520,7 @@ void fill_dump_model(LegDumpRow &row, const RiskFrame &f, std::uint32_t r, const
     row.carry_mode = carry_mode_name(fw->mode);
     row.implied_forward = fw->implied_forward;
     row.published_forward = fw->published_forward;
+    row.T_vendor = fw->T_vendor;
   }
   row.route = to_string(f.route[r]);
   row.flags = flag_names(f.flags[r]);
@@ -543,6 +554,7 @@ void fill_dump_pnl(LegDumpRow &row, const ExplainResult &ex, std::size_t i) {
   row.pnl_rho = ex.pnl_rho[i];
   row.pnl_charm = ex.pnl_charm[i];
   row.pnl_unexplained = ex.pnl_unexplained[i];
+  row.pnl_carry = ex.pnl_carry[i];
 }
 
 // One block of option-leg rows for a step, in prepared row order. The model columns
@@ -666,11 +678,15 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.store_root = args.store_root();
   spec.date = args.date;
   spec.max_underliers = args.underliers;
-  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it
+  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it ...
+  // ... unless the vendor clock overrides each expiry's T with the vendor's years (D22).
+  spec.clock = bench_time(args) == BenchTime::Vendor ? SpiderRockClock::VendorYears
+                                                     : SpiderRockClock::State;
   spec.carry_mode = bench_carry_mode(args);
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
-  ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));
+  ATX_TRY(std::unique_ptr<Snapshot> prev,
+          load_snapshot(spec, rep.buckets.front(), table, nullptr));
   rep.bucket_loads.push_back(bucket_load(*prev));
   // The universe is fixed at the first bucket: later buckets read exactly these
   // tickers (stable uids through the shared table).
@@ -694,14 +710,25 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
       << " unique) + " << rep.n_share_legs << " shares on " << rep.n_underliers
       << " underliers; first frame " << rep.start_evaluate_seconds * 1e3 << " ms\n";
 
+  // Design D23b: each state is built sticky on the previous bucket's carry modes (or not),
+  // and the flips between consecutive buckets are counted either way.
+  const bool sticky = bench_sticky_carry(args);
+  std::vector<std::pair<std::uint32_t, std::int64_t>> flipped;
   for (std::size_t k = 1; k < rep.buckets.size(); ++k) {
-    ATX_TRY(std::unique_ptr<Snapshot> cur, load_snapshot(spec, rep.buckets[k], table));
+    ATX_TRY(std::unique_ptr<Snapshot> cur,
+            load_snapshot(spec, rep.buckets[k], table, sticky ? &prev->forwards : nullptr));
     rep.bucket_loads.push_back(bucket_load(*cur));
+    rep.bucket_loads.back().n_mode_flips = mode_flips(prev->forwards, cur->forwards, flipped);
     ATX_TRY(StepReport step, run_step(streams, *prev, *cur, dump.get()));
     log_step(log, step);
     rep.steps.push_back(std::move(step));
     prev = std::move(cur); // the old state is released only after every stream stepped
   }
+  std::sort(flipped.begin(), flipped.end());
+  rep.n_expiries_mode_flipped = static_cast<std::size_t>(
+      std::unique(flipped.begin(), flipped.end()) - flipped.begin());
+  log << "[risk-bench] carry modes: sticky " << (sticky ? "on" : "off") << ", "
+      << flipped.size() << " flip(s) over " << rep.n_expiries_mode_flipped << " (uid, expiry)\n";
   if (dump != nullptr) {
     log << "[risk-bench] --dump-legs: " << dump->rows << " option-leg rows over "
         << dump->steps_written << " step(s) -> " << dump->path << "\n";

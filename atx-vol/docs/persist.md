@@ -90,6 +90,10 @@ sanctioned root is `C:\atx-cache\persist\` (set `ATX_VOL_PERSIST_ROOT` to it). T
 
 ## Store layout and rebuild rules
 
+Layout bump (lane E, 2026-10-24): the term-carry row is the 40-byte `ExpiryCarry` with
+`T_override` (MarketState fingerprint `0xb9738a6408b9ba89`); a store written with the 32-byte row is
+refused with `SchemaMismatch` at open and its buckets are rebuilt by the next `build`.
+
 ```
 <out_root>/date=2026-10-14/persist-manifest.atxvpm
 <out_root>/date=2026-10-14/persist.lock

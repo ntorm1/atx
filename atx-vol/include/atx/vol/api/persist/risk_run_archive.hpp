@@ -100,13 +100,14 @@ enum class RiskFrameColumn : std::uint8_t {
 };
 inline constexpr std::size_t kRiskFrameColumnCount = 16;
 
-// ExplainResult's per-leg f64 columns, in struct order (pv_base .. d_rate).
+// ExplainResult's per-leg f64 columns, in struct order (pv_base .. d_rate, then pnl_carry,
+// appended by lane E after the status vectors).
 enum class RiskExplainColumn : std::uint8_t {
   PvBase = 0, PvTarget, PnlTotal, PnlDelta, PnlGamma, PnlVega, PnlVolga, PnlVanna, PnlTheta,
   PnlRho, PnlCharm, PnlUnexplained, VolLevel, VolSkew, VolCurv, VolResid, DSpot, DVol, DTime,
-  DRate,
+  DRate, PnlCarry,
 };
-inline constexpr std::size_t kRiskExplainColumnCount = 20;
+inline constexpr std::size_t kRiskExplainColumnCount = 21;
 
 // One recorded step's metadata (a value: nothing is borrowed).
 struct RiskRunStepInfo {

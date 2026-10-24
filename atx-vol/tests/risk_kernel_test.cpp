@@ -652,6 +652,148 @@ TEST(RiskKernel, DegenerateSigmaBoxStillServesFamily) {
 
 namespace {
 
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kOverrideQ = 0.015;
+
+// A marks-only state for uid 1 (spot 100) at `ts_ns` on `time`: one ExpiryCarry row per
+// fixture expiry (rate kRate, q kOverrideQ, no dividends) carrying `T_override[e]` (NaN
+// keeps the clock), or no rows at all (`rows` false: the same carry from flat_rate /
+// flat_q), and a mark for every contract of rt::make_option_legs(1). Heap-pinned: the
+// underlier's term_carry span points into the storage.
+[[nodiscard]] std::unique_ptr<MarketStateStorage>
+override_state(std::int64_t ts_ns, const std::array<double, 4> &T_override, bool rows = true,
+               TimeConvention clock = TimeConvention::Calendar365) {
+  auto st = std::make_unique<MarketStateStorage>();
+  st->ts_ns = ts_ns;
+  st->time.convention = clock;
+  UnderlierState u;
+  u.uid = 1u;
+  u.spot = 100.0;
+  u.flat_rate = rt::kRate;
+  u.flat_q = kOverrideQ;
+  u.carry = CarryFrom::State;
+  st->underliers.push_back(u);
+  std::vector<ExpiryCarry> carry;
+  for (std::size_t e = 0; rows && e < rt::kExpiryUnits.size(); ++e) {
+    carry.push_back(ExpiryCarry{rt::expiry_ns(e), 0.0, rt::kRate, kOverrideQ, T_override[e]});
+  }
+  st->term_carries.push_back(std::move(carry));
+  MarketStateStorage::MarksColumns m;
+  m.uid = 1u;
+  for (const OptionLeg &l : rt::make_option_legs(1)) {
+    const double e = static_cast<double>(
+        std::find(rt::kExpiryUnits.begin(), rt::kExpiryUnits.end(),
+                  (l.expiry_ns - rt::kT0) / rt::kUnitNs) -
+        rt::kExpiryUnits.begin());
+    m.strike.push_back(l.K);
+    m.expiry_ns.push_back(l.expiry_ns);
+    m.side.push_back(l.side);
+    m.sigma.push_back(0.24 - 0.12 * std::log(l.K / 100.0) - 0.01 * e);
+  }
+  st->marks.push_back(std::move(m));
+  st->normalize_marks();
+  st->underliers[0].term_carry = st->term_carries[0];
+  return st;
+}
+
+// Every frame column and counter but the instant (two states at different instants).
+[[nodiscard]] bool frames_equal_but_instant(const RiskFrame &a, RiskFrame b) {
+  b.ts_ns = a.ts_ns;
+  return frames_byte_equal(a, b);
+}
+
+} // namespace
+
+// Design D22: a finite ExpiryCarry::T_override is THE T of its expiry on every kernel route.
+// A state at kT0 whose rows override every expiry with the calendar T one fixture day later
+// prices exactly like the state AT that later instant (no override): family lanes, cold-
+// analytic lanes (and the cold lanes of the family kernel), cold-FD lanes, bit for bit; the
+// cold-analytic price is american_greeks_al at the overriding T. A NaN override (the
+// default) is the TimeSpec clock, bit for bit the state without rows. The override also
+// carries an expiry whose clock refuses (VolTime before its window), and create() refuses a
+// non-positive or infinite override.
+TEST(RiskKernel, ExpiryTOverrideUsedByEveryRoute) {
+  const std::int64_t later_ns = rt::instant_ns(rt::kDayUnits);
+  std::array<double, 4> later{};
+  for (std::size_t e = 0; e < later.size(); ++e) {
+    later[e] = time_to_expiry_years(later_ns, rt::expiry_ns(e), TimeSpec{}).value();
+  }
+  const std::array<double, 4> none{kNaN, kNaN, kNaN, kNaN};
+  const auto over_st = override_state(rt::kT0, later);
+  const auto later_st = override_state(later_ns, none);
+  const auto plain_st = override_state(rt::kT0, none);
+  const auto flat_st = override_state(rt::kT0, none, /*rows=*/false);
+  const auto refusing_st = override_state(rt::kT0, later, true, TimeConvention::VolTime);
+  const MarketState over = make_market_state(*over_st).value();
+  const MarketState at_later = make_market_state(*later_st).value();
+  const MarketState plain = make_market_state(*plain_st).value();
+  const MarketState flat = make_market_state(*flat_st).value();
+  const MarketState refusing = make_market_state(*refusing_st).value();
+  ASSERT_FALSE(refusing.time_to_expiry(rt::expiry_ns(0)).has_value()) << "the premise";
+
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  ColdKernelPolicy fd;
+  fd.analytic = false;
+  const std::array<RiskKernel, 4> kernels{RiskKernel::family(families_always()),
+                                          RiskKernel::family(), RiskKernel::cold(),
+                                          RiskKernel::cold(fd)};
+  const std::array<const char *, 4> names{"family (always)", "family (shipped)", "cold analytic",
+                                          "cold fd"};
+  std::array<std::size_t, 7> routes{}; // RiskRoute::None .. Refused
+  for (std::size_t k = 0; k < kernels.size(); ++k) {
+    const RiskFrame f_over = evaluate_or_die(kernels[k], prep, over, RiskNeeds{});
+    const RiskFrame f_later = evaluate_or_die(kernels[k], prep, at_later, RiskNeeds{});
+    const RiskFrame f_plain = evaluate_or_die(kernels[k], prep, plain, RiskNeeds{});
+    const RiskFrame f_flat = evaluate_or_die(kernels[k], prep, flat, RiskNeeds{});
+    const RiskFrame f_refusing = evaluate_or_die(kernels[k], prep, refusing, RiskNeeds{});
+    EXPECT_TRUE(frames_equal_but_instant(f_over, f_later)) << names[k];
+    EXPECT_TRUE(frames_byte_equal(f_plain, f_flat)) << names[k] << ": NaN override = no row";
+    EXPECT_TRUE(frames_byte_equal(f_over, f_refusing)) << names[k] << ": the clock is not read";
+    for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+      ASSERT_EQ(f_over.status[r], RiskLaneStatus::Ok) << names[k] << " row " << r;
+      const std::size_t e = static_cast<std::size_t>(
+          std::find(rt::kExpiryUnits.begin(), rt::kExpiryUnits.end(),
+                    (prep.expiry_ns()[r] - rt::kT0) / rt::kUnitNs) -
+          rt::kExpiryUnits.begin());
+      ASSERT_LT(e, later.size());
+      EXPECT_TRUE(same_bits(f_over.T[r], later[e])) << names[k] << " row " << r;
+      EXPECT_TRUE(same_bits(f_plain.T[r], plain.time_to_expiry(prep.expiry_ns()[r]).value()));
+      EXPECT_FALSE(same_bits(f_over.price[r], f_plain.price[r])) << "the override moved T";
+      ++routes[static_cast<std::size_t>(f_over.route[r])];
+      if (f_over.route[r] == RiskRoute::ColdAnalytic) {
+        const AmericanGreeks g =
+            american_greeks_al(100.0, prep.strike()[r], later[e], f_over.sigma[r],
+                               f_over.rate[r], f_over.q_eff[r], prep.side()[r],
+                               std::optional<AlOpts>{al_fast_opts()}, true, false, true)
+                .value();
+        EXPECT_TRUE(same_bits(f_over.price[r], g.price)) << names[k] << " row " << r;
+        EXPECT_TRUE(same_bits(f_over.theta[r], g.theta)) << names[k] << " row " << r;
+      }
+    }
+  }
+  std::cout << "[RiskKernel] T override routes: family=" << routes[static_cast<std::size_t>(
+                                                              RiskRoute::Family)]
+            << " cold_analytic=" << routes[static_cast<std::size_t>(RiskRoute::ColdAnalytic)]
+            << " cold_fd=" << routes[static_cast<std::size_t>(RiskRoute::ColdFd)] << "\n";
+  EXPECT_GT(routes[static_cast<std::size_t>(RiskRoute::Family)], 0u);
+  EXPECT_GT(routes[static_cast<std::size_t>(RiskRoute::ColdAnalytic)], 0u);
+  EXPECT_GT(routes[static_cast<std::size_t>(RiskRoute::ColdFd)], 0u);
+
+  // create() refuses a non-positive or infinite override; NaN is the default.
+  for (const double bad : {0.0, -0.5, std::numeric_limits<double>::infinity()}) {
+    std::array<double, 4> t = later;
+    t[2] = bad;
+    const auto st = override_state(rt::kT0, t);
+    const Result<MarketState> s = make_market_state(*st);
+    ASSERT_FALSE(s.has_value()) << bad;
+    EXPECT_EQ(s.error().code(), ErrorCode::InvalidArgument) << bad;
+  }
+}
+
+namespace {
+
 // One sample of the cost-setup receipt at one (T, side): medians (us) over repetitions.
 struct CostSample {
   double geometry_us{0.0};

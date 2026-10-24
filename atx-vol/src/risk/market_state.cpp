@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "risk/expiry_clock.hpp"
+
 namespace atx::vol {
 
 using atx::core::Err;
@@ -83,6 +85,11 @@ constexpr std::size_t kNpos = std::numeric_limits<std::size_t>::max();
     if (!std::isfinite(row.pv_divs) || !std::isfinite(row.rate) || !std::isfinite(row.q)) {
       return Err(ErrorCode::InvalidArgument, "MarketState: term_carry row not finite");
     }
+    // NaN keeps the TimeSpec clock; anything else must be a usable year-fraction.
+    if (!std::isnan(row.T_override) && !finite_positive(row.T_override)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "MarketState: term_carry T_override must be NaN or finite > 0");
+    }
     if (i > 0 && !(u.term_carry[i - 1].expiry_ns < row.expiry_ns)) {
       return Err(ErrorCode::InvalidArgument,
                  "MarketState: term_carry not strictly ascending by expiry_ns");
@@ -114,14 +121,6 @@ constexpr std::size_t kNpos = std::numeric_limits<std::size_t>::max();
     return lo;
   }
   return kNpos;
-}
-
-[[nodiscard]] const ExpiryCarry *find_term_row(std::span<const ExpiryCarry> rows,
-                                               std::int64_t expiry) noexcept {
-  const auto it = std::lower_bound(
-      rows.begin(), rows.end(), expiry,
-      [](const ExpiryCarry &r, std::int64_t e) noexcept { return r.expiry_ns < e; });
-  return (it != rows.end() && it->expiry_ns == expiry) ? &*it : nullptr;
 }
 
 [[nodiscard]] ResolvedContract refused(RiskLaneStatus status, RiskFlags flags) noexcept {
@@ -301,11 +300,11 @@ MarketState::Carry MarketState::carry_at(std::uint32_t uid, double T) const noex
     return c;
   }
   // A term_carry row applies when T is exactly that row's year-fraction from this
-  // state, which is what `resolve` sees for the row's expiry.
+  // state (its T_override when set), which is what `resolve` sees for the row's expiry.
   const ExpiryCarry *row = nullptr;
   if (underliers_[slot].carry == CarryFrom::State) {
     for (const ExpiryCarry &r : underliers_[slot].term_carry) {
-      const Result<double> t = time_to_expiry(r.expiry_ns);
+      const Result<double> t = risk_detail::expiry_T(*this, &r, r.expiry_ns);
       if (t.has_value() && *t == T) {
         row = &r;
         break;
@@ -325,7 +324,9 @@ ResolvedContract MarketState::resolve(std::uint32_t uid, double K, std::int64_t 
   if (!finite_positive(K) || (side != Side::Call && side != Side::Put)) {
     return refused(RiskLaneStatus::InvalidContract, 0u);
   }
-  const Result<double> T_res = time_to_expiry(expiry_ns);
+  // One lookup serves the clock (any CarryFrom) and the carry (CarryFrom::State only).
+  const ExpiryCarry *term_row = risk_detail::expiry_row(underliers_[slot].term_carry, expiry_ns);
+  const Result<double> T_res = risk_detail::expiry_T(*this, term_row, expiry_ns);
   if (!T_res.has_value() || !std::isfinite(*T_res)) {
     return refused(RiskLaneStatus::NumericError, 0u);
   }
@@ -371,9 +372,7 @@ ResolvedContract MarketState::resolve(std::uint32_t uid, double K, std::int64_t 
     return refused(RiskLaneStatus::NumericError, flags);
   }
 
-  const ExpiryCarry *row = underliers_[slot].carry == CarryFrom::State
-                               ? find_term_row(underliers_[slot].term_carry, expiry_ns)
-                               : nullptr;
+  const ExpiryCarry *row = underliers_[slot].carry == CarryFrom::State ? term_row : nullptr;
   const Carry c = carry_for(*this, underliers_[slot], surf, T, row);
   flags |= c.flags;
   if (c.status != RiskLaneStatus::Ok) {
@@ -502,6 +501,31 @@ void MarketStateStorage::normalize_marks() {
     }
   }
 }
+
+namespace risk_detail {
+
+const ExpiryCarry *expiry_row(std::span<const ExpiryCarry> rows, std::int64_t expiry_ns) noexcept {
+  const auto it = std::lower_bound(
+      rows.begin(), rows.end(), expiry_ns,
+      [](const ExpiryCarry &r, std::int64_t e) noexcept { return r.expiry_ns < e; });
+  return (it != rows.end() && it->expiry_ns == expiry_ns) ? &*it : nullptr;
+}
+
+const ExpiryCarry *expiry_row(const MarketState &state, std::uint32_t uid,
+                              std::int64_t expiry_ns) noexcept {
+  const UnderlierState *u = state.underlier(uid);
+  return u != nullptr ? expiry_row(u->term_carry, expiry_ns) : nullptr;
+}
+
+Result<double> expiry_T(const MarketState &state, const ExpiryCarry *row,
+                        std::int64_t expiry_ns) noexcept {
+  if (has_T_override(row)) {
+    return Ok(row->T_override);
+  }
+  return state.time_to_expiry(expiry_ns);
+}
+
+} // namespace risk_detail
 
 Result<MarketState> make_market_state(const MarketStateStorage &storage) {
   std::vector<ContractMarks> views;

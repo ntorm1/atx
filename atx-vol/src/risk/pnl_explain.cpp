@@ -17,6 +17,7 @@
 
 #include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/pricing/pricing_executor.hpp"
+#include "risk/expiry_clock.hpp"
 #include "risk/risk_neumaier.hpp"
 #include "simd/pnl_batch.hpp"
 
@@ -40,6 +41,12 @@ struct PivotGroup {
   bool usable{false};     // a0..a2 apply to the group's legs
   bool from_marks{false}; // the pivots are marks (flag PivotFromMarks)
   bool edge{false};       // a pivot resolved NaN: a0 = a1 = a2 = 0
+  // Either state carries a finite T_override for (uid, expiry) (design D22): the group's
+  // legs then roll by their own frames' T_base - T_shifted instead of the instants' step.
+  bool clock_override{false};
+  // The carry axis's ln-forward re-mark J of (uid, expiry) (design D23a); 0 when the carry
+  // inputs did not move or are not decomposed (pnl_explain.hpp "Carry axis").
+  double carry_j{0.0};
   double F_b{0.0};
   double sigma_atm{0.0};
   double sqrt_T{0.0};
@@ -66,8 +73,9 @@ constexpr std::size_t kSkew = 13;
 constexpr std::size_t kCurv = 14;
 constexpr std::size_t kResid = 15;
 constexpr std::size_t kShares = 16;
-constexpr std::size_t kExcludedPremium = 17;
-constexpr std::size_t kTotalsCount = 18;
+constexpr std::size_t kCarry = 17; // lane E: the carry axis (design D23a)
+constexpr std::size_t kExcludedPremium = 18;
+constexpr std::size_t kTotalsCount = 19;
 
 // The row columns of one Ok leg, in totals column order (all but the excluded premium).
 using TotalsRow = std::array<double, kExcludedPremium>;
@@ -76,7 +84,8 @@ using TotalsRow = std::array<double, kExcludedPremium>;
   return {e.pv_base[i],   e.pv_target[i], e.pnl_total[i], e.pnl_delta[i],      e.pnl_gamma[i],
           e.pnl_vega[i],  e.pnl_volga[i], e.pnl_vanna[i], e.pnl_theta[i],      e.pnl_rho[i],
           e.pnl_charm[i], e.pnl_unexplained[i], e.vol_level[i], e.vol_skew[i], e.vol_curv[i],
-          e.vol_resid[i], e.kind[i] == ExplainLegKind::Share ? e.pnl_total[i] : 0.0};
+          e.vol_resid[i], e.kind[i] == ExplainLegKind::Share ? e.pnl_total[i] : 0.0,
+          e.pnl_carry[i]};
 }
 
 // One Neumaier sum per totals column (risk_neumaier.hpp), held column-parallel: a row
@@ -118,6 +127,7 @@ public:
     t.n_ok = n_ok_;
     t.n_excluded = n_excluded_;
     t.excluded_premium = value(kExcludedPremium);
+    t.pnl_carry = value(kCarry);
     return t;
   }
 
@@ -270,6 +280,63 @@ void sample_marks(PivotGroup &pg, const ContractMarks &mb, const ContractMarks &
   pg.usable = true;
 }
 
+// One state's carry inputs for an expiry (pnl_explain.hpp "Carry axis"): the exact-expiry
+// row's (pv_divs, q), else flat_q with the pv term left out; undefined under
+// CarryFrom::Surface or without the uid.
+struct CarryInputs {
+  bool defined{false};
+  bool from_row{false};
+  double pv_divs{0.0};
+  double q{0.0};
+};
+
+[[nodiscard]] CarryInputs carry_inputs(const MarketState &state, std::uint32_t uid,
+                                       const ExpiryCarry *row) noexcept {
+  const UnderlierState *u = state.underlier(uid);
+  if (u == nullptr || u->carry != CarryFrom::State) {
+    return CarryInputs{};
+  }
+  if (row != nullptr) {
+    return CarryInputs{true, true, row->pv_divs, row->q};
+  }
+  return CarryInputs{true, false, 0.0, u->flat_q};
+}
+
+// J = ln((S_b - pv_t) / (S_b - pv_b)) - (q_t - q_b) T_b: the ln-forward move of the
+// expiry from its carry inputs alone, at the base spot, rate and T. 0 when the two states
+// do not describe the carry the same way, when nothing moved, or when it is not finite
+// (pv_divs >= spot, a refused clock): the move then stays in unexplained.
+[[nodiscard]] double carry_remark(const PivotGroup &pg, const MarketState &base_state,
+                                  const ExpiryCarry *row_b, const MarketState &shifted_state,
+                                  const ExpiryCarry *row_t, double S_b) noexcept {
+  const CarryInputs b = carry_inputs(base_state, pg.uid, row_b);
+  const CarryInputs t = carry_inputs(shifted_state, pg.uid, row_t);
+  if (!(b.defined && t.defined) || b.from_row != t.from_row ||
+      (b.q == t.q && b.pv_divs == t.pv_divs)) {
+    return 0.0;
+  }
+  const Result<double> T_b = risk_detail::expiry_T(base_state, row_b, pg.expiry_ns);
+  if (!T_b.has_value() || !finite_positive(*T_b)) {
+    return 0.0;
+  }
+  double j = -((t.q - b.q) * *T_b);
+  if (b.pv_divs != t.pv_divs) {
+    j = std::log((S_b - t.pv_divs) / (S_b - b.pv_divs)) + j;
+  }
+  return std::isfinite(j) ? j : 0.0;
+}
+
+// The per-(uid, expiry) inputs every leg of the group shares, whatever the options: the
+// clock (design D22) and the carry re-mark (design D23a).
+void prepare_group(PivotGroup &pg, const MarketState &base_state, const RiskFrame &base,
+                   const MarketState &shifted_state) noexcept {
+  const ExpiryCarry *row_b = risk_detail::expiry_row(base_state, pg.uid, pg.expiry_ns);
+  const ExpiryCarry *row_t = risk_detail::expiry_row(shifted_state, pg.uid, pg.expiry_ns);
+  pg.clock_override = risk_detail::has_T_override(row_b) || risk_detail::has_T_override(row_t);
+  pg.carry_j = carry_remark(pg, base_state, row_b, shifted_state, row_t,
+                            base.uid_spot[pg.uid_slot]);
+}
+
 void sample_pivots(PivotGroup &pg, const MarketState &base_state, const RiskFrame &base,
                    const MarketState &shifted_state, double z_ref) noexcept {
   std::uint32_t r0 = pg.row_end;
@@ -307,7 +374,7 @@ void write_excluded(ExplainResult &out, std::size_t i, RiskLaneStatus status,
        {&out.pv_base, &out.pv_target, &out.pnl_total, &out.pnl_delta, &out.pnl_gamma,
         &out.pnl_vega, &out.pnl_volga, &out.pnl_vanna, &out.pnl_theta, &out.pnl_rho,
         &out.pnl_charm, &out.pnl_unexplained, &out.vol_level, &out.vol_skew, &out.vol_curv,
-        &out.vol_resid, &out.d_spot, &out.d_vol, &out.d_time, &out.d_rate}) {
+        &out.vol_resid, &out.d_spot, &out.d_vol, &out.d_time, &out.d_rate, &out.pnl_carry}) {
     (*col)[i] = kNaN;
   }
   out.pv_base[i] = std::isfinite(pv_base) ? pv_base : kNaN;
@@ -391,7 +458,9 @@ void explain_option_leg(const LegCtx &c, std::size_t i) noexcept {
   }
   // rho_b is read only when the row's rate moved (a frame without rho has 0 there).
   const double rho = dr != 0.0 ? c.base.rho[r] : 0.0;
-  const double dt = c.dt;
+  // Design D22: under a T override the time step is the contract's own roll, on the clocks
+  // the two frames priced it at (both Ok here, so both T are finite).
+  const double dt = pg.clock_override ? c.base.T[r] - c.shifted.T[r] : c.dt;
   // One lane through simd/pnl_batch: the kernel is bit-identical for any lane
   // position and route, so this equals the row's value inside a full batch.
   std::array<double, 8> term{};
@@ -433,14 +502,24 @@ void explain_option_leg(const LegCtx &c, std::size_t i) noexcept {
   out.pv_base[i] = w * P_b;
   out.pv_target[i] = w * P_t;
   out.pnl_total[i] = w * (P_t - P_b);
-  // The remainder is taken against THIS row's own eight columns (left to right, the
-  // kernel's order), so a row's columns reproduce its pnl_total to ~1 ulp.
-  const double explained = ((((((out.pnl_delta[i] + out.pnl_gamma[i]) + out.pnl_vega[i]) +
-                                out.pnl_volga[i]) +
-                               out.pnl_vanna[i]) +
-                              out.pnl_theta[i]) +
-                             out.pnl_rho[i]) +
-                            out.pnl_charm[i];
+  // The carry axis (design D23a): dP/dq_eff = -T S delta on the forward-driven price, so a
+  // ln-forward re-mark J at fixed spot is worth delta S J. An exercised row is intrinsic,
+  // which no carry moves.
+  const bool carry_moved = pg.carry_j != 0.0 && c.base.route[r] != RiskRoute::Exercised;
+  const double S_b = c.base.uid_spot[pg.uid_slot];
+  out.pnl_carry[i] = carry_moved ? w * ((c.base.delta[r] * S_b) * pg.carry_j) : 0.0;
+  // The remainder is taken against THIS row's own columns (the eight left to right, the
+  // kernel's order, then the carry axis when it moved), so a row's columns reproduce its
+  // pnl_total to ~1 ulp; an unmoved carry leaves the eight-term bits untouched.
+  double explained = ((((((out.pnl_delta[i] + out.pnl_gamma[i]) + out.pnl_vega[i]) +
+                          out.pnl_volga[i]) +
+                         out.pnl_vanna[i]) +
+                        out.pnl_theta[i]) +
+                       out.pnl_rho[i]) +
+                      out.pnl_charm[i];
+  if (carry_moved) {
+    explained = explained + out.pnl_carry[i];
+  }
   out.pnl_unexplained[i] = out.pnl_total[i] - explained;
   out.d_spot[i] = dS;
   out.d_vol[i] = dsig;
@@ -507,6 +586,7 @@ void explain_share_leg(const PreparedRiskBook &book, const RiskFrame &base,
   out.d_vol[i] = 0.0;
   out.d_time[i] = dt;
   out.d_rate[i] = 0.0;
+  out.pnl_carry[i] = 0.0;
   out.status[i] = RiskLaneStatus::Ok;
 }
 
@@ -614,7 +694,7 @@ void ExplainResult::reserve(std::size_t n_option_legs, std::size_t n_share_legs,
   for (std::vector<double> *col :
        {&pv_base, &pv_target, &pnl_total, &pnl_delta, &pnl_gamma, &pnl_vega, &pnl_volga,
         &pnl_vanna, &pnl_theta, &pnl_rho, &pnl_charm, &pnl_unexplained, &vol_level, &vol_skew,
-        &vol_curv, &vol_resid, &d_spot, &d_vol, &d_time, &d_rate}) {
+        &vol_curv, &vol_resid, &d_spot, &d_vol, &d_time, &d_rate, &pnl_carry}) {
     col->resize(n);
   }
   route_base.resize(n);
@@ -659,11 +739,14 @@ Status explain_into(const PreparedRiskBook &book, const MarketState &base_state,
   }
   std::sort(s.expiries.begin(), s.expiries.end());
   s.expiries.erase(std::unique(s.expiries.begin(), s.expiries.end()), s.expiries.end());
-  if (split) {
-    pricing_executor().run_blocks(s.pivots.size(), opts.n_threads, [&](std::size_t k) {
+  // Per (uid, expiry) group: the shared clock inputs, and the vega-split pivots when
+  // splitting. Each worker writes its own PivotGroup slots only.
+  pricing_executor().run_blocks(s.pivots.size(), opts.n_threads, [&](std::size_t k) {
+    prepare_group(s.pivots[k], base_state, base, shifted_state);
+    if (split) {
       sample_pivots(s.pivots[k], base_state, base, shifted_state, opts.z_ref);
-    });
-  }
+    }
+  });
 
   const std::size_t n_buckets_exp = s.expiries.size() + (n_sh > 0u ? 1u : 0u);
   out.reserve(n_opt, n_sh, book.uids().size(), n_buckets_exp);

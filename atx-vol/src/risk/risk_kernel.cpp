@@ -13,6 +13,7 @@
 #include <span>
 #include <utility>
 
+#include "risk/expiry_clock.hpp"
 #include "risk/risk_kernel_detail.hpp"
 
 namespace atx::vol {
@@ -312,9 +313,11 @@ Status RiskKernel::evaluate(const PreparedRiskBook &book, const MarketState &sta
   out.needs = needs;
   w.bind(book);
 
-  // A TimeSpec that refuses an expiry (VolTime OutOfRange) is structural: no frame.
+  // A clock that refuses an expiry (VolTime OutOfRange) is structural: no frame. An
+  // expiry whose row carries a T_override never reads the TimeSpec (expiry_clock.hpp).
   for (const RiskGroup &g : book.groups()) {
-    if (!state.time_to_expiry(g.expiry_ns).has_value()) {
+    const ExpiryCarry *row = risk_detail::expiry_row(state, g.uid, g.expiry_ns);
+    if (!risk_detail::expiry_T(state, row, g.expiry_ns).has_value()) {
       return fail("RiskKernel::evaluate: the state's TimeSpec refuses a book expiry");
     }
   }

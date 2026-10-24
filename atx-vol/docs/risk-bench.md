@@ -63,7 +63,8 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 | `--kernel family\|cold\|both` | family | the stream's kernel; `both` adds a cold stream for comparison |
 | `--threads N` | 8 | kernel and explain fan-out degree (0 = executor auto) |
 | `--needs rho\|none` | none | evaluate the rho axis (carry-bump families) |
-| `--time voltime\|calendar365` | calendar365 | the clock every state (and so the kernel) measures T on (see "Clock") |
+| `--time vendor\|voltime\|calendar365` | vendor (`--store`), calendar365 (`--synthetic`) | the clock every expiry is priced and rolled on (see "Clock"): `vendor` = the per-expiry median of the vendor's `years` as `ExpiryCarry::T_override` (the state TimeSpec is Calendar365 underneath), `voltime` / `calendar365` = that TimeSpec, no override |
+| `--sticky-carry on\|off` | on (`--store`), off (`--synthetic`) | build each bucket's state sticky on the previous bucket's carry modes (design D23b; "Sticky carry mode" below) |
 | `--trapezoid` | off | `ExplainOptions::trapezoid_second_order` |
 | `--determinism` | off | a threads = 1 shadow stream; totals must be bit-equal |
 | `--out <file>` | stdout | JSON report |
@@ -94,7 +95,8 @@ in `inputs.family_policy` and as the markdown line `- family policy: …`.
 
 The carry mode has no flag: `--store` builds states with `ImpliedFromCalls`, `--synthetic`
 with `Published` (its vendor columns are priced on exactly the D4 carry, design D20); see
-"Carry modes". Both are echoed in the report (`inputs.time`, `inputs.carry_mode`).
+"Carry modes". Both are echoed in the report (`inputs.time`, `inputs.carry_mode`), as is
+`--sticky-carry` (`inputs.sticky_carry`).
 
 ## Loader conventions (`load_spiderrock_bucket`, `market_state_from_bucket`)
 
@@ -115,8 +117,10 @@ rather than misread or pruned silently.
 
 - **expiry** = okey_yr/mn/dy at 16:00 ET (`expiry_instant_ns(…, Pm)`); **bucket instant**
   = 16:00 ET of the date minus (16:00 − HH:MM) (`spiderrock_bucket_instant_ns`; exact
-  because DST resolves at day granularity). `years` is kept as `vendor_T` only; T is the
-  state's `TimeSpec` clock (Calendar365 default).
+  because DST resolves at day granularity). `years` is kept as `vendor_T`; under
+  `SpiderRockClock::VendorYears` (the spec default; lane E, design D22) the state builder
+  makes each expiry's median `years` its `ExpiryCarry::T_override`, so T IS the vendor's
+  clock; under `State` (a hand-built bucket's default) T is the state's `TimeSpec` clock.
 - **Row accounting** (every row counted once):
   `rows_read == size + rows_dropped_null + rows_dropped_bad_input + rows_not_selected +
   dropped_non_american + dropped_nonstandard_root + dropped_forward_framework`.
@@ -161,7 +165,22 @@ rather than misread or pruned silently.
 
 ### Clock (`--time`)
 
-`T` is the state's `TimeSpec` clock; the vendor's `years` is kept only as `vendor_T`.
+**Adopted (lane E, design D22): the vendor clock.** `SpiderRockStoreSpec::clock`
+(default `VendorYears`, copied into `SpiderRockBucket::clock`) puts every expiry on the
+median of its rows' `years` through `ExpiryCarry::T_override`: the kernel prices the
+expiry at that T (family geometry, family and cold lanes), the explain rolls it by its own
+`T_base − T_shifted` (theta / charm, `d_time`), and the implied carry inverts the calls AND
+expresses q on that one T. `BucketStateReport::n_expiries_vendor_T` counts the overridden
+rows; `SpiderRockExpiryForward::T_vendor` reports the median whatever the clock. An expiry
+without a finite positive median `years` keeps the TimeSpec clock. On bucket 1000 all
+1,913 expiry rows are overridden and every row's `years` equals its expiry's median
+(per-row |T_override − years| = 0 over the 365,600 marks; `SpiderRockStoreReal.
+LoadsBucket1000`). The bench defaults to `--time vendor` under `--store` and
+`calendar365` under `--synthetic` (the synthetic `years` IS the Calendar365 T, so an
+override there would only re-derive the same numbers while switching the explain to the
+per-expiry roll). The history below is why.
+
+Before lane E, `T` was the state's `TimeSpec` clock and `years` was kept only as `vendor_T`.
 `SpiderRockStoreReal.LoadsBucket1000` measures |T − `years`| over the 365,600 top-100
 marks of bucket 1000 (days, 1 d = 1/365.25 y; median / p99 by calendar tenor):
 
@@ -179,13 +198,12 @@ interval crosses (2026-11-27, 2026-12-24, 2027-11-26, 2028-07-03, 2028-11-24: +0
 2026-11-27, +0.95 d at 2026-12-31, +1.42 d at 2027-12-17, +1.87 d at 2028-09-15, +2.37 d
 at 2028-12-15). A 13:00 close removes 3 trading hours (3 × 0.7 / 1638 y = 0.468 d);
 `VolTimeCalendar` holds full closures only. The overall VolTime median (0.919 d) misses
-the 0.5 d adoption bar, so **calendar365 is the default under both stores** and `--time
-voltime` is opt-in. Reproducing `years` needs either an early-close table in
+the 0.5 d adoption bar. Reproducing `years` needed either an early-close table in
 `VolTimeCalendar` (core clock change; the per-expiry lines suggest it would bring every
-tenor to ≤ 0.02 d) or a per-expiry T override carried by the state (lane A header: e.g. a
-vendor T per `ExpiryCarry` row that the kernel and the explain's dt use instead of
-`time_to_expiry_years`) — an orchestrator decision. The synthetic store's `years` IS the
-Calendar365 T, so calendar365 is also the only clock its vendor Greeks reproduce.
+tenor to ≤ 0.02 d; recorded as a separate decision for the user, it moves every VolTime
+consumer) or a per-expiry T override carried by the state — the latter is what lane E
+built (above). The synthetic store's `years` IS the Calendar365 T, so calendar365 is the
+clock its vendor Greeks reproduce.
 
 ### State per bucket and the carry modes
 
@@ -237,8 +255,10 @@ Algorithm, per (uid, expiry):
    order statistics at (n−1)/4 and 3(n−1)/4.
 4. Accepted when n ≥ `kImpliedCarryMinCalls` (3) and IQR ≤ `kImpliedCarryMaxIqrRel`
    (1e-3) × F. The row is then `pv_divs = 0`, `rate` = median rate,
-   `q = rate − ln(F / spot) / T_state` with T_state on the STATE's clock, so the engine's
-   `spot·e^{(rate − q)·T_state}` = F exactly (whatever `--time` is).
+   `q = rate − ln(F / spot) / T_state` with T_state the expiry's clock in the state — its
+   `T_override` (the very median `years` the inversion ran on) under `VendorYears`, else
+   the state's TimeSpec — so the engine's `spot·e^{(rate − q)·T_state}` = F exactly
+   (whatever `--time` is). Under the vendor clock inversion and state share ONE clock.
 5. Otherwise (too few calls, the IQR guard, T_state ≤ 0 or refused) the expiry keeps its
    Published row.
 
@@ -249,6 +269,41 @@ is `n_expiry_rows`), `max_implied_vs_published_forward_rel` (max over implied ro
 `market_state_from_bucket(bucket, time, report, forwards)` overload returns every row's
 basis (`SpiderRockExpiryForward`: mode, implied F even when rejected, published F, n_calls,
 IQR), which `--dump-legs` writes per leg.
+
+#### Sticky carry mode (design D23b, lane E; `--sticky-carry`, on under `--store`)
+
+Why: on its own each bucket decides implied vs Published on a hard 1e-3 IQR guard, and
+274 of the 1,913 expiries of the 2026-10-14 top-100 chattered across it between 10:00
+and 15:00: an expiry whose calls sit near the guard flips its forward basis (and with it
+its q, and a carry re-mark of up to the forward gap) from one bucket to the next.
+
+`market_state_from_bucket(bucket, time, report, forwards, previous)` takes the previous
+bucket's `forwards` table (ascending (uid, expiry), as the 4-argument overload returns it,
+built through the same `UnderlierTable`; an unordered table or one aliasing `forwards` is
+InvalidArgument; null = the 4-argument overload bit for bit). Per (uid, expiry) with a
+`previous` entry the guard in step 4 becomes:
+
+| previous mode | implied when |
+|---|---|
+| implied | n ≥ 3 and IQR ≤ `kImpliedCarryStickyHoldFactor` (3) × 1e-3 × F (holds through guard noise) |
+| Published | n ≥ 3 and IQR ≤ `kImpliedCarryStickyEnterFactor` (0.5) × 1e-3 × F (a 2× margin) |
+
+A row without a `previous` entry (the first bucket, a new expiry) takes the one-bucket
+guard; nothing is implied without the inversion. `BucketStateReport` counts
+`n_expiries_sticky_implied` (implied rows the one-bucket guard would have published),
+`n_expiries_sticky_published` (Published rows it would have implied) and `n_mode_flips`
+(rows whose mode differs from their `previous` entry); `SpiderRockExpiryForward` marks the
+row (`sticky`, `mode_flipped`). The bench threads each bucket's table into the next load
+and counts the flips (`mode_flips`) with the flag on or off.
+
+Measured (licensed 2026-10-14, top-100, the 11 buckets 10:00–15:00; lane E): mode flips
+952 over 316 (uid, expiry) → **110 over 80** with the sticky rule; 61 of the 80 flip once,
+mostly a published expiry entering implied as its calls tighten (70 of the 110 events);
+19 flip twice or more. A Python re-implementation of the rule reproduces both counts
+exactly. Price parity is unchanged by it; Σ|unexplained| / Σ|pnl| on options 1.05 % →
+0.99 %. The gate counts chatter — expiries that flip ≥ 2 times across 10:00–15:00, target
+≤ 20 (19 ✔) — because a one-way published → implied entry as an expiry's calls tighten is an
+improvement of its forward basis, not chatter.
 
 Bucket 1000 of 2026-10-14, top-100: **1,758 expiries implied, 155 Published** (10 with
 < 3 calls, 145 on the IQR guard — e.g. TLT / IWM / SPY long-dated, whose calls do not
@@ -337,11 +392,11 @@ our price vs srPrc, delta vs de, vega vs ve / 0.01; MAE, max |Δ| and the mean S
 relative error |m − o| / max(|m|, |o|, floor) with floors 0.01 (price), 1e-3 (delta,
 vega). In synthetic mode this is an identity check up to the family kernel's accuracy.
 
-## Report schema (JSON, `schema_version: 2`)
+## Report schema (JSON, `schema_version: 3`)
 
 Non-finite numbers are written as `null` and read back as NaN; doubles use the shortest
 round-trip decimal form, so `report_from_json(report_to_json(r))` re-serializes byte for
-byte (`RiskBenchReport.JsonSchemaV2RoundTrip`). Times are seconds; P&L is
+byte (`RiskBenchReport.JsonSchemaV3RoundTrip`). Times are seconds; P&L is
 position-scaled currency (qty × multiplier).
 
 **v2** (lane C follow-up 2) adds `inputs.time`, `inputs.carry_mode` and the
@@ -349,12 +404,16 @@ position-scaled currency (qty × multiplier).
 `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel`,
 `implied_carry_seconds`; lane A2's family-kernel fields `inputs.family_policy`,
 `steps[].frame.family_nodes` and `steps[].cold.max_rel_price_family` are v2 fields too.
-The reader requires every v2 field and refuses any other `schema_version` (a v1 report is
+**v3** (lane E) lets `inputs.time` be `vendor` and adds the `bucket_loads[]` fields
+`n_expiries_vendor_T`, `n_expiries_sticky_implied`, `n_expiries_sticky_published` and
+`n_mode_flips`, `inputs.sticky_carry`, the top-level `n_expiries_mode_flipped`, and the
+explain axis `carry` (in `axes` and `axis_share`, whose denominator now includes it). The
+reader requires every v3 field and refuses any other `schema_version` (a v1 / v2 report is
 a ParseError, never read with guessed defaults).
 
 | path | type | meaning |
 |---|---|---|
-| `schema_version` | int | 2 |
+| `schema_version` | int | 3 |
 | `tool` | string | `atx-vol-risk-bench` |
 | `inputs.store` | string | store root read (the synthetic dir in synthetic mode) |
 | `inputs.date`, `.from`, `.to` | string | trading date, bucket window |
@@ -365,19 +424,21 @@ a ParseError, never read with guessed defaults).
 | `inputs.seed` | uint64 | `--seed` |
 | `inputs.requested_underliers`, `_options`, `_shares` | uint | requested book shape |
 | `inputs.host_threads` | uint | `std::thread::hardware_concurrency()` |
-| `inputs.time` | string | `calendar365` / `voltime` (`--time`) |
+| `inputs.time` | string | `vendor` / `voltime` / `calendar365` (`--time`; the run's clock, default included) |
 | `inputs.carry_mode` | string | `implied_from_calls` (`--store`) / `published` (`--synthetic`) |
 | `inputs.family_policy` | string | the effective `FamilyKernelPolicy` of the main stream (`n_sigma`, `n_sigma_min`, pad, spacing, economics and its two constants, schedule, `short_box_tau` and `n_sigma_min_short`); empty under `--kernel cold` |
+| `inputs.sticky_carry` | bool | `--sticky-carry` (default included) |
 | `synthetic_store.generated` | bool | the store was written by this run |
 | `synthetic_store.seconds`, `.rows` | number, uint | generation wall clock, rows written |
 | `book.n_option_legs`, `.n_unique_options`, `.n_share_legs`, `.n_underliers` | uint | from `RiskBook` |
 | `book.shortfall` | uint | requested option legs not found (thin underliers) |
 | `buckets` | [string] | buckets in the window, ascending |
-| `bucket_loads[]` | object | per bucket: `bucket`, `rows_read`, `rows_kept`, `rows_dropped_null`, `rows_dropped_bad_input`, `rows_not_selected`, `dropped_non_american`, `dropped_nonstandard_root`, `rows_null_vendor`, `n_uids`, `n_marks`, `n_uids_with_divs`, `max_ddiv_spread`, `dropped_forward_framework`, `pv_divs_from_ddiv_pv` (bool), `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel` (= `max_implied_vs_published_forward_rel`), `implied_carry_seconds` (loader / state accounting above) |
+| `bucket_loads[]` | object | per bucket: `bucket`, `rows_read`, `rows_kept`, `rows_dropped_null`, `rows_dropped_bad_input`, `rows_not_selected`, `dropped_non_american`, `dropped_nonstandard_root`, `rows_null_vendor`, `n_uids`, `n_marks`, `n_uids_with_divs`, `max_ddiv_spread`, `dropped_forward_framework`, `pv_divs_from_ddiv_pv` (bool), `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel` (= `max_implied_vs_published_forward_rel`), `implied_carry_seconds`, `n_expiries_vendor_T` (rows with a T_override), `n_expiries_sticky_implied`, `n_expiries_sticky_published`, `n_mode_flips` (rows on the other mode than the previous bucket's row of the same (uid, expiry), counted with `--sticky-carry` on or off; 0 for the first bucket) (loader / state accounting above) |
+| `n_expiries_mode_flipped` | uint | distinct (uid, expiry) with at least one mode flip over the run |
 | `start.state_seconds`, `.evaluate_seconds` | number | first bucket's state build, `RiskStream::start` evaluate |
 | `steps[].bucket_from`, `.bucket_to` | string | the step |
 | `steps[].ts_from`, `.ts_to` | int64 | epoch ns of the two states |
-| `steps[].dt_years` | number | explain dt (base state's TimeSpec) |
+| `steps[].dt_years` | number | the instants' step on the base state's TimeSpec (an overridden expiry rolls by its own `T_base − T_shifted`, the per-leg `d_time`) |
 | `steps[].clocks.{load,state,evaluate,family_build,explain,step}_seconds` | number | stage clocks (above) |
 | `steps[].frame.{families_built,carry_sets_built,family_rows,cold_rows,exercised_rows,refused_rows}` | uint | shifted frame's `FrameCounters` |
 | `steps[].frame.family_nodes` | uint | sigma nodes solved over the families built (`FrameCounters::family_nodes`; nodes per family = family_nodes / families_built) |
@@ -389,8 +450,8 @@ a ParseError, never read with guessed defaults).
 | `steps[].explain.pnl_total`, `.explained` | number | totals; explained = pnl_total − pnl_unexplained |
 | `steps[].explain.sum_abs_unexplained`, `.sum_abs_pnl_total` | number | Σ over Ok legs |
 | `steps[].explain.explained_ratio` | number | sum_abs_unexplained / sum_abs_pnl_total |
-| `steps[].explain.axes` | object | totals per axis: `delta gamma vega volga vanna theta rho charm unexplained vol_level vol_skew vol_curv vol_resid shares` |
-| `steps[].explain.axis_share` | object | each axis / (Σ abs of delta … charm + unexplained) |
+| `steps[].explain.axes` | object | totals per axis: `delta gamma vega volga vanna theta rho charm unexplained vol_level vol_skew vol_curv vol_resid shares carry` (`carry` = `ExplainTotals::pnl_carry`, design D23a: the P&L of the per-expiry carry re-mark; Σ of the nine axes incl. carry + unexplained = pnl_total) |
+| `steps[].explain.axis_share` | object | each axis / (Σ abs of delta … charm + carry + unexplained) |
 | `steps[].quality.spearman`, `.ks`, `.zone` | number, number, string | per-leg explained vs actual; zone `green`/`amber`/`red`/`undefined` (diagnostic) |
 | `steps[].vendor_parity.{price,delta,vega}` | object | `n`, `mae`, `sym_rel`, `max_abs` |
 | `steps[].determinism.checked`, `.bit_equal` | bool | `--determinism` result |
@@ -459,6 +520,8 @@ are one bucket apart.)
 | `sr_prc`, `sr_de`, `sr_ga`, `sr_ve`, `sr_th` | the base bucket's raw srPrc, de, ga, ve, th (SpiderRock units) |
 | `sr_years`, `sr_uprc`, `sr_synspot`, `sr_rate`, `sr_sdiv`, `sr_ddiv`, `sr_bid`, `sr_ask` | the same row's years, uPrc, synSpot (empty when the store has none), rate, sdiv, ddiv, bidPrc, askPrc (raw) |
 | `pnl_total`, `pnl_delta`, `pnl_gamma`, `pnl_vega`, `pnl_volga`, `pnl_vanna`, `pnl_theta`, `pnl_rho`, `pnl_charm`, `pnl_unexplained` | the step's per-leg explain (position-scaled) |
+| `T_vendor` | (lane E, appended after `pnl_unexplained` so earlier columns keep their positions) the median `years` of the contract's expiry in the base bucket (`SpiderRockExpiryForward::T_vendor`): equal to `T` under `--time vendor`, the vendor clock beside ours otherwise |
+| `pnl_carry` | (lane E, appended last) the step's per-leg carry axis (`ExplainResult::pnl_carry`, design D23a); `pnl_unexplained` is the remainder after it |
 
 Reading it: a carry gap shows as `q_eff` ≠ `q_eff_d4`, as `implied_forward` far from
 `published_forward`, or as `sr_uprc` / `sr_years` far from `spot` / `T` on the rows with
@@ -487,6 +550,7 @@ half (frame → column mapping, carry precedence, book mapping, an unwritable pa
   `published`, `published_forward` = `forward` (1e-12), each row's contract = its book
   leg's, prepared order, and that a directory as `--dump-legs` is an `IoError`.
 - Loader / state conventions are versioned by `kSpiderRockConventionsVersion`
-  (`spiderrock_store.hpp`; 2 = this document's conventions): persistence fingerprints of
+  (`spiderrock_store.hpp`; 3 = this document's conventions, lane E's vendor clock and
+  sticky carry mode; 2 = follow-up 2): persistence fingerprints of
   cached market states depend on it, so any change to a value derived from the vendor
   columns (clock, carry mode, framework filter, pv_divs source) bumps it.

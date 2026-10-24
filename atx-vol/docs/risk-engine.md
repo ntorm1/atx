@@ -50,8 +50,30 @@ the box, near the exercise edge, per-Greek refusals) go to the cold route with
 - Vega split (`ExplainOptions::vega_split`) pivots in standardized moneyness
   z = k / (σ_atm √T) at ±`z_ref`; `VolMoveConvention::ContractOwn` (default) measures the
   contract's own mark move at its rolled T; `CommonBaseMaturity` holds T.
-- Identities are gated at ≤ 2 ulp: Σ eight terms + unexplained == pnl_total per row;
-  level + skew + curvature + resid == vega term.
+- Identities are gated at ≤ 2 ulp: Σ eight terms (+ carry) + unexplained == pnl_total per
+  row; level + skew + curvature + resid == vega term.
+- Carry axis (design D23a, lane E): a re-mark of an expiry's carry inputs (`ExpiryCarry`
+  q / pv_divs, or flat_q) between two states moves its forward at fixed spot by
+  J = ln((S_b − pv_t)/(S_b − pv_b)) − (q_t − q_b)·T_b; per leg `pnl_carry = w·Δ_b·S_b·J`
+  (`ExplainResult::pnl_carry`, the 21st per-leg double column; `ExplainTotals::pnl_carry`).
+  Exact for the forward-driven price (calls with q_eff ≤ 0 ≤ r, puts with r ≤ 0 ≤ q_eff:
+  ≥ 99.9 % captured). **Known limit (accepted for this wave):** the axis is the delta proxy,
+  so an American put whose early exercise binds over-captures its carry P&L by 1.10–1.18×
+  (measured at r = 4.3 %, T = 0.3) — the exercise premium's own carry sensitivity is not in
+  Δ. `pnl_unexplained` absorbs the remainder exactly (it is `pnl_total` minus every axis,
+  carry included, so the row identity still holds to ≤ 2 ulp). Follow-up: an exact carry
+  revaluation for ITM American puts.
+  `CarryFrom::Surface` states and a row present in one state only are not decomposed. No
+  solve; unmoved carry ⇒ +0.0 and the pre-axis bits.
+- Per-expiry clock (design D22, lane E): `ExpiryCarry::T_override` (finite ⇒ > 0) is THE T
+  of its expiry for both kernels and the explain (dt = the contract's own
+  T_base − T_shifted whenever either state overrides the expiry); NaN keeps the
+  `TimeSpec`. The SpiderRock loader fills it from the vendor's `years`
+  (`SpiderRockClock::VendorYears`).
+- Sticky carry mode (design D23b, lane E): the SpiderRock loader can build a bucket's state
+  on the previous bucket's implied / published table (`market_state_from_bucket` with
+  `previous`): an implied expiry holds to 3× the IQR guard, a published one turns implied
+  only at half of it; the bench does this under `--store` (`--sticky-carry`).
 - Totals are Neumaier-compensated in leg order; results are bit-identical across thread
   counts (a gate, not a goal).
 - Shares are delta-one legs: `pnl_delta = qty · ΔS`; no financing / dividend lines yet.

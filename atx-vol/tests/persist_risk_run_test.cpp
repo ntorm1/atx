@@ -168,7 +168,11 @@ void expect_explain_equal(const ExplainResult &a, const ExplainResult &b, std::s
   EXPECT_TRUE(same_bytes(a.id, b.id)) << k;
   EXPECT_TRUE(same_bytes(a.uid, b.uid)) << k;
   EXPECT_TRUE(same_bytes(a.kind, b.kind)) << k;
-  for (const auto col : rr::kExplainMembers) EXPECT_TRUE(same_bytes(a.*col, b.*col)) << k;
+  for (const auto col : rr::kExplainMembers) {
+    EXPECT_TRUE(same_bytes(a.*col, b.*col)) << k;
+    EXPECT_EQ((a.*col).size(), a.size()) << k << ": a materialized column without one row per leg";
+  }
+  EXPECT_TRUE(same_bytes(a.pnl_carry, b.pnl_carry)) << k;
   EXPECT_TRUE(same_bytes(a.route_base, b.route_base)) << k;
   EXPECT_TRUE(same_bytes(a.route_shifted, b.route_shifted)) << k;
   EXPECT_TRUE(same_bytes(a.flags, b.flags)) << k;
@@ -194,6 +198,8 @@ void expect_archive_matches(const RiskRunArchive &a, const Recorded &rec) {
       EXPECT_TRUE(same_bytes(a.frame(static_cast<RiskFrameColumn>(c), k),
                              rec.frames[k].*rr::kFrameMembers[c]))
           << "step " << k << " frame column " << c;
+      EXPECT_EQ(a.frame(static_cast<RiskFrameColumn>(c), k).size(), rec.frames[k].size())
+          << "step " << k << " frame column " << c << ": one row per unique option";
     }
     if (k == 0) {
       EXPECT_EQ(a.totals(0), nullptr) << "the first state has no explain";
@@ -201,11 +207,17 @@ void expect_archive_matches(const RiskRunArchive &a, const Recorded &rec) {
       continue;
     }
     const ExplainResult &live = rec.explains[k - 1];
+    ASSERT_GT(live.size(), 0u);
+    // Every recorded column, the 21st (pnl_carry, lane E) included, has one row per leg.
+    static_assert(kRiskExplainColumnCount == 21);
     for (std::size_t c = 0; c < kRiskExplainColumnCount; ++c) {
       EXPECT_TRUE(same_bytes(a.explain(static_cast<RiskExplainColumn>(c), k),
                              live.*rr::kExplainMembers[c]))
           << "step " << k << " explain column " << c;
+      EXPECT_EQ(a.explain(static_cast<RiskExplainColumn>(c), k).size(), live.size())
+          << "step " << k << " explain column " << c << ": one row per leg";
     }
+    EXPECT_TRUE(same_bytes(a.explain(RiskExplainColumn::PnlCarry, k), live.pnl_carry)) << k;
     ASSERT_NE(a.totals(k), nullptr);
     EXPECT_TRUE(same_pod(*a.totals(k), live.total)) << k;
   }
@@ -581,7 +593,7 @@ TEST(PersistRiskRun, RefusesLayoutDriftFingerprint) {
   // exactly when a RiskRun record, column or section changes (including ExplainTotals
   // / FrameCounters growing under another lane): re-pin it deliberately, then every
   // old file is refused with SchemaMismatch (no backward compatibility, persist D5).
-  constexpr std::uint64_t kPinned = 0xc881a1e8c5e87255ull; // pinned 2026-10-24 (lane P2)
+  constexpr std::uint64_t kPinned = 0x07b280ae55b35c46ull; // re-pinned 2026-10-24 (lane E)
   EXPECT_EQ(risk_run_fingerprint(), rr::kFingerprint);
   EXPECT_EQ(risk_run_fingerprint(), kPinned);
 
