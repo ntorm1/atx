@@ -318,6 +318,7 @@ set(ATX_VOL_PERSIST_SOURCES
     src/persist/state_store.cpp
     src/persist/surface_timeline.cpp
     src/persist/risk_run_archive.cpp
+    src/persist/risk_run_archive_publish.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES
