@@ -191,10 +191,9 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
   }
 
   // Sigma box: the group's resolved range padded, never below the floor nor the
-  // family's own guard; a degenerate range is widened by +-pad sigma.
-  const double pad = c.policy.sigma_box_pad > 0.0 ? c.policy.sigma_box_pad : 0.05;
+  // family's own guard.
   const double floor = std::max(c.policy.sigma_box_floor, kAlSigmaFamilyMinSigma);
-  const double lo = std::max(smin * (1.0 - c.policy.sigma_box_pad), floor);
+  double lo = std::max(smin * (1.0 - c.policy.sigma_box_pad), floor);
   double hi = smax * (1.0 + c.policy.sigma_box_pad);
   if (smax < lo) { // every lane below the floor: nothing for a family to serve
     for (std::uint32_t r = grp.begin; r < grp.end; ++r) {
@@ -204,8 +203,15 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
     }
     return;
   }
+  // A degenerate box (one sigma and pad 0, or a range squeezed onto the floor) cannot
+  // be prepared: widen it SYMMETRICALLY by +-pad around its centre, floor-clamped.
+  // pad 0 has no width to offer, so the degenerate case alone falls back to 5 %.
   if (!(hi - lo > 1.0e-9)) {
-    hi = std::max(smax, lo) * (1.0 + pad);
+    constexpr double kDegeneratePad = 0.05;
+    const double pad = c.policy.sigma_box_pad > 0.0 ? c.policy.sigma_box_pad : kDegeneratePad;
+    const double centre = std::max(smax, lo);
+    lo = std::max(centre * (1.0 - pad), floor);
+    hi = centre * (1.0 + pad);
   }
 
   // The anchor: spot for a call family (McDonald-Schroder internal strike). For a put
