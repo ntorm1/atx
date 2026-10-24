@@ -68,8 +68,11 @@ synth   --store <dir> [--underliers N]
 - `synth` writes a SpiderRock-shaped synthetic day for a data-free round trip
   (`synth -> build -> inspect -> verify -> bench`).
 
-The licensed store `C:\atx-data\spiderrock-30min` is read-only; the sanctioned output root is
-`C:\atx-cache\persist\` (the default `--out`). The tool passes conventions version 1
+The licensed store `C:\atx-data\spiderrock-30min` is read-only. The output root is `--out`, else
+the environment variable `ATX_VOL_PERSIST_ROOT`; `build`, `bench` and `verify --date` refuse
+(exit 2) when neither is set. There is no compiled-in default: an absolute literal would name a
+directory of whichever machine layout the binary was built for. On the research host the
+sanctioned root is `C:\atx-cache\persist\` (set `ATX_VOL_PERSIST_ROOT` to it). The tool passes conventions version 1
 (`kStateStoreConventionsVersion`, to become `kSpiderRockConventionsVersion` at integration).
 
 ## Store layout and rebuild rules
