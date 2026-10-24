@@ -27,6 +27,7 @@
 #include "fitting/quote_slice_nodes.hpp"
 #include "fitting/quote_slice_price_budget.hpp"
 #include "fitting/quote_slice_vol_space.hpp"
+#include "fitting/raw_price_draft.hpp"
 #include "fitting/rung_memo.hpp"
 #include "fitting/slice_channel.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the hand-off and the fast path
@@ -2653,6 +2654,35 @@ Result<ChannelFitDiagnostics> solve_channel_family(QuoteSliceFit &out,
 }
 
 } // namespace
+
+Status detail::prepare_raw_price_draft_metadata(RawPriceDraft &draft,
+    const QuoteSliceMarket &market, const QuoteSliceConfig &config,
+    std::span<const CashDividend> dividends) {
+  ATX_TRY_VOID(prepare_fit(draft.prepared, market, draft.original_quotes, config, dividends));
+  const auto &fit = draft.prepared;
+  const auto &diag = fit.diagnostics;
+  double q_min = diag.effective_yield;
+  double q_max = diag.effective_yield;
+  draft.terminal_prepaid.reserve(draft.nodes.size());
+  for (const auto &node : draft.nodes) {
+    const double q = effective_yield(fit, calendar_yield_at(fit, node.strike));
+    const double prepaid = market.spot * std::exp(-q * market.variance_years);
+    if (!std::isfinite(q) || !positive(prepaid)) {
+      return Err(ErrorCode::InvalidArgument, "raw price draft: invalid terminal carry");
+    }
+    if (detail::classify_regime(diag.effective_rate, q) == detail::ExerciseRegime::Unsupported ||
+        detail::classify_regime(q, diag.effective_rate) == detail::ExerciseRegime::Unsupported) {
+      return Err(ErrorCode::NotImplemented, "raw price draft: unsupported exercise regime");
+    }
+    q_min = std::min(q_min, q);
+    q_max = std::max(q_max, q);
+    draft.terminal_prepaid.push_back(prepaid);
+  }
+  draft.bounds = {market.spot, std::min(1.0, diag.discount), std::max(1.0, diag.discount),
+      market.spot * std::exp(-std::max(q_max, 0.0) * market.variance_years),
+      market.spot * std::exp(std::max(-q_min, 0.0) * market.variance_years)};
+  return Ok();
+}
 
 Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
   return validate_channel(config);

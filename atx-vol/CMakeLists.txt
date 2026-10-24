@@ -144,6 +144,7 @@ set(ATX_VOL_FITTING_SOURCES
     # Lane C4 (r6): the opt-in exact in-box projection rung (src/fitting/inbox_projection.hpp).
     src/fitting/inbox_projection.cpp
     src/fitting/joint_inbox_projection.cpp
+    src/fitting/raw_price_draft.cpp
     src/fitting/deam_iv_cache.cpp
     src/fitting/quote_surface.cpp
     src/fitting/slice_channel.cpp
