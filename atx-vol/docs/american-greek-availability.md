@@ -239,3 +239,31 @@ the actual build output. Receipts are repair-iv/greek-python-{red,green,status-r
 final,hygiene}.*. The hygiene cache initially selected a venv without pybind11;
 explicitly selecting the existing Python312 interpreter resolved configuration.
 No numerical arithmetic, Greek accuracy budget, or timing claim changed.
+
+Owned and mapped surface fused evaluations now stamp the exact selective
+Price/Delta/Vega request. A later dedicated-axis refusal preserves previously
+supplied price, Delta and resolved IV. Unrequested zeros have no availability;
+invalid-query and price-kernel failures retain their previous poison contract.
+A bare Result<double> supplies no numerical reason metadata, so its missing
+slot is Nonfinite and the original error remains in status; this does not invent
+a StencilCrossing label. Successful dedicated estimates carry ComputedEstimate.
+Full bundles preserve their actual producer reasons and reject incomplete
+full-Greek seeds. Scalar and laned ordinary refusals now use the short typed
+Unavailable error rather than Internal with a heap-allocated message.
+
+The non-AL FD fallback for dedicated Vega now checks the producer's Vega supply.
+A frozen BAW put (S=100, K=116.5837, T=.25, sigma=.2, r=.04, q=.01) previously
+returned successful NaN from surface.vega although its FD bundle explicitly
+refused Vega as StencilCrossing. The pre-change Python module b2aa4140 reproduced
+that failure; the native regression pins both owned and mapped surfaces. The
+public two-endpoint Vega and center-inclusive full-bundle contracts remain
+distinct. No pricing formula, numerical admission or tolerance changed.
+
+Two native runtime REDs reproduced metadata loss and discarded partial prices;
+the separate allocation RED counted three allocations for ordinary FD/AL/laned
+refusals. Final validation passes 162 surface/portfolio/seed/backtest-guard tests
+with two counter-disabled skips, the zero-allocation regression, and all five
+owning PCH-off objects. All refused contracts stay in the tests. Evidence is
+repair-iv/greek-surface-{red,final,alloc-red,alloc-final,hygiene}.* and
+greek-surface-baw-red.{py,log}. Chain-batch and ServedSession result propagation,
+plus additive backtest price coverage/carry bookkeeping, remain separate work.

@@ -38,6 +38,20 @@
 
 namespace atx::vol::detail {
 
+// Full-bundle bits retain their solve-group request. Dedicated routes request
+// only the explicitly selected axes; untouched numeric zeros supply nothing.
+[[nodiscard]] inline GreekFieldMask fused_greek_request(PricedSurface::EvalField fields,
+                                                        GreekNeeds needs) noexcept {
+  using EF = PricedSurface::EvalField;
+  if (has_field(fields, EF::FirstOrder) || has_field(fields, EF::SecondOrder))
+    return american_greek_request(needs.vega, needs.rho, needs.charm);
+  GreekFieldMask requested = GreekFieldMask::None;
+  if (has_field(fields, EF::Price)) requested = requested | GreekFieldMask::Price;
+  if (has_field(fields, EF::Delta)) requested = requested | GreekFieldMask::Delta;
+  if (has_field(fields, EF::Vega)) requested = requested | GreekFieldMask::Vega;
+  return requested;
+}
+
 // Whether `laned_greek_run` is the right route for this batch request. Mirrors the
 // predicate WS-P1a locked on PricedSurface (the ACCELERATOR guard is the caller's — the
 // view carries no accelerator and is always eligible).
@@ -169,9 +183,7 @@ void laned_greek_run(double S, std::span<const Side> side, const std::optional<A
     // in place for diagnosis — consumers gate on status.
     out.greeks[e] = gg;
     out.price[e] = gg.price;
-    out.status[e] = atx::core::Err(atx::core::ErrorCode::Internal,
-                                   "laned_greek_run: non-finite requested Greek on a "
-                                   "finite-price lane");
+    out.status[e] = atx::core::Err(atx::core::ErrorCode::Unavailable, "Greek refused");
   };
 
   const auto flush_put = [&]() {

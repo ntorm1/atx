@@ -66,9 +66,11 @@ constexpr double kFlatDiscountRelativeTolerance = 1.0e-12;
   return std::isfinite(K) && (K > 0.0) && std::isfinite(T) && (T > 0.0);
 }
 
-void poison(AmericanGreeks &greeks) noexcept {
+void poison(AmericanGreeks &greeks, GreekFieldMask requested) noexcept {
+  greeks = {};
   greeks.delta = greeks.gamma = greeks.vega = greeks.theta = greeks.rho = greeks.vanna =
       greeks.volga = greeks.charm = greeks.price = kNaN;
+  detail::mark_american_greek_fields(greeks, requested, AmericanGreekReason::Nonfinite);
 }
 
 // View instance ids are drawn from a HIGH, disjoint range so they can never
@@ -805,6 +807,8 @@ Result<double> PricedSurfaceView::vega_resolved(const ResolvedSurfacePoint &p, S
   if (!greeks.has_value()) {
     return Err(greeks.error());
   }
+  if (!detail::american_greeks_support(*greeks, GreekFieldMask::Vega))
+    return Err(ErrorCode::Unavailable, "vega stencil");
   return Ok(greeks->vega);
 }
 
@@ -862,10 +866,12 @@ PricedSurfaceView::FusedResult
 PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, EvalField fields,
                                      bool analytic, GreekNeeds needs) const {
   FusedResult r;
+  const GreekFieldMask requested = detail::fused_greek_request(fields, needs);
+  detail::mark_american_greek_fields(r.greeks, requested, AmericanGreekReason::Nonfinite);
   if (!p.valid) {
     r.iv = kNaN;
     r.price = kNaN;
-    poison(r.greeks);
+    poison(r.greeks, requested);
     r.status = Err(ErrorCode::InvalidArgument,
                    "PricedSurfaceView::evaluate: non-finite or non-positive K/T");
     return r;
@@ -884,7 +890,7 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
     if (!g.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
-      poison(r.greeks);
+      poison(r.greeks, requested);
       r.status = Err(g.error());
       return r;
     }
@@ -899,8 +905,7 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
     r.greeks = gg;
     r.price = gg.price;
     if (!detail::requested_greeks_finite(gg, needs)) {
-      r.status = Err(ErrorCode::Internal,
-                     "PricedSurfaceView::evaluate: non-finite price or requested Greek");
+      r.status = Err(ErrorCode::Unavailable, "Greek refused");
     }
     return r;
   }
@@ -909,33 +914,48 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
     if (!fv.has_value()) {
       r.iv = kNaN;
       r.price = kNaN;
-      poison(r.greeks);
+      poison(r.greeks, requested);
       r.status = Err(fv.error());
       return r;
     }
     r.price = *fv;
+    r.greeks.price = *fv;
+    detail::mark_american_greek_fields(r.greeks, GreekFieldMask::Price,
+                                      AmericanGreekReason::ComputedEstimate);
+    if (!detail::american_greeks_support(r.greeks, GreekFieldMask::Price)) {
+      r.iv = r.price = kNaN;
+      poison(r.greeks, requested);
+      r.status = Err(ErrorCode::Unavailable, "Price refused");
+      return r;
+    }
   }
   if (has_field(fields, EvalField::Delta)) {
     const Result<double> d = delta_resolved(p, side);
     if (!d.has_value()) {
-      r.iv = kNaN;
-      r.price = kNaN;
-      poison(r.greeks);
       r.status = Err(d.error());
       return r;
     }
     r.greeks.delta = *d;
+    detail::mark_american_greek_fields(r.greeks, GreekFieldMask::Delta,
+                                      AmericanGreekReason::ComputedEstimate);
+    if (!detail::american_greeks_support(r.greeks, GreekFieldMask::Delta)) {
+      r.status = Err(ErrorCode::Unavailable, "Greek refused");
+      return r;
+    }
   }
   if (has_field(fields, EvalField::Vega)) {
     Result<double> vega_result = vega_resolved(p, side);
     if (!vega_result.has_value()) {
-      r.iv = kNaN;
-      r.price = kNaN;
-      poison(r.greeks);
       r.status = Err(vega_result.error());
       return r;
     }
     r.greeks.vega = *vega_result;
+    detail::mark_american_greek_fields(r.greeks, GreekFieldMask::Vega,
+                                      AmericanGreekReason::ComputedEstimate);
+    if (!detail::american_greeks_support(r.greeks, GreekFieldMask::Vega)) {
+      r.status = Err(ErrorCode::Unavailable, "Greek refused");
+      return r;
+    }
   }
   return r;
 }

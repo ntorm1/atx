@@ -7,12 +7,14 @@
 // must give the same bits for every thread count.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -21,6 +23,8 @@
 #include <gtest/gtest.h>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/batch_chain.hpp"
 #include "atx/vol/api/pricing/pricing_executor.hpp"
@@ -30,6 +34,45 @@ namespace atx::vol {
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+TEST(PricedSurfaceGreekAlloc, OrdinaryPartialRefusalsDoNotAllocate) {
+  constexpr double S = 772.99, K = 811.6395, T = .0682, sigma = .12;
+  constexpr double r = .04496, q = .00162193;
+  const double F = S * std::exp((r - q) * T);
+  EssviParams params{};
+  params.T = T; params.F = F; params.theta = sigma * sigma * T;
+  params.phi = params.rho = 0.;
+  params.psi = params.p = params.lambda = .5;
+  CurveSurface curves;
+  curves.push(std::make_unique<EssviCurve>(params, std::exp(-r * T)));
+  PricingContext pricing;
+  pricing.S = S; pricing.r = r;
+  pricing.al_opts = al_fast_profile(std::nullopt);
+  pricing.al_opts.profile = AlProfile::Reference;
+  auto s = PricedSurface::create(std::move(curves), {{T, F, 0., q, 100u, 0u}}, pricing);
+  ASSERT_TRUE(s.has_value());
+  using EF = PricedSurface::EvalField;
+  const auto warm = s->evaluate(K, T, Side::Put, EF::FirstOrder, true);
+  ASSERT_FALSE(warm.status.has_value());
+  ASSERT_EQ(warm.greeks.reasons[1], AmericanGreekReason::StencilCrossing);
+  const std::array<double, 1> strikes{K}, tenors{T};
+  const std::array<Side, 1> sides{Side::Put};
+  std::array<double, 1> ivs{}, prices{};
+  std::array<AmericanGreeks, 1> greeks{};
+  std::array<Status, 1> statuses{};
+  bool retained = true;
+  const auto allocations = testkit::count_allocations([&] {
+    for (const bool analytic : {false, true}) {
+      const auto result = s->evaluate(K, T, Side::Put, EF::FirstOrder, analytic);
+      retained = retained && !result.status.has_value() && std::isfinite(result.price);
+    }
+    const auto rc = s->evaluate_batch(strikes, tenors, sides, EF::FirstOrder, true,
+        PricedSurface::EvaluationSoA{ivs, prices, greeks, statuses, {}, {}});
+    retained = retained && rc.has_value() && !statuses[0].has_value() && std::isfinite(prices[0]);
+  });
+  EXPECT_TRUE(retained);
+  EXPECT_EQ(allocations, 0u);
+}
 
 struct Chain {
   double spot = 100.0;
