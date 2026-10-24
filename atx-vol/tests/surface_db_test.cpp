@@ -542,6 +542,32 @@ TEST(SurfaceDbManifest, RefusesNonZeroReservedAndFlagsUnderValidCrcs) {
   }
 }
 
+// SER audit: a query longer than the 32-char key bound must not be truncated onto
+// the stored 32-char record that shares its prefix (find_symbol,
+// find_symbol_provenance, find_partition all used to alias it).
+TEST(SurfaceDbManifest, OverLongQueryDoesNotAliasATruncatedRecord) {
+  const std::string sym32(32, 'Q');
+  const std::string key32 = "2026-07-10_" + std::string(21, 'K');
+  ASSERT_EQ(key32.size(), 32u);
+  const std::vector<DbSymbolEntry> syms{DbSymbolEntry{sym32, {}}};
+  const std::vector<DbPartitionInfo> parts{
+      DbPartitionInfo{key32, 1, 4096, 1720569600000000000LL}};
+  auto bytes = write_db_manifest(syms, parts);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto m = DbManifest::open(std::move(*bytes));
+  ASSERT_TRUE(m.has_value()) << m.error().to_string();
+  ASSERT_TRUE(m->find_symbol(sym32).has_value());
+  ASSERT_NE(m->find_partition(key32), nullptr);
+
+  const auto sym = m->find_symbol(sym32 + "X");
+  ASSERT_FALSE(sym.has_value()) << "a 33-char query aliased the 32-char record";
+  EXPECT_EQ(sym.error().code(), ErrorCode::NotFound);
+  const auto prov = m->find_symbol_provenance(sym32 + "X");
+  ASSERT_FALSE(prov.has_value()) << "a 33-char query aliased the 32-char record";
+  EXPECT_EQ(prov.error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(m->find_partition(key32 + "X"), nullptr);
+}
+
 TEST(SurfaceDbManifest, Write_RejectsDuplicateAndInvalid) {
   const std::vector<DbSymbolEntry> dup{{"AAPL", {}}, {"aapl", {}}};
   EXPECT_EQ(write_db_manifest(dup, {}).error().code(), ErrorCode::AlreadyExists);

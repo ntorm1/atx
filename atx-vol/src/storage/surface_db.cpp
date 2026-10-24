@@ -813,8 +813,13 @@ Result<DbManifest> DbManifest::open(std::vector<std::byte> bytes) {
   return Ok(std::move(m));
 }
 
+// The three manifest lookups refuse a query longer than kSurfaceDbKeyMax instead of
+// letting `canonicalize_symbol` truncate it: a truncated query would alias a 33-char
+// name onto the stored 32-char record that shares its prefix (lane SER audit).
 Result<SymbolFitConfig> DbManifest::find_symbol(std::string_view symbol) const {
-  const std::string canon = detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax);
+  const std::string canon = symbol.size() <= kSurfaceDbKeyMax
+                                ? detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax)
+                                : std::string{};
   if (!canon.empty()) {
     const auto len = static_cast<std::uint16_t>(canon.size());
     const auto it =
@@ -831,7 +836,9 @@ Result<SymbolFitConfig> DbManifest::find_symbol(std::string_view symbol) const {
 
 Result<std::optional<SurfaceProvenance>>
 DbManifest::find_symbol_provenance(std::string_view symbol) const {
-  const std::string canon = detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax);
+  const std::string canon = symbol.size() <= kSurfaceDbKeyMax
+                                ? detail::canonicalize_symbol(symbol, kSurfaceDbKeyMax)
+                                : std::string{};
   if (!canon.empty()) {
     const auto len = static_cast<std::uint16_t>(canon.size());
     const auto it =
@@ -849,6 +856,9 @@ DbManifest::find_symbol_provenance(std::string_view symbol) const {
 }
 
 const DbPartitionRecord *DbManifest::find_partition(std::string_view key) const noexcept {
+  if (key.size() > kSurfaceDbKeyMax) {
+    return nullptr;
+  }
   const std::string canon = detail::canonicalize_symbol(key, kSurfaceDbKeyMax);
   if (canon.empty()) {
     return nullptr;
