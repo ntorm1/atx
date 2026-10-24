@@ -191,11 +191,12 @@ TEST(RiskBenchE2E, SyntheticRunProducesReport) {
     EXPECT_GT(static_cast<double>(t.n_ok), 0.9 * static_cast<double>(t.n_legs))
         << t.bucket_from << "->" << t.bucket_to;
     EXPECT_EQ(t.n_ok + t.n_excluded, t.n_legs);
-    // Eight Taylor terms + unexplained reproduce the total (totals are Neumaier sums
-    // of per-leg exact remainders, so the identity holds to rounding).
+    // Eight Taylor terms + the carry axis (lane E: the synthetic ddiv is a PV that accrues
+    // between buckets, a pv_divs re-mark) + unexplained reproduce the total (totals are
+    // Neumaier sums of per-leg exact remainders, so the identity holds to rounding).
     const rb::AxisTotals &a = t.axes;
     const double sum = a.delta + a.gamma + a.vega + a.volga + a.vanna + a.theta + a.rho +
-                       a.charm + a.unexplained;
+                       a.charm + a.carry + a.unexplained;
     EXPECT_LT(rel_gap(sum, t.pnl_total), 1e-9);
     EXPECT_LT(rel_gap(a.vol_level + a.vol_skew + a.vol_curv + a.vol_resid, a.vega), 1e-9);
     EXPECT_TRUE(std::isfinite(t.explained_ratio));

@@ -19,8 +19,31 @@
 //   (with ExplainOptions::trapezoid_second_order: gamma_b, volga_b, vanna_b are
 //    replaced by the base/shifted averages; the three other base Greeks are kept)
 //   pnl_rho   = rho_b dr            pnl_charm = charm_b dS dt
-//   explained = sum of the eight    pnl_total = P_t - P_b
+//   pnl_carry = delta_b S_b J       (the carry axis, below; 0 when the carry did not move)
+//   explained = sum of the eight (+ pnl_carry)       pnl_total = P_t - P_b
 //   pnl_unexplained = pnl_total - explained          (exact remainder)
+//
+// `dt` is per expiry when either state carries a finite ExpiryCarry::T_override for the
+// contract's (uid, expiry) (design D22): the contract's own roll T_base - T_shifted, read
+// off the two frames. Otherwise it is the instants' step above.
+//
+// ## Carry axis (design D23a, lane E)
+//
+// A re-mark of an expiry's carry INPUTS between the two states moves its forward at a
+// fixed spot. Per (uid, expiry), with both states under CarryFrom::State:
+//
+//   J = ln((S_b - pv_t) / (S_b - pv_b)) - (q_t - q_b) T_b
+//
+// the ln-forward move from (pv_divs, q) alone, at the base spot, rate and T. pv / q are the
+// exact-expiry ExpiryCarry row's when BOTH states have one (else flat_q, pv term 0: a cash
+// dividend schedule is taken as unchanged); a CarryFrom::Surface state, or a row in one
+// state only, is not decomposed (J = 0: the move stays in unexplained). The rate is NOT
+// carry (rho's axis). Per leg pnl_carry = w delta_b S_b J (an Exercised base row: 0) — the
+// kernel prices on (S, r, q_eff, T), and for the forward-driven (European) part of the
+// price dP/dq_eff = -T S delta exactly; the American early-exercise sensitivity to carry
+// beyond that is not modelled and stays in unexplained. No solve: no RiskNeeds flag. An
+// unmoved carry gives J == 0, pnl_carry == +0.0 and bit-identical other columns (the
+// remainder is then taken over the eight terms exactly as before the axis existed).
 //
 // all per share, then scaled by the leg weight qty * multiplier and scattered to
 // legs in input order (simd/pnl_batch: the eight terms are bit-identical scalar vs
@@ -45,8 +68,8 @@
 //
 // ## Identities (how the tests pin them)
 //
-// explained is the simd/pnl_batch total (a fixed association order) and
-// pnl_unexplained = pnl_total - explained, so explained + pnl_unexplained reproduces
+// explained is the eight columns summed left to right (plus pnl_carry last when it is
+// nonzero) and pnl_unexplained = pnl_total - explained, so explained + pnl_unexplained reproduces
 // pnl_total to within 1 ulp of pnl_total (fl(e + fl(t - e)) is not always t); the gate
 // is <= 2 ulp, never "bit-exact". The vega split is a fraction partition with the
 // remainder in vol_resid: level + skew + curv + resid == pnl_vega to <= 2 ulp.
@@ -134,6 +157,8 @@ struct ExplainTotals {
   std::uint32_t n_ok{0};
   std::uint32_t n_excluded{0};
   double excluded_premium{0.0};
+  // ── Lane E addition (appended; design D23a) ──
+  double pnl_carry{0.0}; // the carry axis (see "Carry axis" above)
 };
 
 struct ExplainBucket {
@@ -176,6 +201,8 @@ struct ExplainResult {
   std::vector<RiskRoute> route_shifted;
   std::vector<RiskFlags> flags;    // base | shifted flags
   std::vector<RiskLaneStatus> status; // Ok, or the exclusion reason
+  // ── Lane E addition (appended; design D23a): the 21st per-leg double column ──
+  std::vector<double> pnl_carry; // the carry axis per leg (position-scaled; 0 for shares)
 
   ExplainTotals total{};
   std::vector<ExplainBucket> by_uid;    // ascending uid

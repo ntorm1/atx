@@ -35,13 +35,15 @@ namespace {
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
 
-// The eight Taylor columns of row i, summed left to right in the kernel's order.
+// The eight Taylor columns of row i, summed left to right in the kernel's order, plus the
+// carry axis (design D23a; +0.0 when the carry did not move, which leaves the sum as is).
 [[nodiscard]] double explained(const ExplainResult &e, std::size_t i) noexcept {
-  return ((((((e.pnl_delta[i] + e.pnl_gamma[i]) + e.pnl_vega[i]) + e.pnl_volga[i]) +
-            e.pnl_vanna[i]) +
-           e.pnl_theta[i]) +
-          e.pnl_rho[i]) +
-         e.pnl_charm[i];
+  return (((((((e.pnl_delta[i] + e.pnl_gamma[i]) + e.pnl_vega[i]) + e.pnl_volga[i]) +
+             e.pnl_vanna[i]) +
+            e.pnl_theta[i]) +
+           e.pnl_rho[i]) +
+          e.pnl_charm[i]) +
+         e.pnl_carry[i];
 }
 
 // Two frames of one book over a (base, shifted) state pair.
@@ -100,6 +102,15 @@ constexpr std::array<TotalsField, 18> kTotalsFields{
     &ExplainTotals::pnl_rho,         &ExplainTotals::pnl_charm,  &ExplainTotals::pnl_unexplained,
     &ExplainTotals::vol_level,       &ExplainTotals::vol_skew,   &ExplainTotals::vol_curv,
     &ExplainTotals::vol_resid,       &ExplainTotals::shares_pnl, &ExplainTotals::excluded_premium};
+// ... and the lane E carry axis (kept apart: the pin below covers the eighteen above).
+constexpr std::array<TotalsField, 19> kAllTotalsFields{
+    &ExplainTotals::pv_base,         &ExplainTotals::pv_target,  &ExplainTotals::pnl_total,
+    &ExplainTotals::pnl_delta,       &ExplainTotals::pnl_gamma,  &ExplainTotals::pnl_vega,
+    &ExplainTotals::pnl_volga,       &ExplainTotals::pnl_vanna,  &ExplainTotals::pnl_theta,
+    &ExplainTotals::pnl_rho,         &ExplainTotals::pnl_charm,  &ExplainTotals::pnl_unexplained,
+    &ExplainTotals::vol_level,       &ExplainTotals::vol_skew,   &ExplainTotals::vol_curv,
+    &ExplainTotals::vol_resid,       &ExplainTotals::shares_pnl, &ExplainTotals::excluded_premium,
+    &ExplainTotals::pnl_carry};
 
 void expect_invalid_argument(const Result<ExplainResult> &r) {
   ASSERT_FALSE(r.has_value());
@@ -534,7 +545,7 @@ TEST(RiskExplain, ExcludedLanesCarryPremiumAndNeverNaN) {
   EXPECT_NEAR(e.total.excluded_premium, rolled_premium + missing_premium + share_premium,
               1e-12 * (rolled_premium + missing_premium + share_premium));
   // Never NaN in a total or a bucket.
-  for (const TotalsField f : kTotalsFields) {
+  for (const TotalsField f : kAllTotalsFields) {
     EXPECT_TRUE(std::isfinite(e.total.*f));
     for (const ExplainBucket &bk : e.by_uid) {
       EXPECT_TRUE(std::isfinite(bk.totals.*f));
@@ -584,7 +595,7 @@ TEST(RiskExplain, ThreadCountBitIdentical) {
         &ExplainResult::pnl_rho, &ExplainResult::pnl_charm, &ExplainResult::pnl_unexplained,
         &ExplainResult::vol_level, &ExplainResult::vol_skew, &ExplainResult::vol_curv,
         &ExplainResult::vol_resid, &ExplainResult::d_spot, &ExplainResult::d_vol,
-        &ExplainResult::d_time, &ExplainResult::d_rate}) {
+        &ExplainResult::d_time, &ExplainResult::d_rate, &ExplainResult::pnl_carry}) {
     EXPECT_TRUE(bytes_equal(a.*col, b.*col));
   }
   EXPECT_TRUE(bytes_equal(a.route_base, b.route_base));
@@ -622,7 +633,7 @@ TEST(RiskExplain, BucketsSumToTotal) {
       n_ok += bk.totals.n_ok;
     }
     EXPECT_EQ(n_ok, e.total.n_ok);
-    for (const TotalsField f : kTotalsFields) {
+    for (const TotalsField f : kAllTotalsFields) {
       double sum = 0.0;
       double gross = 0.0;
       for (const ExplainBucket &bk : *buckets) {
@@ -844,6 +855,7 @@ TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
     ExplainResult e;
     ASSERT_TRUE(explain_into(prep, base, fb, shifted, ft, opts, e).has_value());
     EXPECT_EQ(legs_digest(e), legs_digest(ref)) << "threads " << nt;
+    EXPECT_TRUE(bytes_equal(e.pnl_carry, ref.pnl_carry)) << "threads " << nt; // lane E column
     EXPECT_TRUE(totals_equal(e.total, ref.total)) << "threads " << nt;
     ASSERT_EQ(e.by_uid.size(), ref.by_uid.size());
     for (std::size_t k = 0; k < e.by_uid.size(); ++k) {
@@ -873,6 +885,13 @@ TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
       0x40607ffffffffff7ULL, 0x0ULL};
   EXPECT_EQ(ref.n_pivot_groups, 12u);
   EXPECT_EQ(legs_digest(ref), kPinnedDigest);
+  // Lane E (design D23a): the carry is identical in the two states, so the carry axis is
+  // +0.0 on every leg and in the totals, and the pinned columns above did not move.
+  ASSERT_EQ(ref.pnl_carry.size(), ref.size());
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.pnl_carry[i]), 0u) << "leg " << i;
+  }
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.pnl_carry), 0u);
   for (std::size_t k = 0; k < kTotalsFields.size(); ++k) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.*kTotalsFields[k]), kPinnedTotals[k])
         << "totals field " << k;
@@ -882,25 +901,25 @@ TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
 namespace {
 
 // A marks-only state for uid 1 (spot 100) at `ts_ns`: one ExpiryCarry row per fixture
-// expiry (rate kRate, `q`, `pv_divs[e]`) carrying `T_override[e]` (NaN keeps the clock),
+// expiry (`rate`, `q`, `pv_divs[e]`) carrying `T_override[e]` (NaN keeps the clock),
 // and a mark for every contract of `legs` (the same smile in every state). Heap-pinned:
 // the underlier's term_carry span points into the storage.
 [[nodiscard]] std::unique_ptr<MarketStateStorage>
 clock_state(std::int64_t ts_ns, const std::vector<OptionLeg> &legs,
             const std::array<double, 4> &T_override, const std::array<double, 4> &q,
-            const std::array<double, 4> &pv_divs) {
+            const std::array<double, 4> &pv_divs, double rate = rt::kRate) {
   auto st = std::make_unique<MarketStateStorage>();
   st->ts_ns = ts_ns;
   UnderlierState u;
   u.uid = 1u;
   u.spot = 100.0;
-  u.flat_rate = rt::kRate;
+  u.flat_rate = rate;
   u.flat_q = 0.015;
   u.carry = CarryFrom::State;
   st->underliers.push_back(u);
   std::vector<ExpiryCarry> carry;
   for (std::size_t e = 0; e < rt::kExpiryUnits.size(); ++e) {
-    carry.push_back(ExpiryCarry{rt::expiry_ns(e), pv_divs[e], rt::kRate, q[e], T_override[e]});
+    carry.push_back(ExpiryCarry{rt::expiry_ns(e), pv_divs[e], rate, q[e], T_override[e]});
   }
   st->term_carries.push_back(std::move(carry));
   MarketStateStorage::MarksColumns m;
@@ -994,4 +1013,187 @@ TEST(RiskExplain, ExpiryTOverrideDrivesTheta) {
   EXPECT_GT(sum_total, 0.0);
   EXPECT_LE(sum_unexpl, 0.02 * sum_total);
   EXPECT_GT(sum_unexpl_calendar, 10.0 * sum_unexpl);
+}
+
+namespace {
+
+constexpr std::array<double, 4> kNoOverride{std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN()};
+
+} // namespace
+
+// Design D23a: a re-mark of ONE expiry's carry inputs (nothing else moves: same instant,
+// spot, marks, rate) is explained by the carry axis. Two first-order moves on expiry 2
+// (T ~ 0.3): q + 1 bp (the forward moves -0.3 bp) and pv_divs 0.50 -> 0.52 (-2 bp).
+//
+// The axis is the forward (Black) first-order term delta S J: exact wherever the American
+// price is a function of the forward, i.e. where early exercise cannot pay. A call never
+// exercises early when q_eff <= 0 <= r, a put when r <= 0 <= q_eff, so each side is pinned
+// in its own regime: calls at r = 4.3 %, q = -2 % (q_eff <= 0 even with the dividend);
+// puts at r = 0, q = +2 %. There every leg captures >= 99 % of its pnl_total and the moved
+// legs' unexplained is <= 1 % of their P&L. In the realistic regime (r = 4.3 %, q = 1.5 %)
+// the calls still do (their early exercise barely binds), while the puts' early-exercise
+// premium has its own carry sensitivity (the holder can take K now) that a Taylor term on
+// the frame's Greeks cannot see: measured pnl_carry / pnl_total = 1.10 / 1.14 / 1.18 on the
+// 92 / 97 / 100 puts, bounded here in [1, 1.25] with the axis still shrinking those legs'
+// unexplained to <= 1/4 of their P&L. On every leg of every regime the remainder identity
+// holds to 2 ulp, legs of the other expiries carry no P&L and no carry, and the axis is
+// bit-identical across thread counts.
+TEST(RiskExplain, CarryAxisExplainsForwardRemark) {
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  struct Regime {
+    const char *name;
+    double rate;
+    double q;
+    bool calls_exact; // the calls cannot exercise early (or barely do): >= 99 %
+    bool puts_exact;  // the puts cannot exercise early: >= 99 %
+    bool puts_bound;  // the puts' boundary binds: the measured over-capture bound
+  };
+  const std::array<Regime, 3> regimes{{
+      {"calls European", rt::kRate, -0.02, true, false, false},
+      {"puts European", 0.0, 0.02, false, true, false},
+      {"realistic", rt::kRate, 0.015, true, false, true},
+  }};
+  for (const Regime &g : regimes) {
+    const std::array<double, 4> q_b{g.q, g.q, g.q, g.q};
+    const std::array<double, 4> pv_b{0.0, 0.0, 0.50, 0.0};
+    struct Move {
+      const char *name;
+      std::array<double, 4> q;
+      std::array<double, 4> pv;
+    };
+    const std::array<Move, 2> moves{{
+        {"q +1bp", {g.q, g.q, g.q + 1e-4, g.q}, pv_b},
+        {"pv_divs +0.02", q_b, {0.0, 0.0, 0.52, 0.0}},
+    }};
+    const auto sb = clock_state(rt::kT0, legs, kNoOverride, q_b, pv_b, g.rate);
+    const MarketState base = make_market_state(*sb).value();
+    for (const Move &m : moves) {
+      const auto st = clock_state(rt::kT0, legs, kNoOverride, m.q, m.pv, g.rate);
+      const MarketState shifted = make_market_state(*st).value();
+      const ClockPair f = clock_frames(prep, base, shifted);
+      ExplainOptions one;
+      one.n_threads = 1;
+      ExplainOptions eight;
+      eight.n_threads = 8;
+      const ExplainResult e = explain(prep, base, f.fb, shifted, f.ft, one).value();
+      const ExplainResult e8 = explain(prep, base, f.fb, shifted, f.ft, eight).value();
+      EXPECT_TRUE(bytes_equal(e.pnl_carry, e8.pnl_carry)) << m.name;
+      EXPECT_TRUE(bytes_equal(e.pnl_unexplained, e8.pnl_unexplained)) << m.name;
+      EXPECT_TRUE(totals_equal(e.total, e8.total)) << m.name;
+
+      std::size_t moved = 0;
+      std::size_t exact = 0;
+      double worst_exact = 0.0; // over the legs the forward term must explain to 1 %
+      double worst_put = 0.0;   // the binding puts' measured over-capture
+      double sum_total = 0.0;
+      double sum_unexpl = 0.0;
+      for (std::size_t i = 0; i < legs.size(); ++i) {
+        ASSERT_EQ(e.status[i], RiskLaneStatus::Ok) << g.name << " " << m.name << " leg " << i;
+        const double gap =
+            std::fabs((explained(e, i) + e.pnl_unexplained[i]) - e.pnl_total[i]);
+        EXPECT_LE(gap, 2.0 * ulp(e.pnl_total[i])) << m.name << " leg " << i;
+        if (expiry_index(legs[i].expiry_ns) != 2u) {
+          EXPECT_EQ(e.pnl_total[i], 0.0) << m.name << " leg " << i;
+          EXPECT_EQ(std::bit_cast<std::uint64_t>(e.pnl_carry[i]), 0u) << m.name << " leg " << i;
+          continue;
+        }
+        ASSERT_NE(e.pnl_total[i], 0.0) << m.name << " leg " << i;
+        ++moved;
+        const bool call = legs[i].side == Side::Call;
+        const double capture = e.pnl_carry[i] / e.pnl_total[i];
+        if (call ? g.calls_exact : g.puts_exact) {
+          EXPECT_GE(capture, 0.99) << g.name << " " << m.name << " K " << legs[i].K;
+          EXPECT_LE(capture, 1.01) << g.name << " " << m.name << " K " << legs[i].K;
+          worst_exact = std::max(worst_exact, std::fabs(capture - 1.0));
+          sum_total += std::fabs(e.pnl_total[i]);
+          sum_unexpl += std::fabs(e.pnl_unexplained[i]);
+          ++exact;
+        } else if (!call && g.puts_bound) {
+          EXPECT_GE(capture, 1.0) << g.name << " " << m.name << " K " << legs[i].K;
+          EXPECT_LE(capture, 1.25) << g.name << " " << m.name << " K " << legs[i].K;
+          EXPECT_LE(4.0 * std::fabs(e.pnl_unexplained[i]), std::fabs(e.pnl_total[i]))
+              << g.name << " " << m.name << " K " << legs[i].K;
+          worst_put = std::max(worst_put, capture);
+        }
+      }
+      std::cout << "[RiskExplain] carry re-mark (" << g.name << ") " << m.name << ": "
+                << exact << " of " << moved << " moved legs forward-exact, worst |pnl_carry / "
+                << "pnl_total - 1| = " << worst_exact << " (sum|unexplained| " << sum_unexpl
+                << " of sum|pnl| " << sum_total << ")";
+      if (g.puts_bound) {
+        std::cout << ", American puts max pnl_carry / pnl_total = " << worst_put;
+      }
+      std::cout << "\n";
+      EXPECT_EQ(moved, 5u);
+      EXPECT_GE(exact, 2u);
+      EXPECT_LE(sum_unexpl, 0.01 * sum_total) << g.name << " " << m.name;
+    }
+  }
+}
+
+// Design D23a: when the carry inputs are identical in the two states, the carry axis is
+// +0.0 on every leg and in every total and the other columns keep the pre-axis bits (the
+// A2 pin in ExplainBitEqualAcrossLegFanout holds that on marks-only states). Here: (a)
+// identical rows with only the clock moving (T overrides one day apart), (b) the standard
+// surface scenarios, whose CarryFrom::Surface states are never decomposed, (c) a flat-q
+// CarryFrom::State pair that moves spot / vol / rate / time but not q.
+TEST(RiskExplain, CarryAxisZeroWhenCarryUnchanged) {
+  const auto all_zero = [](const ExplainResult &e) {
+    bool ok = std::bit_cast<std::uint64_t>(e.total.pnl_carry) == 0u;
+    for (const double x : e.pnl_carry) {
+      ok = ok && std::bit_cast<std::uint64_t>(x) == 0u;
+    }
+    for (const ExplainBucket &b : e.by_uid) {
+      ok = ok && std::bit_cast<std::uint64_t>(b.totals.pnl_carry) == 0u;
+    }
+    for (const ExplainBucket &b : e.by_expiry) {
+      ok = ok && std::bit_cast<std::uint64_t>(b.totals.pnl_carry) == 0u;
+    }
+    return ok;
+  };
+  // (a) the clock alone.
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  std::array<double, 4> T_b{};
+  std::array<double, 4> T_t{};
+  for (std::size_t x = 0; x < T_b.size(); ++x) {
+    T_b[x] = rt::years(rt::kExpiryUnits[x]);
+    T_t[x] = rt::years(rt::kExpiryUnits[x] - rt::kDayUnits);
+  }
+  const std::array<double, 4> q{0.015, 0.012, 0.015, 0.02};
+  const std::array<double, 4> pv{0.0, 0.3, 0.5, 0.0};
+  const auto sb = clock_state(rt::kT0, legs, T_b, q, pv);
+  const auto st = clock_state(rt::instant_ns(rt::kDayUnits), legs, T_t, q, pv);
+  const MarketState base = make_market_state(*sb).value();
+  const MarketState shifted = make_market_state(*st).value();
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const ClockPair f = clock_frames(prep, base, shifted);
+  const ExplainResult a = explain(prep, base, f.fb, shifted, f.ft).value();
+  EXPECT_TRUE(all_zero(a)) << "clock only";
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    ASSERT_EQ(a.status[i], RiskLaneStatus::Ok);
+    EXPECT_NE(a.pnl_theta[i], 0.0) << "the clock moved";
+  }
+  // (b) surface states, every option convention.
+  for (const VolMoveConvention conv :
+       {VolMoveConvention::ContractOwn, VolMoveConvention::CommonBaseMaturity}) {
+    const auto s = standard_scenario(RiskKernel::family());
+    ExplainOptions opts;
+    opts.vol_move = conv;
+    EXPECT_TRUE(all_zero(run(*s, opts))) << "surface carry";
+  }
+  // (c) flat-q State carry on both sides; everything but q moves.
+  const auto cb = rt::make_state(rt::StateMove{}, CarryFrom::State);
+  const auto ct = rt::make_state(rt::shifted_move(), CarryFrom::State);
+  const RiskBook full = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
+  const PreparedRiskBook full_prep = PreparedRiskBook::create(full).value();
+  const ClockPair g = clock_frames(full_prep, cb->state, ct->state);
+  const ExplainResult c = explain(full_prep, cb->state, g.fb, ct->state, g.ft).value();
+  EXPECT_TRUE(all_zero(c)) << "flat q unchanged";
+  EXPECT_NE(c.total.pnl_total, 0.0);
 }

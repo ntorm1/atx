@@ -611,6 +611,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
     t.explained_ratio = 32.1 / 99999.0;
     t.axes.delta = 0.1 + k;
     t.axes.vol_resid = -0.25;
+    t.axes.carry = 12.75; // lane E (schema v3)
     t.axis_share.delta = 0.5;
     t.spearman = 0.97;
     t.ks = 0.02;
@@ -662,6 +663,8 @@ TEST(RiskBenchReport, JsonSchemaV3RoundTrip) {
   EXPECT_EQ(back->bucket_loads[0].max_forward_gap_rel, 0.330673);
   EXPECT_EQ(back->bucket_loads[0].implied_carry_seconds, 0.0126);
   EXPECT_EQ(back->bucket_loads[0].n_expiries_vendor_T, 1911u);
+  EXPECT_EQ(back->steps[1].axes.carry, 12.75);
+  EXPECT_NE(text.find("\"carry\": 12.75"), std::string::npos);
   EXPECT_EQ(back->carry_mode, "published"); // --synthetic
   EXPECT_TRUE(back->summary.determinism_bit_equal);
   EXPECT_EQ(back->summary.cold_speedup_p50, 100.0);
@@ -809,6 +812,7 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   row.pnl_delta = 10.0;
   row.pnl_unexplained = 0.25;
   row.T_vendor = 0.1025;
+  row.pnl_carry = -1.75;
 
   std::string out;
   rb::append_leg_dump_csv(out, row);
@@ -844,7 +848,7 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("implied_forward"), "455.5");
   EXPECT_EQ(cell("published_forward"), "454.25");
   EXPECT_EQ(cell("sr_synspot"), "455.25");
-  EXPECT_EQ(names.size(), 68u);
+  EXPECT_EQ(names.size(), 69u);
   EXPECT_EQ(cell("route"), "Family");
   EXPECT_EQ(cell("flags"), "VendorParityAvailable|ColdFallback");
   EXPECT_EQ(cell("status"), "Ok");
@@ -877,7 +881,11 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("pnl_gamma"), "");
   EXPECT_EQ(cell("pnl_unexplained"), "0.25");
   EXPECT_EQ(cell("T_vendor"), "0.1025");
-  EXPECT_EQ(names.back(), "T_vendor"); // appended: earlier columns keep their positions
+  EXPECT_EQ(cell("pnl_carry"), "-1.75");
+  // Lane E appended T_vendor, pnl_carry: the earlier 67 columns keep their positions.
+  EXPECT_EQ(names[names.size() - 2u], "T_vendor");
+  EXPECT_EQ(names.back(), "pnl_carry");
+  EXPECT_EQ(names[66], "pnl_unexplained");
 
   // No vendor mark => no price error; flat carry labelled as such; a store without
   // synSpot and a uid without a carry row leave those cells empty.

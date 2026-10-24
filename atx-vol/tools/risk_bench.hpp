@@ -163,6 +163,7 @@ struct AxisTotals {
   double vol_curv{0.0};
   double vol_resid{0.0};
   double shares{0.0};
+  double carry{0.0}; // lane E (schema v3): ExplainTotals::pnl_carry (design D23a)
 };
 
 // `--kernel both`: the cold kernel on the same states, compared row by row.
@@ -222,7 +223,7 @@ struct StepReport {
   double sum_abs_pnl_total{0.0};
   double explained_ratio{kNaN};    // sum_abs_unexplained / sum_abs_pnl_total
   AxisTotals axes{};
-  AxisTotals axis_share{};         // axis / sum of |axes| (delta..charm + unexplained)
+  AxisTotals axis_share{};         // axis / sum of |axes| (delta..charm, carry, unexplained)
   double spearman{kNaN};           // per-leg explained vs actual (diagnostic)
   double ks{kNaN};
   PlaZone zone{PlaZone::Undefined};
@@ -520,6 +521,7 @@ struct LegDumpRow {
   // The median vendor `years` of the contract's expiry in the base bucket
   // (SpiderRockExpiryForward::T_vendor): the T under --time vendor, a diagnostic otherwise.
   double T_vendor{kNaN};
+  double pnl_carry{kNaN}; // the step's per-leg carry axis (design D23a), after T_vendor
 };
 
 // Copies row `r` of `bucket` into the sr_* columns of `row`.

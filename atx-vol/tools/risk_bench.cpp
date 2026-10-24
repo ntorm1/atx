@@ -204,15 +204,17 @@ void fill_frame(StepReport &t, const RiskFrame &f) {
   a.vol_curv = x.vol_curv;
   a.vol_resid = x.vol_resid;
   a.shares = x.shares_pnl;
+  a.carry = x.pnl_carry;
   return a;
 }
 
-// Each Greek axis (and the remainder) as a fraction of the sum of their magnitudes;
-// the vega split pieces as fractions of the same denominator.
+// Each Greek axis, the carry axis and the remainder as a fraction of the sum of their
+// magnitudes; the vega split pieces as fractions of the same denominator.
 [[nodiscard]] AxisTotals axis_shares(const AxisTotals &a) noexcept {
   const double denom = std::abs(a.delta) + std::abs(a.gamma) + std::abs(a.vega) +
                        std::abs(a.volga) + std::abs(a.vanna) + std::abs(a.theta) +
-                       std::abs(a.rho) + std::abs(a.charm) + std::abs(a.unexplained);
+                       std::abs(a.rho) + std::abs(a.charm) + std::abs(a.carry) +
+                       std::abs(a.unexplained);
   if (!(denom > 0.0)) {
     return AxisTotals{};
   }
@@ -231,6 +233,7 @@ void fill_frame(StepReport &t, const RiskFrame &f) {
   s.vol_curv = a.vol_curv / denom;
   s.vol_resid = a.vol_resid / denom;
   s.shares = a.shares / denom;
+  s.carry = a.carry / denom;
   return s;
 }
 
@@ -320,7 +323,8 @@ void fill_parity(StepReport &t, const RiskFrame &f, const PreparedRiskBook &pb,
          bits_equal(x.charm, y.charm) && bits_equal(x.unexplained, y.unexplained) &&
          bits_equal(x.vol_level, y.vol_level) && bits_equal(x.vol_skew, y.vol_skew) &&
          bits_equal(x.vol_curv, y.vol_curv) && bits_equal(x.vol_resid, y.vol_resid) &&
-         bits_equal(x.shares, y.shares) && a.n_ok == b.n_ok && a.n_excluded == b.n_excluded &&
+         bits_equal(x.shares, y.shares) && bits_equal(x.carry, y.carry) && a.n_ok == b.n_ok &&
+         a.n_excluded == b.n_excluded &&
          bits_equal(a.excluded_premium, b.excluded_premium);
 }
 
@@ -330,6 +334,7 @@ void fill_parity(StepReport &t, const RiskFrame &f, const PreparedRiskBook &pb,
                                  const ExplainResult &b, const RiskFrame &fb) noexcept {
   return totals_equal(a.total, b.total) && columns_equal(a.pnl_total, b.pnl_total) &&
          columns_equal(a.pnl_unexplained, b.pnl_unexplained) &&
+         columns_equal(a.pnl_carry, b.pnl_carry) &&
          columns_equal(fa.price, fb.price) && columns_equal(fa.delta, fb.delta) &&
          columns_equal(fa.gamma, fb.gamma) && columns_equal(fa.vega, fb.vega) &&
          columns_equal(fa.theta, fb.theta);
@@ -541,6 +546,7 @@ void fill_dump_pnl(LegDumpRow &row, const ExplainResult &ex, std::size_t i) {
   row.pnl_rho = ex.pnl_rho[i];
   row.pnl_charm = ex.pnl_charm[i];
   row.pnl_unexplained = ex.pnl_unexplained[i];
+  row.pnl_carry = ex.pnl_carry[i];
 }
 
 // One block of option-leg rows for a step, in prepared row order. The model columns

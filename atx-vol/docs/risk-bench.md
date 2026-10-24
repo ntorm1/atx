@@ -350,7 +350,8 @@ position-scaled currency (qty × multiplier).
 `bucket_loads[]` fields `dropped_forward_framework`, `pv_divs_from_ddiv_pv`,
 `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel`,
 `implied_carry_seconds`. **v3** (lane E) lets `inputs.time` be `vendor` and adds the
-`bucket_loads[]` field `n_expiries_vendor_T`. The reader requires every v3 field and
+`bucket_loads[]` field `n_expiries_vendor_T` and the explain axis `carry` (in `axes` and
+`axis_share`, whose denominator now includes it). The reader requires every v3 field and
 refuses any other `schema_version` (a v1 / v2 report is a ParseError, never read with
 guessed defaults).
 
@@ -389,8 +390,8 @@ guessed defaults).
 | `steps[].explain.pnl_total`, `.explained` | number | totals; explained = pnl_total − pnl_unexplained |
 | `steps[].explain.sum_abs_unexplained`, `.sum_abs_pnl_total` | number | Σ over Ok legs |
 | `steps[].explain.explained_ratio` | number | sum_abs_unexplained / sum_abs_pnl_total |
-| `steps[].explain.axes` | object | totals per axis: `delta gamma vega volga vanna theta rho charm unexplained vol_level vol_skew vol_curv vol_resid shares` |
-| `steps[].explain.axis_share` | object | each axis / (Σ abs of delta … charm + unexplained) |
+| `steps[].explain.axes` | object | totals per axis: `delta gamma vega volga vanna theta rho charm unexplained vol_level vol_skew vol_curv vol_resid shares carry` (`carry` = `ExplainTotals::pnl_carry`, design D23a: the P&L of the per-expiry carry re-mark; Σ of the nine axes incl. carry + unexplained = pnl_total) |
+| `steps[].explain.axis_share` | object | each axis / (Σ abs of delta … charm + carry + unexplained) |
 | `steps[].quality.spearman`, `.ks`, `.zone` | number, number, string | per-leg explained vs actual; zone `green`/`amber`/`red`/`undefined` (diagnostic) |
 | `steps[].vendor_parity.{price,delta,vega}` | object | `n`, `mae`, `sym_rel`, `max_abs` |
 | `steps[].determinism.checked`, `.bit_equal` | bool | `--determinism` result |
@@ -460,6 +461,7 @@ are one bucket apart.)
 | `sr_years`, `sr_uprc`, `sr_synspot`, `sr_rate`, `sr_sdiv`, `sr_ddiv`, `sr_bid`, `sr_ask` | the same row's years, uPrc, synSpot (empty when the store has none), rate, sdiv, ddiv, bidPrc, askPrc (raw) |
 | `pnl_total`, `pnl_delta`, `pnl_gamma`, `pnl_vega`, `pnl_volga`, `pnl_vanna`, `pnl_theta`, `pnl_rho`, `pnl_charm`, `pnl_unexplained` | the step's per-leg explain (position-scaled) |
 | `T_vendor` | (lane E, appended after `pnl_unexplained` so earlier columns keep their positions) the median `years` of the contract's expiry in the base bucket (`SpiderRockExpiryForward::T_vendor`): equal to `T` under `--time vendor`, the vendor clock beside ours otherwise |
+| `pnl_carry` | (lane E, appended last) the step's per-leg carry axis (`ExplainResult::pnl_carry`, design D23a); `pnl_unexplained` is the remainder after it |
 
 Reading it: a carry gap shows as `q_eff` ≠ `q_eff_d4`, as `implied_forward` far from
 `published_forward`, or as `sr_uprc` / `sr_years` far from `spot` / `T` on the rows with

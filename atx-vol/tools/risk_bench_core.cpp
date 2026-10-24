@@ -1403,7 +1403,7 @@ struct AxisField {
   const char *name;
   double AxisTotals::*field;
 };
-constexpr std::array<AxisField, 14> kAxisFields{{{"delta", &AxisTotals::delta},
+constexpr std::array<AxisField, 15> kAxisFields{{{"delta", &AxisTotals::delta},
                                                  {"gamma", &AxisTotals::gamma},
                                                  {"vega", &AxisTotals::vega},
                                                  {"volga", &AxisTotals::volga},
@@ -1416,7 +1416,8 @@ constexpr std::array<AxisField, 14> kAxisFields{{{"delta", &AxisTotals::delta},
                                                  {"vol_skew", &AxisTotals::vol_skew},
                                                  {"vol_curv", &AxisTotals::vol_curv},
                                                  {"vol_resid", &AxisTotals::vol_resid},
-                                                 {"shares", &AxisTotals::shares}}};
+                                                 {"shares", &AxisTotals::shares},
+                                                 {"carry", &AxisTotals::carry}}};
 
 [[nodiscard]] Json axes_json(const AxisTotals &a) {
   Json o = obj({});
@@ -1958,7 +1959,7 @@ static_assert(static_cast<std::size_t>(CarrySource::Absent) + 1 == kCarrySourceN
               "kCarrySourceNames must cover every CarrySource");
 
 // The columns in write order: append_leg_dump_csv writes exactly these, one cell each.
-constexpr std::array<std::string_view, 68> kLegDumpColumns{
+constexpr std::array<std::string_view, 69> kLegDumpColumns{
     "step",            "leg_index",         "leg_id",       "prepared_row",
     "ticker",          "uid",               "uid_slot",     "strike",
     "expiry",          "side",              "qty",          "multiplier",
@@ -1975,7 +1976,8 @@ constexpr std::array<std::string_view, 68> kLegDumpColumns{
     "sr_rate",         "sr_sdiv",           "sr_ddiv",      "sr_bid",
     "sr_ask",          "pnl_total",         "pnl_delta",    "pnl_gamma",
     "pnl_vega",        "pnl_volga",         "pnl_vanna",    "pnl_theta",
-    "pnl_rho",         "pnl_charm",         "pnl_unexplained", "T_vendor"};
+    "pnl_rho",         "pnl_charm",         "pnl_unexplained", "T_vendor",
+    "pnl_carry"};
 
 // One CSV line under construction: every cell call writes the separator first.
 class CsvLine {
@@ -2131,7 +2133,9 @@ void append_leg_dump_csv(std::string &out, const LegDumpRow &row) {
                          row.pnl_unexplained}) {
     line.number(v);
   }
-  line.number(row.T_vendor); // lane E: appended, so the earlier columns keep their positions
+  // Lane E: appended, so the earlier columns keep their positions.
+  line.number(row.T_vendor);
+  line.number(row.pnl_carry);
   line.end();
 }
 
