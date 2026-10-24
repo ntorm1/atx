@@ -57,6 +57,7 @@ struct Snapshot {
   MarketStateStorage storage;
   std::optional<MarketState> state;
   BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards; // per ExpiryCarry row, (uid, expiry) order
   double load_seconds{0.0};
   double state_seconds{0.0};
 };
@@ -69,7 +70,8 @@ struct Snapshot {
   ATX_TRY(snap->bucket, load_spiderrock_bucket(spec, bucket_et, table));
   snap->load_seconds = seconds_since(t0);
   const Clock::time_point t1 = Clock::now();
-  ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report));
+  ATX_TRY(snap->storage, market_state_from_bucket(snap->bucket, spec.time, &snap->report,
+                                                  &snap->forwards));
   ATX_TRY(MarketState state, make_market_state(snap->storage));
   snap->state.emplace(std::move(state));
   snap->state_seconds = seconds_since(t1);
@@ -86,6 +88,12 @@ struct Snapshot {
   b.rows_not_selected = s.bucket.rows_not_selected;
   b.dropped_non_american = s.bucket.dropped_non_american;
   b.dropped_nonstandard_root = s.bucket.dropped_nonstandard_root;
+  b.dropped_forward_framework = s.bucket.dropped_forward_framework;
+  b.pv_divs_from_ddiv_pv = s.report.pv_divs_from_ddiv_pv;
+  b.n_expiries_implied = s.report.n_expiries_implied;
+  b.n_expiries_published = s.report.n_expiries_published;
+  b.max_forward_gap_rel = s.report.max_implied_vs_published_forward_rel;
+  b.implied_carry_seconds = s.report.implied_carry_seconds;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;
@@ -452,6 +460,18 @@ struct CarryUsed {
   return CarryUsed{CarrySource::Flat, u->flat_rate, u->flat_q, 0.0};
 }
 
+// The base state's basis for (uid, expiry); nullptr when it wrote no such row.
+[[nodiscard]] const SpiderRockExpiryForward *expiry_forward(const Snapshot &s, std::uint32_t uid,
+                                                            std::int64_t expiry_ns) noexcept {
+  const auto it = std::lower_bound(
+      s.forwards.begin(), s.forwards.end(), std::pair{uid, expiry_ns},
+      [](const SpiderRockExpiryForward &f, const std::pair<std::uint32_t, std::int64_t> &key) {
+        return std::pair{f.uid, f.expiry_ns} < key;
+      });
+  return it != s.forwards.end() && it->uid == uid && it->expiry_ns == expiry_ns ? &*it
+                                                                                : nullptr;
+}
+
 // The to_string(RiskFlag) names of the set bits, lowest first, '|'-joined.
 [[nodiscard]] std::string flag_names(RiskFlags bits) {
   std::string s;
@@ -482,6 +502,11 @@ void fill_dump_model(LegDumpRow &row, const RiskFrame &f, std::uint32_t r, const
   row.carry_rate = c.rate;
   row.carry_q = c.q;
   row.pv_divs = c.pv_divs;
+  if (const SpiderRockExpiryForward *fw = expiry_forward(base, row.uid, row.expiry_ns)) {
+    row.carry_mode = carry_mode_name(fw->mode);
+    row.implied_forward = fw->implied_forward;
+    row.published_forward = fw->published_forward;
+  }
   row.route = to_string(f.route[r]);
   row.flags = flag_names(f.flags[r]);
   row.status = to_string(f.status[r]);
@@ -637,6 +662,8 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.store_root = args.store_root();
   spec.date = args.date;
   spec.max_underliers = args.underliers;
+  spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it
+  spec.carry_mode = bench_carry_mode(args);
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
   ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));
