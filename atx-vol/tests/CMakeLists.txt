@@ -669,6 +669,9 @@ add_executable(atx-vol-tests
     # bucket -> MarketStateStorage and the synthetic SpiderRock-shaped store
     # (SpiderRockStore.* / SyntheticStore.* / BucketState.*; risk slice).
     spiderrock_store_test.cpp
+    # ... and the ENGINE-FREE core of atx-vol-risk-bench (RiskBenchArgs.* /
+    # RiskBenchBook.* / RiskBenchStats.* / RiskBenchReport.*; risk slice).
+    risk_bench_test.cpp
     # vrp_model_test.cpp (vrp-ml lane vrp-model) is NOT listed here: it needs
     # the atx-engine learn layer, so it builds into its own
     # atx-vol-vrp-model-tests exe further down, which exists only when the
@@ -685,6 +688,22 @@ add_executable(atx-vol-tests
 # oracle_host_probe.cpp is here for the same reason it is a separate TU at all:
 # --quiet-host needs <windows.h>, which must not reach the textually-included
 # driver beside the Arrow headers.
+# Risk-engine sprint 2026-10-24 lane C: the engine-free core of atx-vol-risk-bench
+# (tools/risk_bench_core.cpp; header tools/risk_bench.hpp) compiles in the same way,
+# so RiskBench* exercises the shipped TU. Its engine driver (tools/risk_bench.cpp)
+# references the risk engine and joins only under ATX_VOL_RISK_E2E below.
+target_sources(atx-vol-tests PRIVATE ../tools/risk_bench_core.cpp)
+
+# The END-TO-END bench test (RiskBenchE2E.*) drives run_risk_bench over a synthetic
+# store; it needs the risk engine (lane A's src/risk/*) linked, so it is compiled
+# only when this option is ON (the integration stage flips it). OFF keeps every
+# slice linkable without the engine.
+option(ATX_VOL_RISK_E2E
+       "Compile the atx-vol-risk-bench end-to-end test (requires the risk engine)" OFF)
+if(ATX_VOL_RISK_E2E)
+    target_sources(atx-vol-tests PRIVATE risk_bench_e2e_test.cpp ../tools/risk_bench.cpp)
+endif()
+
 target_sources(atx-vol-tests PRIVATE
     ../tools/oracle_convention_sweep.cpp
     ../tools/oracle_conventions.cpp

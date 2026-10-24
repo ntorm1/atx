@@ -1266,6 +1266,18 @@ if(ATX_BUILD_TOOLS)
         tools/oracle_cohort_reader.cpp)
     target_link_libraries(atx-vol-oracle-bench PRIVATE atx::vol atx::core atx_warnings)
 
+    # Risk-engine sprint 2026-10-24 (design §5.8): the intraday risk benchmark over
+    # the SpiderRock store layout (licensed or `--synthetic`; identical loader and
+    # engine path). risk_bench_core.cpp is the engine-free core (also compiled into
+    # atx-vol-tests); risk_bench.cpp drives RiskStream. CLI / report schema:
+    # docs/risk-bench.md. The JSON report is written / read by a self-contained
+    # encoder in the core (no third-party JSON dependency reaches the test slices).
+    add_executable(atx-vol-risk-bench
+        tools/risk_bench_main.cpp
+        tools/risk_bench.cpp
+        tools/risk_bench_core.cpp)
+    target_link_libraries(atx-vol-risk-bench PRIVATE atx::vol atx::core atx_warnings)
+
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
     # buildable when ATX_VOL_LAKEHOUSE actually compiled TrackStore/compact()
