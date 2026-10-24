@@ -136,7 +136,8 @@ TEST(PricedSurfaceShapeBlend, DefaultOverloadBitIdentical) {
     for (std::size_t j = 0; j < 20; ++j) {
       const double K = grid_K(j);
       const double k = std::log(K / ps.forward_at(T));
-      EXPECT_TRUE(bits_equal(ps.iv(K, T), ps.iv(K, T, TenorInterp::TotalVariance))) << K << ' ' << T;
+      EXPECT_TRUE(bits_equal(ps.iv(K, T), ps.iv(K, T, TenorInterp::TotalVariance)))
+          << K << ' ' << T;
       EXPECT_TRUE(bits_equal(ref.iv(K, T), ref.iv(K, T, TenorInterp::TotalVariance)));
       EXPECT_TRUE(bits_equal(view->iv(K, T), view->iv(K, T, TenorInterp::TotalVariance)));
       EXPECT_TRUE(bits_equal(view->iv(K, T), ps.iv(K, T)));

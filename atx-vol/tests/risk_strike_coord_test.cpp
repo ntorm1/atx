@@ -155,7 +155,8 @@ TEST(StrikeCoord, RoundTripsAllPairsOnSurface) {
           // The starting coordinate's value, read off a Strike resolution of K0.
           ProjectionPolicy from_policy = policy;
           from_policy.delta_conv = from.conv;
-          const auto seed = convert_strike_coord(ref, T, side, StrikeCoord::strike(K0), from_policy);
+          const auto seed =
+              convert_strike_coord(ref, T, side, StrikeCoord::strike(K0), from_policy);
           ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
           const StrikeCoord from_coord{from.kind, coord_value(*seed, from.kind), from.conv};
           const auto r1 = convert_strike_coord(ref, T, side, from_coord, policy);
@@ -235,7 +236,8 @@ TEST(StrikeCoord, AmericanMatchesStrategyResolver) {
       const double slope = (ps.delta(K + h, T, side).value() - ps.delta(K - h, T, side).value()) /
                            (2.0 * h);
       ASSERT_GT(std::fabs(slope), 0.0);
-      EXPECT_LE(std::fabs(K - *theirs), 2.0 * policy.delta_tolerance / std::fabs(slope) + 1.0e-12 * K)
+      const double width = 2.0 * policy.delta_tolerance / std::fabs(slope) + 1.0e-12 * K;
+      EXPECT_LE(std::fabs(K - *theirs), width)
           << "side " << static_cast<int>(side) << " target " << target;
     }
   }
@@ -251,7 +253,8 @@ TEST(StrikeCoord, ForbidRefusesTenorExtrapolation) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code(), ErrorCode::OutOfRange);
   }
-  const auto inside = convert_strike_coord(ref, 0.4, Side::Call, StrikeCoord::strike(100.0), forbid);
+  const auto inside =
+      convert_strike_coord(ref, 0.4, Side::Call, StrikeCoord::strike(100.0), forbid);
   ASSERT_TRUE(inside.has_value()) << inside.error().to_string();
   EXPECT_FALSE(has_flag(inside->flags, RiskFlag::TenorExtrapolated));
 }
@@ -319,7 +322,8 @@ TEST(StrikeCoord, BatchMatchesScalar) {
   EXPECT_EQ(ok_rows, 6u);
   // Structural errors fail the whole call before any row.
   std::vector<CoordResult> short_out(2);
-  EXPECT_FALSE(convert_strike_coord_batch(ref, T, side, from, policy, short_out, status).has_value());
+  EXPECT_FALSE(
+      convert_strike_coord_batch(ref, T, side, from, policy, short_out, status).has_value());
   EXPECT_FALSE(
       convert_strike_coord_batch(SurfaceRef{}, T, side, from, policy, out, status).has_value());
 }
@@ -343,7 +347,8 @@ TEST(StrikeCoord, InvalidDeltaIsInvalidArgument) {
   }
   EXPECT_EQ(code_of(0.0, Side::Call, StrikeCoord::delta(0.3)), ErrorCode::InvalidArgument);
   EXPECT_EQ(code_of(0.4, Side::Call, StrikeCoord::strike(-5.0)), ErrorCode::InvalidArgument);
-  const auto null_surface = convert_strike_coord(SurfaceRef{}, 0.4, Side::Call, StrikeCoord::delta(0.3));
+  const auto null_surface =
+      convert_strike_coord(SurfaceRef{}, 0.4, Side::Call, StrikeCoord::delta(0.3));
   ASSERT_FALSE(null_surface.has_value());
   EXPECT_EQ(null_surface.error().code(), ErrorCode::InvalidArgument);
   // A spot delta the carry puts out of reach is a typed NotFound, not a wrong answer.

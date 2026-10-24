@@ -65,7 +65,9 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
   return static_cast<std::int32_t>(civil::days_from_civil(year, month, dom));
 }
 
-[[nodiscard]] bool valid_side(Side side) noexcept { return side == Side::Call || side == Side::Put; }
+[[nodiscard]] bool valid_side(Side side) noexcept {
+  return side == Side::Call || side == Side::Put;
+}
 
 // A malformed template is a structural error (the Result), never a row status.
 [[nodiscard]] Status validate_spec(const TheoContract &spec) {
@@ -238,7 +240,8 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
   out.flags |= c.flags;
   out.fingerprint = fingerprint_of(spec.uid, c.K, expiry_ns, spec.side);
 
-  const Result<double> mark = risk_detail::cold_price(surface, c.K, out.T, spec.side, policy.interp);
+  const Result<double> mark =
+      risk_detail::cold_price(surface, c.K, out.T, spec.side, policy.interp);
   const Result<AmericanGreeks> greeks =
       risk_detail::cold_greeks_analytic(surface, c.K, out.T, spec.side, policy.interp);
   if (!mark || !greeks || !std::isfinite(*mark)) {

@@ -80,7 +80,9 @@ constexpr double kBisectionWidthTol = 1.0e-13;
   return p > 0.5 ? -norm_ppf_lower(1.0 - p) : norm_ppf_lower(p);
 }
 
-[[nodiscard]] bool valid_side(Side side) noexcept { return side == Side::Call || side == Side::Put; }
+[[nodiscard]] bool valid_side(Side side) noexcept {
+  return side == Side::Call || side == Side::Put;
+}
 
 // Signed forward-delta range check: (0,1) call, (-1,0) put.
 [[nodiscard]] bool forward_delta_in_range(double signed_delta, Side side) noexcept {
@@ -163,7 +165,8 @@ struct SurfaceAt {
   double g_lo = g(lo);
   const double g_hi = g(hi);
   if (!std::isfinite(g_lo) || !std::isfinite(g_hi) || (g_lo > 0.0) == (g_hi > 0.0)) {
-    return Err(ErrorCode::NotFound, "convert_strike_coord: delta target unreachable on the surface");
+    return Err(ErrorCode::NotFound,
+               "convert_strike_coord: delta target unreachable on the surface");
   }
   for (int it = 0; it < kMaxBisectionIterations && (hi - lo) > kBisectionWidthTol; ++it) {
     const double mid = 0.5 * (lo + hi);
@@ -371,8 +374,12 @@ Result<CoordResult> convert_strike_coord(const SurfaceRef &surface, double T, Si
   if (!valid_side(side) || !std::isfinite(from.value)) {
     return Err(ErrorCode::InvalidArgument, "convert_strike_coord: bad side or non-finite value");
   }
-  if (!known_convention(policy.delta_conv)) {
-    return Err(ErrorCode::InvalidArgument, "convert_strike_coord: unknown policy delta convention");
+  const bool modes_known =
+      known_convention(policy.delta_conv) &&
+      (policy.interp == TenorInterp::TotalVariance || policy.interp == TenorInterp::ShapeBlend) &&
+      (policy.extrap == TenorExtrapPolicy::Flag || policy.extrap == TenorExtrapPolicy::Forbid);
+  if (!modes_known) {
+    return Err(ErrorCode::InvalidArgument, "convert_strike_coord: unknown policy mode");
   }
   ATX_TRY_VOID(validate_coord(from, side));
 
@@ -398,7 +405,8 @@ Result<CoordResult> convert_strike_coord(const SurfaceRef &surface, double T, Si
   at.q = surface.q_eff_at(T);
   at.sigma_atm = finite_positive(at.F) ? surface.iv(at.F, T, policy.interp) : kNaN;
   if (!finite_positive(at.F) || !finite_positive(at.S) || !finite_positive(at.sigma_atm)) {
-    return Err(ErrorCode::Unavailable, "convert_strike_coord: surface has no forward / ATM vol at T");
+    return Err(ErrorCode::Unavailable,
+               "convert_strike_coord: surface has no forward / ATM vol at T");
   }
 
   ATX_TRY(const StrikeSolve solve, solve_strike(surface, at, side, from, policy));
