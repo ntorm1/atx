@@ -458,11 +458,11 @@ void write_valid_projected_var(const fs::path &dir) {
             << "base_date\tbase_ts_ns\tshifted_date\tshifted_ts_ns\tpv_base\tpv_target\t"
                "pnl_total\tpnl_delta\tpnl_gamma\tpnl_vega\tpnl_volga\tpnl_vanna\tpnl_theta\t"
                "pnl_rho\tpnl_charm\tpnl_unexplained\tvol_level\tvol_skew\tvol_curv\tvol_resid\t"
-               "shares_pnl\tn_ok\tn_excluded\texcluded_premium\tn_legs_resolved\t"
+               "shares_pnl\tn_ok\tn_excluded\texcluded_premium\tpnl_carry\tn_legs_resolved\t"
                "n_legs_unresolved\tadmitted\tdefinition_fingerprint\n"
             << "2026-10-01\t" << ts0 << "\t2026-10-02\t" << (ts0 + day)
             << "\t100\t90\t-10\t-6\t1\t-3\t0\t0\t-0.5\t0\t0\t-1.5\t-2\t-0.5\t-0.25\t-0.25\t0\t1\t0"
-               "\t0\t1\t0\t1\t"
+               "\t0\t0\t1\t0\t1\t"
             << pair_fp << '\n';
   write_file(dir / "projected_risk_scenarios.tsv", scenarios.str());
 

@@ -6,6 +6,10 @@ little-endian, CRC-32C framed, published atomically and never rewritten in place
 directory / manifest pattern, market-state stores) is lane P1's: `docs/persist.md` and
 `docs/storage/PERSIST_FORMAT.md`.
 
+Layout bump (lane E, 2026-10-24): RiskRun records the 21st explain column `pnl_carry`,
+`ExplainTotals` is 160 B and `FrameCounters` 112 B (lane A2's counters); fingerprint
+`0x07b280ae55b35c46` (was `0xc881a1e8c5e87255`): older segments are refused with `SchemaMismatch`.
+
 ## Surface timeline — uid-major fitted-surface history
 
 `SurfaceTimelineStore` keeps one period file per UTC month (`<YYYY-MM>-g<seq12>.atxstl`) under a

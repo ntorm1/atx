@@ -31,6 +31,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/pricing/pricing_executor.hpp"
+#include "risk/expiry_clock.hpp"
 #include "risk/historical_var_detail.hpp"
 #include "risk/risk_neumaier.hpp"
 
@@ -181,15 +182,18 @@ struct UidGroup {
 }
 
 // The pair's scenario-level refusals, tested exactly as the kernel and explain test them:
-// either state's TimeSpec refuses one of the book's expiries (RiskKernel::evaluate), or the
-// base TimeSpec refuses the step (explain_into). Both report these as InvalidArgument, like a
-// structural error, so they are told apart here, before either runs.
+// either state's clock refuses one of the book's expiries (RiskKernel::evaluate: the expiry's
+// own clock, risk_detail::expiry_T — a finite ExpiryCarry::T_override, else the TimeSpec), or
+// the base TimeSpec refuses the step (explain_into). Both report these as InvalidArgument,
+// like a structural error, so they are told apart here, before either runs.
 [[nodiscard]] bool time_refuses(const PreparedRiskBook &prepared, const MarketState &base,
                                 const MarketState &shifted) {
   for (const RiskGroup &g : prepared.groups()) {
-    if (!base.time_to_expiry(g.expiry_ns).has_value() ||
-        !shifted.time_to_expiry(g.expiry_ns).has_value()) {
-      return true;
+    for (const MarketState *s : {&base, &shifted}) {
+      const ExpiryCarry *row = risk_detail::expiry_row(*s, g.uid, g.expiry_ns);
+      if (!risk_detail::expiry_T(*s, row, g.expiry_ns).has_value()) {
+        return true;
+      }
     }
   }
   const Result<double> dt = time_to_expiry_years(base.ts_ns(), shifted.ts_ns(), base.time());
@@ -322,7 +326,7 @@ public:
         t.pv_base,   t.pv_target, t.pnl_total, t.pnl_delta,       t.pnl_gamma, t.pnl_vega,
         t.pnl_volga, t.pnl_vanna, t.pnl_theta, t.pnl_rho,         t.pnl_charm, t.pnl_unexplained,
         t.vol_level, t.vol_skew,  t.vol_curv,  t.vol_resid,       t.shares_pnl,
-        t.excluded_premium};
+        t.excluded_premium, t.pnl_carry};
     for (std::size_t k = 0; k < kFields; ++k) {
       sum_[k].add(v[k]);
     }
@@ -353,6 +357,7 @@ public:
     t.vol_resid = m(15);
     t.shares_pnl = m(16);
     t.excluded_premium = m(17);
+    t.pnl_carry = m(18); // lane E: the averaged axes still sum to the averaged total
     const std::uint64_t n64 = n;
     t.n_ok = static_cast<std::uint32_t>((n_ok_ + n64 / 2u) / n64);
     t.n_excluded = static_cast<std::uint32_t>((n_excluded_ + n64 / 2u) / n64);
@@ -360,7 +365,7 @@ public:
   }
 
 private:
-  static constexpr std::size_t kFields = 18;
+  static constexpr std::size_t kFields = 19;
   std::array<risk_detail::NeumaierSum, kFields> sum_{};
   std::uint64_t n_ok_{0};
   std::uint64_t n_excluded_{0};

@@ -49,11 +49,12 @@ enum class Section : std::uint32_t {
   FrameUidStatus = 37,
   FrameShareMark = 38,
   FrameShareStatus = 39,
-  ExplainF64 = 48,  // 48 .. 67: ExplainResult f64 columns in RiskExplainColumn order
-  ExplainRouteBase = 68,
-  ExplainRouteShifted = 69,
-  ExplainFlags = 70,
-  ExplainStatus = 71,
+  ExplainF64 = 48,  // 48 .. 68: ExplainResult f64 columns in RiskExplainColumn order
+                    // (68 = PnlCarry, lane E; the four sections below moved up by one)
+  ExplainRouteBase = 69,
+  ExplainRouteShifted = 70,
+  ExplainFlags = 71,
+  ExplainStatus = 72,
   BucketsByUid = 80,
   BucketsByExpiry = 81,
   VarIndex = 96,
@@ -146,7 +147,7 @@ struct RiskRunStep {
   FrameCounters counters{};
 };
 static_assert(kRiskLaneStatusCount == 6, "RiskRunStep pins six exclusion reasons: re-pin");
-static_assert(kPersistPod<RiskRunStep> && sizeof(RiskRunStep) == 264);
+static_assert(kPersistPod<RiskRunStep> && sizeof(RiskRunStep) == 288);
 static_assert(offsetof(RiskRunStep, excluded_count) == 104);
 static_assert(offsetof(RiskRunStep, excluded_premium) == 128);
 static_assert(offsetof(RiskRunStep, counters) == 176);
@@ -157,7 +158,7 @@ struct RiskRunBucket {
   std::int64_t expiry_ns{};
   ExplainTotals totals{};
 };
-static_assert(kPersistPod<RiskRunBucket> && sizeof(RiskRunBucket) == 176);
+static_assert(kPersistPod<RiskRunBucket> && sizeof(RiskRunBucket) == 184);
 
 struct RiskRunVar {
   std::uint64_t step{};        // the last step appended before this result, or kNone64
@@ -181,7 +182,7 @@ struct RiskRunVarFrame {
   std::uint8_t admitted{};
   std::array<std::uint8_t, 7> reserved{};
 };
-static_assert(kPersistPod<RiskRunVarFrame> && sizeof(RiskRunVarFrame) == 184);
+static_assert(kPersistPod<RiskRunVarFrame> && sizeof(RiskRunVarFrame) == 192);
 
 struct RiskRunVarPoint {
   double confidence{};
@@ -190,7 +191,7 @@ struct RiskRunVarPoint {
   std::uint64_t tail_scenarios{};
   ExplainTotals tail_mean{};
 };
-static_assert(kPersistPod<RiskRunVarPoint> && sizeof(RiskRunVarPoint) == 184);
+static_assert(kPersistPod<RiskRunVarPoint> && sizeof(RiskRunVarPoint) == 192);
 
 // ── Field lists (fingerprint + no-padding proofs) ─────────────────────────────
 
@@ -211,7 +212,7 @@ cat(const std::array<PersistFieldSpec, N> &a, const std::array<PersistFieldSpec,
   return out;
 }
 
-[[nodiscard]] constexpr std::array<PersistFieldSpec, 20> totals_fields(std::size_t at) noexcept {
+[[nodiscard]] constexpr std::array<PersistFieldSpec, 21> totals_fields(std::size_t at) noexcept {
   return {{
       fld("pv_base", at + offsetof(ExplainTotals, pv_base), 8),
       fld("pv_target", at + offsetof(ExplainTotals, pv_target), 8),
@@ -233,10 +234,11 @@ cat(const std::array<PersistFieldSpec, N> &a, const std::array<PersistFieldSpec,
       fld("n_ok", at + offsetof(ExplainTotals, n_ok), 4),
       fld("n_excluded", at + offsetof(ExplainTotals, n_excluded), 4),
       fld("excluded_premium", at + offsetof(ExplainTotals, excluded_premium), 8),
+      fld("pnl_carry", at + offsetof(ExplainTotals, pnl_carry), 8), // lane E (D23a)
   }};
 }
 
-[[nodiscard]] constexpr std::array<PersistFieldSpec, 9> counters_fields(std::size_t at) noexcept {
+[[nodiscard]] constexpr std::array<PersistFieldSpec, 12> counters_fields(std::size_t at) noexcept {
   return {{
       fld("families_built", at + offsetof(FrameCounters, families_built), 8),
       fld("carry_sets_built", at + offsetof(FrameCounters, carry_sets_built), 8),
@@ -247,6 +249,10 @@ cat(const std::array<PersistFieldSpec, N> &a, const std::array<PersistFieldSpec,
       fld("status_count", at + offsetof(FrameCounters, status_count), 4 * kRiskLaneStatusCount),
       fld("evaluate_seconds", at + offsetof(FrameCounters, evaluate_seconds), 8),
       fld("family_build_seconds", at + offsetof(FrameCounters, family_build_seconds), 8),
+      // Lane A2's appended counters (re-pinned with lane E's merge of the integration tip).
+      fld("family_nodes", at + offsetof(FrameCounters, family_nodes), 8),
+      fld("uneconomic_rows", at + offsetof(FrameCounters, uneconomic_rows), 8),
+      fld("short_tenor_rows", at + offsetof(FrameCounters, short_tenor_rows), 8),
   }};
 }
 
@@ -258,6 +264,10 @@ static_assert(persist_fields_tile(kTotalsFields, sizeof(ExplainTotals)),
 inline constexpr auto kCountersFields = detail::counters_fields(0);
 static_assert(persist_fields_tile(kCountersFields, sizeof(FrameCounters)),
               "FrameCounters changed: re-pin the RiskRun layout (wave3-persist D13)");
+// The sizes the records below are laid out against (lane E re-pin: ExplainTotals 152 -> 160
+// with pnl_carry; FrameCounters 88 -> 112 with lane A2's three counters).
+static_assert(sizeof(ExplainTotals) == 160 && sizeof(FrameCounters) == 112,
+              "ExplainTotals / FrameCounters changed: re-pin the RiskRun layout");
 
 inline constexpr std::array<PersistFieldSpec, 15> kMetaFields{{
     {"book_fingerprint", offsetof(RiskRunMeta, book_fingerprint), 8},
@@ -381,7 +391,8 @@ inline constexpr std::array<std::string_view, kRiskExplainColumnCount> kExplainC
     "explain.pnl_gamma", "explain.pnl_vega",  "explain.pnl_volga",       "explain.pnl_vanna",
     "explain.pnl_theta", "explain.pnl_rho",   "explain.pnl_charm",       "explain.pnl_unexplained",
     "explain.vol_level", "explain.vol_skew",  "explain.vol_curv",        "explain.vol_resid",
-    "explain.d_spot",    "explain.d_vol",     "explain.d_time",          "explain.d_rate"};
+    "explain.d_spot",    "explain.d_vol",     "explain.d_time",          "explain.d_rate",
+    "explain.pnl_carry"};
 
 // The f64 columns in RiskFrameColumn / RiskExplainColumn order (== struct order).
 inline constexpr std::array<std::vector<double> RiskFrame::*, kRiskFrameColumnCount> kFrameMembers{
@@ -399,7 +410,45 @@ inline constexpr std::array<std::vector<double> ExplainResult::*, kRiskExplainCo
                     &ExplainResult::vol_level, &ExplainResult::vol_skew,
                     &ExplainResult::vol_curv,  &ExplainResult::vol_resid,
                     &ExplainResult::d_spot,    &ExplainResult::d_vol,
-                    &ExplainResult::d_time,    &ExplainResult::d_rate};
+                    &ExplainResult::d_time,    &ExplainResult::d_rate,
+                    &ExplainResult::pnl_carry};
+
+// A std::array initializer shorter than its extent zero-fills the tail, so a column count
+// raised without its name / member would pass silently: refuse that at compile time. The
+// explain f64 sections are contiguous types from ExplainF64 and must not reach the next.
+[[nodiscard]] constexpr bool explain_columns_complete() noexcept {
+  for (std::size_t c = 0; c < kRiskExplainColumnCount; ++c) {
+    if (kExplainMembers[c] == nullptr || kExplainColumnNames[c].empty()) return false;
+  }
+  for (std::size_t c = 0; c < kRiskFrameColumnCount; ++c) {
+    if (kFrameMembers[c] == nullptr || kFrameColumnNames[c].empty()) return false;
+  }
+  return true;
+}
+static_assert(explain_columns_complete(), "a RiskRun column lacks its member or name");
+// The member lists above are hand-written, so a per-leg / per-row column added to
+// ExplainResult or RiskFrame without them would be dropped SILENTLY (materialize_explain /
+// materialize_frame would return it empty beside full columns, and a consumer indexing it per
+// leg would read out of bounds). Pin both structs' shape — in units of a std::vector, so the
+// pin holds at any iterator-debug level — so such an addition fails here first. ExplainResult:
+// 30 vectors (id, uid, kind, 20 f64 columns, 4 route/flag/status, pnl_carry, 2 bucket lists)
+// + 280 bytes of scalars, ExplainTotals and the exclusion arrays. RiskFrame: 24 vectors (16 f64,
+// 3 lane, 3 per-uid, 2 per-share) + 136 bytes (instant, book id, RiskNeeds, FrameCounters).
+static_assert(sizeof(ExplainResult) == 30 * sizeof(std::vector<double>) + 280,
+              "ExplainResult changed: update kExplainMembers / kExplainColumnNames and "
+              "RiskExplainColumn (or the RiskRun step records), then re-pin the RiskRun layout");
+static_assert(sizeof(RiskFrame) == 24 * sizeof(std::vector<double>) + 136,
+              "RiskFrame changed: update kFrameMembers / kFrameColumnNames and RiskFrameColumn "
+              "(or the RiskRun frame sections), then re-pin the RiskRun layout");
+static_assert(kRiskExplainColumnCount == 21 &&
+                  kExplainMembers[static_cast<std::size_t>(RiskExplainColumn::PnlCarry)] ==
+                      &ExplainResult::pnl_carry,
+              "RiskExplainColumn changed: re-pin the RiskRun layout");
+static_assert(type_of(Section::ExplainF64) + kRiskExplainColumnCount ==
+                  type_of(Section::ExplainRouteBase),
+              "explain f64 section types overlap the next section");
+static_assert(type_of(Section::FrameF64) + kRiskFrameColumnCount <= type_of(Section::FrameRoute),
+              "frame f64 section types overlap the next section");
 
 // ── Schema (file order == this order) ────────────────────────────────────────
 

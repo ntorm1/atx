@@ -18,7 +18,7 @@ drift is `SchemaMismatch` (no backward compatibility, persist D5).
 | Kind | `PersistKind` | Salt | Schema fingerprint (v1) |
 |---|---|---|---|
 | SurfaceTimeline | 3 | `ATXVST01` | `0x8e3c8cc7c33a7ea1` |
-| RiskRun | 4 | `ATXVRR01` | `0xc881a1e8c5e87255` (pinned by `PersistRiskRun.RefusesLayoutDriftFingerprint`) |
+| RiskRun | 4 | `ATXVRR01` | `0x07b280ae55b35c46` (pinned by `PersistRiskRun.RefusesLayoutDriftFingerprint`; re-pinned by lane E from `0xc881a1e8c5e87255`) |
 
 ## 1. SurfaceTimeline
 
@@ -151,11 +151,11 @@ has written them back. A run whose every segment must survive a power loss sets
 | 32 / 33 / 34 | frame.route / flags / status | U8 / U32 / U8 | n_frames x n_unique |
 | 35 / 36 / 37 | frame.uid_spot / uid_flat_rate / uid_status | F64 / F64 / U8 | n_frames x n_uids |
 | 38 / 39 | frame.share_mark / share_status | F64 / U8 | n_frames x n_share_legs |
-| 48..67 | explain.pv_base .. explain.d_rate | F64 | n_explain_rows (RiskExplainColumn order, 20 columns) |
-| 68 / 69 / 70 / 71 | explain.route_base / route_shifted / flags / status | U8 / U8 / U32 / U8 | n_explain_rows |
-| 80 / 81 | buckets.by_uid / by_expiry | Pod / 176 | sum of the steps' bucket counts |
+| 48..68 | explain.pv_base .. explain.d_rate, explain.pnl_carry | F64 | n_explain_rows (RiskExplainColumn order, 21 columns) |
+| 69 / 70 / 71 / 72 | explain.route_base / route_shifted / flags / status | U8 / U8 / U32 / U8 | n_explain_rows |
+| 80 / 81 | buckets.by_uid / by_expiry | Pod / 184 | sum of the steps' bucket counts |
 | 96 | var.index | Pod / 64 | n_var |
-| 97 / 98 | var.frames / var.points | Pod / 184 / 184 | sums of the index counts |
+| 97 / 98 | var.frames / var.points | Pod / 192 / 192 | sums of the index counts |
 
 Sections without content (frames off, buckets off, no VaR) are present and empty.
 
@@ -171,7 +171,7 @@ share), `reserved0 u16 @6`, `slot u32 @8` (option: prepared row; share: uid slot
 share). **book.unique (24 B)**: `uid u32 @0`, `side u8 @4`, `reserved0 u8 @5`, `reserved1 u16 @6`,
 `strike f64 @8`, `expiry_ns i64 @16`.
 
-**steps (264 B)**: `step u64 @0` (global), `ts_ns i64 @8`, `base_ts_ns i64 @16`, `dt_years f64 @24`,
+**steps (288 B)**: `step u64 @0` (global), `ts_ns i64 @8`, `base_ts_ns i64 @16`, `dt_years f64 @24`,
 `frame_index u64 @32` (ordinal of the step's frame in the segment, `~0` when none), `explain_row
 u64 @40` (first explain row, `~0` when none), `bucket_uid_begin u64 @48`, `bucket_expiry_begin u64
 @56`, `book_logical_id u64 @64` (the frame's process-local identity, round-tripped verbatim),
@@ -179,16 +179,21 @@ u64 @40` (first explain row, `~0` when none), `bucket_uid_begin u64 @48`, `bucke
 / 16 / 32 the frame's RiskNeeds second_order / rho / charm), `explain_rows u32 @84`,
 `n_pivot_groups u32 @88`, `n_pivot_edge_fallback u32 @92`, `n_bucket_uid u32 @96`,
 `n_bucket_expiry u32 @100`, `excluded_count u32[6] @104`, `excluded_premium f64[6] @128`,
-`counters FrameCounters @176` (88 B: six u64 counters, `status_count u32[6] @224`,
-`evaluate_seconds f64 @248`, `family_build_seconds f64 @256`).
+`counters FrameCounters @176` (112 B: six u64 counters, `status_count u32[6] @224`,
+`evaluate_seconds f64 @248`, `family_build_seconds f64 @256`, `family_nodes`, `uneconomic_rows`,
+`short_tenor_rows` u64 @264 / 272 / 280).
 
-**ExplainTotals (152 B)**: 17 f64 `pv_base @0 .. shares_pnl @128` in struct order, `n_ok u32 @136`,
-`n_excluded u32 @140`, `excluded_premium f64 @144`. **Buckets (176 B)**: `step u64 @0`, `key u64
+Lane E re-pin (2026-10-24): the 21st explain column `explain.pnl_carry` (type 68; the four explain
+U8 / U32 sections moved to 69..72), `ExplainTotals` 152 → 160 B (`pnl_carry`), and lane A2's three
+appended `FrameCounters` (88 → 112 B). A file written before is refused with `SchemaMismatch`.
+
+**ExplainTotals (160 B)**: 17 f64 `pv_base @0 .. shares_pnl @128` in struct order, `n_ok u32 @136`,
+`n_excluded u32 @140`, `excluded_premium f64 @144`, `pnl_carry f64 @152`. **Buckets (184 B)**: `step u64 @0`, `key u64
 @8`, `expiry_ns i64 @16`, `totals @24`. **var.index (64 B)**: `step u64 @0` (`~0` before any step),
 `frame_begin @8`, `frame_count @16`, `point_begin @24`, `point_count @32`, `n_admitted @40` (u64),
-`reference_pv f64 @48`, `reserved u64 @56`. **var.frames (184 B)**: `base_ts_ns @0`, `shifted_ts_ns
-@8`, `totals @16`, `n_legs_resolved u32 @168`, `n_legs_unresolved u32 @172`, `admitted u8 @176`
-(0 / 1), `reserved u8[7] @177`. **var.points (184 B)**: `confidence @0`, `value_at_risk @8`,
+`reference_pv f64 @48`, `reserved u64 @56`. **var.frames (192 B)**: `base_ts_ns @0`, `shifted_ts_ns
+@8`, `totals @16`, `n_legs_resolved u32 @176`, `n_legs_unresolved u32 @180`, `admitted u8 @184`
+(0 / 1), `reserved u8[7] @185`. **var.points (192 B)**: `confidence @0`, `value_at_risk @8`,
 `expected_shortfall @16` (f64), `tail_scenarios u64 @24`, `tail_mean @32`.
 (`HistoricalVarFrame` itself has implicit padding, so it is re-laid explicitly — persist D3.)
 

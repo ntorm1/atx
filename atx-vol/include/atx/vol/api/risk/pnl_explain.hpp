@@ -38,7 +38,10 @@
 // exact-expiry ExpiryCarry row's when BOTH states have one (else flat_q, pv term 0: a cash
 // dividend schedule is taken as unchanged); a CarryFrom::Surface state, or a row in one
 // state only, is not decomposed (J = 0: the move stays in unexplained). The rate is NOT
-// carry (rho's axis). Per leg pnl_carry = w delta_b S_b J (an Exercised base row: 0) — the
+// carry (rho's axis); under an implied-carry row (q = r - ln(F/S)/T) a rate re-mark also moves
+// q by dr, so pnl_carry books -w delta S T dr that only the rho axis offsets — with rho off
+// (RiskNeeds without rho) that lands in unexplained, as `rate_move_without_rho` flags.
+// Per leg pnl_carry = w delta_b S_b J (an Exercised base row: 0) — the
 // kernel prices on (S, r, q_eff, T), and for the forward-driven (European) part of the
 // price dP/dq_eff = -T S delta exactly; the American early-exercise sensitivity to carry
 // beyond that is not modelled and stays in unexplained. No solve: no RiskNeeds flag. An

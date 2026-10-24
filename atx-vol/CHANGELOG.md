@@ -22,7 +22,7 @@ FlushFileBuffers). `RiskRunArchive` reopens them zero-copy and adds `step_info` 
 `compact_risk_run` merges bit-exactly, optionally into a zstd + byte-shuffle cold tier, refusing
 (`SegmentMismatch`) when a segment was published meanwhile (an overload takes the durability; the
 3-argument form is `Flush`). Schema fingerprints refuse any layout
-drift (RiskRun pinned `0xc881a1e8c5e87255`; an `ExplainTotals` / `FrameCounters` change is a compile
+drift (RiskRun pinned `0x07b280ae55b35c46` after lane E's re-pin; an `ExplainTotals` / `FrameCounters` change is a compile
 error in `src/persist/risk_run_format.hpp` first). Tool `atx-vol-history-store` (timeline build |
 inspect | bench, riskrun inspect | bench). Docs: `docs/persist-history.md`,
 `docs/storage/PERSIST_HISTORY_FORMAT.md`.
@@ -56,13 +56,15 @@ fills it from the vendor's `years` (`SpiderRockClock::VendorYears`, the spec def
 `kSpiderRockConventionsVersion` 3). The explain gains a carry axis: a re-mark of an expiry's
 q / pv_divs between two states is booked per leg as `pnl_carry = w·Δ·S·J` (`ExplainResult::pnl_carry`,
 the 21st per-leg double column; `ExplainTotals::pnl_carry`, which grows the struct 152 → 160
-bytes) instead of landing in unexplained; unmoved carry ⇒ +0.0. `market_state_from_bucket` has
+bytes) instead of landing in unexplained; unmoved carry ⇒ +0.0. It is the delta proxy: an American put
+whose early exercise binds over-captures 1.10–1.18× (accepted; unexplained absorbs the remainder). `market_state_from_bucket` has
 a sticky-mode overload taking the previous bucket's forwards table (an implied expiry holds to
 3× the IQR guard, a published one enters at half of it). `atx-vol-risk-bench`: `--time vendor`
 (default under `--store`), `--sticky-carry on|off` (default on under `--store`), report schema
 v3 (axis `carry`, `n_expiries_vendor_T`, sticky counts, `n_mode_flips`), dump columns `T_vendor`,
-`pnl_carry`. Integration: lane P2's RiskRun layout (20 explain columns) must append the carry
-column. Licensed 10:00–15:00: price sym-rel 4.27 % → 0.41 %, unexplained on options 3.01 % →
+`pnl_carry`. Persist layouts follow: the MarketState term-carry row stores `T_override` (40 B;
+fingerprint `0xb9738a6408b9ba89`) and RiskRun records `pnl_carry` (21 columns, `ExplainTotals` 160 B,
+fingerprint `0x07b280ae55b35c46`); older files are refused with `SchemaMismatch` and rebuilt. Licensed 10:00–15:00: price sym-rel 4.27 % → 0.41 %, unexplained on options 3.01 % →
 0.99 %.
 
 ### BREAKING — historical VaR rebuilt on the risk engine
@@ -101,8 +103,9 @@ difference rather than a one-period P&L.
   template, or one the engine did not admit, makes the call `Unavailable` (as the old
   incomplete-frame gate did). Fewer than two snapshots is `InvalidArgument`. The VaR pins in the
   `ListedDispersionPipeline`, `DispersionRun` and `DispersionProjectedVarGate` tests are re-pinned.
-- **Artifacts change**: `projected_risk_scenarios.tsv` has one row per pair and 28 columns (pair
-  dates and timestamps, every `ExplainTotals` field, counts, `admitted`, definition fingerprint).
+- **Artifacts change**: `projected_risk_scenarios.tsv` has one row per pair and 29 columns (pair
+  dates and timestamps, every `ExplainTotals` field incl. lane E's `pnl_carry`, counts, `admitted`,
+  definition fingerprint).
   It had one row per session and 10 columns. `projected_risk_legs.tsv` keeps its 15 columns, with
   one row per (pair, template) dated at the pair's base session and status `ok`.
   `projected_var.tsv` keeps its 11 columns, with `n_scenarios` = admitted pairs = sessions − 1.

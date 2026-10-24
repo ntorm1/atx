@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/api/marketdata/data.hpp" // expiry_instant_ns
 #include "atx/vol/api/risk/historical_var.hpp"
 #include "atx/vol/api/risk/market_state.hpp"
 #include "atx/vol/api/risk/pnl_explain.hpp"
@@ -513,6 +514,7 @@ TEST(HistoricalVar, TailMeanIsAttributionOfTail) {
     hand.vol_level += t.vol_level / 3.0;
     hand.vol_skew += t.vol_skew / 3.0;
     hand.shares_pnl += t.shares_pnl / 3.0;
+    hand.pnl_carry += t.pnl_carry / 3.0;
   }
   const auto near = [](double got, double want, const char *what) {
     EXPECT_NEAR(got, want, 1e-10 * std::max(1.0, std::fabs(want))) << what;
@@ -527,16 +529,41 @@ TEST(HistoricalVar, TailMeanIsAttributionOfTail) {
   near(p.tail_mean.vol_level, hand.vol_level, "vol_level");
   near(p.tail_mean.vol_skew, hand.vol_skew, "vol_skew");
   near(p.tail_mean.shares_pnl, hand.shares_pnl, "shares_pnl");
+  near(p.tail_mean.pnl_carry, hand.pnl_carry, "pnl_carry");
   // ES is the tail's mean loss, i.e. minus the attributed tail P&L, to the bit.
   EXPECT_TRUE(same_bits(p.expected_shortfall, -p.tail_mean.pnl_total));
-  // The attribution adds up: eight Greek axes + unexplained == the tail's mean P&L.
+  // The attribution adds up: eight Greek axes + the carry axis + unexplained == the tail's
+  // mean P&L.
+  const auto axes_of = [](const ExplainTotals &m) {
+    return m.pnl_delta + m.pnl_gamma + m.pnl_vega + m.pnl_volga + m.pnl_vanna + m.pnl_theta +
+           m.pnl_rho + m.pnl_charm + m.pnl_carry + m.pnl_unexplained;
+  };
   const ExplainTotals &m = p.tail_mean;
-  const double axes = m.pnl_delta + m.pnl_gamma + m.pnl_vega + m.pnl_volga + m.pnl_vanna +
-                      m.pnl_theta + m.pnl_rho + m.pnl_charm + m.pnl_unexplained;
-  EXPECT_NEAR(axes, m.pnl_total, 1e-9 * std::max(1.0, std::fabs(m.pnl_total)));
+  EXPECT_NEAR(axes_of(m), m.pnl_total, 1e-9 * std::max(1.0, std::fabs(m.pnl_total)));
   EXPECT_NE(m.pnl_vega, 0.0);
   EXPECT_NE(m.shares_pnl, 0.0);
   EXPECT_EQ(m.n_ok, book.options.size() + book.shares.size());
+
+  // Lane E: a scenario that re-marks carry books part of its P&L on the carry axis. Move a
+  // per-scenario amount from unexplained to pnl_carry (each frame's identity unchanged): the
+  // tail mean must average pnl_carry too, or its axes stop summing to its total.
+  std::vector<HistoricalVarFrame> carried = res->frames;
+  for (std::size_t k = 0; k < carried.size(); ++k) {
+    const double c = 0.25 * static_cast<double>(k + 1) * std::max(1.0, std::fabs(m.pnl_total));
+    carried[k].totals.pnl_carry = c;
+    carried[k].totals.pnl_unexplained -= c;
+  }
+  const Result<HistoricalVarResult> again = summarize_historical_var(carried, cfg.confidences);
+  ASSERT_TRUE(again.has_value()) << again.error().to_string();
+  const ExplainTotals &mc = again->points[0].tail_mean;
+  double hand_carry = 0.0;
+  for (std::size_t k = 2; k < 5; ++k) {
+    hand_carry += carried[order[k]].totals.pnl_carry / 3.0;
+  }
+  EXPECT_NE(mc.pnl_carry, 0.0);
+  near(mc.pnl_carry, hand_carry, "pnl_carry (re-marked)");
+  EXPECT_TRUE(same_bits(mc.pnl_total, m.pnl_total)) << "the P&L itself does not move";
+  EXPECT_NEAR(axes_of(mc), mc.pnl_total, 1e-9 * std::max(1.0, std::fabs(mc.pnl_total)));
 }
 
 // ── Failure policy ───────────────────────────────────────────────────────────
@@ -734,6 +761,89 @@ TEST(HistoricalVar, ForeignWorkspaceIsAnErrorNotADroppedScenario) {
   ASSERT_TRUE(bound.has_value()) << bound.error().to_string();
   EXPECT_EQ(*bound, historical_var_detail::PairOutcome::Explained);
   EXPECT_EQ(out.total.n_ok, 2u);
+}
+
+// Lane E (I-4): the scenario pre-check reads each expiry's clock the way the kernel does
+// (risk_detail::expiry_T). An expiry the TimeSpec refuses (VolTime past its 2032 calendar) is
+// priced by the kernel when its ExpiryCarry row carries a finite T_override, so the pair must
+// be explained, not refused; without the override it is still Refused.
+namespace {
+
+[[nodiscard]] std::unique_ptr<MarketStateStorage>
+clock_override_state(std::int64_t ts_ns, std::int64_t expiry_ns, double T_override, double spot) {
+  auto st = std::make_unique<MarketStateStorage>();
+  st->ts_ns = ts_ns;
+  st->time.convention = TimeConvention::VolTime;
+  UnderlierState u;
+  u.uid = 1u;
+  u.spot = spot;
+  u.flat_rate = 0.04;
+  u.flat_q = 0.01;
+  u.carry = CarryFrom::State;
+  st->underliers.push_back(u);
+  st->term_carries.push_back({ExpiryCarry{expiry_ns, 0.0, 0.04, 0.01, T_override}});
+  MarketStateStorage::MarksColumns marks;
+  marks.uid = 1u;
+  for (const Side side : {Side::Call, Side::Put}) {
+    marks.strike.push_back(100.0);
+    marks.expiry_ns.push_back(expiry_ns);
+    marks.side.push_back(side);
+    marks.sigma.push_back(0.25);
+  }
+  st->marks.push_back(std::move(marks));
+  st->normalize_marks();
+  st->underliers[0].term_carry = st->term_carries[0];
+  return st;
+}
+
+} // namespace
+
+TEST(HistoricalVar, ClockOverrideAdmitsAnExpiryTheTimeSpecRefuses) {
+  constexpr std::int64_t kHourNs = 3'600'000'000'000LL;
+  const std::int64_t expiry = expiry_instant_ns("2033-06-17");
+  const std::int64_t t0 = expiry_instant_ns("2032-11-01") - 6 * kHourNs; // 10:00 ET
+  const std::int64_t t1 = t0 + kHourNs / 2;
+  ASSERT_GT(expiry, 0);
+  const std::vector<OptionLeg> legs{{1u, 1u, 100.0, expiry, Side::Call, 1.0, 100.0},
+                                    {2u, 1u, 100.0, expiry, Side::Put, -1.0, 100.0}};
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prepared = PreparedRiskBook::create(book).value();
+  const RiskKernel kernel = RiskKernel::family();
+  constexpr double kT = 0.62;
+  constexpr double kStep = 1.0 / (365.25 * 48.0);
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+  const auto run = [&](double T_base, double T_shifted, ExplainResult &out) {
+    const auto bs = clock_override_state(t0, expiry, T_base, 100.0);
+    const auto ts = clock_override_state(t1, expiry, T_shifted, 100.4);
+    const MarketState b = make_market_state(*bs).value();
+    const MarketState t = make_market_state(*ts).value();
+    // The premise: the TimeSpec refuses the expiry but not the step.
+    EXPECT_FALSE(b.time_to_expiry(expiry).has_value());
+    EXPECT_TRUE(time_to_expiry_years(t0, t1, b.time()).has_value());
+    const HistoricalVarScenario scenario{&b, &t};
+    RiskWorkspace ws;
+    ws.reserve(prepared);
+    RiskFrame base;
+    RiskFrame shifted;
+    return historical_var_detail::evaluate_pair(kernel, prepared, scenario, RiskNeeds{},
+                                                ExplainOptions{}, ws, base, shifted, out);
+  };
+
+  ExplainResult with;
+  const Result<historical_var_detail::PairOutcome> priced = run(kT, kT - kStep, with);
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  EXPECT_EQ(*priced, historical_var_detail::PairOutcome::Explained)
+      << "the kernel prices an overridden expiry; the pre-check must not refuse it";
+  EXPECT_EQ(with.total.n_ok, 2u);
+  EXPECT_TRUE(std::isfinite(with.total.pnl_total));
+  ASSERT_EQ(with.d_time.size(), 2u);
+  EXPECT_NEAR(with.d_time[0], kStep, 1e-15) << "rolled on the overridden clock";
+
+  ExplainResult without;
+  const Result<historical_var_detail::PairOutcome> refused = run(kNaN, kNaN, without);
+  ASSERT_TRUE(refused.has_value()) << refused.error().to_string();
+  EXPECT_EQ(*refused, historical_var_detail::PairOutcome::Refused);
 }
 
 // ── Kernels and determinism ──────────────────────────────────────────────────

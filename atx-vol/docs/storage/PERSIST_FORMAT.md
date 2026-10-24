@@ -310,7 +310,9 @@ u32 @84; `reserved2` u64 @88.
 
 `YieldPillar` (16 B): `t_years`, `zero_rate` f64. `UidTableRow` (8 B): `offset`, `length` u32
 into `strings`. `SurfaceIndexRow` (16 B): `uid`, `reserved`, `symbol_offset`, `symbol_length` u32.
-`ExpiryCarry` (32 B: `expiry_ns`, `pv_divs`, `rate`, `q`) and `DividendEvent` (16 B: `ex_date_ns`,
+`ExpiryCarry` (40 B: `expiry_ns`, `pv_divs`, `rate`, `q`, `T_override` — the last appended by lane E,
+NaN = none; MarketState fingerprint `0xb9738a6408b9ba89`, was `0x2e40ab410db4469d` with the 32-byte
+row) and `DividendEvent` (16 B: `ex_date_ns`,
 `amount`) are the library's own PODs, stored as-is; their field lists are part of the fingerprint.
 
 The writer refuses a yield curve whose rebuilt discount factors are not bit-equal to the source
