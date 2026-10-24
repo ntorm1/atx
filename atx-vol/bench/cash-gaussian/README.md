@@ -202,3 +202,13 @@ bound. The one-step Black76 diagnostic uses a fixed 5e-10 absolute check,
 declared before the 18 results; every multi-step residual remains visible.
 Three reader controls cover complete/refused denominators and 18 malformed
 model/work/capture mutations. The original 32 numerical outcomes are unchanged.
+
+The single frozen follow-up run completes all 18 European controls and preserves
+all five prior crossing refusals. Six one-step values match Black76 within
+1.43e-13 USD, while all twelve repeated controls exceed 0.001 USD error. Decimal
+reconstruction places every captured crossing nearest to an existing endpoint;
+no rounding treatment is applied. See the
+[full diagnostic report](../../docs/cash-gaussian-followup-review-20261024.md)
+and [prospective cubic plan](cubic-plan.md). The cubic representation is design
+only; no new numerical implementation, American reference or timing result is
+included.
