@@ -10,6 +10,7 @@ import argparse
 import bisect
 import csv
 import hashlib
+import importlib.util
 import json
 import math
 import platform
@@ -18,6 +19,15 @@ import os
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
+
+# The native CLI tests load this oracle by filename from outside bench/. Resolve
+# the review helper by its owning path without mutating the caller's sys.path.
+_review_spec = importlib.util.spec_from_file_location(
+    "atx_spy_identification_review", Path(__file__).with_name("spy_identification_review.py"))
+identification_review = importlib.util.module_from_spec(_review_spec)
+_review_spec.loader.exec_module(identification_review)
+FROZEN_CONTRACT = identification_review.FROZEN_CONTRACT
+REVIEWED_CONTRACT = identification_review.REVIEWED_CONTRACT
 
 INPUT_SHA256 = "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e"
 SERVED = {"ok", "ok_price_only"}
@@ -870,26 +880,37 @@ def cold_price_audit(report, rows, roots=None):
             "failures": failures, "observations": observations}
 
 
-def identification_coverage(prices, eligibility):
+def identification_coverage(prices, eligibility, contract=FROZEN_CONTRACT, report=None, rows=()):
     """Accuracy cannot be bought by silently demoting previously identified rows.
 
     Baseline output is acceptance evidence only, never a fitting input or an
-    eligibility exclusion. A legitimate demotion requires a reviewed baseline
-    change; offsetting it with a newly identified row does not hide it here.
+    eligibility exclusion. Reviewed transitions require an explicit selected
+    contract; the unchanged strict diagnostic always exposes every demotion.
     """
+    if contract not in (FROZEN_CONTRACT, REVIEWED_CONTRACT):
+        raise ValueError("unknown identification contract")
     minimum = eligibility.get("minimum_identified_rows", 1)
     baseline = eligibility.get("identification_baseline")
     current_price_only = set(prices["price_only_row_ids"])
     baseline_price_only = set(baseline["price_only_row_ids"]) if baseline else set()
     new_price_only = sorted(current_price_only - baseline_price_only) if baseline else []
     newly_identified = sorted(baseline_price_only - current_price_only) if baseline else []
-    return {"minimum_identified_rows": minimum,
+    count_passed = isinstance(minimum, int) and not isinstance(minimum, bool) and \
+        minimum > 0 and prices["identified_rows_checked"] >= minimum
+    strict_passed = count_passed and not new_price_only
+    review = identification_review.reviewed_transitions(
+        new_price_only, eligibility, report, rows, zero_volatility_bounds) \
+        if contract == REVIEWED_CONTRACT else {"accepted_row_ids": [], "failures": [], "proofs": []}
+    return {"contract": contract, "minimum_identified_rows": minimum,
             "identified_rows_checked": prices["identified_rows_checked"],
             "baseline_applied": baseline is not None,
             "new_price_only_row_ids": new_price_only,
             "baseline_price_only_rows_now_not_price_only": newly_identified,
-            "coverage_passed": isinstance(minimum, int) and not isinstance(minimum, bool) and
-                minimum > 0 and prices["identified_rows_checked"] >= minimum and not new_price_only,
+            "strict_coverage_passed": strict_passed,
+            "reviewed_accepted_row_ids": review["accepted_row_ids"],
+            "reviewed_transition_evidence": review,
+            "coverage_passed": count_passed and not review["failures"] and
+                set(new_price_only) == set(review["accepted_row_ids"]),
             "scope": "New PriceOnly classifications require explicit review, even if count gains "
                      "elsewhere offset them. Missing/error rows still fail the independent serving gates."}
 
@@ -1200,7 +1221,8 @@ def verify(args, eligibility):
     contract = accuracy_contract(getattr(args, "accuracy_contract", STRICT_IV_CONTRACT))
     prices = cold_price_audit(report, rows, roots)
     floors = cold_floor_audit(report, rows, roots)
-    coverage = identification_coverage(prices, eligibility)
+    coverage = identification_coverage(prices, eligibility,
+        getattr(args, "identification_contract", FROZEN_CONTRACT), report, rows)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
         "input_frozen": receipt["input_sha256"] == eligibility["input_sha256"],
@@ -1295,6 +1317,9 @@ def main():
     parser.add_argument("--accuracy-contract", choices=(STRICT_IV_CONTRACT, RAW_SPREAD_PRICE_CONTRACT),
                         default=STRICT_IV_CONTRACT,
                         help="Explicit promotion contract; historical strict IV gate remains the default.")
+    parser.add_argument("--identification-contract", choices=(FROZEN_CONTRACT, REVIEWED_CONTRACT),
+                        default=FROZEN_CONTRACT,
+                        help="Strict frozen coverage by default; reviewed transitions require exact evidence.")
     args = parser.parse_args()
     eligibility = freeze(args.input)
     if args.command == "run-audit":
@@ -1319,7 +1344,8 @@ def main():
         result[gate] &= not result["raw_model_failures"] and result["report_hash_verified"] and \
             result["input_hash_verified"]
         if args.command == "cold-prices":
-            result["identification_coverage"] = identification_coverage(result, eligibility)
+            result["identification_coverage"] = identification_coverage(
+                result, eligibility, args.identification_contract, report, rows)
             result[gate] &= result["identification_coverage"]["coverage_passed"]
     elif args.command == "freeze":
         result = eligibility

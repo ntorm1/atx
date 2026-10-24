@@ -1,0 +1,196 @@
+{
+  "schema": "atx-vol-reviewed-feasible-floor-v1",
+  "input_sha256": "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e",
+  "baseline_canonical_sha256": "a29138905a0ea54b93c988ce73676c04d14247925b1f58d4934f5fda51544afd",
+  "baseline_file_sha256": "e9cd28de5d910c92aecdca1cc33d61ad5e3fa5698ef76ec808815ed72e845561",
+  "baseline_native_report_sha256": "72fe8d747a724bf92817733fe308d6a4fc91b90796f27daecad21476c58de3e7",
+  "baseline_prediction_sha256": "681c3b44e3edbd799b90b03ccfaad2564d98a580085ae4131093cf749e08a8cf",
+  "minimum_identified_rows": 12183,
+  "price_roundoff_epsilon_multiplier": 32,
+  "target_shift_strict_max_usd": 1e-07,
+  "evidence": {
+    "source_commit": "7afabf2c7352d8871498dd62873def6bd8bd7721",
+    "cold_test": "RawPriceTargets.TwoRecoveredFloorTargetsHaveAuditableClassificationChanges",
+    "cold_receipt_sha256": "e4b8f2a09d85b07fd71006aaceeeef70660b9a33310dd832a4b8f0622b407404",
+    "cold_test_xml_sha256": "c6681baaaa14f97cfb206697b06fd4ba599120b37072beb28f931f451d26336f",
+    "integrated_native_report_sha256": "976c70b74988fb2baf7849fdc83280891f8137318f58c900f90dcee778b5b803",
+    "integrated_prediction_sha256": "892135920e749c697228fffce1e212b36c4385d47d3b6aff3bc0c02bb91ce676",
+    "review": "Root independently reviewed both old IVs as valid and both new targets as genuine FloorVol; only changed-target classification is accepted."
+  },
+  "contracts": [
+    {
+      "raw_row": {
+        "row_id": 27418697,
+        "chain_id": 9021385734418239560,
+        "snapshot_ns": 1791988200000000000,
+        "observation_ns": 1791988205890628000,
+        "underlier": "SPY",
+        "root": "SPY",
+        "expiry_days": 21568,
+        "strike": 120.0,
+        "is_call": 1,
+        "exercise": "American",
+        "spot_bid": "772.989990234375",
+        "spot_ask": "773.010009765625",
+        "spot": 773.0,
+        "bid": 651.530029296875,
+        "ask": 655.5,
+        "bid_size": "5",
+        "ask_size": "10",
+        "years": 2.257885694503784,
+        "years_calendar": 2.257885694503784,
+        "rate": 0.0515890046954155,
+        "sdiv": -0.002056798432022333,
+        "ddiv": "14.648799896240234",
+        "ddiv_pv": 13.88219165802002,
+        "split": "development",
+        "input_status": "ok"
+      },
+      "entry": {
+        "chain_id": 9021385734418239560,
+        "market": {
+          "calendar_years": 2.257885694503784,
+          "continuous_yield": -0.0021653110161423683,
+          "dividend_pv": 13.88219165802002,
+          "rate": 0.0515890046954155,
+          "spot": 773.0,
+          "variance_years": 2.257885694503784
+        },
+        "bounds": {
+          "discount_max": 1.0,
+          "discount_min": 0.8900460502901547,
+          "prepaid_max": 773.0,
+          "prepaid_min": 762.7159810400503,
+          "spot": 773.0
+        },
+        "dividend_model": "aggregate_funding_pv_approximation",
+        "method": "joint_feasible_mid",
+        "cold_fit_fallback": "none",
+        "fit_status": "success",
+        "grade": "B",
+        "record_attached": false
+      },
+      "carry_point": {
+        "continuous_yield": -0.002056798432022333,
+        "strike": 120.0
+      },
+      "expected_query": {
+        "iv_lower": 0.0,
+        "iv_upper": 0.005,
+        "price": 655.9104556897006,
+        "reason": "floor_vol",
+        "served_price": 655.9104556897006,
+        "side": "call",
+        "status": "price_only",
+        "strike": 120.0,
+        "vol_convention": "none",
+        "volatility": null
+      },
+      "cold_proof": {
+        "band": 7.730010000000001e-07,
+        "ceiling": 773.0,
+        "cold_price_at_sigma_floor": 655.9104550052317,
+        "new_price": 655.9104556897006,
+        "new_search_iv": 0.005,
+        "new_search_status": 0,
+        "old_cold_price": 655.9104557785978,
+        "old_cold_residual": -2.0463630789890885e-12,
+        "old_exercise_class": 0,
+        "old_price": 655.9104557785998,
+        "old_search_iv": 0.035424785275844375,
+        "old_search_status": 0,
+        "old_sigma": 0.035424785275844375,
+        "row_id": 27418697,
+        "stationary_time": 6.57494361154853,
+        "zero_vol_supremum": 655.9104550052318
+      }
+    },
+    {
+      "raw_row": {
+        "row_id": 27419115,
+        "chain_id": 9021385734418239560,
+        "snapshot_ns": 1791988200000000000,
+        "observation_ns": 1791988205901629000,
+        "underlier": "SPY",
+        "root": "SPY",
+        "expiry_days": 21568,
+        "strike": 230.0,
+        "is_call": 1,
+        "exercise": "American",
+        "spot_bid": "772.989990234375",
+        "spot_ask": "773.010009765625",
+        "spot": 773.0,
+        "bid": 554.0,
+        "ask": 558.0,
+        "bid_size": "5",
+        "ask_size": "13",
+        "years": 2.257885694503784,
+        "years_calendar": 2.257885694503784,
+        "rate": 0.0515890046954155,
+        "sdiv": -0.002056798432022333,
+        "ddiv": "14.648799896240234",
+        "ddiv_pv": 13.88219165802002,
+        "split": "development",
+        "input_status": "ok"
+      },
+      "entry": {
+        "chain_id": 9021385734418239560,
+        "market": {
+          "calendar_years": 2.257885694503784,
+          "continuous_yield": -0.0021653110161423683,
+          "dividend_pv": 13.88219165802002,
+          "rate": 0.0515890046954155,
+          "spot": 773.0,
+          "variance_years": 2.257885694503784
+        },
+        "bounds": {
+          "discount_max": 1.0,
+          "discount_min": 0.8900460502901547,
+          "prepaid_max": 773.0,
+          "prepaid_min": 762.7159810400503,
+          "spot": 773.0
+        },
+        "dividend_model": "aggregate_funding_pv_approximation",
+        "method": "joint_feasible_mid",
+        "cold_fit_fallback": "none",
+        "fit_status": "success",
+        "grade": "B",
+        "record_attached": false
+      },
+      "carry_point": {
+        "continuous_yield": -0.002056798432022333,
+        "strike": 230.0
+      },
+      "expected_query": {
+        "iv_lower": 0.0,
+        "iv_upper": 0.005,
+        "price": 558.005390232761,
+        "reason": "floor_vol",
+        "served_price": 558.005390232761,
+        "side": "call",
+        "status": "price_only",
+        "strike": 230.0,
+        "vol_convention": "none",
+        "volatility": null
+      },
+      "cold_proof": {
+        "band": 7.730010000000001e-07,
+        "ceiling": 773.0,
+        "cold_price_at_sigma_floor": 558.0053894733147,
+        "new_price": 558.005390232761,
+        "new_search_iv": 0.005,
+        "new_search_status": 0,
+        "old_cold_price": 558.0053902522301,
+        "old_cold_residual": -2.9558577807620168e-12,
+        "old_exercise_class": 0,
+        "old_price": 558.005390252233,
+        "old_search_iv": 0.13667756557476937,
+        "old_search_status": 0,
+        "old_sigma": 0.13667756557476937,
+        "row_id": 27419115,
+        "stationary_time": 20.824339093907348,
+        "zero_vol_supremum": 558.0053894733147
+      }
+    }
+  ]
+}
