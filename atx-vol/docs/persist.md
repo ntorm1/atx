@@ -99,7 +99,10 @@ sanctioned root is `C:\atx-cache\persist\` (set `ATX_VOL_PERSIST_ROOT` to it). T
 
 A bucket is rebuilt when its source fingerprint changes: loader conventions version,
 `ATX_VOL_VERSION`, every `SpiderRockStoreSpec` field, the bucket, and the (name, size,
-last-write time) of each source parquet file; or when the extras choice changes or `--force`.
+last-write time) of each source parquet file; or when the extras choice changes or `--force`;
+or when the published file fails a Full verification (the skip check verifies Full at any size:
+it costs ~50 ms against the ~1.8 s load it saves, so payload damage above the 64 MiB
+default-open threshold is still repaired by the next build).
 Publication is file-then-manifest under `persist.lock`; readers resolve buckets only through the
 manifest and never see a partial file.
 

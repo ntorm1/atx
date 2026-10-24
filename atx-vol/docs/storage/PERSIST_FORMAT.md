@@ -110,7 +110,13 @@ Bytes and Pod sizes are given by `element_stride`; the scalar dtypes have the ob
   2^32 bytes (the writer refuses a larger codec section). A reader refuses (`CodecError`) a
   `raw_length` above that cap, or a frame whose compressed size is not exactly `length` or whose
   recorded content size is not exactly `raw_length`, BEFORE allocating the decoded buffer (an
-  allocation failure is also `CodecError`). `ByteShuffle` (Blosc-style) transposes the bytes of `element_stride`-wide
+  allocation failure is also `CodecError`). Because a frame header can consistently claim any
+  size, the reader also bounds the claim by the frame's body: `raw_length` must be at most
+  32768 x `length` (the zstd format's own ceiling: one 4-byte RLE block per 128 KiB; a
+  constant 16 MiB column measures 31596:1, MarketState columns peak near 300:1) and at most
+  what its block headers can produce (raw and RLE blocks exactly, compressed blocks at the
+  frame's block maximum). Decoded buffers are allocated without a zero fill. `ByteShuffle`
+  (Blosc-style) transposes the bytes of `element_stride`-wide
   elements before compression and back after it. Encoding fans sections out over the pricing
   executor; the bytes are identical for any thread count.
 - The MarketState writer stores every section uncompressed (zero-copy mapping is the point). The
@@ -158,8 +164,9 @@ Codec sections are always decoded and verified at open, so nothing allocates aft
    raw_length` uncompressed) -> `SectionStride`; uncompressed `crc32c != raw_crc32c` ->
    `HeaderInvalid`.
 8. Two entries with one `type` -> `DuplicateSection`.
-9. Codec sections: stored CRC -> `SectionChecksum`; `raw_length` > 2^32, or a frame header
-   that is not one exact frame recording `raw_length` -> `CodecError` (checked before any
+9. Codec sections: stored CRC -> `SectionChecksum`; `raw_length` > 2^32 or > 32768 x
+   `length`, a frame header that is not one exact frame recording `raw_length`, or block
+   headers that cannot produce `raw_length` -> `CodecError` (all checked before any
    allocation); decode or allocation failure -> `CodecError`; raw CRC -> `RawChecksum`.
 10. `Full` / `Paranoid`: each section CRC in file order -> `SectionChecksum`; a nonzero gap byte ->
     `PaddingNotZero`.
@@ -172,9 +179,11 @@ optional section is skipped (`PersistFile.SkipsUnknownOptionalRefusesUnknownRequ
 `typed<T>(type)` refuses a stride other than `sizeof(T)` (`SectionStride`) and a payload not
 aligned for `T` (`Misaligned`).
 
-`PersistFile.RefusesEachCraftedCorruption` pins 42 crafted files against these statuses
+`PersistFile.RefusesEachCraftedCorruption` pins 43 crafted files against these statuses
 (including `codec-raw-length-huge` / `codec-raw-length-max`: resealed tables claiming 2^44 and
-2^64 - 128 decoded bytes).
+2^64 - 128 decoded bytes, and `codec-claim-tiny-body`: an 18-byte frame that consistently claims
+2^32), and `PersistFile.ConsistentHugeCodecClaimIsRefusedBeforeAllocation` asserts that a 256 MiB
+claim in an 18-byte frame no longer grows peak commit (it grew 512 MiB before the bound).
 
 ## 3. Schema fingerprint
 
