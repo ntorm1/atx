@@ -82,6 +82,19 @@ if(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH)
         LABELS "atx_vol_research")
 endif()
 
+if(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+    add_executable(atx-vol-joint-centrality-qp-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-centrality/qp_tests.cpp)
+    target_link_libraries(atx-vol-joint-centrality-qp-tests PRIVATE
+        atx::vol Eigen3::Eigen GTest::gtest_main atx_warnings)
+    target_include_directories(atx-vol-joint-centrality-qp-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_test(NAME atx-vol-joint-centrality-qp COMMAND atx-vol-joint-centrality-qp-tests)
+    set_tests_properties(atx-vol-joint-centrality-qp PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+        LABELS "atx_vol_research")
+endif()
+
 # Explicit private research target; no kernel is linked into the production library.
 option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
 if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)

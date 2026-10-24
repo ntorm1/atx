@@ -1,5 +1,9 @@
 #include "fitting/joint_inbox_projection.hpp"
 
+#if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+#include "../../bench/joint-centrality/qp_control.hpp"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -634,3 +638,16 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
 }
 
 } // namespace atx::vol::detail
+
+#if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+namespace atx::vol::research {
+bool solve_joint_homogeneous_control(const JointHomogeneousInput &input,
+    CentralityDirection output, JointHomogeneousWork &work) {
+  // Refusal stub: independent controls must fail before the actual solve is wired.
+  static_cast<void>(input);
+  static_cast<void>(output);
+  work = {};
+  return false;
+}
+} // namespace atx::vol::research
+#endif

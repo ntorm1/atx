@@ -342,6 +342,14 @@ if(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS)
         COMPILE_DEFINITIONS ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS=1)
 endif()
 
+# Private whole-QP experiment, separately gated from the standalone primitive.
+option(ATX_VOL_JOINT_CENTRALITY_RESEARCH "Research-only joint centrality correction" OFF)
+if(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+    set_property(SOURCE src/fitting/joint_inbox_projection.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_JOINT_CENTRALITY_RESEARCH=1)
+    target_sources(atx-vol PRIVATE bench/joint-centrality/corrector.cpp)
+endif()
+
 # All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
 # AVX2+FMA intrinsics and get the ISA enabled PER-FILE (NOT library-wide) so the
 # rest of atx-vol stays baseline x86-64 and the binary loads on any CPU. Runtime
