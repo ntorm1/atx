@@ -17,6 +17,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -95,7 +96,8 @@ template <class T> [[nodiscard]] bool all_zero(const T &bytes) noexcept {
       s.bytes.size() % s.stride != 0u) {
     return persist_error(PersistStatus::InvalidArgument, s.type, i);
   }
-  if (s.codec == PersistCodec::Zstd && (s.level < 1 || s.level > 19)) {
+  if (s.codec == PersistCodec::Zstd &&
+      (s.level < 1 || s.level > 19 || s.bytes.size() > persist_detail::kMaxCodecRawBytes)) {
     return persist_error(PersistStatus::InvalidArgument, s.type, i);
   }
   return {};
@@ -256,9 +258,9 @@ std::uint32_t persist_crc32c(std::span<const std::byte> bytes) noexcept { return
 
 // ── Builder ──────────────────────────────────────────────────────────────────
 
-PersistResult<std::vector<std::byte>> build_persist_file(std::span<const PersistSectionInput> sections,
-                                                         const PersistFileInfo &info,
-                                                         unsigned n_threads) {
+PersistResult<std::vector<std::byte>>
+build_persist_file(std::span<const PersistSectionInput> sections, const PersistFileInfo &info,
+                   unsigned n_threads) {
   if (PersistOutcome ok = check_inputs(sections, info); !ok) return tl::unexpected(ok.error());
   auto encoded = encode_codec_sections(sections, n_threads);
   if (!encoded) return tl::unexpected(encoded.error());
@@ -310,7 +312,8 @@ PersistResult<std::vector<std::byte>> build_persist_file(std::span<const Persist
   f.kind = h.kind;
   f.schema_fingerprint = h.schema_fingerprint;
   f.header_crc32c = h.header_crc32c;
-  f.file_crc32c = crc_of(std::span<const std::byte>{out.data(), static_cast<std::size_t>(footer_offset)});
+  f.file_crc32c =
+      crc_of(std::span<const std::byte>{out.data(), static_cast<std::size_t>(footer_offset)});
   f.footer_crc32c = footer_crc(f);
   std::memcpy(out.data() + footer_offset, &f, sizeof f);
   return out;
@@ -327,7 +330,8 @@ PersistOutcome replace_file(std::string_view path, std::span<const std::byte> by
     if (os) {
       // SAFETY: std::byte -> char view for ostream::write; char may alias any object.
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-      os.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+      os.write(reinterpret_cast<const char *>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
     }
     if (!os) {
       std::error_code ignored;
@@ -335,7 +339,9 @@ PersistOutcome replace_file(std::string_view path, std::span<const std::byte> by
       return persist_error(PersistStatus::IoError);
     }
   }
-  if (!detail::flush_and_publish_file(tmp.string(), path)) return persist_error(PersistStatus::IoError);
+  if (!detail::flush_and_publish_file(tmp.string(), path)) {
+    return persist_error(PersistStatus::IoError);
+  }
   return {};
 }
 
@@ -478,16 +484,23 @@ struct FileCore {
     if (crc_of(a.stored(i)) != e.crc32c) {
       return persist_error(PersistStatus::SectionChecksum, e.type, i);
     }
-    if (e.raw_length > std::numeric_limits<std::size_t>::max() - 64u) {
+    // Nothing is allocated from the table's raw_length until it is bounded and the frame
+    // header itself records exactly that size; an allocation failure is still a refusal.
+    if (e.raw_length > persist_detail::kMaxCodecRawBytes ||
+        !persist_detail::check_zstd_frame(a.stored(i), e.raw_length)) {
       return persist_error(PersistStatus::CodecError, e.type, i);
     }
-    auto &buffer = a.decoded.emplace_back(static_cast<std::size_t>((e.raw_length + 63u) / 64u));
-    const std::span<std::byte> out =
-        std::as_writable_bytes(std::span{buffer}).first(static_cast<std::size_t>(e.raw_length));
-    if (PersistOutcome ok = persist_detail::decode_zstd(a.stored(i), e.element_stride,
-                                                        static_cast<PersistFilter>(e.filter), out,
-                                                        scratch);
-        !ok) {
+    std::span<std::byte> out;
+    try {
+      auto &buffer = a.decoded.emplace_back(static_cast<std::size_t>((e.raw_length + 63u) / 64u));
+      out = std::as_writable_bytes(std::span{buffer}).first(static_cast<std::size_t>(e.raw_length));
+      if (PersistOutcome ok = persist_detail::decode_zstd(a.stored(i), e.element_stride,
+                                                          static_cast<PersistFilter>(e.filter),
+                                                          out, scratch);
+          !ok) {
+        return persist_error(PersistStatus::CodecError, e.type, i);
+      }
+    } catch (const std::bad_alloc &) {
       return persist_error(PersistStatus::CodecError, e.type, i);
     }
     if (crc_of(out) != e.raw_crc32c) return persist_error(PersistStatus::RawChecksum, e.type, i);
@@ -517,7 +530,9 @@ struct FileCore {
   using S = PersistStatus;
   // SAFETY: address arithmetic only, to check alignment.
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-  if (reinterpret_cast<std::uintptr_t>(bytes.data()) % 8u != 0u) return persist_error(S::Misaligned);
+  if (reinterpret_cast<std::uintptr_t>(bytes.data()) % 8u != 0u) {
+    return persist_error(S::Misaligned);
+  }
   const std::uint64_t n = bytes.size();
   if (n < kHeaderBytes + kFooterBytes) {
     const bool foreign = n >= kPersistMagic.size() &&
@@ -529,14 +544,17 @@ struct FileCore {
   std::memcpy(&a->header, bytes.data(), sizeof a->header);
   const PersistHeader &h = a->header;
   if (PersistOutcome ok = check_header(h, n); !ok) return tl::unexpected(ok.error());
-  if (h.kind != static_cast<std::uint32_t>(kind)) return persist_error(S::WrongKind, kPersistNone, h.kind);
+  if (h.kind != static_cast<std::uint32_t>(kind)) {
+    return persist_error(S::WrongKind, kPersistNone, h.kind);
+  }
   if (h.schema_fingerprint != fingerprint) return persist_error(S::SchemaMismatch);
   const std::uint64_t footer_offset = h.file_size - kFooterBytes;
   std::memcpy(&a->footer, bytes.data() + footer_offset, sizeof a->footer);
   if (PersistOutcome ok = check_footer(a->footer, h); !ok) return tl::unexpected(ok.error());
 
   const std::uint64_t table_end = kHeaderBytes + std::uint64_t{h.section_count} * kEntryBytes;
-  const auto table = bytes.subspan(kHeaderBytes, static_cast<std::size_t>(table_end - kHeaderBytes));
+  const auto table =
+      bytes.subspan(kHeaderBytes, static_cast<std::size_t>(table_end - kHeaderBytes));
   if (crc_of(table) != h.section_table_crc32c) return persist_error(S::SectionTableChecksum);
   a->entries.resize(h.section_count);
   if (!table.empty()) std::memcpy(a->entries.data(), table.data(), table.size());
@@ -657,7 +675,8 @@ PersistResult<PersistFile> PersistFile::open(std::string_view path, PersistKind 
     const std::span<const std::byte> bytes{reinterpret_cast<const std::byte *>(owner->base()),
                                            owner->size()};
     auto impl = std::make_unique<Impl>();
-    if (PersistOutcome ok = validate(*impl, bytes, std::move(owner), kind, fingerprint, options.verify);
+    if (PersistOutcome ok =
+            validate(*impl, bytes, std::move(owner), kind, fingerprint, options.verify);
         !ok) {
       return tl::unexpected(ok.error());
     }
@@ -679,7 +698,8 @@ PersistResult<PersistFile> PersistFile::open_bytes(std::span<const std::byte> by
                                                    PersistKind kind, std::uint64_t fingerprint,
                                                    PersistVerify verify) {
   auto impl = std::make_unique<Impl>();
-  if (PersistOutcome ok = validate(*impl, bytes, std::move(owner), kind, fingerprint, verify); !ok) {
+  if (PersistOutcome ok = validate(*impl, bytes, std::move(owner), kind, fingerprint, verify);
+      !ok) {
     return tl::unexpected(ok.error());
   }
   return PersistFile{std::move(impl)};
@@ -687,7 +707,9 @@ PersistResult<PersistFile> PersistFile::open_bytes(std::span<const std::byte> by
 
 const PersistHeader &PersistFile::header() const noexcept { return impl_->header; }
 const PersistFooter &PersistFile::footer() const noexcept { return impl_->footer; }
-std::span<const PersistSectionEntry> PersistFile::sections() const noexcept { return impl_->entries; }
+std::span<const PersistSectionEntry> PersistFile::sections() const noexcept {
+  return impl_->entries;
+}
 std::span<const std::byte> PersistFile::bytes() const noexcept { return impl_->bytes; }
 std::shared_ptr<const void> PersistFile::keepalive() const noexcept { return impl_->owner; }
 
@@ -707,7 +729,8 @@ PersistResult<std::span<const std::byte>> PersistFile::section(std::uint32_t typ
   return a.served[i];
 }
 
-PersistOutcome PersistFile::check_schema(std::span<const PersistSectionSpec> schema) const noexcept {
+PersistOutcome
+PersistFile::check_schema(std::span<const PersistSectionSpec> schema) const noexcept {
   for (const PersistSectionSpec &spec : schema) {
     const PersistSectionEntry *e = entry(spec.type);
     if (e == nullptr) {

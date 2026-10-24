@@ -107,6 +107,15 @@ class WriterLock {
 public:
   // Bounded retry budget against a LIVE contender. Never waited out against a
   // STALE (dead-owner) lock, which is taken over immediately instead.
+  //
+  // A lock file the previous holder is still deleting is not a failure either:
+  // on Windows its name is DELETE-PENDING for the instant between release()'s
+  // delete disposition and that handle closing, and CREATE_NEW then fails with
+  // ERROR_ACCESS_DENIED (or ERROR_SHARING_VIOLATION / ERROR_DELETE_PENDING).
+  // Those codes are retried within the same `timeout`; one that outlasts it is
+  // IoError naming the Win32 code (a genuine permission failure stays
+  // distinguishable from Unavailable). Measured before this rule: 2 of 60
+  // repeats of PersistDirectory.LockSerializesConcurrentPublishers failed.
   static constexpr std::chrono::milliseconds kDefaultTimeout{5000};
 
   [[nodiscard]] static atx::core::Result<WriterLock>

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -106,20 +107,31 @@ namespace fs = std::filesystem;
   return value;
 }
 
-// Tri-state outcome of one CREATE_NEW/O_EXCL attempt: `Err` is an unexpected
-// filesystem failure; `Ok(handle)` is a fresh lock; `Ok(nullopt)` means the
-// path is already taken (by a live OR stale owner -- the caller decides
-// which).
+// Outcome of one CREATE_NEW/O_EXCL attempt (`Err` is an unexpected filesystem
+// failure): `handle` set is a fresh lock; otherwise the path is taken (by a
+// live OR stale owner -- the caller decides which), or, with
+// `transient_error` nonzero, refused in a state that clears by itself (the
+// previous holder's lock file still being deleted; see writer_lock.hpp).
+struct CreateAttempt {
+  std::optional<std::intptr_t> handle;
+  std::uint32_t transient_error{0};
+};
+
 #if defined(_WIN32)
-[[nodiscard]] Result<std::optional<std::intptr_t>> try_create_new(const fs::path &path) {
+[[nodiscard]] Result<CreateAttempt> try_create_new(const fs::path &path) {
   HANDLE h = ::CreateFileW(path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
                            nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h != INVALID_HANDLE_VALUE) {
-    return Ok(std::optional<std::intptr_t>{reinterpret_cast<std::intptr_t>(h)});
+    return Ok(CreateAttempt{reinterpret_cast<std::intptr_t>(h), 0});
   }
   const DWORD error = ::GetLastError();
   if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
-    return Ok(std::optional<std::intptr_t>{std::nullopt});
+    return Ok(CreateAttempt{});
+  }
+  // STATUS_DELETE_PENDING surfaces through CreateFileW as ERROR_ACCESS_DENIED.
+  if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+      error == ERROR_DELETE_PENDING) {
+    return Ok(CreateAttempt{std::nullopt, static_cast<std::uint32_t>(error)});
   }
   return Err(ErrorCode::IoError,
              "WriterLock::acquire: cannot create lock file (win32 error=" +
@@ -170,14 +182,14 @@ void close_handle(std::intptr_t native_handle) noexcept {
 }
 
 #else
-[[nodiscard]] Result<std::optional<std::intptr_t>> try_create_new(const fs::path &path) {
+[[nodiscard]] Result<CreateAttempt> try_create_new(const fs::path &path) {
   const std::string p = path.string();
   const int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
   if (fd >= 0) {
-    return Ok(std::optional<std::intptr_t>{fd});
+    return Ok(CreateAttempt{fd, 0});
   }
   if (errno == EEXIST) {
-    return Ok(std::optional<std::intptr_t>{std::nullopt});
+    return Ok(CreateAttempt{});
   }
   return Err(ErrorCode::IoError, "WriterLock::acquire: cannot create lock file: " + p);
 }
@@ -238,14 +250,30 @@ Result<WriterLock> WriterLock::acquire(std::string_view lock_path,
   const fs::path path{std::string(lock_path)};
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   constexpr std::chrono::milliseconds kRetryInterval{20};
+  // A delete-pending name clears within microseconds of the previous holder's
+  // release, so a transient refusal is retried far sooner than live contention.
+  constexpr std::chrono::milliseconds kTransientRetryInterval{1};
 
   for (;;) {
     auto attempt = try_create_new(path);
     if (!attempt) {
       return Err(attempt.error());
     }
-    if (attempt->has_value()) {
-      const std::intptr_t handle = **attempt;
+    if (attempt->transient_error != 0) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return Err(ErrorCode::IoError,
+                   "WriterLock::acquire: cannot create lock file (win32 error=" +
+                       std::to_string(attempt->transient_error) +
+                       ", still refused when the timeout expired): " + path.string());
+      }
+      std::this_thread::sleep_for(std::min(
+          kTransientRetryInterval,
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)));
+      continue;
+    }
+    if (attempt->handle.has_value()) {
+      const std::intptr_t handle = *attempt->handle;
       if (Status wrote = write_owner_pid(handle, current_process_id()); !wrote) {
         close_handle(handle);
         std::error_code ec;

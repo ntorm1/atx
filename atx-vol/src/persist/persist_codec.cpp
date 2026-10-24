@@ -67,9 +67,8 @@ PersistResult<std::vector<std::byte>> encode_zstd(std::span<const std::byte> raw
   return out;
 }
 
-PersistOutcome decode_zstd(std::span<const std::byte> stored, std::uint32_t stride,
-                           PersistFilter filter, std::span<std::byte> out,
-                           std::vector<std::byte> &scratch) {
+PersistOutcome check_zstd_frame(std::span<const std::byte> stored,
+                                std::uint64_t raw_length) noexcept {
   // Exactly one frame, no trailing bytes, recording exactly the expected size: a frame
   // that decodes "successfully" to another length is a corruption, not data.
   if (ZSTD_findFrameCompressedSize(stored.data(), stored.size()) != stored.size()) {
@@ -77,9 +76,16 @@ PersistOutcome decode_zstd(std::span<const std::byte> stored, std::uint32_t stri
   }
   const unsigned long long content = ZSTD_getFrameContentSize(stored.data(), stored.size());
   if (content == ZSTD_CONTENTSIZE_ERROR || content == ZSTD_CONTENTSIZE_UNKNOWN ||
-      content != out.size()) {
+      content != raw_length) {
     return persist_error(PersistStatus::CodecError, kPersistNone, content);
   }
+  return {};
+}
+
+PersistOutcome decode_zstd(std::span<const std::byte> stored, std::uint32_t stride,
+                           PersistFilter filter, std::span<std::byte> out,
+                           std::vector<std::byte> &scratch) {
+  if (PersistOutcome ok = check_zstd_frame(stored, out.size()); !ok) return ok;
   if (out.empty()) return {};
   const bool shuffled = filter == PersistFilter::ByteShuffle && stride > 1;
   std::span<std::byte> dst = out;

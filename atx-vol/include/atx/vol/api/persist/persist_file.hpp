@@ -137,7 +137,8 @@ public:
   // The (decoded) payload of `type`. MissingSection when absent; under Lazy the first
   // touch verifies the stored CRC (SectionChecksum on mismatch, and every later touch
   // reports the same verdict).
-  [[nodiscard]] PersistResult<std::span<const std::byte>> section(std::uint32_t type) const noexcept;
+  [[nodiscard]] PersistResult<std::span<const std::byte>>
+  section(std::uint32_t type) const noexcept;
 
   // Typed zero-copy view. SectionStride when the stored stride is not sizeof(T) or the
   // stored dtype is not persist_dtype_of<T>(); Misaligned when the payload address is
@@ -173,7 +174,8 @@ public:
   // UnsupportedSectionMajor, another dtype / stride -> SectionStride; a present
   // UNKNOWN section flagged Required -> UnsupportedSection; an unknown optional section
   // is skipped. Allocation-free.
-  [[nodiscard]] PersistOutcome check_schema(std::span<const PersistSectionSpec> schema) const noexcept;
+  [[nodiscard]] PersistOutcome
+  check_schema(std::span<const PersistSectionSpec> schema) const noexcept;
 
   // Verify every not-yet-verified section CRC and the whole-file CRC now (what a
   // `verify` CLI calls on a Framing / Lazy open). Allocation-free.
@@ -195,7 +197,7 @@ private:
 struct PersistManifestEntry {
   std::uint64_t seq{};                 // directory-unique, ascending in publish order
   std::array<char, 48> file_name{};
-  std::array<char, 16> key{};          // [A-Za-z0-9_.-]{1,16}, unique within the manifest
+  std::array<char, 16> key{};          // [A-Za-z0-9_.-]{1,15}, unique within the manifest
   std::uint64_t file_size{};
   std::uint32_t file_crc32c{};         // the file footer's whole-file CRC
   std::uint32_t header_crc32c{};
@@ -222,7 +224,7 @@ inline constexpr std::string_view kPersistLockFileName = "persist.lock";
 //   MarketState      bucket_et=<key>-g<seq, 12 digits>.atxms
 //   SurfaceTimeline  <key>-g<seq, 12 digits>.atxstl
 //   RiskRun          seg-<seq, 12 digits>.atxrr
-// InvalidArgument for the Manifest kind or a key outside [A-Za-z0-9_.-]{1,16} (and
+// InvalidArgument for the Manifest kind or a key outside [A-Za-z0-9_.-]{1,15} (and
 // never "." / ".."): the name can never carry a path part.
 [[nodiscard]] PersistResult<std::string> persist_file_name(PersistKind kind, std::string_view key,
                                                            std::uint64_t seq);

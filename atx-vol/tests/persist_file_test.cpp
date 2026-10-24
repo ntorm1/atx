@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <span>
 #include <string>
@@ -494,8 +495,8 @@ using Img = std::vector<std::byte>;
   c.push_back({"codec-garbage-frame", [](Img &i) {
                  const PersistSectionEntry e = entry_of(i, 5);
                  for (std::uint64_t k = 0; k < e.length; ++k) i[e.offset + k] = std::byte{0x5A};
-                 const std::uint32_t crc = persist_crc32c(
-                     std::span<const std::byte>{i.data() + e.offset, static_cast<std::size_t>(e.length)});
+                 const std::uint32_t crc = persist_crc32c(std::span<const std::byte>{
+                     i.data() + e.offset, static_cast<std::size_t>(e.length)});
                  mutate_entry(i, 5, [&](PersistSectionEntry &x) { x.crc32c = crc; });
                }, V::Framing, S::CodecError});
   c.push_back({"codec-raw-crc", [](Img &i) {
@@ -505,6 +506,20 @@ using Img = std::vector<std::byte>;
                  mutate_entry(i, 5, [](PersistSectionEntry &e) {
                    e.raw_length += 8;
                    e.element_count += 1;
+                 });
+               }, V::Framing, S::CodecError});
+  // A resealed table claiming a huge decoded length: refused before anything is
+  // allocated from it (review 1 blocker: std::bad_alloc escaped open()).
+  c.push_back({"codec-raw-length-huge", [](Img &i) {
+                 mutate_entry(i, 5, [](PersistSectionEntry &e) {
+                   e.raw_length = std::uint64_t{1} << 44;
+                   e.element_count = e.raw_length / e.element_stride;
+                 });
+               }, V::Framing, S::CodecError});
+  c.push_back({"codec-raw-length-max", [](Img &i) {
+                 mutate_entry(i, 5, [](PersistSectionEntry &e) {
+                   e.raw_length = ~std::uint64_t{0} - 127u;
+                   e.element_count = e.raw_length / e.element_stride;
                  });
                }, V::Framing, S::CodecError});
   c.push_back({"filter-without-codec", [](Img &i) {
@@ -789,7 +804,8 @@ namespace {
 [[nodiscard]] std::string name_of(const PersistManifestEntry &e) {
   return std::string(e.file_name.data(),
                      static_cast<std::size_t>(
-                         std::find(e.file_name.begin(), e.file_name.end(), '\0') - e.file_name.begin()));
+                         std::find(e.file_name.begin(), e.file_name.end(), '\0') -
+                         e.file_name.begin()));
 }
 
 } // namespace
@@ -827,8 +843,8 @@ TEST(PersistDirectory, PublishesFileThenManifest) {
   EXPECT_EQ(hit->seq, 3u);
   EXPECT_EQ(hit->source_fingerprint, 13u);
   EXPECT_EQ(d->find("1100"), nullptr);
-  auto f = PersistFile::open(d->path(*hit), PersistKind::MarketState, kTestFp,
-                             PersistOpenOptions{true, PersistVerify::Paranoid, false, hit->file_size});
+  const PersistOpenOptions paranoid{true, PersistVerify::Paranoid, false, hit->file_size};
+  auto f = PersistFile::open(d->path(*hit), PersistKind::MarketState, kTestFp, paranoid);
   ASSERT_TRUE(f.has_value());
   EXPECT_EQ(f->footer().file_crc32c, hit->file_crc32c);
   EXPECT_EQ(f->header().header_crc32c, hit->header_crc32c);
@@ -863,10 +879,11 @@ TEST(PersistDirectory, RefusesTraversalFileName) {
   for (const std::string_view key :
        {std::string_view{".."}, std::string_view{"."}, std::string_view{"../x"},
         std::string_view{"a/b"}, std::string_view{"a\\b"}, std::string_view{"C:"},
-        std::string_view{""}, std::string_view{"abcdefghijklmnopq"}}) {
-    EXPECT_EQ(persist_file_name(PersistKind::MarketState, key, 1).error().status,
-              PersistStatus::InvalidArgument)
-        << key;
+        std::string_view{""}, std::string_view{"abcdefghijklmnopq"},
+        std::string_view{"abcdefghijklmnop"}}) { // 16: the key field keeps a NUL
+    const auto name = persist_file_name(PersistKind::MarketState, key, 1);
+    ASSERT_FALSE(name.has_value()) << key;
+    EXPECT_EQ(name.error().status, PersistStatus::InvalidArgument) << key;
   }
   EXPECT_EQ(persist_file_name(PersistKind::Manifest, "1000", 1).error().status,
             PersistStatus::InvalidArgument);
@@ -900,19 +917,24 @@ TEST(PersistDirectory, LockSerializesConcurrentPublishers) {
   constexpr int kWriters = 6;
   constexpr int kEach = 3;
   std::vector<std::thread> pool;
-  std::atomic<int> failures{0};
+  std::mutex mu;
+  std::vector<std::string> failures;
   for (int w = 0; w < kWriters; ++w) {
     pool.emplace_back([&, w] {
       for (int k = 0; k < kEach; ++k) {
         const std::string key = "k" + std::to_string(w) + "_" + std::to_string(k);
         auto e = PersistDirectory::publish(
             dir.string(), key, state_like_image(static_cast<std::uint64_t>(w * 10 + k), w));
-        if (!e) failures.fetch_add(1);
+        if (!e) {
+          const std::lock_guard<std::mutex> hold(mu);
+          failures.push_back(key + ": " + std::string(to_string(e.error().status)) + " detail " +
+                             std::to_string(e.error().detail));
+        }
       }
     });
   }
   for (std::thread &t : pool) t.join();
-  EXPECT_EQ(failures.load(), 0);
+  for (const std::string &f : failures) ADD_FAILURE() << "publish failed: " << f;
   auto d = PersistDirectory::open(dir.string());
   ASSERT_TRUE(d.has_value());
   ASSERT_EQ(d->entries().size(), static_cast<std::size_t>(kWriters * kEach))

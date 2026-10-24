@@ -6303,3 +6303,48 @@ real source yet); the S3 trainer and purged-CV/embargo validation harness
   units, the refusal-reason sum, full row-accounting closure, and absence of
   membership. `mode_b_smoke_tune` now runs the worktree-local binary instead of
   a bare PATH lookup.
+
+### NEW — binary persistence: the ATXVPF container and a SpiderRock-derived MarketState store
+
+A risk run's market input no longer has to be rebuilt from Parquet every time. A new public
+module `api/persist/` (lane P1 of the wave-3 persistence sprint; spec
+`docs/storage/PERSIST_FORMAT.md`, guide `docs/persist.md`):
+
+- **ATXVPF (`PersistFile`)** — one container for every persisted kind: 256-byte header,
+  64-byte section entries, 64-byte aligned payloads, 4096-byte file size, 64-byte footer;
+  CRC32C on the header, section table, every section (stored and raw), the footer and the whole
+  file; a constexpr schema fingerprint per kind (FNV-1a/64 + fmix64 over a field-level schema
+  table, so moving or resizing a field refuses old files instead of misreading them); optional
+  zstd + byte shuffle per section; verify levels Framing / Lazy / Full / Paranoid; mapped or
+  one-read access; no allocation after open. 42 crafted corruptions (including resealed
+  tables claiming 2^44 / 2^64 decoded bytes, refused before any allocation) are each refused
+  with their own `PersistStatus`.
+- **`PersistDirectory`** — a manifest of kind Manifest plus `persist.lock`: publish is
+  file-then-manifest (temp + flush + rename), readers resolve keys only through the manifest,
+  file names are canonical (no traversal), orphans of an interrupted publish are skipped.
+- **MarketState archive (`.atxms`)** — one `MarketStateStorage` per file, optionally with the
+  per-mark selection extras and embedded fitted surfaces. `MarketStateArchive::open` serves a
+  `MarketState` whose marks, term carry and dividends are spans into the mapping; yield curves
+  are stored from the new `YieldCurve::pillars()` and rebuilt bit-equal at open. 41 bytes per
+  mark core, +56 extras.
+- **State store** — `build_state_store_from_spiderrock` / `StateStore`: a fingerprinted,
+  derived cache of the Parquet ingest (rebuilt when the loader conventions version, the library
+  version, the store spec or any source file changes), with uids identical to one serial load
+  even though buckets load in parallel, and byte-identical rebuilds.
+- **Tool `atx-vol-state-store`** — `build | inspect | verify | bench | synth`.
+
+Measured on the licensed day 2026-10-14 (bucket 1000, warm): the top-100 book (367,664 marks,
+35.7 MB) opens with Full verification and serves its state in 11.1 ms p50 against 1.35 s for
+the Parquet load + state build (121x; Framing 2.3 ms). The uncapped book (1.94 M marks,
+189.6 MB) opens Full in 67.5 ms p50 against 1.65 s, over the 60 ms target, so the default opens
+verify Full only up to 64 MiB (`kMarketStateFullVerifyMaxBytes`) and Framing above it: the
+uncapped book opens in 16.2 ms by default, Full / Paranoid on request. Encode + publish per
+bucket: 0.086 s (top-100) and 0.43 s (uncapped). Rebuilds of all 11 buckets are sha256-identical
+across `--parallel 1` / `--parallel 2` and repeated runs, and a `RiskStream` explain over the 11
+archived states is bit-equal to the Parquet-built states on all 10 transitions.
+
+**Existing callers.** None change. The module is additive; `zstd` is linked PRIVATE to
+`atx-vol`. `YieldCurve` gains an additive `pillars()` accessor (it now also keeps the zero rates
+`create` was given); `disc` / `zero` are unchanged. `atx-vol-state-store` has no compiled-in
+output root: `--out` or `ATX_VOL_PERSIST_ROOT`. `--state-store` wiring in the risk bench is a
+later integration item.

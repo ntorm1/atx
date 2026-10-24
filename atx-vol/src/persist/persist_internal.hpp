@@ -35,6 +35,17 @@ void byte_unshuffle(std::span<const std::byte> in, std::uint32_t stride,
                                                                 std::uint32_t stride,
                                                                 PersistFilter filter, int level);
 
+// The largest decoded (raw) length of one codec section, writer and reader alike. A
+// reader allocates the decoded buffer from the section table, so the table's raw_length
+// must be bounded before any allocation (a resealed table can claim 2^44 or 2^64 - 128).
+inline constexpr std::uint64_t kMaxCodecRawBytes = std::uint64_t{1} << 32;
+
+// CodecError unless `stored` is exactly one zstd frame (no trailing bytes) whose
+// recorded content size is exactly `raw_length`. Reads the frame header only: the
+// check a reader makes BEFORE allocating `raw_length` bytes.
+[[nodiscard]] PersistOutcome check_zstd_frame(std::span<const std::byte> stored,
+                                              std::uint64_t raw_length) noexcept;
+
 // Decode one zstd frame into `out` (exactly out.size() bytes), undoing the shuffle.
 // CodecError unless `stored` is exactly one frame whose recorded content size is
 // out.size() and which decodes to that many bytes. `scratch` is grown as needed.
