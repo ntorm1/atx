@@ -341,3 +341,31 @@ TEST(TheoContract, UnreachableDeltaIsTyped) {
   ASSERT_FALSE(none.has_value());
   EXPECT_EQ(none.error().code(), ErrorCode::InvalidArgument);
 }
+
+// Design gate (spec section 8): a theo resolved outside the fitted tenor range is
+// served and flagged under Flag, refused (typed, not structural) under Forbid.
+TEST(TheoContract, TenorExtrapolationIsFlagged) {
+  const PricedSurface ps = make_surface(100.0, 0.04, 0.015);
+  const SurfaceRef ref{ps};
+  const std::int64_t ts = utc_ns(2026, 10, 20, 15, 0);
+  const TheoContract long_dated{11, MaturitySpec::years_of(1.6), StrikeCoord::delta(-0.25),
+                                Side::Put};
+  const auto flagged = resolve_theo(long_dated, ref, ts);
+  ASSERT_TRUE(flagged.has_value()) << flagged.error().to_string();
+  EXPECT_EQ(flagged->status, TheoStatus::Ok);
+  EXPECT_TRUE(has_flag(flagged->flags, RiskFlag::TenorExtrapolated));
+  EXPECT_TRUE(std::isfinite(flagged->mark));
+  ProjectionPolicy forbid;
+  forbid.extrap = TenorExtrapPolicy::Forbid;
+  const auto refused = resolve_theo(long_dated, ref, ts, forbid);
+  ASSERT_TRUE(refused.has_value()) << refused.error().to_string();
+  EXPECT_EQ(refused->status, TheoStatus::MaturityUnavailable);
+  EXPECT_TRUE(has_flag(refused->flags, RiskFlag::TenorExtrapolated));
+  EXPECT_TRUE(std::isnan(refused->leg.K));
+  const auto inside = resolve_theo(
+      TheoContract{11, MaturitySpec::years_of(0.6), StrikeCoord::delta(-0.25), Side::Put}, ref, ts,
+      forbid);
+  ASSERT_TRUE(inside.has_value());
+  EXPECT_EQ(inside->status, TheoStatus::Ok);
+  EXPECT_FALSE(has_flag(inside->flags, RiskFlag::TenorExtrapolated));
+}
