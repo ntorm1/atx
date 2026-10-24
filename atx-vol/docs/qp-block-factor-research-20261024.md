@@ -152,7 +152,9 @@ requirements and reproducible full-fit performance earn integration. A subsequen
 quiet timing attempt should investigate host placement/activity explicitly; it
 must not silently weaken the gate or discard difficult trials.
 
-Primary motivation and API contracts are linked in the
-[replay README](../bench/qp-faer-research/README.md): faer sequential sparse LDLT,
-Karsavuran et al. on serial sparse Cholesky, and Eigen's sparse interfaces.
+Primary motivation and API contracts:
+[faer sparse LDLT](https://docs.rs/faer/0.24.4/faer/sparse/linalg/cholesky/index.html),
+[Karsavuran et al. on serial sparse Cholesky](https://arxiv.org/abs/2409.13090), and
+[Eigen sparse interfaces](https://eigen.tuxfamily.org/dox/group__CholmodSupport__Module.html).
+The replay source/README lives on the isolated research branch named above.
 No published paper establishes this library's measured performance.

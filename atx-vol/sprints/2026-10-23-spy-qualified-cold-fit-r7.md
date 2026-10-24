@@ -6,26 +6,30 @@ Current integration checkpoint, 2026-10-24: local `C:/atx` main contains
 `96cd56db`, with all pre-existing files preserved. New Greek/cash components are
 integrating in pool-3; later pending-merge statements are historical.
 
-The latest complete-fit release trials are **1.3944879, 1.4460046 and
-1.3173856 seconds; median 1.3944879**. These are fresh processes, one worker,
-P-core 6, with the sibling-activity gate passed. Binary `6afb2de0` includes the
-finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
+The latest ordinary-backend control takes **1.3226988, 1.4265373 and
+1.4471122 seconds; median 1.4265373**. All three fresh processes use one worker
+on P-core 6 and pass the sibling-activity gate. Archived binary `6afb2de0` includes
+the finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
 12,866/12,866 eligible rows, 99.88341365% raw containment, 12,850 identified IVs
 and 16 truthful PriceOnly results. Maximum cold Reference residual remains
 $0.000501296609/share under `min($0.001, 1% of original spread)`.
 
-The immediately following archived-main control measured 1.4906585, 1.6913849
-and 1.5600743 seconds, but its second run failed the sibling-activity gate
-(11.00917%). Retain all receipts; this comparison establishes no speedup or
-regression. The historical main checkpoint median 1.0989175 and earlier 1.03-second
-sets remain valid records of their own runs, not substitutes for the latest clock.
+The full double block-factor prototype also passes all 13 correctness gates.
+Its two timing sets are 1.1301671/1.3739241/1.1918033 seconds and
+1.6014335/1.2003743/1.1195960 seconds, respectively. The first set has one
+sibling-activity failure and the second has three; neither qualifies a speedup.
+All runs and denominators remain recorded. No candidate run is below one second.
+
+The earlier 1.3944879-second ordinary-backend median, historical main median
+1.0989175 and earlier 1.03-second sets remain evidence of their own runs.
+They are not replacements for the latest clock or proof of a source regression.
 Subsecond and 100-process release qualification remain open.
 
 Finalizer floor reuse removes 265 boundary solves with identical predictions.
-FP32 replay is rejected; double block replay is promising but unqualified and
-requires a full-QP prototype. Boundary Greek admission passes the complete715
-rerun with all prices unchanged; downstream portfolio/Python propagation and
-short-time derivative accuracy remain open. Cash guards and exact50-case manifest
+FP32 replay is rejected; the full double block-factor prototype passes every API
+correctness gate but remains unqualified for timing and production deployment. Boundary Greek admission passes the complete715
+rerun with all prices unchanged; portfolio and derivative-book availability fixes are reviewed/integrating, while
+backtest/Python propagation and short-time derivative accuracy remain open. Cash guards and exact50-case manifest
 are integrated; three-grid PDE evidence retains43/44 pass plus1uncertain at finest.
 See [current exact-binary evidence](../docs/spy-cold-acceptance-r7.md).
 

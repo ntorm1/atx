@@ -8,35 +8,42 @@ oracle and reproducible gates, **not an achieved subsecond fit**.
 Current checkpoint: local main contains reviewed `96cd56db`; new reviewed
 Greek/cash components are integrating separately in pool-3.
 
-The latest complete-fit release trials are **1.3944879, 1.4460046 and
-1.3173856 seconds; median 1.3944879**. These are fresh processes, one worker,
-P-core 6, with the sibling-activity gate passed. Binary `6afb2de0` includes the
-finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
+The latest ordinary-backend control takes **1.3226988, 1.4265373 and
+1.4471122 seconds; median 1.4265373**. All three fresh processes use one worker
+on P-core 6 and pass the sibling-activity gate. Archived binary `6afb2de0` includes
+the finalizer floor cache and passes all 13 actual-API checks: 33/33 expiries,
 12,866/12,866 eligible rows, 99.88341365% raw containment, 12,850 identified IVs
 and 16 truthful PriceOnly results. Maximum cold Reference residual remains
 $0.000501296609/share under `min($0.001, 1% of original spread)`.
 
-The immediately following archived-main control measured 1.4906585, 1.6913849
-and 1.5600743 seconds, but its second run failed the sibling-activity gate
-(11.00917%). Retain all receipts; this comparison establishes no speedup or
-regression. The historical main checkpoint median 1.0989175 and earlier 1.03-second
-sets remain valid records of their own runs, not substitutes for the latest clock.
+The full double block-factor prototype also passes all 13 correctness gates.
+Its two timing sets are 1.1301671/1.3739241/1.1918033 seconds and
+1.6014335/1.2003743/1.1195960 seconds, respectively. The first set has one
+sibling-activity failure and the second has three; neither qualifies a speedup.
+All runs and denominators remain recorded. No candidate run is below one second.
+
+The earlier 1.3944879-second ordinary-backend median, historical main median
+1.0989175 and earlier 1.03-second sets remain evidence of their own runs.
+They are not replacements for the latest clock or proof of a source regression.
 Subsecond and 100-process release qualification remain open.
 
 The finalizer source is `c721422d`; measured clean source `0662116e` adds docs.
 Exact binary SHA256: `6afb2de0f3eb61f93a9bc59fc8b6d6abf6e2245e562cf530d26db8100b13c632`.
 Prediction SHA256: `e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`.
 Evidence root: `C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/`.
-Latest timing manifest: `final-floor-v1-lto-profile/manifest.json`, SHA256
-`d338dbfe5dedef52c33e77ed64726de7b8ccd43a0a8b4f049f7c766f8b0c247e`.
-Control: `final-floor-v1-main-control/manifest.json`, SHA256
-`4d3fb0a0ca45532dd784a6fe74957f4b09cbbe53308ca5f8ab45edecb8007613`.
-Joined result: `acceptance/integrated-final-floor-lto-v1-audit/qualification-clock-v1.json`.
-Every correctness check passes; timing fails only the 100-process count and
-all-under-one-second checks. The control's sibling failure remains separately visible.
+Latest ordinary timing manifest: `qp-faer-original-control-v1/manifest.json`, SHA256
+`b518828a9dd50e545824846723d1ab666b2c690ae33b4692508592c1884cea86`.
+The prior `final-floor-v1-lto-profile` and `final-floor-v1-main-control` receipts
+remain immutable, including the latter's sibling failure. The full block-factor
+prototype uses research source `020e5be8`, binary `60b87627`, and prediction SHA256
+`560da64113e2727373aaa5a08e9a095a10634216d149b569789a4b8d1cba39f0`.
+Every price/status/coverage certificate passes; small reordered double values
+are checked by the complete API audit, not assumed equivalent from residuals.
 
-The [mixed-precision experiment](qp-mixed-precision-research-20261024.md) is not
-promoted. Double block-factor replay is research-only pending a full-QP prototype.
+See [full block-factor evidence](qp-block-factor-research-20261024.md) for both
+failed-host timing manifests, numerical deltas, fallback contracts and remaining
+C++ refusal/ISA/build-packaging gates. The [mixed-precision experiment](qp-mixed-precision-research-20261024.md)
+is not promoted. Ordinary integration remains on the original double backend.
 
 ## Frozen workload and denominator
 
