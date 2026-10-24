@@ -508,6 +508,20 @@ using Img = std::vector<std::byte>;
                    e.element_count += 1;
                  });
                }, V::Framing, S::CodecError});
+  // A resealed table claiming a huge decoded length: refused before anything is
+  // allocated from it (review 1 blocker: std::bad_alloc escaped open()).
+  c.push_back({"codec-raw-length-huge", [](Img &i) {
+                 mutate_entry(i, 5, [](PersistSectionEntry &e) {
+                   e.raw_length = std::uint64_t{1} << 44;
+                   e.element_count = e.raw_length / e.element_stride;
+                 });
+               }, V::Framing, S::CodecError});
+  c.push_back({"codec-raw-length-max", [](Img &i) {
+                 mutate_entry(i, 5, [](PersistSectionEntry &e) {
+                   e.raw_length = ~std::uint64_t{0} - 127u;
+                   e.element_count = e.raw_length / e.element_stride;
+                 });
+               }, V::Framing, S::CodecError});
   c.push_back({"filter-without-codec", [](Img &i) {
                  mutate_entry(i, 2, [](PersistSectionEntry &e) { e.filter = 1; });
                }, V::Full, S::HeaderInvalid});
