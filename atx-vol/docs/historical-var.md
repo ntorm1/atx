@@ -36,11 +36,16 @@ resolved / unresolved, and `admitted`.
 | a template's uid has no surface in base_i, delta unreachable, maturity unavailable … | counted in `n_legs_unresolved`; the scenario runs with the rest |
 | a state with **no surface at all** (marks-only) as base or shifted, book has templates | scenario refused (not admitted): marks cannot host theoretical contracts (D13) |
 | no resolved template and no share leg | not admitted |
-| an explain exclusion (rolled, refused, numeric error lane) | admitted iff `excluded_premium ≤ max_excluded_premium_frac · |pv_base|` (default 0: any priced exclusion drops the scenario) and at least one leg is in the totals |
-| the state's clock refuses an expiry or the step | not admitted |
+| an explain exclusion (rolled, refused, numeric error lane, a share or option leg whose uid is missing from a state) | admitted iff at least one leg is in the totals, every excluded leg's premium is KNOWN, and `excluded_premium < max_excluded_premium_frac · |pv_base|` (strictly; default 0: any exclusion drops the scenario) |
+| an excluded leg whose BASE value is unavailable (explain books it at premium 0) | never admitted, whatever the fraction: its premium is unknown, not zero |
+| the state's clock refuses an expiry or the step | not admitted (checked before the kernel runs, with the kernel's and explain's own tests) |
 | empty book, null state pointer, confidence outside (0, 1), invalid kernel policy, non-finite qty, negative `max_excluded_premium_frac` | `InvalidArgument` for the call |
+| any other evaluate / explain failure (structural: a workspace or frame bound to another book …) | the call's error, never a silently dropped scenario |
 
-Scenario-level failures never fail the call.
+Scenario-level failures never fail the call; structural ones always do. Each scenario has its
+own `RiskBook`, so the one workspace is re-bound with `RiskWorkspace::reserve` before every
+evaluation; that re-bind is what `reserve` does today, not what its header promises, and is
+recorded at the call site in `historical_var.cpp`.
 
 ## Quantiles
 
@@ -55,7 +60,9 @@ the admitted scenarios. With no admitted scenario every point has NaN VaR / ES a
 `summarize_historical_var(frames, confidences)` is that quantile half on its own: a caller that
 evaluates a long history in windows (one `historical_var` per window, `confidences` empty)
 summarizes the concatenated frames once, and an artifact verifier recomputes published points
-from stored frames — both bit-identical to one `historical_var` over the whole history.
+from stored frames — both bit-identical to one `historical_var` over the whole history. It
+refuses (`InvalidArgument`) an ADMITTED frame whose `pnl_total` or `pv_base` is not finite: a
+NaN loss has no rank. Frames that are not admitted are never read.
 `config.keep_resolved_legs` keeps every template's resolution on every base state in
 `resolved_legs` (scenario-major).
 
@@ -107,12 +114,21 @@ went with it.
 ## Tests
 
 - `tests/risk_historical_var_test.cpp`, ctest prefix `risk/HistoricalVar.`:
-  `FixedDeltaTemplatesReSolvePerScenario`, `FixedMoneynessTemplatesHoldK`, `SharesInScenarioPnl`,
-  `NearestRankQuantilesMatchHandComputation` (5 scenarios, VaR / ES at 0.6 and 0.8 by hand),
-  `TailMeanIsAttributionOfTail`, `UnresolvedTemplateIsCountedNotFatal`,
-  `NoSurfaceStateIsRefused`, `FamilyAndColdAgreeWithinTolerance` (|ΔVaR| ≤ 1e-6 · reference_pv on
-  a synthetic 3-state history), `DeterministicAcrossThreads`, `InvalidArgumentsAreRefused`.
-- Dispersion: `dispersion/ListedDispersionPipeline.*` (numeric pins of the pair P&L and VaR / ES),
+  - pipeline: `FixedDeltaTemplatesReSolvePerScenario`, `FixedMoneynessTemplatesHoldK`,
+    `SharesInScenarioPnl`;
+  - quantiles: `NearestRankQuantilesMatchHandComputation` (5 scenarios, VaR / ES at 0.6 and 0.8
+    by hand), `NearestRankTiesKeepScenarioOrder`, `NearestRankAtOneScenarioAndConfidenceNearOne`,
+    `TailMeanIsAttributionOfTail`, `SummarizeRefusesAnAdmittedNonFiniteFrame`;
+  - failure policy: `UnresolvedTemplateIsCountedNotFatal`, `NoSurfaceStateIsRefused`,
+    `ExcludedLegNeedsAKnownPremiumStrictlyBelowTheFraction`,
+    `ForeignWorkspaceIsAnErrorNotADroppedScenario`, `InvalidArgumentsAreRefused`;
+  - kernels: `FamilyAndColdAgreeWithinTolerance` (family economics off so the family route really
+    runs, witnessed by `FrameCounters`; bounds derived from the 1e-6 relative price gate, plus
+    |ΔVaR| ≤ 1e-6 · reference_pv), `DeterministicAcrossThreads`.
+- Dispersion: `dispersion/ListedDispersionPipeline.*` (numeric pins of the pair P&L and VaR / ES;
+  the windowed evaluator bit-equal to one span, with the covered-twice / uncovered / past-the-end
+  refusals; a timed surface off its snapshot's instant refused even next to an untimed one),
   `dispersion/DispersionRun*` and `dispersion/DispersionProjectedVar*` (artifact schema, verifier,
-  sessions − 1 rule). On the listed-pipeline 3-set fixture the family and cold kernels agree to
-  3e-10 on a 6.7e3 pv book; the pair P&Ls are −36.0787 / +74.7856, so VaR95 = ES95 = 36.0787.
+  sessions − 1 rule, and an 18-session history that crosses the route's 16-pair window seam with
+  every archive opened once). On the listed-pipeline 3-set fixture the pair P&Ls are
+  −36.0787 / +74.7856, so VaR95 = ES95 = 36.0787.

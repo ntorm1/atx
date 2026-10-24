@@ -1306,6 +1306,45 @@ TEST(DispersionProjectedVar, P1_LoadsAnchorOnceAndSubsetsHistoricalArchives) {
   fs::remove_all(fixture.dir, error);
 }
 
+// The windowed history (review D-1). With more sessions than one snapshot batch
+// (kSnapshotBatch = 16 pairs in dispersion_run.cpp) the route hands the history to
+// dispersion_book_var in two windows, [0, 16] and [16, 17], and CARRIES session 16 from the
+// first window into the second instead of reopening it. So every archive is opened exactly
+// once, the pairs chain across the window seam, and the published artifacts verify.
+TEST(DispersionProjectedVar, WindowedHistoryCarriesTheSeamSession) {
+  constexpr std::size_t n_dates = 18u;
+  const PvFixture fixture = make_pv_fixture("pv_windowed", pv_reconstituting_blocks(),
+                                            kEmitTsvDiagnostics, n_dates);
+  ASSERT_EQ(fixture.dates.size(), n_dates);
+
+  MarketSnapshot::reset_open_count();
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+  EXPECT_EQ(MarketSnapshot::open_count(), n_dates)
+      << "the seam session was reopened rather than carried into the second window";
+  MarketSnapshot::reset_open_count();
+
+  const std::vector<std::vector<std::string>> frames =
+      read_tsv_rows(fixture.dir / "projected_risk_scenarios.tsv");
+  ASSERT_EQ(frames.size(), n_dates); // header + (dates - 1) pairs
+  const std::size_t base_col = column_of(frames.front(), "base_date");
+  const std::size_t shifted_col = column_of(frames.front(), "shifted_date");
+  const std::size_t admitted_col = column_of(frames.front(), "admitted");
+  ASSERT_NE(base_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(shifted_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(admitted_col, static_cast<std::size_t>(-1));
+  for (std::size_t row = 1; row < frames.size(); ++row) {
+    // Pair `row - 1` is session row - 1 -> session row, across the seam (rows 16, 17) too.
+    EXPECT_EQ(frames[row][base_col], fixture.dates[row - 1u]) << row;
+    EXPECT_EQ(frames[row][shifted_col], fixture.dates[row]) << row;
+    EXPECT_EQ(frames[row][admitted_col], "1") << row;
+  }
+  EXPECT_TRUE(verify_projected_var_artifacts(fixture.dir, n_dates));
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
 TEST(DispersionProjectedVar, C14_FailedRerunInvalidatesThePreviousGeneration) {
   const PvFixture fixture =
       make_pv_fixture("pv_c14_failed_rerun", pv_reconstituting_blocks(), kEmitTsvDiagnostics);

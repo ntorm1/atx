@@ -644,13 +644,23 @@ struct WindowStates {
     bool untimed = false;
     for (const std::uint32_t uid : uids) {
       const SurfaceRef ref = snapshot.surfaces->find(uid);
-      if (ref.valid()) {
-        refs.push_back(ref);
-        untimed = untimed || ref->pricing().now_ts_ns <= 0;
+      if (!ref.valid()) {
+        continue;
       }
+      // A surface that carries no valuation instant is measured from the snapshot's; any
+      // other disagreement between a surface's instant and its snapshot's is refused HERE,
+      // per surface, because an untimed surface switches market_state_from_surfaces' own
+      // check off for the whole set.
+      const std::int64_t surface_ns = ref->pricing().now_ts_ns;
+      if (surface_ns <= 0) {
+        untimed = true;
+      } else if (surface_ns != snapshot.ts_ns) {
+        return Err(ErrorCode::InvalidArgument,
+                   "projected VaR: a surface's valuation instant (uid " + std::to_string(uid) +
+                       ") disagrees with its snapshot's");
+      }
+      refs.push_back(ref);
     }
-    // A surface that carries no valuation instant is measured from the snapshot's; any
-    // other disagreement between a surface's instant and its snapshot's is refused.
     ATX_TRY(MarketStateStorage storage,
             market_state_from_surfaces(snapshot.ts_ns, time, refs, untimed));
     out.storage.push_back(std::move(storage));
