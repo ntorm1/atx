@@ -159,11 +159,14 @@ unimportable or stale `_core` is a failure, never a skip.
 
 ```powershell
 powershell scripts\atx-build.ps1 configure -Preset vol-rel -DATX_VOL_PYTHON=ON `
-  -DPython3_EXECUTABLE="C:/Program Files/Python312/python.exe" `
-  -Dpybind11_DIR=<python -m pybind11 --cmakedir>
+  -DPython3_EXECUTABLE="C:/Program Files/Python312/python.exe"
 powershell scripts\atx-build.ps1 build atx-vol-python-core -Preset vol-rel -Jobs 4
 powershell scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-python$"
 ```
+
+`pybind11_DIR` is derived from that interpreter's `python -m pybind11 --cmakedir`
+unless you pass it (vcpkg has no pybind11 port). The wrapper's `configure` forwards
+extra `-D` arguments to CMake.
 
 The ctest driver (`tests/_ctest_pytest_driver.py`) runs the suite in two processes,
 because `_core`'s vcpkg Arrow and pyarrow's Arrow cannot share one (see the known
