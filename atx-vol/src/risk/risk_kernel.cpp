@@ -139,7 +139,8 @@ void cold_row(RiskFrame &f, std::size_t r, double S, double K, Side side, const 
   // NearExerciseEdge refusal). Lanes sent cold BEFORE a family answer -- T below
   // kAlSigmaFamilyMinTau, a failed family prepare or carry set, a lane off the block
   // geometry, a group wholly below the sigma floor, a SigmaOutsideBox /
-  // SigmaBelowGuard status -- carry only this narrow bit, like every pure-cold row.
+  // SigmaBelowGuard status, a FamilyUneconomic group -- carry only this narrow bit,
+  // like every pure-cold row.
   const double intrinsic = side == Side::Put ? K - S : S - K;
   if (intrinsic > 0.0 && g.price <= intrinsic + kIntrinsicTolPerStrike * K) {
     f.flags[r] |= RiskFlag::NearExerciseEdge;
@@ -218,6 +219,11 @@ namespace {
   if (!(std::isfinite(p.sigma_box_floor) && p.sigma_box_floor > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "RiskKernel: sigma_box_floor must be finite > 0");
   }
+  if (!(std::isfinite(p.family_node_cost_us) && p.family_node_cost_us > 0.0 &&
+        std::isfinite(p.cold_lane_cost_us) && p.cold_lane_cost_us > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "RiskKernel: family_node_cost_us / cold_lane_cost_us must be finite > 0");
+  }
   return Ok();
 }
 
@@ -225,6 +231,7 @@ void tally_rows(RiskFrame &out) noexcept {
   FrameCounters &c = out.counters;
   for (std::size_t r = 0; r < out.size(); ++r) {
     ++c.status_count[static_cast<std::size_t>(out.status[r])];
+    c.uneconomic_rows += has_flag(out.flags[r], RiskFlag::FamilyUneconomic) ? 1u : 0u;
     switch (out.route[r]) {
     case RiskRoute::Family:
       ++c.family_rows;
@@ -312,6 +319,7 @@ Status RiskKernel::evaluate(const PreparedRiskBook &book, const MarketState &sta
     for (const risk_detail::BlockCounters &bc : w.block_counters) {
       out.counters.families_built += bc.families_built;
       out.counters.carry_sets_built += bc.carry_sets_built;
+      out.counters.family_nodes += bc.family_nodes;
       out.counters.family_build_seconds += bc.family_build_seconds;
     }
     break;

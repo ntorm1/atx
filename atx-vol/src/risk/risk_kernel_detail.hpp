@@ -35,6 +35,7 @@ struct ExpiryBlock {
 struct BlockCounters {
   std::uint64_t families_built{0};
   std::uint64_t carry_sets_built{0};
+  std::uint64_t family_nodes{0}; // sigma nodes over the families built
   double family_build_seconds{0.0};
 };
 

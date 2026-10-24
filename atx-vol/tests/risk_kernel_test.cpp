@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -494,7 +495,13 @@ TEST(RiskKernel, RefusesInvalidPolicyAndTimeSpec) {
   wide_pad.sigma_box_pad = 1.0;
   FamilyKernelPolicy zero_floor;
   zero_floor.sigma_box_floor = 0.0;
-  for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor}) {
+  // Lane A2: the economics constants are validated even while economics is off.
+  FamilyKernelPolicy free_nodes;
+  free_nodes.family_node_cost_us = 0.0;
+  FamilyKernelPolicy nan_cold;
+  nan_cold.cold_lane_cost_us = std::numeric_limits<double>::quiet_NaN();
+  nan_cold.family_economics = false;
+  for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor, free_nodes, nan_cold}) {
     expect_invalid_argument(
         RiskKernel::family(bad).evaluate(prep, owned->state, RiskNeeds{}, frame, ws));
     expect_cleared(frame);
