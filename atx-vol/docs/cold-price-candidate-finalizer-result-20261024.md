@@ -135,3 +135,42 @@ policy, command/exit receipt, complete output and independent verification.
 The canonical policy and prediction hashes remain those above. This closes
 the exact-release-binary correctness step only. A qualified quiet-host
 comparison and any subsecond or speedup claim remain outstanding.
+
+## Matching control and blocked paired attempt
+
+A matching ThinLTO control at `6f94b783` disables both empirical switches.
+Its source differs from the enabled `e209692b` archive only in two documentation
+files; its entire saved CMake cache differs only in those two switches. Captures
+remain OFF, the QP research setting remains empty, and the strict CPU guard is
+identical. Its own 13 actual-API gates pass with the same complete `e086` output.
+All 209 timing/work leaves, including every differing route counter, are retained.
+
+The control executable is
+`candidate-finalizer-lto-control-v1/bin/atx-vol-quote-bench.exe`, SHA256
+`479faf0e37b31ae7bf40def20f1f65cd5694f1507e4355d60fd2243abd352407`.
+Its 14-artifact manifest is
+`0e7cafb35ae740348241762c25027122a1fc9c73a242990c2954901efca3f656`.
+Both directories are under the acceptance evidence root above.
+
+The separately reviewed paired plan fixes six fresh processes in
+OFF/ON/ON/OFF/OFF/ON order, worker 1 on P-core logical CPU 6, no warmup or
+replacement, strict sibling load below 5% and whole-system load below 10%.
+It requires three valid one-second host-load samples plus zero detected
+native/build jobs before any fit is launched. Failed trials remain retained;
+detected competing jobs stop further launches.
+
+The single coordinated attempt was blocked by its process check before CPU
+sampling: `atx-vol-state-store` PID 4852, `clang-cl` PID 1848, `cmake` PID 7856
+and `ninja` PID 12504. Zero CPU intervals and zero fitting trials ran. All lane
+holds were released; no process was modified and no retry was substituted.
+`candidate-paired-clock-v1/manifest.json` has SHA256
+`f81ea988eaf130d6cf3e39aa20bfd40603b22b9ee5ee1137ffba3f5871861b8c`;
+its separate blocked receipt is
+`bd2dc4c3bb474c2456d8766ae020268e4aea6dbe799ff0be2207e38ccc35c745`.
+
+The wrapper's terminal summary displayed null fields because PowerShell
+`Select-Object` did not expose the ordered dictionary's keys. The saved JSON
+correctly retained the refusal and empty trial list. An unexecuted future
+plan-v2 changes only that display cast, with a reproducing control; the frozen
+plan-v1 and blocked result remain unchanged. No performance comparison follows
+from this blocked attempt.
