@@ -1,12 +1,15 @@
 // RiskKernel (api/risk/risk_kernel.hpp): the cold analytic kernel against
 // PricedSurface::greeks_analytic (bit for bit), the family kernel against the cold
 // kernel inside its box, near-edge routing, the rho / carry-set coupling, thread-count
-// determinism and a throughput smoke. The allocation bound lives in
-// risk_kernel_alloc_test.cpp (its own executable: it replaces global operator new).
+// determinism, a throughput smoke, and the documented failure paths (cold_fallback
+// off, structural refusals, the FD cold route, the degenerate sigma box). The
+// allocation bound lives in risk_kernel_alloc_test.cpp (its own executable: it
+// replaces global operator new).
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -16,6 +19,7 @@
 #include <optional>
 #include <vector>
 
+#include "atx/vol/api/risk/pnl_explain.hpp"
 #include "atx/vol/api/risk/risk_kernel.hpp"
 #include "support/risk_synthetic_market.hpp"
 
@@ -35,6 +39,44 @@ namespace {
   const Status st = kernel.evaluate(book, state, needs, frame, ws);
   EXPECT_TRUE(st.has_value()) << (st.has_value() ? "" : st.error().to_string());
   return frame;
+}
+
+// One deep ITM put one day out (below the family's tau floor) and a three-week put
+// sweep across the exercise boundary, on uid 1 (spot 100).
+[[nodiscard]] std::vector<OptionLeg> edge_sweep_legs() {
+  std::vector<OptionLeg> legs;
+  std::uint64_t id = 1;
+  const std::int64_t one_day = rt::instant_ns(rt::kDayUnits);
+  legs.push_back(OptionLeg{id++, 1u, 130.0, one_day, Side::Put, 1.0, 100.0});
+  const std::int64_t three_weeks = rt::instant_ns(21 * rt::kDayUnits);
+  for (double K = 100.0; K <= 140.0; K += 1.0) {
+    legs.push_back(OptionLeg{id++, 1u, K, three_weeks, Side::Put, 1.0, 100.0});
+  }
+  return legs;
+}
+
+// A state on the VolTime clock at the fixture's instant (Nov 2023, before the
+// convention's covered 2024-2032 window): its TimeSpec refuses every book expiry.
+[[nodiscard]] std::unique_ptr<rt::OwnedState> refusing_state() {
+  std::unique_ptr<rt::OwnedState> s = rt::make_state(rt::StateMove{});
+  s->storage.time.convention = TimeConvention::VolTime;
+  s->state = make_market_state(s->storage).value();
+  return s;
+}
+
+// A structural refusal leaves `out` in clear_values(): every row Refused, no number.
+void expect_cleared(const RiskFrame &f) {
+  ASSERT_GT(f.size(), 0u);
+  for (std::size_t r = 0; r < f.size(); ++r) {
+    EXPECT_EQ(f.status[r], RiskLaneStatus::Refused) << r;
+    EXPECT_EQ(f.route[r], RiskRoute::None) << r;
+    EXPECT_TRUE(std::isnan(f.price[r]) && std::isnan(f.sigma[r])) << r;
+  }
+}
+
+void expect_invalid_argument(const Status &st) {
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument) << st.error().to_string();
 }
 
 template <class T>
@@ -181,16 +223,7 @@ TEST(RiskKernel, FamilyMatchesColdInsideBox) {
 
 TEST(RiskKernel, NearEdgeRoutesCold) {
   const auto owned = rt::make_state(rt::StateMove{});
-  // One day to expiry (below the family's tau floor) and three weeks, deep ITM puts
-  // swept across the exercise boundary on uid 1 (spot 100).
-  std::vector<OptionLeg> legs;
-  std::uint64_t id = 1;
-  const std::int64_t one_day = rt::instant_ns(rt::kDayUnits);
-  legs.push_back(OptionLeg{id++, 1u, 130.0, one_day, Side::Put, 1.0, 100.0});
-  const std::int64_t three_weeks = rt::instant_ns(21 * rt::kDayUnits);
-  for (double K = 100.0; K <= 140.0; K += 1.0) {
-    legs.push_back(OptionLeg{id++, 1u, K, three_weeks, Side::Put, 1.0, 100.0});
-  }
+  const std::vector<OptionLeg> legs = edge_sweep_legs();
   const RiskBook book = RiskBook::create(legs, {}).value();
   const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
   const RiskFrame f = evaluate_or_die(RiskKernel::family(), prep, owned->state, RiskNeeds{});
@@ -298,4 +331,192 @@ TEST(RiskKernel, FamilyThroughputSmoke) {
             << f.counters.cold_rows << " exercised=" << f.counters.exercised_rows
             << " families=" << f.counters.families_built << "\n";
   EXPECT_LT(fam_us, cold_us / 5.0);
+}
+
+TEST(RiskKernel, ColdFallbackOffLeavesRefused) {
+  const auto owned = rt::make_state(rt::StateMove{});
+  const std::vector<OptionLeg> legs = edge_sweep_legs();
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  FamilyKernelPolicy no_fallback;
+  no_fallback.cold_fallback = false;
+  const RiskFrame on = evaluate_or_die(RiskKernel::family(), prep, owned->state, RiskNeeds{});
+  const RiskFrame off =
+      evaluate_or_die(RiskKernel::family(no_fallback), prep, owned->state, RiskNeeds{});
+  constexpr RiskFlags kCold = static_cast<RiskFlags>(RiskFlag::ColdFallback);
+  constexpr RiskFlags kEdge = static_cast<RiskFlags>(RiskFlag::NearExerciseEdge);
+  std::size_t refused = 0;
+  std::size_t refused_edge = 0;
+  for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+    if (!has_flag(on.flags[r], RiskFlag::ColdFallback)) {
+      // Never handed to the cold route: the same row with or without the fallback.
+      EXPECT_EQ(off.route[r], on.route[r]) << r;
+      EXPECT_EQ(off.status[r], on.status[r]) << r;
+      EXPECT_EQ(off.flags[r], on.flags[r]) << r;
+      EXPECT_TRUE(same_bits(off.price[r], on.price[r])) << r;
+      continue;
+    }
+    EXPECT_EQ(off.status[r], RiskLaneStatus::Refused) << r;
+    EXPECT_EQ(off.route[r], RiskRoute::Refused) << r;
+    EXPECT_TRUE(std::isnan(off.price[r]) && std::isnan(off.delta[r]) && std::isnan(off.T[r]))
+        << r;
+    EXPECT_FALSE(has_flag(off.flags[r], RiskFlag::ColdFallback)) << r;
+    // The family's reasons survive, minus ColdFallback (the fallback side's cold pass
+    // may add its own intrinsic NearExerciseEdge bit, so that bit is compared apart).
+    EXPECT_EQ(off.flags[r] & ~kEdge, on.flags[r] & ~(kCold | kEdge)) << r;
+    ++refused;
+    refused_edge += has_flag(off.flags[r], RiskFlag::NearExerciseEdge) ? 1u : 0u;
+  }
+  std::cout << "[RiskKernel] cold_fallback=false: refused=" << refused
+            << " (NearExerciseEdge kept on " << refused_edge << ")\n";
+  EXPECT_GT(refused, 0u);
+  EXPECT_GT(refused_edge, 0u) << "the family's edge-band lanes keep NearExerciseEdge";
+  EXPECT_EQ(off.counters.refused_rows, refused);
+  EXPECT_EQ(off.counters.cold_rows, 0u);
+
+  // explain excludes those legs: no base mark, so premium 0 and no NaN in any total.
+  const ExplainResult e =
+      explain(prep, owned->state, off, owned->state, off, ExplainOptions{}).value();
+  std::size_t excluded = 0;
+  for (std::size_t i = 0; i < legs.size(); ++i) {
+    if (off.status[prep.leg_prepared_row()[i]] != RiskLaneStatus::Refused) {
+      continue;
+    }
+    EXPECT_EQ(e.status[i], RiskLaneStatus::Refused) << i;
+    EXPECT_TRUE(std::isnan(e.pv_base[i]) && std::isnan(e.pnl_total[i])) << i;
+    ++excluded;
+  }
+  const std::size_t k_refused = static_cast<std::size_t>(RiskLaneStatus::Refused);
+  EXPECT_EQ(e.excluded_count[k_refused], excluded);
+  EXPECT_EQ(e.excluded_premium[k_refused], 0.0);
+  EXPECT_EQ(e.total.n_excluded, excluded);
+  EXPECT_EQ(e.total.excluded_premium, 0.0);
+  EXPECT_TRUE(std::isfinite(e.total.pv_base) && std::isfinite(e.total.pnl_total));
+}
+
+TEST(RiskKernel, RefusesForeignWorkspaceAndFrame) {
+  const auto owned = rt::make_state(rt::StateMove{});
+  const RiskBook book_a = RiskBook::create(rt::make_option_legs(), {}).value();
+  const RiskBook book_b = RiskBook::create(rt::make_option_legs(2), {}).value();
+  const PreparedRiskBook a = PreparedRiskBook::create(book_a).value();
+  const PreparedRiskBook b = PreparedRiskBook::create(book_b).value();
+  const RiskKernel kernel = RiskKernel::family();
+  RiskWorkspace ws_a;
+  RiskFrame frame_a;
+  ASSERT_TRUE(kernel.evaluate(a, owned->state, RiskNeeds{}, frame_a, ws_a).has_value());
+  RiskWorkspace ws_b;
+  RiskFrame frame_b;
+  ASSERT_TRUE(kernel.evaluate(b, owned->state, RiskNeeds{}, frame_b, ws_b).has_value());
+
+  // A frame bound to book a, evaluated for book b.
+  RiskWorkspace fresh;
+  expect_invalid_argument(kernel.evaluate(b, owned->state, RiskNeeds{}, frame_a, fresh));
+  expect_cleared(frame_a);
+  // A workspace bound to book a, used for book b.
+  expect_invalid_argument(kernel.evaluate(b, owned->state, RiskNeeds{}, frame_b, ws_a));
+  expect_cleared(frame_b);
+  // Rebinding the workspace makes it legal again.
+  ws_a.reserve(b);
+  EXPECT_TRUE(kernel.evaluate(b, owned->state, RiskNeeds{}, frame_b, ws_a).has_value());
+  EXPECT_EQ(frame_b.status[0], RiskLaneStatus::Ok);
+}
+
+TEST(RiskKernel, RefusesInvalidPolicyAndTimeSpec) {
+  const auto owned = rt::make_state(rt::StateMove{});
+  const RiskBook book = RiskBook::create(rt::make_option_legs(), {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  RiskFrame frame;
+  RiskWorkspace ws;
+  ASSERT_TRUE(
+      RiskKernel::family().evaluate(prep, owned->state, RiskNeeds{}, frame, ws).has_value());
+
+  FamilyKernelPolicy few_nodes;
+  few_nodes.n_sigma = 3;
+  FamilyKernelPolicy wide_pad;
+  wide_pad.sigma_box_pad = 1.0;
+  FamilyKernelPolicy zero_floor;
+  zero_floor.sigma_box_floor = 0.0;
+  for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor}) {
+    expect_invalid_argument(
+        RiskKernel::family(bad).evaluate(prep, owned->state, RiskNeeds{}, frame, ws));
+    expect_cleared(frame);
+  }
+
+  // A TimeSpec that refuses a book expiry is structural, on either kernel.
+  const auto refusing = refusing_state();
+  ASSERT_FALSE(refusing->state.time_to_expiry(rt::expiry_ns(0)).has_value()) << "the premise";
+  const std::array<RiskKernel, 2> kernels{RiskKernel::family(), RiskKernel::cold()};
+  for (const RiskKernel &kernel : kernels) {
+    ASSERT_TRUE(kernel.evaluate(prep, owned->state, RiskNeeds{}, frame, ws).has_value());
+    expect_invalid_argument(kernel.evaluate(prep, refusing->state, RiskNeeds{}, frame, ws));
+    expect_cleared(frame);
+  }
+}
+
+TEST(RiskKernel, ColdFdRouteServesEveryLane) {
+  const auto owned = rt::make_state(rt::shifted_move());
+  const RiskBook book = RiskBook::create(rt::make_option_legs(), {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  ColdKernelPolicy fd_policy;
+  fd_policy.analytic = false;
+  const RiskFrame fd =
+      evaluate_or_die(RiskKernel::cold(fd_policy), prep, owned->state, RiskNeeds{});
+  const RiskFrame al = evaluate_or_die(RiskKernel::cold(), prep, owned->state, RiskNeeds{});
+  double max_price = 0.0;
+  double max_delta = 0.0;
+  for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+    ASSERT_EQ(fd.status[r], RiskLaneStatus::Ok) << r;
+    EXPECT_EQ(fd.route[r], RiskRoute::ColdFd) << r;
+    EXPECT_TRUE(std::isfinite(fd.delta[r]) && std::isfinite(fd.gamma[r]) &&
+                std::isfinite(fd.vega[r]) && std::isfinite(fd.theta[r]))
+        << r;
+    max_price = std::max(max_price, std::fabs(fd.price[r] - al.price[r]) / al.price[r]);
+    max_delta = std::max(max_delta, std::fabs(fd.delta[r] - al.delta[r]));
+  }
+  std::cout << "[RiskKernel] cold FD vs cold analytic: max |dprice|/price=" << max_price
+            << " max |ddelta|=" << max_delta << "\n";
+  EXPECT_LE(max_price, 1e-9) << "both routes price on andersen_lake";
+  EXPECT_LE(max_delta, 1e-3);
+
+  // The family kernel's cold route follows analytic_cold.
+  const auto flat = rt::make_state(rt::StateMove{});
+  const RiskBook sweep = RiskBook::create(edge_sweep_legs(), {}).value();
+  const PreparedRiskBook sweep_prep = PreparedRiskBook::create(sweep).value();
+  FamilyKernelPolicy fam_fd;
+  fam_fd.analytic_cold = false;
+  const RiskFrame f =
+      evaluate_or_die(RiskKernel::family(fam_fd), sweep_prep, flat->state, RiskNeeds{});
+  std::size_t cold = 0;
+  for (std::size_t r = 0; r < sweep_prep.n_unique(); ++r) {
+    ASSERT_EQ(f.status[r], RiskLaneStatus::Ok) << r;
+    if (has_flag(f.flags[r], RiskFlag::ColdFallback)) {
+      EXPECT_EQ(f.route[r], RiskRoute::ColdFd) << r;
+      ++cold;
+    }
+  }
+  EXPECT_GT(cold, 0u);
+}
+
+TEST(RiskKernel, DegenerateSigmaBoxStillServesFamily) {
+  // One contract per group and no pad: the group's sigma range is a single point, so
+  // the box is widened symmetrically around it (see family_group).
+  const auto owned = rt::make_state(rt::StateMove{});
+  const std::vector<OptionLeg> legs{
+      OptionLeg{1u, 1u, 105.0, rt::expiry_ns(2), Side::Call, 1.0, 100.0},
+      OptionLeg{2u, 1u, 95.0, rt::expiry_ns(2), Side::Put, 1.0, 100.0},
+  };
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  FamilyKernelPolicy no_pad;
+  no_pad.sigma_box_pad = 0.0;
+  const RiskFrame fam =
+      evaluate_or_die(RiskKernel::family(no_pad), prep, owned->state, RiskNeeds{});
+  const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, RiskNeeds{});
+  EXPECT_EQ(fam.counters.families_built, 2u);
+  for (std::size_t r = 0; r < prep.n_unique(); ++r) {
+    ASSERT_EQ(fam.status[r], RiskLaneStatus::Ok) << r;
+    EXPECT_EQ(fam.route[r], RiskRoute::Family) << r;
+    EXPECT_LE(std::fabs(fam.price[r] - cold.price[r]) / cold.price[r], 1e-6) << r;
+    EXPECT_LE(rel_gap(fam.vega[r], cold.vega[r]), 1e-4) << r;
+  }
 }

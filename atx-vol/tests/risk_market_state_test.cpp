@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -230,6 +231,38 @@ TEST(MarketState, StateCarryEscrowsDividends) {
   const double T2 = rt::years(rt::kExpiryUnits[2]);
   const double pv2 = 1.0 * std::exp(-r * rt::years(500)) + 1.5 * std::exp(-r * rt::years(3000));
   EXPECT_DOUBLE_EQ(other.forward, (100.0 - pv2) * std::exp((r - 0.01) * T2));
+}
+
+TEST(MarketState, StateCarryReadsYieldCurve) {
+  // A term curve on the underlier replaces flat_rate for the State carry (no
+  // term_carry row): rate = zero(T), and the escrowed dividend is discounted on it.
+  const std::array<double, 2> pillars{0.05, 1.0};
+  const std::array<double, 2> zeros{0.02, 0.06};
+  MarketStateStorage st;
+  st.ts_ns = rt::kT0;
+  st.yield_curves.push_back(YieldCurve::create(pillars, zeros).value());
+  st.underliers.push_back(marks_only_underlier(9u));
+  st.dividend_schedules.push_back({DividendEvent{rt::instant_ns(500), 1.0}});
+  st.underliers[0].cash_divs = st.dividend_schedules[0];
+  st.underliers[0].yield = &st.yield_curves[0];
+  st.marks.push_back(one_mark(9u, 100.0, rt::expiry_ns(1), Side::Put, 0.25));
+  const MarketState state = make_market_state(st).value();
+
+  const double T = rt::years(rt::kExpiryUnits[1]);
+  const double r = st.yield_curves[0].zero(T);
+  ASSERT_NE(r, st.underliers[0].flat_rate) << "the curve must be distinguishable";
+  const ResolvedContract rc = state.resolve(9u, 100.0, rt::expiry_ns(1), Side::Put);
+  ASSERT_EQ(rc.status, RiskLaneStatus::Ok);
+  EXPECT_TRUE(same_bits(rc.rate, r));
+  const double pv = 1.0 * std::exp(-r * rt::years(500));
+  const double F = (100.0 - pv) * std::exp((r - 0.01) * T);
+  EXPECT_DOUBLE_EQ(rc.forward, F);
+  EXPECT_DOUBLE_EQ(rc.q_eff, r - std::log(F / 100.0) / T);
+  EXPECT_FALSE(has_flag(rc.flags, RiskFlag::CarryFromSurface));
+  const MarketState::Carry c = state.carry_at(9u, T);
+  EXPECT_EQ(c.status, RiskLaneStatus::Ok);
+  EXPECT_TRUE(same_bits(c.rate, rc.rate));
+  EXPECT_TRUE(same_bits(c.forward, rc.forward));
 }
 
 TEST(MarketState, SurfaceCarryMatchesPricedSurface) {

@@ -1,5 +1,16 @@
 // RiskStream — a fixed book over a moving market: every state's frame is evaluated
 // exactly once and is the shifted side of one explain and the base of the next.
+//
+// FAILURE RULE. A failed `step` (a structural evaluate refusal or an explain_into
+// refusal) INVALIDATES the stream: `started` is cleared, the borrowed previous-state
+// pointer is dropped and both frames are cleared, so every later `step` returns
+// InvalidArgument until the next successful `start`. The header's LIFETIME note lets
+// the caller release s_{k-1} as soon as `step(s_k)` returns, failed or not; keeping
+// the pointer across a failure would hand the next step a dangling state.
+//
+// PIMPL RULE (every class of the risk lane). An accessor on a moved-from (or, where
+// one exists, default-constructed) object never dereferences the null Impl: it
+// returns a documented empty value — 0, an empty span, or a shared empty object.
 
 #include <array>
 #include <cstddef>
@@ -44,7 +55,31 @@ struct RiskStream::Impl {
   bool rho_next{false};
   std::uint64_t n_evaluations{0};
   std::uint64_t n_explains{0};
+
+  // The failure rule (top of file): drop the borrowed state, clear both frames.
+  void invalidate() noexcept {
+    started = false;
+    previous_state = nullptr;
+    rho_next = false;
+    for (RiskFrame &f : frames) {
+      f.clear_values();
+    }
+  }
 };
+
+namespace {
+
+// Shared empty objects for the accessors of a moved-from stream (the PIMPL rule).
+[[nodiscard]] const PreparedRiskBook &empty_prepared() noexcept {
+  static const PreparedRiskBook kEmpty{};
+  return kEmpty;
+}
+[[nodiscard]] const RiskFrame &empty_frame() noexcept {
+  static const RiskFrame kEmpty{};
+  return kEmpty;
+}
+
+} // namespace
 
 RiskStream::RiskStream(const RiskBook &book, RiskKernel kernel, RiskNeeds needs,
                        ExplainOptions opts)
@@ -64,7 +99,7 @@ Status RiskStream::start(const MarketState &s0) {
   m.current = 0;
   m.rho_next = false;
   if (Status st = m.kernel.evaluate(m.prepared, s0, m.needs, m.frames[0], m.ws); !st.has_value()) {
-    m.started = false;
+    m.invalidate();
     return st;
   }
   ++m.n_evaluations;
@@ -84,14 +119,17 @@ Result<const ExplainResult *> RiskStream::step(const MarketState &s1) {
   RiskNeeds needs = m.needs;
   needs.rho = needs.rho || m.rho_next;
   const std::size_t next = 1u - m.current;
+  // Every failure path below invalidates the stream before returning (FAILURE RULE).
   if (Status st = m.kernel.evaluate(m.prepared, s1, needs, m.frames[next], m.ws);
       !st.has_value()) {
+    m.invalidate();
     return Err(st.error());
   }
   ++m.n_evaluations;
   if (Status st = explain_into(m.prepared, *m.previous_state, m.frames[m.current], s1,
                                m.frames[next], m.opts, m.result);
       !st.has_value()) {
+    m.invalidate();
     return Err(st.error());
   }
   ++m.n_explains;
@@ -105,10 +143,14 @@ Result<const ExplainResult *> RiskStream::step(const MarketState &s1) {
   return &m.result;
 }
 
-const PreparedRiskBook &RiskStream::prepared() const noexcept { return impl_->prepared; }
-const RiskFrame &RiskStream::current() const noexcept { return impl_->frames[impl_->current]; }
+const PreparedRiskBook &RiskStream::prepared() const noexcept {
+  return impl_ ? impl_->prepared : empty_prepared();
+}
+const RiskFrame &RiskStream::current() const noexcept {
+  return impl_ ? impl_->frames[impl_->current] : empty_frame();
+}
 const RiskFrame &RiskStream::previous() const noexcept {
-  return impl_->frames[1u - impl_->current];
+  return impl_ ? impl_->frames[1u - impl_->current] : empty_frame();
 }
 std::uint64_t RiskStream::n_evaluations() const noexcept {
   return impl_ ? impl_->n_evaluations : 0u;

@@ -130,6 +130,14 @@ void cold_row(RiskFrame &f, std::size_t r, double S, double K, Side side, const 
   f.charm[r] = charm;
   f.route[r] = analytic ? RiskRoute::ColdAnalytic : RiskRoute::ColdFd;
   f.status[r] = RiskLaneStatus::Ok;
+  // NearExerciseEdge on a cold row is NARROWER than the family's band. The cold
+  // bundles expose no edge distance, so the bit is set only in the exercise regime:
+  // a positive intrinsic and a served price within 1e-9 K of it (the family's own
+  // exercised rule). Continuation-side lanes inside the family's 0.25 sigma sqrt(T)
+  // band (kAlFamilyGreekEdgeBand) are NOT flagged by the pure cold kernel. On the
+  // family kernel the band itself is flagged before the lane reaches this pass
+  // (judge: family near_edge or a per-Greek NearExerciseEdge refusal), so a family
+  // kernel's cold lane carries the full band meaning.
   const double intrinsic = side == Side::Put ? K - S : S - K;
   if (intrinsic > 0.0 && g.price <= intrinsic + kIntrinsicTolPerStrike * K) {
     f.flags[r] |= RiskFlag::NearExerciseEdge;
@@ -186,8 +194,15 @@ RiskKernel RiskKernel::cold(const ColdKernelPolicy &policy) {
 RiskKernelKind RiskKernel::kind() const noexcept {
   return impl_ ? impl_->kind : RiskKernelKind::Family;
 }
-const FamilyKernelPolicy &RiskKernel::family_policy() const noexcept { return impl_->family; }
-const ColdKernelPolicy &RiskKernel::cold_policy() const noexcept { return impl_->cold; }
+// PIMPL rule (risk_stream.cpp): a moved-from kernel reports the default policies.
+const FamilyKernelPolicy &RiskKernel::family_policy() const noexcept {
+  static const FamilyKernelPolicy kDefault{};
+  return impl_ ? impl_->family : kDefault;
+}
+const ColdKernelPolicy &RiskKernel::cold_policy() const noexcept {
+  static const ColdKernelPolicy kDefault{};
+  return impl_ ? impl_->cold : kDefault;
+}
 
 namespace {
 

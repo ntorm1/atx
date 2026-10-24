@@ -482,11 +482,24 @@ void explain_share_leg(const PreparedRiskBook &book, const RiskFrame &base,
   out.status[i] = RiskLaneStatus::Ok;
 }
 
+// The frame's shape is exactly RiskFrame::reserve(n_unique, n_uids, n_shares): every
+// column is checked (RiskFrame is a public aggregate; a hand-built or partially
+// resized frame must be refused, never read out of bounds).
 [[nodiscard]] Status validate_frame(const PreparedRiskBook &book, const RiskFrame &f) {
-  if (f.book_logical_id != book.book_logical_id() || f.size() != book.n_unique() ||
-      f.uid_spot.size() != book.uids().size() ||
-      f.share_mark.size() != book.share_uid_slot().size() ||
-      f.share_status.size() != book.share_uid_slot().size()) {
+  const std::size_t n = book.n_unique();
+  const std::size_t n_uids = book.uids().size();
+  const std::size_t n_shares = book.share_uid_slot().size();
+  bool ok = f.book_logical_id == book.book_logical_id();
+  for (const std::vector<double> *col :
+       {&f.T, &f.sigma, &f.forward, &f.q_eff, &f.rate, &f.price, &f.delta, &f.gamma, &f.vega,
+        &f.theta, &f.rho, &f.vanna, &f.volga, &f.charm, &f.vendor_price, &f.vendor_delta}) {
+    ok = ok && col->size() == n;
+  }
+  ok = ok && f.route.size() == n && f.flags.size() == n && f.status.size() == n;
+  ok = ok && f.uid_spot.size() == n_uids && f.uid_flat_rate.size() == n_uids &&
+       f.uid_status.size() == n_uids;
+  ok = ok && f.share_mark.size() == n_shares && f.share_status.size() == n_shares;
+  if (!ok) {
     return Err(ErrorCode::InvalidArgument,
                "explain: frame not evaluated for this book (logical id / shape mismatch)");
   }

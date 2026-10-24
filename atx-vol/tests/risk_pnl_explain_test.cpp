@@ -1,7 +1,7 @@
 // explain / explain_into (api/risk/pnl_explain.hpp): the Taylor identity, parity with
 // the PortfolioPricer::pnl_explain oracle, the level / skew / curvature vega split,
 // the two vol-move conventions, shares, exclusions, the trapezoid rule, determinism
-// across thread counts and the bucket totals.
+// across thread counts, the bucket totals and the structural refusals.
 
 #include <gtest/gtest.h>
 
@@ -101,6 +101,11 @@ constexpr std::array<TotalsField, 18> kTotalsFields{
     &ExplainTotals::vol_level,       &ExplainTotals::vol_skew,   &ExplainTotals::vol_curv,
     &ExplainTotals::vol_resid,       &ExplainTotals::shares_pnl, &ExplainTotals::excluded_premium};
 
+void expect_invalid_argument(const Result<ExplainResult> &r) {
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument) << r.error().to_string();
+}
+
 } // namespace
 
 TEST(RiskExplain, TaylorIdentityWithinTwoUlp) {
@@ -180,31 +185,37 @@ TEST(RiskExplain, MatchesPortfolioPricerOracle) {
   std::cout << "[RiskExplain] shifted mark == fair_value bit-exact: ours " << ours_eq_fv << "/"
             << legs.size() << ", oracle " << oracle_eq_fv << "/" << legs.size()
             << " (oracle max rel gap to fair_value " << oracle_vs_fv << ")\n";
+  EXPECT_EQ(ours_eq_fv, legs.size()) << "our shifted mark is the scalar cold reference";
+  EXPECT_LE(oracle_vs_fv, 1e-12) << "the oracle's target mark is within the PV basis";
 
   using Col = std::vector<double> ExplainResult::*;
   using OCol = std::vector<double> PnlFrame::*;
+  // `bit_exact`: the column is pinned bit for bit on every leg (pv_base, the eight
+  // Taylor columns, the four moves). The rest carry the oracle's target mark
+  // (pv_target and the two PV differences) and are held to the 1e-12 PV basis.
   struct Pair {
     const char *name;
     Col ours;
     OCol oracle;
+    bool bit_exact;
   };
   const std::array<Pair, 16> cols{{
-      {"pv_base", &ExplainResult::pv_base, &PnlFrame::pv_base},
-      {"pv_target", &ExplainResult::pv_target, &PnlFrame::pv_target},
-      {"pnl_total", &ExplainResult::pnl_total, &PnlFrame::pnl_total},
-      {"pnl_delta", &ExplainResult::pnl_delta, &PnlFrame::pnl_delta},
-      {"pnl_gamma", &ExplainResult::pnl_gamma, &PnlFrame::pnl_gamma},
-      {"pnl_vega", &ExplainResult::pnl_vega, &PnlFrame::pnl_vega},
-      {"pnl_volga", &ExplainResult::pnl_volga, &PnlFrame::pnl_volga},
-      {"pnl_vanna", &ExplainResult::pnl_vanna, &PnlFrame::pnl_vanna},
-      {"pnl_theta", &ExplainResult::pnl_theta, &PnlFrame::pnl_theta},
-      {"pnl_rho", &ExplainResult::pnl_rho, &PnlFrame::pnl_rho},
-      {"pnl_charm", &ExplainResult::pnl_charm, &PnlFrame::pnl_charm},
-      {"pnl_unexplained", &ExplainResult::pnl_unexplained, &PnlFrame::pnl_unexplained},
-      {"d_spot", &ExplainResult::d_spot, &PnlFrame::d_spot},
-      {"d_vol", &ExplainResult::d_vol, &PnlFrame::d_vol},
-      {"d_time", &ExplainResult::d_time, &PnlFrame::d_time},
-      {"d_rate", &ExplainResult::d_rate, &PnlFrame::d_rate},
+      {"pv_base", &ExplainResult::pv_base, &PnlFrame::pv_base, true},
+      {"pv_target", &ExplainResult::pv_target, &PnlFrame::pv_target, false},
+      {"pnl_total", &ExplainResult::pnl_total, &PnlFrame::pnl_total, false},
+      {"pnl_delta", &ExplainResult::pnl_delta, &PnlFrame::pnl_delta, true},
+      {"pnl_gamma", &ExplainResult::pnl_gamma, &PnlFrame::pnl_gamma, true},
+      {"pnl_vega", &ExplainResult::pnl_vega, &PnlFrame::pnl_vega, true},
+      {"pnl_volga", &ExplainResult::pnl_volga, &PnlFrame::pnl_volga, true},
+      {"pnl_vanna", &ExplainResult::pnl_vanna, &PnlFrame::pnl_vanna, true},
+      {"pnl_theta", &ExplainResult::pnl_theta, &PnlFrame::pnl_theta, true},
+      {"pnl_rho", &ExplainResult::pnl_rho, &PnlFrame::pnl_rho, true},
+      {"pnl_charm", &ExplainResult::pnl_charm, &PnlFrame::pnl_charm, true},
+      {"pnl_unexplained", &ExplainResult::pnl_unexplained, &PnlFrame::pnl_unexplained, false},
+      {"d_spot", &ExplainResult::d_spot, &PnlFrame::d_spot, true},
+      {"d_vol", &ExplainResult::d_vol, &PnlFrame::d_vol, true},
+      {"d_time", &ExplainResult::d_time, &PnlFrame::d_time, true},
+      {"d_rate", &ExplainResult::d_rate, &PnlFrame::d_rate, true},
   }};
   for (const Pair &c : cols) {
     double worst = 0.0;
@@ -215,6 +226,10 @@ TEST(RiskExplain, MatchesPortfolioPricerOracle) {
       const double a = (e.*c.ours)[i];
       const double b = (o.*c.oracle)[i];
       exact += same_bits(a, b) ? 1u : 0u;
+      if (c.bit_exact) {
+        EXPECT_TRUE(same_bits(a, b)) << c.name << " leg " << i << " ours=" << a
+                                     << " oracle=" << b;
+      }
       // pnl_total and pnl_unexplained are differences of PVs: the oracle's target mark
       // differs from fair_value by up to ~6e-15 of the PV (above), so their gap is
       // measured against the leg's PV scale, not against the (cancelled) difference.
@@ -227,7 +242,11 @@ TEST(RiskExplain, MatchesPortfolioPricerOracle) {
       EXPECT_LE(rel, 1e-12) << c.name << " leg " << i << " ours=" << a << " oracle=" << b;
     }
     std::cout << "[RiskExplain] oracle " << c.name << ": bit-exact " << exact << "/" << legs.size()
-              << ", max rel gap " << worst << "\n";
+              << ", max rel gap " << worst << (c.bit_exact ? " (asserted bit-exact)" : "")
+              << "\n";
+    if (c.bit_exact) {
+      EXPECT_EQ(exact, legs.size()) << c.name;
+    }
   }
   // Totals: Neumaier here vs the oracle's plain fixed-order sum.
   const std::array<std::pair<double, double>, 12> totals{{
@@ -613,4 +632,110 @@ TEST(RiskExplain, BucketsSumToTotal) {
       EXPECT_LE(std::fabs(sum - e.total.*f), 1e-9 * std::max(gross, 1e-300));
     }
   }
+}
+
+TEST(RiskExplain, RefusesFrameFromAnotherBook) {
+  const auto s = standard_scenario(RiskKernel::family());
+  // The same legs in a second book: another logical id, the same shape.
+  const RiskBook other = RiskBook::create(rt::make_option_legs(), rt::make_share_legs()).value();
+  const PreparedRiskBook other_prep = PreparedRiskBook::create(other).value();
+  RiskFrame foreign;
+  RiskWorkspace ws;
+  ASSERT_TRUE(RiskKernel::family()
+                  .evaluate(other_prep, s->shifted->state, RiskNeeds{}, foreign, ws)
+                  .has_value());
+  ASSERT_EQ(foreign.size(), s->ft.size());
+  expect_invalid_argument(
+      explain(*s->prep, s->base->state, s->fb, s->shifted->state, foreign, ExplainOptions{}));
+  expect_invalid_argument(
+      explain(*s->prep, s->base->state, foreign, s->shifted->state, s->ft, ExplainOptions{}));
+  // A default (unprepared) book.
+  expect_invalid_argument(explain(PreparedRiskBook{}, s->base->state, s->fb, s->shifted->state,
+                                  s->ft, ExplainOptions{}));
+  // explain_into leaves `out` untouched on a refusal.
+  ExplainResult out;
+  const Status st = explain_into(*s->prep, s->base->state, s->fb, s->shifted->state, foreign,
+                                 ExplainOptions{}, out);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(out.size(), 0u);
+}
+
+TEST(RiskExplain, RefusesShortenedFrame) {
+  const auto s = standard_scenario(RiskKernel::family());
+  ASSERT_TRUE(explain(*s->prep, s->base->state, s->fb, s->shifted->state, s->ft, {}).has_value());
+  // Every per-contract column, then the per-uid and per-share columns: one element
+  // short on a hand-shortened copy is a shape mismatch, never an out-of-bounds read.
+  using DCol = std::vector<double> RiskFrame::*;
+  const std::array<DCol, 16> contract_cols{
+      &RiskFrame::T,     &RiskFrame::sigma,        &RiskFrame::forward,     &RiskFrame::q_eff,
+      &RiskFrame::rate,  &RiskFrame::price,        &RiskFrame::delta,       &RiskFrame::gamma,
+      &RiskFrame::vega,  &RiskFrame::theta,        &RiskFrame::rho,         &RiskFrame::vanna,
+      &RiskFrame::volga, &RiskFrame::charm,        &RiskFrame::vendor_price,
+      &RiskFrame::vendor_delta};
+  std::size_t refused = 0;
+  const auto check = [&](const RiskFrame &bad) {
+    expect_invalid_argument(
+        explain(*s->prep, s->base->state, s->fb, s->shifted->state, bad, ExplainOptions{}));
+    expect_invalid_argument(
+        explain(*s->prep, s->base->state, bad, s->shifted->state, s->ft, ExplainOptions{}));
+    ++refused;
+  };
+  for (const DCol col : contract_cols) {
+    RiskFrame bad = s->ft;
+    (bad.*col).pop_back();
+    check(bad);
+  }
+  {
+    RiskFrame bad = s->ft;
+    bad.route.pop_back();
+    check(bad);
+  }
+  {
+    RiskFrame bad = s->ft;
+    bad.flags.pop_back();
+    check(bad);
+  }
+  {
+    RiskFrame bad = s->ft;
+    bad.status.pop_back();
+    check(bad);
+  }
+  for (const DCol col : {&RiskFrame::uid_spot, &RiskFrame::uid_flat_rate}) {
+    RiskFrame bad = s->ft;
+    (bad.*col).pop_back();
+    check(bad);
+  }
+  {
+    RiskFrame bad = s->ft;
+    bad.uid_status.pop_back();
+    check(bad);
+  }
+  {
+    RiskFrame bad = s->ft;
+    bad.share_mark.pop_back();
+    check(bad);
+  }
+  {
+    RiskFrame bad = s->ft;
+    bad.share_status.pop_back();
+    check(bad);
+  }
+  EXPECT_EQ(refused, 24u); // 16 numeric + route / flags / status + 3 per-uid + 2 per-share
+}
+
+TEST(RiskExplain, RefusesInvalidZRefAndRefusedStep) {
+  const auto s = standard_scenario(RiskKernel::family());
+  for (const double z : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                         std::numeric_limits<double>::infinity()}) {
+    ExplainOptions opts;
+    opts.z_ref = z;
+    expect_invalid_argument(
+        explain(*s->prep, s->base->state, s->fb, s->shifted->state, s->ft, opts));
+  }
+  // The base state's TimeSpec refuses the step (VolTime before its covered window).
+  rt::OwnedState &b = *s->base;
+  b.storage.time.convention = TimeConvention::VolTime;
+  b.state = make_market_state(b.storage).value();
+  expect_invalid_argument(
+      explain(*s->prep, b.state, s->fb, s->shifted->state, s->ft, ExplainOptions{}));
 }
