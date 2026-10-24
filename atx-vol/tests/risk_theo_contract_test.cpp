@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // SurfaceRef
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/core/vol_time.hpp"
+#include "atx/vol/api/fitting/spline_curve.hpp"   // SplineVolParams
 #include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp" // EssviParams
@@ -68,6 +70,89 @@ using namespace atx::vol; // NOLINT(google-build-using-namespace): test-local br
   pc.al_opts = al_default_opts();
   pc.uid = 21;
   return PricedSurface::create(std::move(cs), std::move(ctx), pc).value();
+}
+
+// A two-pillar SplineVol surface (T 0.25 / 0.5, ATM 24% / 22%) whose
+// data-supported standardized range is [-1.5, 1.2]: k_hi = 0.144 / 0.187.
+[[nodiscard]] PricedSurface make_spline_surface() {
+  constexpr std::array<double, 2> kT{0.25, 0.5};
+  constexpr std::array<double, 2> kAtm{0.24, 0.22};
+  constexpr double r = 0.04;
+  constexpr double q = 0.015;
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (std::size_t i = 0; i < kT.size(); ++i) {
+    const double F = 100.0 * std::exp((r - q) * kT[i]);
+    SplineVolParams p;
+    p.atm_vol = kAtm[i];
+    p.z = {-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0};
+    p.mult = {1.34, 1.21, 1.09, 1.0, 0.95, 0.93, 0.94};
+    p.z_lo_valid = -1.5;
+    p.z_hi_valid = 1.2;
+    cs.push(std::make_unique<SplineVolCurve>(std::move(p), kT[i], F, std::exp(-r * kT[i])));
+    ctx.push_back(SliceContext{kT[i], F, 0.0, q, 20, 0});
+  }
+  PricingContext pc;
+  pc.S = 100.0;
+  pc.r = r;
+  pc.now_ts_ns = 1'790'000'000'000'000'000LL;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_default_opts();
+  pc.uid = 22;
+  return PricedSurface::create(std::move(cs), std::move(ctx), pc).value();
+}
+
+// A test-only flat-vol slice with a vol HOLE: w(k) is NaN for lo < k < hi.
+class HoleCurve final : public IVolCurve {
+public:
+  HoleCurve(double T, double F, double lo, double hi) noexcept
+      : IVolCurve(T, F, 1.0), lo_(lo), hi_(hi) {}
+  [[nodiscard]] double w(double k_log) const noexcept override {
+    return (k_log > lo_ && k_log < hi_) ? std::nan("") : 0.04 * T_;
+  }
+  [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::Svi; }
+  [[nodiscard]] std::size_t dof() const noexcept override { return 1u; }
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
+    return std::make_unique<HoleCurve>(T_, F_, lo_, hi_);
+  }
+
+private:
+  double lo_;
+  double hi_;
+};
+
+[[nodiscard]] PricedSurface make_hole_surface(double lo, double hi) {
+  constexpr std::array<double, 2> kT{0.25, 0.5};
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (const double T : kT) {
+    const double F = 100.0 * std::exp(0.03 * T);
+    cs.push(std::make_unique<HoleCurve>(T, F, lo, hi));
+    ctx.push_back(SliceContext{T, F, 0.0, 0.01, 20, 0});
+  }
+  PricingContext pc;
+  pc.S = 100.0;
+  pc.r = 0.04;
+  pc.now_ts_ns = 1'790'000'000'000'000'000LL;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_default_opts();
+  pc.uid = 23;
+  return PricedSurface::create(std::move(cs), std::move(ctx), pc).value();
+}
+
+// The uniform non-Ok rule: no strike-level number is served and the fingerprint is 0.
+void expect_unserved(const ResolvedTheo &r) {
+  EXPECT_NE(r.status, TheoStatus::Ok);
+  EXPECT_EQ(r.fingerprint, 0u);
+  EXPECT_TRUE(std::isnan(r.leg.K));
+  EXPECT_TRUE(std::isnan(r.k_log));
+  EXPECT_TRUE(std::isnan(r.standard_moneyness));
+  EXPECT_TRUE(std::isnan(r.delta));
+  EXPECT_TRUE(std::isnan(r.forward_delta));
+  EXPECT_TRUE(std::isnan(r.iv));
+  EXPECT_TRUE(std::isnan(r.mark));
+  EXPECT_TRUE(std::isnan(r.greeks.delta));
+  EXPECT_TRUE(std::isnan(r.greeks.price));
 }
 
 // NaN-aware, bit-exact equality of every field.
@@ -368,4 +453,151 @@ TEST(TheoContract, TenorExtrapolationIsFlagged) {
   ASSERT_TRUE(inside.has_value());
   EXPECT_EQ(inside->status, TheoStatus::Ok);
   EXPECT_FALSE(has_flag(inside->flags, RiskFlag::TenorExtrapolated));
+}
+
+// The best-effort moneyness provenance reaches a resolved theo: a strike in a
+// SplineVol data-free wing carries MoneynessExtrapolated, one inside does not.
+TEST(TheoContract, MoneynessExtrapolationIsFlagged) {
+  const PricedSurface ps = make_spline_surface();
+  const SurfaceRef ref{ps};
+  const std::int64_t ts = utc_ns(2026, 10, 20, 15, 0);
+  const auto resolve = [&](StrikeCoord strike, Side side) {
+    const auto r = resolve_theo(TheoContract{30, MaturitySpec::years_of(0.37), strike, side}, ref,
+                                ts);
+    EXPECT_TRUE(r.has_value()) << r.error().to_string();
+    return r.value_or(ResolvedTheo{});
+  };
+  const ResolvedTheo wing = resolve(StrikeCoord::log_moneyness(0.4), Side::Call);
+  EXPECT_EQ(wing.status, TheoStatus::Ok);
+  EXPECT_TRUE(has_flag(wing.flags, RiskFlag::MoneynessExtrapolated));
+  EXPECT_FALSE(has_flag(wing.flags, RiskFlag::TenorExtrapolated));
+  EXPECT_TRUE(std::isfinite(wing.mark));
+  const ResolvedTheo deep_put = resolve(StrikeCoord::delta(-0.03), Side::Put);
+  EXPECT_EQ(deep_put.status, TheoStatus::Ok);
+  EXPECT_TRUE(has_flag(deep_put.flags, RiskFlag::MoneynessExtrapolated));
+  const ResolvedTheo atm = resolve(StrikeCoord::log_moneyness(0.0), Side::Call);
+  EXPECT_EQ(atm.status, TheoStatus::Ok);
+  EXPECT_FALSE(has_flag(atm.flags, RiskFlag::MoneynessExtrapolated));
+}
+
+// project_series: a missing surface at one valuation is that row's
+// SurfaceUnavailable (uniform non-Ok shape); its neighbours resolve normally.
+TEST(TheoContract, NullSurfaceRowIsSurfaceUnavailable) {
+  const PricedSurface ps = make_surface(100.0, 0.04, 0.015);
+  const std::array<SurfaceRef, 3> refs{SurfaceRef{ps}, SurfaceRef{}, SurfaceRef{ps}};
+  const std::array<std::int64_t, 3> ts{utc_ns(2026, 10, 20, 15, 0), utc_ns(2026, 10, 21, 15, 0),
+                                       utc_ns(2026, 10, 22, 15, 0)};
+  const TheoContract spec{31, MaturitySpec::years_of(0.3), StrikeCoord::log_moneyness(-0.05),
+                          Side::Put};
+  std::array<ResolvedTheo, 3> out{};
+  ASSERT_TRUE(project_series(spec, refs, ts, ProjectionPolicy{}, out).has_value());
+  EXPECT_EQ(out[0].status, TheoStatus::Ok);
+  EXPECT_EQ(out[2].status, TheoStatus::Ok);
+  EXPECT_EQ(out[1].status, TheoStatus::SurfaceUnavailable);
+  expect_unserved(out[1]);
+  EXPECT_EQ(out[1].valuation_ns, ts[1]);
+  EXPECT_EQ(out[1].leg.uid, 31u);
+}
+
+// No vol where the template lands is the surface's failure, for every strike kind:
+// a moneyness strike in a vol hole, and a Delta template on a surface without an
+// ATM vol (which must not read as an unreachable delta).
+TEST(TheoContract, NoVolIsSurfaceUnavailable) {
+  const std::int64_t ts = utc_ns(2026, 10, 20, 15, 0);
+  const PricedSurface wing_hole = make_hole_surface(0.15, 0.30);
+  const auto in_hole = resolve_theo(
+      TheoContract{32, MaturitySpec::years_of(0.3), StrikeCoord::log_moneyness(0.2), Side::Call},
+      SurfaceRef{wing_hole}, ts);
+  ASSERT_TRUE(in_hole.has_value()) << in_hole.error().to_string();
+  EXPECT_EQ(in_hole->status, TheoStatus::SurfaceUnavailable);
+  expect_unserved(*in_hole);
+  EXPECT_TRUE(std::isfinite(in_hole->T));
+  const auto outside = resolve_theo(
+      TheoContract{32, MaturitySpec::years_of(0.3), StrikeCoord::log_moneyness(0.0), Side::Call},
+      SurfaceRef{wing_hole}, ts);
+  ASSERT_TRUE(outside.has_value());
+  EXPECT_EQ(outside->status, TheoStatus::Ok);
+
+  const PricedSurface atm_hole = make_hole_surface(-0.02, 0.02);
+  for (const DeltaConvention conv : {DeltaConvention::Forward, DeltaConvention::American}) {
+    ProjectionPolicy policy;
+    policy.delta_conv = conv;
+    const auto delta_theo = resolve_theo(
+        TheoContract{33, MaturitySpec::years_of(0.3), StrikeCoord::delta(-0.25, conv), Side::Put},
+        SurfaceRef{atm_hole}, ts, policy);
+    ASSERT_TRUE(delta_theo.has_value()) << delta_theo.error().to_string();
+    EXPECT_EQ(delta_theo->status, TheoStatus::SurfaceUnavailable) << static_cast<int>(conv);
+    expect_unserved(*delta_theo);
+  }
+}
+
+// A deterministic pricer refusal: a put in the double-continuation regime
+// (q < r <= 0) has no single-boundary Andersen-Lake price. The strike resolves,
+// but the row follows the uniform non-Ok rule.
+TEST(TheoContract, PricingErrorRowFollowsUniformRule) {
+  const PricedSurface ps = make_surface(100.0, -0.01, -0.02);
+  const std::int64_t ts = utc_ns(2026, 10, 20, 15, 0);
+  const TheoContract spec{34, MaturitySpec::years_of(0.3), StrikeCoord::log_moneyness(-0.05),
+                          Side::Put};
+  const auto theo = resolve_theo(spec, SurfaceRef{ps}, ts);
+  ASSERT_TRUE(theo.has_value()) << theo.error().to_string();
+  EXPECT_EQ(theo->status, TheoStatus::PricingError);
+  expect_unserved(*theo);
+  EXPECT_TRUE(std::isfinite(theo->T));
+  EXPECT_TRUE(std::isfinite(theo->forward));
+  ASSERT_FALSE(ps.fair_value(100.0, theo->T, Side::Put).has_value()) << "the regime is refused";
+  // The batch form reports the same row bit for bit.
+  std::array<ResolvedTheo, 1> many{};
+  ASSERT_TRUE(resolve_theo_many(std::span<const TheoContract>{&spec, 1}, SurfaceRef{ps}, ts,
+                                ProjectionPolicy{}, many)
+                  .has_value());
+  EXPECT_TRUE(same_bits(*theo, many[0]));
+}
+
+// A moneyness coordinate that names no finite positive strike on this state is a
+// template problem, reported as InvalidSpec (never as an unreachable delta).
+TEST(TheoContract, NonFiniteStrikeIsInvalidSpec) {
+  const PricedSurface ps = make_surface(100.0, 0.04, 0.015);
+  const std::int64_t ts = utc_ns(2026, 10, 20, 15, 0);
+  const std::vector<TheoContract> specs{
+      {35, MaturitySpec::years_of(0.3), StrikeCoord::log_moneyness(800.0), Side::Call},
+      {36, MaturitySpec::years_of(0.3), StrikeCoord::log_moneyness(-800.0), Side::Put},
+      {37, MaturitySpec::years_of(0.3), StrikeCoord::standard_moneyness(1.0e307), Side::Call},
+  };
+  std::vector<ResolvedTheo> many(specs.size());
+  ASSERT_TRUE(resolve_theo_many(specs, SurfaceRef{ps}, ts, ProjectionPolicy{}, many).has_value());
+  for (std::size_t i = 0; i < specs.size(); ++i) {
+    const auto theo = resolve_theo(specs[i], SurfaceRef{ps}, ts);
+    ASSERT_TRUE(theo.has_value()) << theo.error().to_string();
+    EXPECT_EQ(theo->status, TheoStatus::InvalidSpec) << i;
+    expect_unserved(*theo);
+    EXPECT_TRUE(same_bits(*theo, many[i])) << i;
+  }
+}
+
+// The instant bound is EXCLUSIVE: +/- 2^62 itself is refused, so no accepted pair
+// can make time_to_expiry_years subtract its way to 2^63.
+TEST(TheoContract, InstantBoundIsExclusive) {
+  constexpr std::int64_t kBound = std::int64_t{1} << 62;
+  const TimeSpec clock{};
+  const auto low = resolve_maturity(-kBound, MaturitySpec::absolute(0), clock);
+  ASSERT_FALSE(low.has_value());
+  EXPECT_EQ(low.error().code(), ErrorCode::InvalidArgument);
+  const auto high = resolve_maturity(0, MaturitySpec::absolute(kBound), clock);
+  ASSERT_FALSE(high.has_value());
+  EXPECT_EQ(high.error().code(), ErrorCode::InvalidArgument);
+  // The widest accepted pair: its difference 2^63 - 2 still fits int64.
+  const auto widest = resolve_maturity(-(kBound - 1), MaturitySpec::absolute(kBound - 1), clock);
+  ASSERT_TRUE(widest.has_value()) << widest.error().to_string();
+  EXPECT_EQ(*widest, kBound - 1);
+  const double T = time_to_expiry_years(-(kBound - 1), *widest, clock).value();
+  EXPECT_GT(T, 290.0);
+  // The pair the old closed bound admitted (-2^62 -> +2^62) is now structural.
+  const PricedSurface ps = make_surface(100.0, 0.04, 0.015);
+  const auto refused =
+      resolve_theo(TheoContract{38, MaturitySpec::absolute(kBound), StrikeCoord::strike(100.0),
+                                Side::Call},
+                   SurfaceRef{ps}, -kBound);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
 }

@@ -12,17 +12,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // SurfaceRef
 #include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/backtest/priced_surface_view.hpp"
 #include "atx/vol/api/backtest/strategy.hpp" // resolve_strike_by_delta
+#include "atx/vol/api/fitting/spline_curve.hpp" // SplineVolParams
 #include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp" // EssviParams
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/risk/strike_coord.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
 
 namespace {
 
@@ -61,6 +65,33 @@ constexpr double kSpot = 100.0;
   pc.method = AmericanMethod::AndersenLake;
   pc.al_opts = al_default_opts();
   pc.uid = 11;
+  return PricedSurface::create(std::move(cs), std::move(ctx), pc).value();
+}
+
+// One SplineVol pillar (T = 0.25, ATM 24%) whose data-supported standardized
+// range is [-1.5, 1.2]: beyond k_hi = 1.2 * 0.24 * sqrt(0.25) = 0.144 (or below
+// k_lo = -0.18) the slice is flat-wing extrapolation and says so.
+[[nodiscard]] PricedSurface make_spline_surface() {
+  constexpr double T = 0.25;
+  constexpr double r = 0.04;
+  constexpr double q = 0.015;
+  const double F = kSpot * std::exp((r - q) * T);
+  SplineVolParams p;
+  p.atm_vol = 0.24;
+  p.z = {-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0};
+  p.mult = {1.34, 1.21, 1.09, 1.0, 0.95, 0.93, 0.94};
+  p.z_lo_valid = -1.5;
+  p.z_hi_valid = 1.2;
+  CurveSurface cs;
+  cs.push(std::make_unique<SplineVolCurve>(std::move(p), T, F, std::exp(-r * T)));
+  std::vector<SliceContext> ctx{SliceContext{T, F, 0.0, q, 20, 0}};
+  PricingContext pc;
+  pc.S = kSpot;
+  pc.r = r;
+  pc.now_ts_ns = 1'790'000'000'000'000'000LL;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_default_opts();
+  pc.uid = 12;
   return PricedSurface::create(std::move(cs), std::move(ctx), pc).value();
 }
 
@@ -357,4 +388,35 @@ TEST(StrikeCoord, InvalidDeltaIsInvalidArgument) {
                                                 StrikeCoord::delta(0.97, DeltaConvention::Spot));
   ASSERT_FALSE(unreachable.has_value());
   EXPECT_EQ(unreachable.error().code(), ErrorCode::NotFound);
+}
+
+TEST(StrikeCoord, FlagsMoneynessExtrapolation) {
+  const PricedSurface ps = make_spline_surface();
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"spl", &ps, std::nullopt}};
+  auto bytes = write_surface_archive_v2(items);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto arch = SurfaceArchiveV2::open(std::move(*bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto view = arch->map_symbol("spl");
+  ASSERT_TRUE(view.has_value()) << view.error().to_string();
+  constexpr double T = 0.25; // the exact pillar: no tenor flag in play
+  for (const SurfaceRef ref : {SurfaceRef{ps}, SurfaceRef{*view}}) {
+    const auto flagged = [&](StrikeCoord from, Side side) {
+      const auto r = convert_strike_coord(ref, T, side, from);
+      EXPECT_TRUE(r.has_value()) << r.error().to_string();
+      EXPECT_FALSE(r.has_value() && has_flag(r->flags, RiskFlag::TenorExtrapolated));
+      return r.has_value() && has_flag(r->flags, RiskFlag::MoneynessExtrapolated);
+    };
+    // Inside the data-supported range [-0.18, 0.144]: not flagged.
+    EXPECT_FALSE(flagged(StrikeCoord::log_moneyness(0.0), Side::Call)) << ref.is_view();
+    EXPECT_FALSE(flagged(StrikeCoord::log_moneyness(0.12), Side::Call)) << ref.is_view();
+    EXPECT_FALSE(flagged(StrikeCoord::log_moneyness(-0.15), Side::Put)) << ref.is_view();
+    // Beyond either edge: flagged, whatever coordinate named the strike.
+    EXPECT_TRUE(flagged(StrikeCoord::log_moneyness(0.3), Side::Call)) << ref.is_view();
+    EXPECT_TRUE(flagged(StrikeCoord::log_moneyness(-0.3), Side::Put)) << ref.is_view();
+    EXPECT_TRUE(flagged(StrikeCoord::strike(130.0), Side::Call)) << ref.is_view();
+    EXPECT_TRUE(flagged(StrikeCoord::delta(0.03), Side::Call)) << ref.is_view();
+    EXPECT_TRUE(flagged(StrikeCoord::delta(-0.03, DeltaConvention::American), Side::Put))
+        << ref.is_view();
+  }
 }

@@ -28,16 +28,18 @@ namespace civil = atx::core::time;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr std::int64_t kNsPerHour = 3'600'000'000'000;
 constexpr std::int64_t kNsPerDay = 24 * kNsPerHour;
-// Instants are accepted within +/- 2^62 ns (1824 .. 2116): every derived expiry
-// (+ at most 100 years) and every expiry - valuation difference then fits int64.
-constexpr std::int64_t kMaxAbsInstantNs = std::int64_t{1} << 62;
+// Instants are accepted STRICTLY inside (-2^62, 2^62) ns (1824 .. 2116), an
+// exclusive bound: any expiry - valuation difference is then below 2^63 in
+// magnitude (time_to_expiry_years subtracts them in int64), and a derived expiry
+// (valuation + at most ~100 years ~ 3.2e18 ns) stays below 2^63.
+constexpr std::int64_t kInstantBoundNs = std::int64_t{1} << 62;
 constexpr double kMaxYears = 100.0;
 constexpr std::int32_t kMaxCalendarDays = 36'600;
 constexpr std::int32_t kMaxCalendarMonths = 1'200;
 constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceiling
 
 [[nodiscard]] bool instant_in_range(std::int64_t ns) noexcept {
-  return ns >= -kMaxAbsInstantNs && ns <= kMaxAbsInstantNs;
+  return ns > -kInstantBoundNs && ns < kInstantBoundNs;
 }
 
 [[nodiscard]] std::int64_t floor_div(std::int64_t a, std::int64_t b) noexcept {
@@ -151,6 +153,14 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
 }
 
 // A row with the identity fields set and every number NaN ("not computed").
+//
+// THE uniform rule for a row whose status is not Ok: fingerprint 0 and every
+// STRIKE-level number (leg.K, k_log, standard_moneyness, delta, forward_delta, iv,
+// mark, greeks) NaN, even where a strike was found before a later step failed.
+// Only the identity (uid, side, multiplier, valuation, expiry when resolved), the
+// maturity-level T / forward when resolved, the provenance flags and the delta
+// evaluations spent survive. A consumer can therefore key on `status == Ok` or on
+// `fingerprint != 0` interchangeably.
 [[nodiscard]] ResolvedTheo unresolved_row(const TheoContract &spec, std::int64_t valuation_ns,
                                           std::int64_t expiry_ns, TheoStatus status) noexcept {
   ResolvedTheo r;
@@ -174,19 +184,30 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
   return r;
 }
 
-// A strike-resolution failure that is the market's, not the template's.
+// A strike-resolution failure that is not structural. The mapping (forward / ATM
+// vol availability is checked BEFORE the conversion, so it never lands here):
+//   NotFound    Delta strike: DeltaUnreachable (target outside the surface's reach).
+//               Any other kind: InvalidSpec — convert_strike_coord's only NotFound
+//               for a moneyness / strike coordinate is a strike that is not finite
+//               and positive (e.g. log-moneyness 800 overflows F e^k): the template
+//               names no strike on this state.
+//   OutOfRange  MaturityUnavailable (TenorExtrapPolicy::Forbid).
+//   Unavailable Delta strike: DeltaUnreachable (the solve could not evaluate /
+//               converge, or the solved strike has no vol); any other kind:
+//               SurfaceUnavailable (no vol at that strike).
+//   otherwise   PricingError.
 // (An if-chain, not a switch: ErrorCode is atx-core's open vocabulary and every
 // code not named here is, deliberately, a pricing error.)
 [[nodiscard]] TheoStatus market_status(ErrorCode code, const StrikeCoord &strike) noexcept {
+  const bool delta_strike = strike.kind == StrikeCoordKind::Delta;
   if (code == ErrorCode::NotFound) {
-    return TheoStatus::DeltaUnreachable;
+    return delta_strike ? TheoStatus::DeltaUnreachable : TheoStatus::InvalidSpec;
   }
   if (code == ErrorCode::OutOfRange) {
     return TheoStatus::MaturityUnavailable;
   }
   if (code == ErrorCode::Unavailable) {
-    return strike.kind == StrikeCoordKind::Delta ? TheoStatus::DeltaUnreachable
-                                                 : TheoStatus::SurfaceUnavailable;
+    return delta_strike ? TheoStatus::DeltaUnreachable : TheoStatus::SurfaceUnavailable;
   }
   return TheoStatus::PricingError;
 }
@@ -217,6 +238,14 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
       return Ok(out);
     }
   }
+  // A surface that serves no forward / ATM vol at T is unavailable for EVERY strike
+  // kind (a Delta template must not read this as an unreachable delta).
+  const bool forward_ok = std::isfinite(out.forward) && out.forward > 0.0;
+  const double sigma_atm = forward_ok ? surface.iv(out.forward, out.T, policy.interp) : kNaN;
+  if (!forward_ok || !(std::isfinite(sigma_atm) && sigma_atm > 0.0)) {
+    out.status = TheoStatus::SurfaceUnavailable;
+    return Ok(out);
+  }
 
   const Result<CoordResult> coord =
       convert_strike_coord(surface, out.T, spec.side, spec.strike, policy);
@@ -229,6 +258,19 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
     return Ok(out);
   }
   const CoordResult &c = *coord;
+  out.delta_evaluations = c.delta_evaluations;
+  out.flags |= c.flags;
+
+  const Result<double> mark =
+      risk_detail::cold_price(surface, c.K, out.T, spec.side, policy.interp);
+  const Result<AmericanGreeks> greeks =
+      risk_detail::cold_greeks_analytic(surface, c.K, out.T, spec.side, policy.interp);
+  if (!mark || !greeks || !std::isfinite(*mark)) {
+    // The uniform non-Ok rule (unresolved_row): the strike found above is not
+    // served, so K / iv / deltas stay NaN and the fingerprint stays 0.
+    out.status = TheoStatus::PricingError;
+    return Ok(out);
+  }
   out.leg.K = c.K;
   out.forward = c.forward;
   out.k_log = c.k_log;
@@ -236,20 +278,9 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
   out.delta = c.delta;
   out.forward_delta = forward_delta(c.forward, c.K, out.T, c.sigma, spec.side);
   out.iv = c.sigma;
-  out.delta_evaluations = c.delta_evaluations;
-  out.flags |= c.flags;
-  out.fingerprint = fingerprint_of(spec.uid, c.K, expiry_ns, spec.side);
-
-  const Result<double> mark =
-      risk_detail::cold_price(surface, c.K, out.T, spec.side, policy.interp);
-  const Result<AmericanGreeks> greeks =
-      risk_detail::cold_greeks_analytic(surface, c.K, out.T, spec.side, policy.interp);
-  if (!mark || !greeks || !std::isfinite(*mark)) {
-    out.status = TheoStatus::PricingError;
-    return Ok(out);
-  }
   out.mark = *mark;
   out.greeks = *greeks;
+  out.fingerprint = fingerprint_of(spec.uid, c.K, expiry_ns, spec.side);
   return Ok(out);
 }
 
