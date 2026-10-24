@@ -21,6 +21,7 @@
 #include <parquet/arrow/writer.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -593,6 +594,99 @@ TEST(SpiderRockStore, RefusesNestedSchema) {
 #endif
 }
 
+// ── Clock gaps: our T against the vendor's year fractions ───────────────────
+//
+// Gaps are in days (1 d = 1 / 365.25 y), bucketed by calendar tenor (expiry - ts).
+
+constexpr double kDayNs = 86'400.0 * 1e9;
+constexpr double kDaysPerYear = atx::vol::kCalendarYearNs / kDayNs;
+constexpr std::size_t kTenorBuckets = 4;
+constexpr std::array<double, kTenorBuckets> kTenorUpperDays{
+    1.0, 7.0, 30.0, std::numeric_limits<double>::infinity()};
+constexpr std::array<const char *, kTenorBuckets> kTenorNames{"<=1d", "1-7d", "7-30d", ">30d"};
+
+[[nodiscard]] double median_copy(std::vector<double> v) {
+  if (v.empty()) {
+    return kNaN;
+  }
+  std::sort(v.begin(), v.end());
+  const std::size_t m = v.size() / 2;
+  return v.size() % 2 == 1 ? v[m] : (v[m - 1] + v[m]) / 2.0;
+}
+
+[[nodiscard]] double p99_copy(std::vector<double> v) { // nearest rank
+  if (v.empty()) {
+    return kNaN;
+  }
+  std::sort(v.begin(), v.end());
+  const auto rank = static_cast<std::size_t>(std::ceil(0.99 * static_cast<double>(v.size())));
+  return v[std::max<std::size_t>(rank, 1) - 1];
+}
+
+struct ClockGaps {
+  double median_all{kNaN};
+  std::array<double, kTenorBuckets> median_by{};
+};
+
+// |T(spec) - vendor| over the bucket's rows: prints the median and p99 overall and per tenor
+// bucket. Rows whose vendor value is not finite, or that the clock refuses (VolTime outside
+// its covered calendar), are counted and skipped.
+ClockGaps print_clock_gaps(const SpiderRockBucket &b, const TimeSpec &spec,
+                           const std::vector<double> &vendor, const char *label) {
+  std::array<std::vector<double>, kTenorBuckets> by;
+  std::vector<double> all;
+  std::vector<double> signed_all;
+  std::size_t refused = 0;
+  for (std::size_t r = 0; r < b.size() && r < vendor.size(); ++r) {
+    const auto T = atx::vol::time_to_expiry_years(b.ts_ns, b.expiry_ns[r], spec);
+    if (!T.has_value() || !std::isfinite(vendor[r])) {
+      ++refused;
+      continue;
+    }
+    const double gap = (*T - vendor[r]) * kDaysPerYear;
+    const double tenor = static_cast<double>(b.expiry_ns[r] - b.ts_ns) / kDayNs;
+    std::size_t k = 0;
+    while (k + 1 < kTenorBuckets && tenor > kTenorUpperDays[k]) {
+      ++k;
+    }
+    by[k].push_back(std::fabs(gap));
+    all.push_back(std::fabs(gap));
+    signed_all.push_back(gap);
+  }
+  ClockGaps out;
+  out.median_all = median_copy(all);
+  std::printf("[clock %s] rows=%zu refused=%zu | median |gap| %.4f d, p99 %.4f d, signed "
+              "median %+.4f d\n",
+              label, all.size(), refused, out.median_all, p99_copy(all),
+              median_copy(signed_all));
+  for (std::size_t k = 0; k < kTenorBuckets; ++k) {
+    out.median_by[k] = median_copy(by[k]);
+    std::printf("[clock %s]   tenor %-6s rows=%8zu median |gap| %.4f d  p99 %.4f d\n", label,
+                kTenorNames[k], by[k].size(), out.median_by[k], p99_copy(by[k]));
+  }
+  return out;
+}
+
+// One line per expiry: tenor, the vendor's median `years`, and the signed VolTime /
+// Calendar365 gaps to it — the view that locates where (which expiry) a clock departs.
+void print_expiry_clock_gaps(const SpiderRockBucket &b) {
+  std::map<std::int64_t, std::vector<double>> per_expiry;
+  for (std::size_t r = 0; r < b.size(); ++r) {
+    per_expiry[b.expiry_ns[r]].push_back(b.vendor_T[r]);
+  }
+  const TimeSpec vol_time{atx::vol::TimeConvention::VolTime};
+  for (const auto &[expiry, years] : per_expiry) {
+    const double med = median_copy(years);
+    const double tv = atx::vol::time_to_expiry_years(b.ts_ns, expiry, vol_time).value_or(kNaN);
+    const double tc = atx::vol::time_to_expiry_years(b.ts_ns, expiry, TimeSpec{}).value_or(kNaN);
+    std::printf("[clock expiry] %s tenor %7.2f d rows=%6zu years %.8f | VolTime %+.4f d  "
+                "Cal365 %+.4f d\n",
+                atx::vol::ns_to_iso_date(expiry).c_str(),
+                static_cast<double>(expiry - b.ts_ns) / kDayNs, years.size(), med,
+                (tv - med) * kDaysPerYear, (tc - med) * kDaysPerYear);
+  }
+}
+
 TEST(SpiderRockStoreReal, LoadsBucket1000) {
   const std::string root = real_store_root();
   if (root.empty()) {
@@ -646,6 +740,20 @@ TEST(SpiderRockStoreReal, LoadsBucket1000) {
               static_cast<long long>(top->rows_not_selected), report.n_uids, report.n_marks,
               report.n_expiry_rows, report.n_uids_with_divs, report.max_ddiv_spread,
               report.n_duplicate_marks, report.n_rows_bad_sigma);
+  // Clock (follow-up 2, item D): our T against the vendor's `years` on the top-100 marks.
+  // Measured here (2026-10-14 1000): VolTime reproduces `years` to <= 0.02 d per expiry up
+  // to the first NYSE early close (2026-11-27), then the gap steps by ~0.46 d at every
+  // early-close session (VolTimeCalendar holds full closures only), so the overall median
+  // is ~0.92 d, above the brief's 0.5 d adoption bar: the bench keeps calendar365 as its
+  // default (docs/risk-bench.md "Clock"). Pinned: VolTime stays within 0.05 d on the
+  // tenors before the first early close.
+  const TimeSpec vol_time{atx::vol::TimeConvention::VolTime};
+  const ClockGaps vt = print_clock_gaps(*top, vol_time, top->vendor_T, "VolTime-years");
+  (void)print_clock_gaps(*top, TimeSpec{}, top->vendor_T, "Cal365-years");
+  print_expiry_clock_gaps(*top);
+  for (std::size_t k = 0; k + 1 < kTenorBuckets; ++k) {
+    EXPECT_LE(vt.median_by[k], 0.05) << "VolTime vs years, tenor " << kTenorNames[k];
+  }
   EXPECT_GE(report.n_uids, 100u);
   EXPECT_GT(top->dropped_non_american, 0);
   EXPECT_GT(report.n_uids_with_divs, 0u);
