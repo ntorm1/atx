@@ -232,6 +232,8 @@ struct BucketLoad {
   std::size_t n_marks{0};
   std::size_t n_uids_with_divs{0};
   double max_ddiv_spread{0.0};
+  // ── Follow-up 2 additions (appended; schema v2) ──
+  std::int64_t dropped_forward_framework{0};
 };
 
 struct RiskBenchReport {

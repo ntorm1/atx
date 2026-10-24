@@ -89,6 +89,15 @@ struct SpiderRockStoreSpec {
   // price is not a function of the underlier's spot. Applied before the top-N count;
   // counted in `dropped_nonstandard_root`. A NULL root passes.
   bool standard_roots_only{true};
+  // ── Lane C follow-up 2 additions (appended) ──
+  // Keep only prcFramework == "Spot" rows (ASCII case-insensitive) when the partition has
+  // a `prcFramework` column (the licensed drop does). A Forward-framework row carries a
+  // per-EXPIRY forward in uPrc (OEX on 2026-10-14: 3,878 / 3,929 / 3,960 at 2 d / 5 mo /
+  // 8 mo), so a per-uid median spot is meaningless to the American-on-spot kernel.
+  // Applied after the exType filter (a European Forward-framework row stays counted in
+  // `dropped_non_american`), before the root filter and the top-N count; a NULL
+  // framework is not Spot. Dropped rows are counted in `dropped_forward_framework`.
+  bool spot_framework_only{true};
 };
 
 // One bucket decoded to SoA (rows sorted by (uid, expiry_ns, side, strike)).
@@ -122,7 +131,7 @@ struct SpiderRockBucket {
   // Rows of underliers outside the admitted set (explicit list / top-N cap),
   // including whole row groups pruned by the ticker statistics; not part of
   // rows_dropped_*: they were never candidates. Every row of the partition is
-  // counted once, in the six-term identity stated at dropped_nonstandard_root below
+  // counted once, in the seven-term identity stated at dropped_nonstandard_root below
   // (a NULL ticker counts as rows_dropped_null; a pruned row group counts as
   // rows_not_selected).
   std::int64_t rows_not_selected{0};
@@ -137,14 +146,28 @@ struct SpiderRockBucket {
   // Rows dropped by SpiderRockStoreSpec::standard_roots_only (okey_tk != the
   // underlier ticker), counted before underlier admission; part of the identity:
   // rows_read == size() + rows_dropped_null + rows_dropped_bad_input +
-  //              rows_not_selected + dropped_non_american + dropped_nonstandard_root.
+  //              rows_not_selected + dropped_non_american + dropped_nonstandard_root +
+  //              dropped_forward_framework.
   std::int64_t dropped_nonstandard_root{0};
+  // ── Lane C follow-up 2 additions (appended) ──
+  // Rows dropped by SpiderRockStoreSpec::spot_framework_only (prcFramework != "Spot",
+  // including a NULL framework, on rows that passed the exType filter), counted before
+  // underlier admission; part of the identity above.
+  std::int64_t dropped_forward_framework{0};
 };
 
 // Vendor-unit scales (see "Vendor Greek UNITS" above): ve = vega * kSpiderRockVegaScale,
 // th = theta * kSpiderRockThetaScale (BUS_252 day).
 inline constexpr double kSpiderRockVegaScale = 0.01;
 inline constexpr double kSpiderRockThetaScale = 1.0 / 252.0;
+
+// The version of the conventions the loader and the bucket -> state builder apply to the
+// vendor columns. Bump whenever the loader changes a value it derives from the vendor
+// columns (clock, carry mode, framework filter, pv_divs source); persistence fingerprints
+// depend on it. 1 = the wave-1 loader (Calendar365, published D4 carry from ddiv); 2 =
+// follow-up 2 (Spot-framework filter, pv_divs from ddivPv, carry implied from vendor calls,
+// the bench's --time clock).
+inline constexpr std::uint32_t kSpiderRockConventionsVersion = 2;
 
 // The bucket's instant: `date` + HH:MM US/Eastern -> UTC epoch ns, derived as
 // expiry_instant_ns(date, Pm) - (16:00 - HH:MM) (exact: DST resolves at day

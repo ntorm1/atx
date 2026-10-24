@@ -85,6 +85,7 @@ struct Snapshot {
   b.rows_not_selected = s.bucket.rows_not_selected;
   b.dropped_non_american = s.bucket.dropped_non_american;
   b.dropped_nonstandard_root = s.bucket.dropped_nonstandard_root;
+  b.dropped_forward_framework = s.bucket.dropped_forward_framework;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;

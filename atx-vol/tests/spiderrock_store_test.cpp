@@ -111,9 +111,11 @@ struct Row {
   bool null_uprc = false;
   bool null_tk = false;
   // Written only when write_partition(licensed_extras): the 2026-10-14 drop's
-  // exercise style and option root (empty root = the underlier ticker).
+  // exercise style, option root (empty root = the underlier ticker) and price
+  // framework (empty = NULL).
   std::string ex_type = "American";
   std::string root;
+  std::string framework = "Spot";
 };
 
 struct NumField {
@@ -170,6 +172,11 @@ void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool lar
     }
     add_string("okey_tk", [](const Row &r) { return r.root.empty() ? r.tk : r.root; },
                [](const Row &) { return false; });
+    if (::testing::Test::HasFatalFailure()) {
+      return;
+    }
+    add_string("prcFramework", [](const Row &r) { return r.framework; },
+               [](const Row &r) { return r.framework.empty(); });
     if (::testing::Test::HasFatalFailure()) {
       return;
     }
@@ -550,6 +557,65 @@ TEST(SpiderRockStore, StandardRootsOnlyDropsAdjustedRoots) {
   EXPECT_EQ(c->dropped_nonstandard_root, 0);
 }
 
+// Forward-framework rows carry a per-expiry forward in uPrc (OEX on the licensed drop):
+// spot_framework_only drops them after the exType filter and before the top-N count.
+TEST(SpiderRockStore, SpotFrameworkOnlyDropsForwardRows) {
+  std::vector<Row> rows;
+  auto add = [&](const char *tk, const char *ex_type, const char *framework, int n) {
+    for (int i = 0; i < n; ++i) {
+      Row r;
+      r.tk = tk;
+      r.ex_type = ex_type;
+      r.framework = framework;
+      r.strike = 50.0 + i;
+      rows.push_back(r);
+    }
+  };
+  add("OEX", "American", "Forward", 5); // the most rows, but a forward in uPrc
+  add("SPY", "American", "Spot", 3);
+  add("SPY", "American", "spot", 1);    // case-insensitive
+  rows.back().dy = 25; // its own expiry: keys stay unique
+  add("XAU", "American", "", 1);        // NULL framework: not Spot
+  add("IDX", "European", "Forward", 2); // exType runs first: counted as non-American
+  const fs::path root = fresh_dir("framework");
+  write_partition(bucket_dir(root, "2026-10-14", "1000"), rows, /*large=*/false, true,
+                  /*row_group_rows=*/1024); // one group: no ticker-stats pruning
+  write_partition(bucket_dir(root, "2026-10-14", "1030"), rows, /*large=*/false,
+                  /*licensed_extras=*/false); // no prcFramework column: keep all
+  ASSERT_FALSE(HasFatalFailure());
+
+  SpiderRockStoreSpec spec = spec_for(root, "2026-10-14");
+  spec.max_underliers = 1;
+  UnderlierTable table;
+  const auto b = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(table.size(), 1u);
+  EXPECT_NE(table.find("SPY"), 0u);
+  EXPECT_EQ(b->size(), 4u);
+  EXPECT_EQ(b->dropped_forward_framework, 6);
+  EXPECT_EQ(b->dropped_non_american, 2);
+  EXPECT_EQ(b->rows_read, static_cast<std::int64_t>(b->size()) + b->rows_dropped_null +
+                              b->rows_dropped_bad_input + b->rows_not_selected +
+                              b->dropped_non_american + b->dropped_nonstandard_root +
+                              b->dropped_forward_framework);
+
+  // spot_framework_only = false admits every framework (and the top-1 is OEX).
+  spec.spot_framework_only = false;
+  UnderlierTable all;
+  const auto c = atx::vol::load_spiderrock_bucket(spec, "1000", all);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_NE(all.find("OEX"), 0u);
+  EXPECT_EQ(c->dropped_forward_framework, 0);
+
+  // Column absent: every row is kept by this filter (exType is absent too).
+  spec = spec_for(root, "2026-10-14");
+  UnderlierTable plain;
+  const auto d = atx::vol::load_spiderrock_bucket(spec, "1030", plain);
+  ASSERT_TRUE(d.has_value()) << d.error().to_string();
+  EXPECT_EQ(d->size(), rows.size());
+  EXPECT_EQ(d->dropped_forward_framework, 0);
+}
+
 // Row-group pruning and the projected read address parquet LEAF columns by the arrow
 // field index, which holds only for a flat schema: a nested column is refused loudly
 // (with and without the top-N statistics path), never pruned silently.
@@ -705,20 +771,24 @@ TEST(SpiderRockStoreReal, LoadsBucket1000) {
   const double full_ms = ms_since(t0);
   ASSERT_TRUE(full.has_value()) << full.error().to_string();
   std::printf("[real 1000 uncapped] load %.1f ms: read=%lld kept=%zu null=%lld bad=%lld "
-              "non_american=%lld nonstandard_root=%lld not_selected=%lld null_vendor=%lld "
-              "uids=%zu\n",
+              "non_american=%lld forward_framework=%lld nonstandard_root=%lld "
+              "not_selected=%lld null_vendor=%lld uids=%zu\n",
               full_ms, static_cast<long long>(full->rows_read), full->size(),
               static_cast<long long>(full->rows_dropped_null),
               static_cast<long long>(full->rows_dropped_bad_input),
               static_cast<long long>(full->dropped_non_american),
+              static_cast<long long>(full->dropped_forward_framework),
               static_cast<long long>(full->dropped_nonstandard_root),
               static_cast<long long>(full->rows_not_selected),
               static_cast<long long>(full->rows_null_vendor), t_all.size());
   EXPECT_GT(full->size(), 1'500'000u);
   EXPECT_GT(full->dropped_non_american, 0);
+  EXPECT_GT(full->dropped_forward_framework, 0);
+  EXPECT_EQ(t_all.find("OEX"), 0u) << "OEX is Forward-framework: spot_framework_only drops it";
   EXPECT_EQ(full->rows_read, static_cast<std::int64_t>(full->size()) + full->rows_dropped_null +
                                  full->rows_dropped_bad_input + full->rows_not_selected +
-                                 full->dropped_non_american + full->dropped_nonstandard_root);
+                                 full->dropped_non_american + full->dropped_nonstandard_root +
+                                 full->dropped_forward_framework);
 
   spec.max_underliers = 100;
   UnderlierTable table;
@@ -732,11 +802,13 @@ TEST(SpiderRockStoreReal, LoadsBucket1000) {
   const double state_ms = ms_since(t0);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
   std::printf("[real 1000 top-100] load %.1f ms, state %.1f ms: kept=%zu null=%lld bad=%lld "
-              "non_american=%lld not_selected=%lld | uids=%zu marks=%zu expiry_rows=%zu "
-              "uids_with_divs=%zu max_ddiv_spread=%.6g dup_marks=%zu bad_sigma=%zu\n",
+              "non_american=%lld forward_framework=%lld not_selected=%lld | uids=%zu marks=%zu "
+              "expiry_rows=%zu uids_with_divs=%zu max_ddiv_spread=%.6g dup_marks=%zu "
+              "bad_sigma=%zu\n",
               top_ms, state_ms, top->size(), static_cast<long long>(top->rows_dropped_null),
               static_cast<long long>(top->rows_dropped_bad_input),
               static_cast<long long>(top->dropped_non_american),
+              static_cast<long long>(top->dropped_forward_framework),
               static_cast<long long>(top->rows_not_selected), report.n_uids, report.n_marks,
               report.n_expiry_rows, report.n_uids_with_divs, report.max_ddiv_spread,
               report.n_duplicate_marks, report.n_rows_bad_sigma);
