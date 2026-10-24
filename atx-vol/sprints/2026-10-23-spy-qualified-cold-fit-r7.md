@@ -2,6 +2,22 @@
 
 Status: implementation in progress; no qualified sub-second result.
 
+Current integration checkpoint, 2026-10-24: local `C:/atx` main is merged through
+`96cd56db` after combined SPY/storage/Python gates, preserving all existing local
+files. Later entries that describe a pending merge are historical. Latest measured
+complete-fit release trials are 1.1647743/1.0251590/1.0989175 seconds, median
+1.0989175; all 13 API gates pass. No subsecond or 100-process qualification.
+The subsequent finalizer floor-cache change preserves every prediction byte and
+all 13 gates in development and ThinLTO, removing 265 boundary solves; qualified
+latency remains pending. Cash reference admission guards are integrated in the
+active branch with 28 focused tests and exact 50-case historical parity.
+
+The isolated mixed-precision QP experiment is not promoted: exact replay controls
+pass, but 191 correction solves and 26 double fallback directions establish no
+performance gain. See [the retained experiment](../docs/qp-mixed-precision-research-20261024.md).
+Greek per-field admission and consumer propagation remain active, separately
+reviewed work. Price accuracy does not qualify Greek or discrete-cash accuracy.
+
 ## Acceptance contract
 
 One build and one policy must simultaneously deliver a fresh-process SPY cold fit on

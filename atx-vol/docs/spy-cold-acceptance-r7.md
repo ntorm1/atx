@@ -5,6 +5,21 @@ Updated: 2026-10-24 (America/New_York). Starting local main:
 `feat/vol-r7-acceptance-20261023`, pool-33. This document records a development
 oracle and reproducible gates, **not an achieved subsecond fit**.
 
+Current checkpoint: local main contains reviewed `96cd56db`; the combined
+release binary passes all 13 API gates and three fresh one-core fits of
+1.1647743/1.0251590/1.0989175 seconds (median 1.0989175). Later historical
+statements about pending main integration are superseded. New finalizer floor
+reuse at `c721422d` preserves prediction hash
+`e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`
+and all 13 gates in development and ThinLTO; its qualified latency is pending.
+Latest ThinLTO binary hash:
+`6afb2de0f3eb61f93a9bc59fc8b6d6abf6e2245e562cf530d26db8100b13c632`.
+Receipt: `acceptance/integrated-final-floor-lto-v1-audit/verification-reviewed-v3.json`.
+The failed busy-host interleaved controls remain in evidence and establish no
+whole-fit improvement. Mixed-precision replay is research-only and not promoted;
+[its report](qp-mixed-precision-research-20261024.md) separates component
+diagnostics from the unchanged production fit and publication gates.
+
 ## Frozen workload and denominator
 
 Input: `C:/atx-cache/quote-benchmark/fit-timing-20261017-cohort5/input/quotes-SPY.csv`.
