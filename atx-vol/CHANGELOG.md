@@ -5,6 +5,42 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING — surface archive ATXVSA21 + manifest ATXVDB02: O(1) single-underlying point read (lane SER)
+
+FORMAT BREAK, no migration: `.atxvsa` partitions must be rewritten as `ATXVSA21` (ATXVSA2
+revision 1, major 5) and `manifest.atxdb` as `ATXVDB02`; `ATXVSA20`, `ATXVSA03` and `ATXVDB01`
+are refused with a `ParseError` naming the magic found. Rebuild a surface db from its hives;
+none exists outside rebuildable caches. Spec: `docs/atxvsa2-format.md`.
+
+- New `point_read_archive_surface` / `point_read_archive_reconstruct`
+  (`api/storage/surface_archive.hpp`): one symbol from a partition file through three positional
+  reads (header, one lookup-slot run, the record), every touched byte CRC-checked, the record
+  bound to the query by the canonical symbol it now carries; no mapping or handle outlives the
+  call. `SurfaceDb::map_surface` / `load_surface` serve through it. On a 6,000-symbol 11.3 MB
+  partition a cold `map_surface` reads 2,214 B in 3 calls (was 11.58 MB in 2,826) in 24 µs p50 /
+  41 µs p99 (was 11.8 ms / 14.6 ms); whole-board `open_partition` + `map_all` 7.6 ms (was 12.3).
+- Removed: the `SurfaceDb` LRU partition cache (`partition_cache_stats`,
+  `partition_cache_capacity` in `SurfaceDb{Create,Open}Opts`, `SurfaceDbCacheStats`; the Python
+  bindings drop them too), `LoadedSurface::partition` (now `backing`, the one record's bytes), the
+  ATXVSA03 record declarations and their `run_archive.cpp` recogniser (`RunDir::run_identity_hash`
+  folds the 128-B ATXVSA21 header, so every run dir's identity hash changes, and a run dir holding
+  an older archive is refused instead of folded), the prior-salt accept-list, the
+  zero-marker legacy provenance (an explicit `prov_status` byte), and the reserved-field reuse for
+  `SurfacePolicy` / provenance / `config_fingerprint` in the manifest (named fields now).
+- `SurfaceArchiveV2::open_copied` / `open_file` read the whole file with one positional read (no
+  `ifstream`); the symbol hash is a format-defined FNV-1a/64 + fmix64 (was wyhash, documented as
+  unstable across builds).
+
+### FIXED — storage: republish under concurrent readers, manifest lookup aliasing (lane SER)
+
+`flush_and_publish_file` replaces the destination with POSIX rename semantics on Windows first,
+so readers that share delete never refuse a republish (4 of 40 publishes exhausted the ~635 ms
+retry budget under a two-thread point-read loop; pinned by
+`SurfaceArchivePointRead.ConcurrentRepublishServesOneWholeVersion`). `DbManifest::find_symbol`,
+`find_symbol_provenance` and `find_partition` refuse a query over 32 chars instead of truncating
+it onto the stored 32-char record sharing its prefix
+(`SurfaceDbManifest.OverLongQueryDoesNotAliasATruncatedRecord`).
+
 ### FIXED — family enclosure: the computed bracket meets the width (lane K5)
 
 `family_enclosure` (`src/pricing/american_iv.cpp`, the Skipped rule of K3's family-route root
