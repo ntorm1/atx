@@ -202,6 +202,13 @@ set(ATX_VOL_MARKETDATA_SOURCES
     src/marketdata/listed_opra.cpp
     src/marketdata/listed_definitions_cache.cpp
     src/marketdata/occ_ess.cpp
+    # Risk-engine sprint 2026-10-24 lane C: SpiderRock intraday store loader +
+    # SpiderRock-shaped synthetic store (api/marketdata/spiderrock_store.hpp). Both
+    # read/write parquet through Arrow directly; Arrow/Parquet reach atx-vol through
+    # atx::core's unconditional PUBLIC edge (the oracle reader's arrangement), so they
+    # are NOT gated on ATX_VOL_LAKEHOUSE.
+    src/marketdata/spiderrock_store.cpp
+    src/marketdata/synthetic_spiderrock_store.cpp
 )
 
 set(ATX_VOL_STORAGE_SOURCES

@@ -665,6 +665,10 @@ add_executable(atx-vol-tests
     # matches nothing in ATX_VOL_SLOW_FILTER, so the suite lands in the
     # atx_vol_fast label.
     oracle_bench_test.cpp
+    # Risk-engine sprint 2026-10-24 lane C: the SpiderRock intraday store loader,
+    # bucket -> MarketStateStorage and the synthetic SpiderRock-shaped store
+    # (SpiderRockStore.* / SyntheticStore.* / BucketState.*; risk slice).
+    spiderrock_store_test.cpp
     # vrp_model_test.cpp (vrp-ml lane vrp-model) is NOT listed here: it needs
     # the atx-engine learn layer, so it builds into its own
     # atx-vol-vrp-model-tests exe further down, which exists only when the
