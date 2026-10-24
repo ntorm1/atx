@@ -1720,6 +1720,55 @@ TEST(AmericanIvNonMonotone, SearchRetainsNoCandidateOnSuccessOrError) {
   EXPECT_FALSE(retained.rejected_candidate);
 }
 
+TEST(AmericanIvNonMonotone, PriceBudgetCandidateUsesColdTargetAndRefusesExercisePlateaus) {
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  struct Case { double S, K, T, r, q, price; Side side; };
+  const Case cases[] = {
+      {773.0, 850.0, 0.425459623336792, 0.04721422493457794,
+       0.010136770165678387, 77.00167497706315, Side::Put},
+      {773.0, 925.0, 2.257885694503784, 0.0515890046954155,
+       0.00582131263777355, 152.01331004092836, Side::Put},
+      {773.0, 65.0, 0.9224853515625, 0.04965313524007797,
+       0.008097793258072, 708.0004269712528, Side::Call},
+      {100.0, 140.0, 5.0, 0.05, 0.0,
+       cold_al(100.0, 140.0, 5.0, 0.2, 0.05, 0.0, Side::Put), Side::Put},
+      {100.0, 105.0, 0.25, 0.04, -0.01,
+       cold_al(100.0, 105.0, 0.25, 0.3, 0.04, -0.01, Side::Call), Side::Call},
+  };
+  for (const auto &c : cases) {
+    const auto candidate = atx::vol::american_implied_vol_price_candidate(
+        c.price, c.S, c.K, c.T, c.r, c.q, c.side, opts, 0.001);
+    ASSERT_TRUE(candidate) << c.K;
+    const double actual_error = std::abs(cold_al(c.S, c.K, c.T, *candidate, c.r, c.q,
+                                                 c.side) - c.price);
+    EXPECT_LE(actual_error, 0.001) << c.K;
+    EXPECT_FALSE(spot_exercises(c.S, c.K, c.T, *candidate, c.r, c.q, c.side));
+    if (actual_error > 0.0) {
+      EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
+          c.price, c.S, c.K, c.T, c.r, c.q, c.side, opts, actual_error * 0.5));
+    }
+  }
+  for (const double budget : {0.0, -0.001, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
+        10.0, 100.0, 100.0, 1.0, 0.05, 0.0, Side::Call, opts, budget));
+  }
+  const double in_region = zero_vol_value(kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put) + 5e-6;
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
+      in_region, kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put, opts, 0.001));
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
+      40.0, 100.0, 140.0, 1.0, 0.05, 0.0, Side::Put, opts, 0.001));
+  for (const auto mutate : {+[](IvOpts &o) { o.warm_start = 0.25; },
+                            +[](IvOpts &o) { o.price_tol = 0.001; },
+                            +[](IvOpts &o) { o.method = AmericanMethod::Baw; }}) {
+    IvOpts unsupported = opts;
+    mutate(unsupported);
+    EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
+        10.0, 100.0, 100.0, 1.0, 0.05, 0.0, Side::Call, unsupported, 0.001));
+  }
+}
+
 // Outside the region the flag changes nothing: a target far above the band on the
 // ledgered contract, an ATM contract, the kIvMin clamp of a European-regime call (no
 // exercise region), and the BAW route (the refusal is for the cold Andersen-Lake map).

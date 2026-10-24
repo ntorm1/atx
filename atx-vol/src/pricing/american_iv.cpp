@@ -2866,6 +2866,42 @@ IvSearchResult american_implied_vol_search(double price, double S, double K, dou
   }
 }
 
+std::optional<double> american_implied_vol_price_candidate(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error) noexcept {
+  if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
+      opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
+      opts.warm_start != 0.0 || opts.price_tol != 0.0) return std::nullopt;
+  try {
+    IvOpts seed = opts;
+    seed.al_opts = al_fast_profile(opts.al_opts);
+    seed.refuse_non_monotone = false;
+    const IvResult candidate = search_typed(price, S, K, T, r, q, side, seed);
+    if (candidate.status != IvStatus::Ok || !(candidate.iv > kIvMin) ||
+        !std::isfinite(candidate.iv)) return std::nullopt;
+    // Fast is only a seed. This cold target solve supplies both the price and
+    // exercise classification, avoiding a separate boundary solve for the gate.
+    const auto cold = andersen_lake_classified(S, K, T, candidate.iv, r, q, side,
+                                              opts.al_opts, AlExerciseRegion::KernelFloor);
+    if (!cold || !cold->priced() || !std::isfinite(cold->price) ||
+        cold->cls == AlExerciseClass::ExercisePlateau ||
+        std::abs(cold->price - price) > max_price_error) return std::nullopt;
+    if (in_band(price, S, K, T, r, q, side, opts.al_opts)) {
+      // A monetary budget does not make a flat IV identifiable. Retain the
+      // existing positive cold-chord floor; only the residual budget changes.
+      const double below = candidate.iv * (1.0 - kCertProbeRel);
+      const auto p_below = andersen_lake(S, K, T, below, r, q, side, opts.al_opts);
+      if (!p_below || !std::isfinite(*p_below) ||
+          !((cold->price - *p_below) / (candidate.iv - below) > kCertSlopeFloorRel * K)) {
+        return std::nullopt;
+      }
+    }
+    return candidate.iv;
+  } catch (const std::bad_alloc &) {
+    return std::nullopt;
+  }
+}
+
 IvResult american_implied_vol_premium(double price, double S, double K, double T, double r,
                                       double q, Side side, const IvOpts &opts,
                                       IvPremiumMemory *memory, IvPremiumStats &stats,

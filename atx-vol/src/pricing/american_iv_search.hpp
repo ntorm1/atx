@@ -22,4 +22,12 @@ struct IvSearchResult {
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts) noexcept;
 
+// Opt-in repaired-node seed: Fast arithmetic on the target AL scheme, accepted
+// only after cold target repricing within max_price_error. Exercise/flat candidates
+// are never identified. A refusal requests the caller's unchanged typed fallback.
+// Zero/invalid budgets and unsupported Search controls return nullopt.
+[[nodiscard]] std::optional<double> american_implied_vol_price_candidate(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error) noexcept;
+
 } // namespace atx::vol
