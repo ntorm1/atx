@@ -4,9 +4,11 @@
 //
 // WRITER. RiskRunWriter stages one segment in memory (SoA vectors, reserved once, so a
 // steady-state append is a handful of memcpys) and seals it — frames the staged spans
-// straight into a PersistFile image and publishes it through PersistDirectory (file
-// first, then the manifest) — when a NEW step would start while the staged bytes have
-// reached `segment_bytes`, and on finish(). A step therefore never straddles two
+// straight into a PersistFile image and publishes it with PersistDirectory's protocol
+// (file first, then the manifest; risk_run_archive_publish.cpp) — when a NEW step would
+// start while the staged bytes have reached `segment_bytes` (at
+// options.seal_durability, Publish by default), and on finish() (at
+// options.finish_durability, Flush by default). A step therefore never straddles two
 // segments: every segment holds whole steps plus the book, and opens on its own.
 // A step is opened by append_frame (its instant is the frame's) and an explain whose
 // shifted instant is that step's attaches to it; any other explain opens its own step.
@@ -19,7 +21,8 @@
 // COMPACTION. compact_risk_run reads the run fully verified, concatenates every
 // column's bytes in step order (bit-exact: no value is re-encoded), re-bases the step
 // and VaR indices, optionally zstd + byte-shuffles every section (the cold tier) and
-// replaces the manifest with the one merged segment under the directory lock. The
+// replaces the manifest with the one merged segment under the directory lock, refusing
+// (SegmentMismatch) when anything was published since the run was read. The
 // superseded segment files stay on disk (a reader may map them; offline gc removes
 // them).
 
@@ -43,7 +46,6 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/api/persist/persist_file.hpp"
-#include "persist/persist_internal.hpp"
 #include "persist/risk_run_format.hpp"
 #include "storage/writer_lock.hpp"
 
@@ -310,7 +312,7 @@ struct WriterCore {
     prefault(staging.explain_status, steps * n_legs());
   }
 
-  [[nodiscard]] PersistOutcome seal() {
+  [[nodiscard]] PersistOutcome seal(SealDurability durability) {
     SegmentParts p;
     RiskRunMeta &m = p.meta;
     m.book_fingerprint = book.fingerprint;
@@ -368,8 +370,11 @@ struct WriterCore {
     if (!image) return tl::unexpected(image.error());
     const auto records = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(m.n_steps, std::numeric_limits<std::uint32_t>::max()));
-    auto published = PersistDirectory::publish(dir, segment_key(next_segment), *image, records);
-    if (!published) return tl::unexpected(published.error());
+    if (PersistOutcome ok =
+            publish_segment(dir, segment_key(next_segment), *image, records, durability);
+        !ok) {
+      return ok;
+    }
     staging.clear();
     ++next_segment;
     return {};
@@ -377,7 +382,9 @@ struct WriterCore {
 
   // A new step is about to start: seal first when the staged segment is full.
   [[nodiscard]] PersistOutcome before_new_step() {
-    if (!staging.steps.empty() && staging.bytes >= options.segment_bytes) return seal();
+    if (!staging.steps.empty() && staging.bytes >= options.segment_bytes) {
+      return seal(options.seal_durability);
+    }
     return {};
   }
 
@@ -545,7 +552,7 @@ struct WriterCore {
     if (finished) return persist_error(S::InvalidArgument);
     // An empty run still publishes one (book-only) segment so it opens.
     if (!staging.empty() || next_segment == 0) {
-      if (PersistOutcome ok = seal(); !ok) return ok;
+      if (PersistOutcome ok = seal(options.finish_durability); !ok) return ok;
     }
     finished = true;
     return {};
@@ -866,6 +873,11 @@ rows(const SegmentView &v, std::uint32_t type, std::uint64_t begin, std::uint64_
   return col->subspan(static_cast<std::size_t>(begin), static_cast<std::size_t>(n));
 }
 
+[[nodiscard]] RiskNeeds needs_of(std::uint32_t step_flags) noexcept {
+  return RiskNeeds{(step_flags & kStepNeedsSecondOrder) != 0u,
+                   (step_flags & kStepNeedsRho) != 0u, (step_flags & kStepNeedsCharm) != 0u};
+}
+
 [[nodiscard]] PersistResult<RiskFrame> materialize_frame_of(const ReaderCore &c, std::size_t step) {
   const auto a = c.at(step);
   if (a.step == nullptr || (a.step->flags & kStepHasFrame) == 0u) return persist_error(S::NotFound);
@@ -875,8 +887,7 @@ rows(const SegmentView &v, std::uint32_t type, std::uint64_t begin, std::uint64_
   RiskFrame f;
   f.ts_ns = s.ts_ns;
   f.book_logical_id = s.book_logical_id;
-  f.needs = RiskNeeds{(s.flags & kStepNeedsSecondOrder) != 0u,
-                      (s.flags & kStepNeedsRho) != 0u, (s.flags & kStepNeedsCharm) != 0u};
+  f.needs = needs_of(s.flags);
   f.counters = s.counters;
   const std::uint64_t ru = s.frame_index * m.n_unique;
   for (std::uint32_t col = 0; col < kRiskFrameColumnCount; ++col) {
@@ -1082,6 +1093,23 @@ const PersistFile &Reader::segment(std::size_t segment) const noexcept {
 const RiskRunStep *Reader::step(std::size_t step) const noexcept {
   return impl_ ? impl_->core.at(step).step : nullptr;
 }
+std::optional<RiskRunStepInfo> Reader::step_info(std::size_t step) const noexcept {
+  if (!impl_ || step >= impl_->core.step_ref.size()) return std::nullopt;
+  const RiskRunStep &s = *impl_->core.at(step).step;
+  RiskRunStepInfo out;
+  out.step = s.step;
+  out.ts_ns = s.ts_ns;
+  out.base_ts_ns = s.base_ts_ns;
+  out.dt_years = s.dt_years;
+  out.book_logical_id = s.book_logical_id;
+  out.has_frame = (s.flags & kStepHasFrame) != 0u;
+  out.has_explain = (s.flags & kStepHasExplain) != 0u;
+  out.explain_rows = s.explain_rows;
+  out.segment = impl_->core.step_ref[step].first;
+  out.needs = needs_of(s.flags);
+  out.counters = s.counters;
+  return out;
+}
 std::span<const RiskRunLeg> Reader::legs() const noexcept {
   return impl_ && !impl_->core.segs.empty() ? impl_->core.segs.front().legs
                                             : std::span<const RiskRunLeg>{};
@@ -1136,83 +1164,6 @@ template <class T> [[nodiscard]] std::vector<T> rows_from_bytes(std::span<const 
 template <class T> void append_rows(std::vector<std::byte> &dst, const std::vector<T> &rows_) {
   const auto b = std::as_bytes(std::span<const T>{rows_});
   dst.insert(dst.end(), b.begin(), b.end());
-}
-
-template <std::size_t N> void put_name(std::array<char, N> &a, std::string_view s) noexcept {
-  a.fill('\0');
-  std::copy_n(s.begin(), std::min(s.size(), N - 1), a.begin());
-}
-
-// Replace the run's manifest with ONE entry for `image` (the merged segment), under
-// the directory lock, refusing if anything was published since `seen` was read. The
-// manifest record layout and fingerprint are PersistDirectory's (persist_file.hpp);
-// PersistDirectory::publish can only add or replace one key, never drop the others,
-// which is why this one rewrite lives here.
-[[nodiscard]] PersistOutcome publish_compacted(std::string_view dir,
-                                               std::span<const PersistManifestEntry> seen,
-                                               std::span<const std::byte> image,
-                                               std::uint32_t records) {
-  const fs::path root{std::string(dir)};
-  const fs::path lock_path = root / std::string(kPersistLockFileName);
-  auto lock = atx::vol::detail::WriterLock::acquire(lock_path.string());
-  if (!lock) {
-    return persist_error(lock.error().code() == ErrorCode::Unavailable ? S::Busy : S::IoError);
-  }
-  auto now = PersistDirectory::open(dir);
-  if (!now) return tl::unexpected(now.error());
-  if (now->entries().size() != seen.size() ||
-      !std::equal(seen.begin(), seen.end(), now->entries().begin(),
-                  [](const PersistManifestEntry &a, const PersistManifestEntry &b) {
-                    return a.seq == b.seq && a.file_crc32c == b.file_crc32c;
-                  })) {
-    return persist_error(S::SegmentMismatch, kPersistManifestEntriesSection);
-  }
-  std::uint64_t seq = 1;
-  for (const PersistManifestEntry &e : seen) seq = std::max(seq, e.seq + 1);
-  const std::string key = segment_key(0);
-  std::string name;
-  std::error_code ec;
-  for (std::uint32_t probe = 0; probe < (1u << 16); ++probe, ++seq) {
-    auto candidate = persist_file_name(PersistKind::RiskRun, key, seq);
-    if (!candidate) return tl::unexpected(candidate.error());
-    if (!fs::exists(root / *candidate, ec)) {
-      name = std::move(*candidate);
-      break;
-    }
-  }
-  if (name.empty()) return persist_error(S::IoError);
-  if (PersistOutcome ok = publish_persist_file((root / name).string(), image); !ok) return ok;
-
-  PersistHeader h{};
-  PersistFooter ft{};
-  std::memcpy(&h, image.data(), sizeof h);
-  std::memcpy(&ft, image.data() + image.size() - sizeof ft, sizeof ft);
-  PersistManifestEntry e{};
-  e.seq = seq;
-  put_name(e.file_name, name);
-  put_name(e.key, key);
-  e.file_size = h.file_size;
-  e.file_crc32c = ft.file_crc32c;
-  e.header_crc32c = h.header_crc32c;
-  e.kind = h.kind;
-  e.records = records;
-  e.schema_fingerprint = h.schema_fingerprint;
-  e.source_fingerprint = h.source_fingerprint;
-  e.ts_min_ns = h.ts_min_ns;
-  e.ts_max_ns = h.ts_max_ns;
-  const PersistSectionInput in{kPersistManifestEntriesSection, 1, 0, PersistDType::Pod,
-                               static_cast<std::uint32_t>(sizeof(PersistManifestEntry)), true,
-                               PersistCodec::None, PersistFilter::None, 3,
-                               std::as_bytes(std::span{&e, 1})};
-  PersistFileInfo info;
-  info.kind = PersistKind::Manifest;
-  info.schema_fingerprint = persist_manifest_fingerprint();
-  info.ts_min_ns = e.ts_min_ns;
-  info.ts_max_ns = e.ts_max_ns;
-  auto manifest = build_persist_file(std::span{&in, 1}, info);
-  if (!manifest) return tl::unexpected(manifest.error());
-  const fs::path manifest_path = root / std::string(kPersistManifestFileName);
-  return persist_detail::replace_file(manifest_path.string(), *manifest);
 }
 
 [[nodiscard]] bool is_book_slot(std::size_t i) noexcept {
@@ -1320,7 +1271,11 @@ RiskRunWriter::~RiskRunWriter() = default;
 PersistResult<RiskRunWriter> RiskRunWriter::create(std::string_view dir,
                                                    const PreparedRiskBook &book,
                                                    const RiskRunOptions &options) {
-  if (dir.empty() || options.segment_bytes == 0u) {
+  const auto durability_ok = [](SealDurability d) {
+    return d == SealDurability::Publish || d == SealDurability::Flush;
+  };
+  if (dir.empty() || options.segment_bytes == 0u || !durability_ok(options.seal_durability) ||
+      !durability_ok(options.finish_durability)) {
     return persist_error(PersistStatus::InvalidArgument);
   }
   // A run directory has one writer for its whole life: refuse one that already holds
@@ -1389,12 +1344,39 @@ const ExplainTotals *RiskRunArchive::totals(std::size_t step) const noexcept {
 std::span<const std::uint64_t> RiskRunArchive::leg_ids() const noexcept {
   return impl_ ? impl_->reader.leg_ids() : std::span<const std::uint64_t>{};
 }
+std::optional<RiskRunStepInfo> RiskRunArchive::step_info(std::size_t step) const noexcept {
+  if (!impl_) return std::nullopt;
+  return impl_->reader.step_info(step);
+}
+PersistResult<RiskFrame> RiskRunArchive::materialize_frame(std::size_t step) const {
+  if (!impl_) return persist_error(PersistStatus::InvalidArgument);
+  return impl_->reader.materialize_frame(step);
+}
+PersistResult<ExplainResult> RiskRunArchive::materialize_explain(std::size_t step) const {
+  if (!impl_) return persist_error(PersistStatus::InvalidArgument);
+  return impl_->reader.materialize_explain(step);
+}
+std::size_t RiskRunArchive::n_var() const noexcept {
+  return impl_ ? impl_->reader.n_var() : 0u;
+}
+PersistResult<HistoricalVarResult> RiskRunArchive::var(std::size_t index) const {
+  if (!impl_) return persist_error(PersistStatus::InvalidArgument);
+  return impl_->reader.var(index);
+}
 
 // ── compact_risk_run ──────────────────────────────────────────────────────────
 
 PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec codec, int level) {
+  return compact_risk_run(dir, codec, level, SealDurability::Flush);
+}
+
+PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec codec, int level,
+                                            SealDurability durability) {
   using namespace risk_run; // NOLINT(google-build-using-namespace): this TU's own detail
   if (codec != PersistCodec::None && codec != PersistCodec::Zstd) {
+    return persist_error(S::InvalidArgument);
+  }
+  if (durability != SealDurability::Publish && durability != SealDurability::Flush) {
     return persist_error(S::InvalidArgument);
   }
   if (codec == PersistCodec::Zstd && (level < 1 || level > 19)) {
@@ -1415,7 +1397,8 @@ PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec c
   if (!image) return tl::unexpected(image.error());
   const auto records = static_cast<std::uint32_t>(
       std::min<std::uint64_t>(p.meta.n_steps, std::numeric_limits<std::uint32_t>::max()));
-  if (PersistOutcome ok = publish_compacted(dir, seen->entries(), *image, records); !ok) {
+  if (PersistOutcome ok = publish_compacted(dir, seen->entries(), *image, records, durability);
+      !ok) {
     return tl::unexpected(ok.error());
   }
   return reader->n_segments();

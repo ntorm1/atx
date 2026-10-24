@@ -19,7 +19,10 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -295,17 +298,14 @@ TEST(PersistRiskRun, FrameRoundTripsBitExact) {
     auto a = RiskRunArchive::open(dir.string(), o);
     ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
     expect_archive_matches(*a, rec);
-    auto reader = rr::Reader::open(dir.string(), o);
-    ASSERT_TRUE(reader.has_value());
     for (std::size_t k = 0; k < rec.frames.size(); ++k) {
-      auto f = reader->materialize_frame(k);
+      auto f = a->materialize_frame(k);
       ASSERT_TRUE(f.has_value()) << to_string(f.error().status);
       expect_frame_equal(*f, rec.frames[k], k);
-      ASSERT_NE(reader->step(k), nullptr);
-      EXPECT_EQ(reader->step(k)->step, k);
-      EXPECT_EQ(reader->step(k)->ts_ns, market.states[k]->state.ts_ns());
+      ASSERT_TRUE(a->step_info(k).has_value());
+      EXPECT_EQ(a->step_info(k)->ts_ns, market.states[k]->state.ts_ns());
     }
-    EXPECT_EQ(reader->materialize_frame(5).error().status, PersistStatus::NotFound);
+    EXPECT_EQ(a->materialize_frame(5).error().status, PersistStatus::NotFound);
   }
   // A run without frame columns still records each step's instant and counters.
   const fs::path lean = fresh_dir("lean");
@@ -327,21 +327,20 @@ TEST(PersistRiskRun, ExplainRoundTripsBitExact) {
   auto a = RiskRunArchive::open(dir.string());
   ASSERT_TRUE(a.has_value());
   expect_archive_matches(*a, rec);
-  auto reader = rr::Reader::open(dir.string());
-  ASSERT_TRUE(reader.has_value());
   for (std::size_t k = 1; k < rec.frames.size(); ++k) {
-    auto e = reader->materialize_explain(k);
+    auto e = a->materialize_explain(k);
     ASSERT_TRUE(e.has_value()) << to_string(e.error().status);
     expect_explain_equal(*e, rec.explains[k - 1], k);
   }
-  EXPECT_EQ(reader->materialize_explain(0).error().status, PersistStatus::NotFound);
+  EXPECT_EQ(a->materialize_explain(0).error().status, PersistStatus::NotFound);
+  EXPECT_EQ(a->materialize_explain(99).error().status, PersistStatus::NotFound);
 
   // Buckets off: the explain columns stay, the bucket rows are not recorded.
   const fs::path lean = fresh_dir("nobuckets");
   RiskRunOptions no_buckets;
   no_buckets.buckets = false;
   (void)record_run(market, lean, no_buckets);
-  auto r2 = rr::Reader::open(lean.string());
+  auto r2 = RiskRunArchive::open(lean.string());
   ASSERT_TRUE(r2.has_value());
   auto e2 = r2->materialize_explain(3);
   ASSERT_TRUE(e2.has_value());
@@ -496,7 +495,7 @@ TEST(PersistRiskRun, HistoricalVarResultRoundTrips) {
     ASSERT_TRUE(w->append_var(v2).has_value());
     ASSERT_TRUE(w->finish().has_value());
 
-    auto reader = rr::Reader::open(dir.string());
+    auto reader = RiskRunArchive::open(dir.string());
     ASSERT_TRUE(reader.has_value()) << to_string(reader.error().status);
     ASSERT_EQ(reader->n_var(), 3u);
     expect_var_equal(reader->var(0).value(), v0);
@@ -528,12 +527,10 @@ TEST(PersistRiskRun, CompactionIsBitExact) {
   auto a = RiskRunArchive::open(dir.string());
   ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
   expect_archive_matches(*a, rec);
-  auto reader = rr::Reader::open(dir.string());
-  ASSERT_TRUE(reader.has_value());
-  EXPECT_EQ(reader->n_segments(), 1u);
   for (std::size_t k = 0; k < rec.frames.size(); ++k) {
-    expect_frame_equal(reader->materialize_frame(k).value(), rec.frames[k], k);
-    if (k > 0) expect_explain_equal(reader->materialize_explain(k).value(), rec.explains[k - 1], k);
+    expect_frame_equal(a->materialize_frame(k).value(), rec.frames[k], k);
+    EXPECT_EQ(a->step_info(k).value().segment, 0u) << k;
+    if (k > 0) expect_explain_equal(a->materialize_explain(k).value(), rec.explains[k - 1], k);
   }
   // Compacting a one-segment run is a rewrite of the same columns.
   ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::None, 0).value(), 1u);
@@ -698,4 +695,176 @@ TEST(PersistRiskRun, RecordedRiskStreamMatchesLiveTotals) {
     day_disk += a->totals(k)->pnl_total;
   }
   EXPECT_EQ(std::bit_cast<std::uint64_t>(day_live), std::bit_cast<std::uint64_t>(day_disk));
+}
+
+TEST(PersistRiskRun, StepInfoDescribesEveryStep) {
+  const Market market = make_market(5);
+  const fs::path dir = fresh_dir("info");
+  RiskRunOptions one;
+  one.segment_bytes = 1; // one step per segment: step k lives in segment k
+  const Recorded rec = record_run(market, dir, one);
+  auto a = RiskRunArchive::open(dir.string());
+  ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+  ASSERT_EQ(a->n_steps(), 5u);
+  for (std::size_t k = 0; k < 5; ++k) {
+    const std::optional<RiskRunStepInfo> s = a->step_info(k);
+    ASSERT_TRUE(s.has_value()) << k;
+    EXPECT_EQ(s->step, k);
+    EXPECT_EQ(s->segment, k);
+    EXPECT_EQ(s->ts_ns, rec.frames[k].ts_ns);
+    EXPECT_EQ(s->book_logical_id, rec.frames[k].book_logical_id);
+    EXPECT_TRUE(s->has_frame);
+    EXPECT_EQ(s->needs, rec.frames[k].needs) << k;
+    EXPECT_TRUE(same_pod(s->counters, rec.frames[k].counters)) << k;
+    EXPECT_EQ(s->has_explain, k > 0);
+    if (k == 0) {
+      EXPECT_EQ(s->base_ts_ns, 0);
+      EXPECT_EQ(s->explain_rows, 0u);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(s->dt_years), 0u);
+      continue;
+    }
+    const ExplainResult &e = rec.explains[k - 1];
+    EXPECT_EQ(s->base_ts_ns, e.base_ts_ns);
+    EXPECT_EQ(s->ts_ns, e.shifted_ts_ns);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(s->dt_years), std::bit_cast<std::uint64_t>(e.dt_years));
+    EXPECT_EQ(s->explain_rows, e.id.size());
+  }
+  EXPECT_FALSE(a->step_info(5).has_value());
+
+  // Frames off: every step and its explain stay, no step has a frame.
+  const fs::path lean = fresh_dir("info-lean");
+  RiskRunOptions no_frames;
+  no_frames.frames = false;
+  (void)record_run(market, lean, no_frames);
+  auto b = RiskRunArchive::open(lean.string());
+  ASSERT_TRUE(b.has_value());
+  const std::optional<RiskRunStepInfo> s2 = b->step_info(2);
+  ASSERT_TRUE(s2.has_value());
+  EXPECT_FALSE(s2->has_frame);
+  EXPECT_TRUE(s2->has_explain);
+  EXPECT_EQ(s2->segment, 0u);
+  EXPECT_EQ(b->materialize_frame(2).error().status, PersistStatus::NotFound);
+}
+
+TEST(PersistRiskRun, SealDurabilityPublishesIdenticalBytes) {
+  const RiskRunOptions defaults;
+  EXPECT_EQ(defaults.seal_durability, SealDurability::Publish);
+  EXPECT_EQ(defaults.finish_durability, SealDurability::Flush);
+
+  // One stream, recorded through writers that differ only in durability: the bytes
+  // (every segment's file CRC, then the compacted segment's) are identical.
+  const Market market = make_market(5);
+  RiskStream stream(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  Recorded rec;
+  ASSERT_TRUE(stream.start(market.states[0]->state).has_value());
+  rec.frames.push_back(stream.current());
+  for (std::size_t k = 1; k < market.states.size(); ++k) {
+    auto r = stream.step(market.states[k]->state);
+    ASSERT_TRUE(r.has_value());
+    rec.frames.push_back(stream.current());
+    rec.explains.push_back(**r);
+  }
+  rec.leg_ids = rec.explains.front().id;
+  const std::pair<SealDurability, SealDurability> modes[] = {
+      {SealDurability::Publish, SealDurability::Flush},
+      {SealDurability::Flush, SealDurability::Flush},
+      {SealDurability::Publish, SealDurability::Publish}};
+  std::vector<std::vector<std::uint32_t>> crcs;
+  std::vector<std::uint32_t> compacted;
+  for (const auto &[seal, last] : modes) {
+    const fs::path dir = fresh_dir("durability-" + std::to_string(crcs.size()));
+    RiskRunOptions o;
+    o.segment_bytes = 1;
+    o.seal_durability = seal;
+    o.finish_durability = last;
+    auto w = RiskRunWriter::create(dir.string(), stream.prepared(), o);
+    ASSERT_TRUE(w.has_value());
+    ASSERT_TRUE(w->append_frame(rec.frames[0]).has_value());
+    for (std::size_t k = 1; k < rec.frames.size(); ++k) {
+      ASSERT_TRUE(w->append_frame(rec.frames[k]).has_value());
+      ASSERT_TRUE(w->append_explain(rec.explains[k - 1]).has_value());
+    }
+    ASSERT_TRUE(w->finish().has_value());
+    auto d = PersistDirectory::open(dir.string());
+    ASSERT_TRUE(d.has_value());
+    ASSERT_EQ(d->entries().size(), 5u);
+    std::vector<std::uint32_t> c;
+    for (const PersistManifestEntry &e : d->entries()) c.push_back(e.file_crc32c);
+    crcs.push_back(std::move(c));
+    auto a = RiskRunArchive::open(dir.string());
+    ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+    expect_archive_matches(*a, rec);
+    // The temp files of either path are gone once the seal returns.
+    for (const auto &f : fs::directory_iterator(dir)) {
+      EXPECT_EQ(f.path().filename().string().find(".tmp"), std::string::npos) << f.path();
+    }
+    // Compaction at the same durability as the streaming seals.
+    ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::None, 0, seal).value(), 5u);
+    auto merged = PersistDirectory::open(dir.string());
+    ASSERT_TRUE(merged.has_value());
+    ASSERT_EQ(merged->entries().size(), 1u);
+    compacted.push_back(merged->entries().front().file_crc32c);
+    auto m = RiskRunArchive::open(dir.string());
+    ASSERT_TRUE(m.has_value());
+    expect_archive_matches(*m, rec);
+  }
+  EXPECT_EQ(crcs[1], crcs[0]);
+  EXPECT_EQ(crcs[2], crcs[0]);
+  EXPECT_EQ(compacted[1], compacted[0]);
+  EXPECT_EQ(compacted[2], compacted[0]);
+
+  // An out-of-range durability is refused before anything is written.
+  RiskRunOptions bad;
+  bad.seal_durability = static_cast<SealDurability>(7);
+  EXPECT_EQ(RiskRunWriter::create(fresh_dir("bad-seal").string(), stream.prepared(), bad)
+                .error()
+                .status,
+            PersistStatus::InvalidArgument);
+  RiskRunOptions bad_last;
+  bad_last.finish_durability = static_cast<SealDurability>(2);
+  EXPECT_EQ(RiskRunWriter::create(fresh_dir("bad-last").string(), stream.prepared(), bad_last)
+                .error()
+                .status,
+            PersistStatus::InvalidArgument);
+  const fs::path keep = fresh_dir("durability-0");
+  EXPECT_EQ(compact_risk_run(keep.string(), PersistCodec::None, 0, static_cast<SealDurability>(5))
+                .error()
+                .status,
+            PersistStatus::InvalidArgument);
+}
+
+TEST(PersistRiskRun, CompactionRefusesAStaleManifest) {
+  // The compaction contract: the merged manifest replaces the one the run was read
+  // from, or nothing. A segment a live writer published in between makes it refuse.
+  const Market market = make_market(4);
+  const fs::path dir = fresh_dir("stale");
+  RiskRunOptions one;
+  one.segment_bytes = 1;
+  (void)record_run(market, dir, one);
+  auto seen = PersistDirectory::open(dir.string());
+  ASSERT_TRUE(seen.has_value());
+  ASSERT_EQ(seen->entries().size(), 4u);
+  std::ifstream in(seen->path(seen->entries().back()), std::ios::binary);
+  const std::vector<char> raw{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  std::vector<std::byte> image(raw.size());
+  std::memcpy(image.data(), raw.data(), raw.size());
+
+  // A late seal lands after the compactor read the manifest.
+  ASSERT_TRUE(
+      rr::publish_segment(dir.string(), rr::segment_key(99), image, 1, SealDurability::Publish)
+          .has_value());
+  EXPECT_EQ(manifest_size(dir), 5u);
+  const auto refused =
+      rr::publish_compacted(dir.string(), seen->entries(), image, 1, SealDurability::Flush);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().status, PersistStatus::SegmentMismatch);
+  EXPECT_EQ(manifest_size(dir), 5u); // untouched
+
+  // Against the manifest as it now stands the same publish goes through.
+  auto now = PersistDirectory::open(dir.string());
+  ASSERT_TRUE(now.has_value());
+  ASSERT_TRUE(
+      rr::publish_compacted(dir.string(), now->entries(), image, 1, SealDurability::Publish)
+          .has_value());
+  EXPECT_EQ(manifest_size(dir), 1u);
 }

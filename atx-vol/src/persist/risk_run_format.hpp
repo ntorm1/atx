@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -468,13 +469,30 @@ inline constexpr std::uint64_t kFingerprint =
 // segment order (PersistDirectory keeps entries sorted by key).
 [[nodiscard]] std::string segment_key(std::uint64_t ordinal);
 
+// ── Publication (risk_run_archive_publish.cpp) ───────────────────────────────
+
+// Publish `image` (a complete RiskRun segment) as the new generation of `key` in
+// `dir` (created if absent), PersistDirectory's protocol at `durability`: under
+// `dir/persist.lock`, the segment under a fresh canonical name, then the manifest.
+// Busy when a live writer holds the lock past its timeout; IoError on an OS failure.
+[[nodiscard]] PersistOutcome publish_segment(std::string_view dir, std::string_view key,
+                                             std::span<const std::byte> image,
+                                             std::uint32_t records, SealDurability durability);
+
+// Compaction's publish: the merged `image` under a fresh name, then — under the lock,
+// after re-reading the manifest — a manifest naming only it, refused (SegmentMismatch)
+// when the manifest no longer equals `seen` (seq and file CRC of every entry).
+[[nodiscard]] PersistOutcome publish_compacted(std::string_view dir,
+                                               std::span<const PersistManifestEntry> seen,
+                                               std::span<const std::byte> image,
+                                               std::uint32_t records, SealDurability durability);
+
 // ── Reader ────────────────────────────────────────────────────────────────────
 
 // Everything a RiskRun directory holds, validated at open (every segment's framing,
 // schema, structure and the book identity across segments; column payloads are
 // CRC-verified lazily on first touch under Lazy). RiskRunArchive is a thin facade
-// over this; the extended reads (owned materializations, VaR results, per-step
-// metadata) are the additive API the archive does not (yet) publish.
+// over this; the tool and the white-box tests use the segment-level accessors.
 class Reader {
 public:
   [[nodiscard]] static PersistResult<Reader> open(std::string_view dir,
@@ -493,6 +511,8 @@ public:
   [[nodiscard]] const PersistFile &segment(std::size_t segment) const noexcept;
   // nullptr past the end.
   [[nodiscard]] const RiskRunStep *step(std::size_t step) const noexcept;
+  // std::nullopt past the end.
+  [[nodiscard]] std::optional<RiskRunStepInfo> step_info(std::size_t step) const noexcept;
   [[nodiscard]] std::span<const RiskRunLeg> legs() const noexcept;
   [[nodiscard]] std::span<const std::uint64_t> leg_ids() const noexcept;
   [[nodiscard]] std::span<const RiskRunUnique> unique() const noexcept;

@@ -113,7 +113,28 @@ with matching ids / uids / kinds — anything else is `InvalidArgument`. `append
 `HistoricalVarResult` against the last step (or none). A segment is sealed when a NEW step would
 start while the staged bytes have reached `segment_bytes`, and on `finish()`; a writer destroyed
 without `finish()` publishes nothing it had not sealed. `create` refuses a directory that already
-holds a run (`AlreadyExists`) and `segment_bytes == 0`.
+holds a run (`AlreadyExists`), `segment_bytes == 0` and an unknown `SealDurability`.
+
+### 2.1a Publication and durability
+
+A seal publishes with PersistDirectory's protocol (`src/persist/risk_run_archive_publish.cpp`):
+under `<dir>/persist.lock`, read the manifest, write the segment under a fresh canonical name
+(`seg-<seq12>.atxrr`, seq = max + 1, skipping any crash orphan on disk), then replace the
+manifest. Both files go through a unique temp beside the target and a rename, so a reader never
+sees a partial file, and a crash between them leaves an unreferenced orphan, never a dangling
+entry. The manifest image is byte-compatible with PersistDirectory's (manifest kind and
+fingerprint, one Pod section of `PersistManifestEntry` rows sorted by key, header ts range = the
+union of the rows'), built in this lane because `PersistDirectory::publish` always flushes and
+can add or replace only one key.
+
+| `SealDurability` | per file | survives |
+|---|---|---|
+| `Publish` (default for `segment_bytes` seals) | temp, write, rename | a process crash; a power loss can tear a file, then `open` refuses it by CRC |
+| `Flush` (default for `finish()` and compaction) | temp, write, FlushFileBuffers, rename | a power loss, for that segment and the manifest |
+
+A `Flush` seal does not reach back to earlier `Publish` segments: they are durable once the OS
+has written them back. A run whose every segment must survive a power loss sets
+`seal_durability = Flush`. The writer starts no thread.
 
 ### 2.2 Sections (all `type_major` 1, all required, in this file order)
 
@@ -186,13 +207,16 @@ column reads as empty. `risk_run::Reader` (private) adds owned `materialize_fram
 
 ### 2.4 Compaction and the cold tier
 
-`compact_risk_run(dir, codec, level)` reads the run in Read mode at Full verification, concatenates
+`compact_risk_run(dir, codec, level[, durability])` (the 3-argument form is `Flush`) reads the run
+in Read mode at Full verification, concatenates
 every column section's bytes in segment order (no value is re-encoded: bit-exact), re-bases the
 step (`frame_index`, `explain_row`, bucket begins) and VaR (`frame_begin`, `point_begin`) indices,
 writes ONE segment (ordinal 0) — with `PersistCodec::Zstd` every section is zstd-coded at `level`
 in [1, 19] after a byte shuffle by element stride — and, under `<dir>/persist.lock`, refuses if the
-manifest changed since it was read (`SegmentMismatch`), publishes the merged file under a fresh
-name and replaces the manifest with its single entry. The superseded segment files stay on disk
+manifest changed since it was read (`SegmentMismatch`: every entry's seq and file CRC are
+compared), publishes the merged file under a fresh name and replaces the manifest with its
+single entry (§2.1a; `PersistDirectory::replace_all` was deferred, so this is the compaction
+contract). The superseded segment files stay on disk
 (they may be mapped; offline gc removes them). Compressed sections are decoded and CRC-verified
 at open by the container, so nothing allocates after open on either tier.
 

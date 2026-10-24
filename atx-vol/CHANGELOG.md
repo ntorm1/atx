@@ -14,8 +14,13 @@ builds the view over the same bytes as the partition, so history views are bit-e
 construction; `SurfaceTimelineStore::build_from_surface_db` merges SurfaceDb partitions into period
 generations and `collect()` feeds `project_series` (bit-equal to owned surfaces). `RiskRunWriter`
 records RiskFrame / ExplainResult / HistoricalVarResult steps into immutable `seg-*.atxrr`
-segments behind a manifest; `RiskRunArchive` reopens them zero-copy; `compact_risk_run` merges
-bit-exactly, optionally into a zstd + byte-shuffle cold tier. Schema fingerprints refuse any layout
+segments behind a manifest, each seal at a `SealDurability` (`RiskRunOptions::seal_durability`,
+default `Publish` = temp + rename, no flush; `finish_durability`, default `Flush` = Publish +
+FlushFileBuffers). `RiskRunArchive` reopens them zero-copy and adds `step_info` /
+`materialize_frame` / `materialize_explain` / `n_var` / `var` (owned, validated copies);
+`compact_risk_run` merges bit-exactly, optionally into a zstd + byte-shuffle cold tier, refusing
+(`SegmentMismatch`) when a segment was published meanwhile (an overload takes the durability; the
+3-argument form is `Flush`). Schema fingerprints refuse any layout
 drift (RiskRun pinned `0xc881a1e8c5e87255`; an `ExplainTotals` / `FrameCounters` change is a compile
 error in `src/persist/risk_run_format.hpp` first). Tool `atx-vol-history-store` (timeline build |
 inspect | bench, riskrun inspect | bench). Docs: `docs/persist-history.md`,

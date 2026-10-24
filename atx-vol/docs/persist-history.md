@@ -7,10 +7,11 @@ little-endian, CRC-32C framed, published atomically and never rewritten in place
 
 ## Surface timeline — uid-major fitted-surface history
 
-`SurfaceTimelineStore` keeps one `YYYY-MM.atxstl` period file per UTC month under a manifest,
-each holding VERBATIM ATXVSA2 surface records behind a `(uid, ts)` index. One uid's history over
-N snapshots is two binary searches plus N zero-copy views instead of N SurfaceDb point reads, and
-every view is bit-exact to the partition's own view (same bytes, same `create_over_record`).
+`SurfaceTimelineStore` keeps one period file per UTC month (`<YYYY-MM>-g<seq12>.atxstl`) under a
+manifest, each holding VERBATIM ATXVSA2 surface records behind a `(uid, ts)` index. One uid's
+history over N snapshots is two binary searches plus N zero-copy views instead of N SurfaceDb
+point reads, and every view is bit-exact to the partition's own view (same bytes, same
+`create_over_record`).
 
 ```cpp
 // Fold SurfaceDb partitions (keys YYYY-MM-DDTHHMM, one market instant each) into the store.
@@ -26,12 +27,23 @@ project_series(spec, refs, ts, policy, out);   // == the same call over owned su
 Rebuilding a period merges its previous generation (a re-written partition replaces its snapshot);
 a corrupted record is refused on `view()` (`SectionChecksum`), never served.
 
+Accepted deviations from the design (ruling 2026-10-24):
+
+- **Month-only period routing.** The frozen API has no period knob: a record's period is the UTC
+  calendar month of its instant.
+- **`SurfaceTimeline::uids()` is served from an owned copy** of the uid directory. The frozen
+  return type is `std::span<const std::uint32_t>`, and the on-disk directory rows are 24-byte
+  records (uid, entry range, ticker), not a bare u32 column.
+- **`TimelineSource.ts_ns == 0` means "each record's own instant"** (its
+  `PricingContext::now_ts_ns`); a nonzero `ts_ns` stamps every record of that source.
+
 ## Risk run — recorded frames, explains and VaR
 
 `RiskRunWriter` records a `RiskStream` (or any producer of `RiskFrame` / `ExplainResult` /
-`HistoricalVarResult`) into a directory of immutable 64 MiB segments; `RiskRunArchive` reopens it
-with zero-copy column spans; `compact_risk_run` merges the segments bit-exactly, optionally into
-the zstd + byte-shuffle cold tier.
+`HistoricalVarResult`) into a directory of immutable segments (sealed at `segment_bytes`, 64 MiB
+by default); `RiskRunArchive` reopens it with zero-copy column spans plus owned
+materializations; `compact_risk_run` merges the segments bit-exactly, optionally into the
+zstd + byte-shuffle cold tier.
 
 ```cpp
 RiskStream stream(book, RiskKernel::family());
@@ -46,7 +58,45 @@ w.finish().value();
 auto run = RiskRunArchive::open(dir).value();
 std::span<const double> pnl = run.explain(RiskExplainColumn::PnlTotal, 5);  // borrowed
 const ExplainTotals *t = run.totals(5);                                     // bit-equal to live
+RiskRunStepInfo info = run.step_info(5).value();     // instants, needs, counters, segment
+ExplainResult e = run.materialize_explain(5).value(); // owned deep copy, buckets included
+RiskFrame f = run.materialize_frame(5).value();
+for (std::size_t i = 0; i < run.n_var(); ++i) HistoricalVarResult v = run.var(i).value();
 ```
+
+### Seal durability
+
+`RiskRunOptions::seal_durability` (seals triggered by `segment_bytes`, default `Publish`) and
+`finish_durability` (the last seal, default `Flush`) choose how durable a seal is when it
+returns. Both write a unique temp beside the target and rename it, the segment first, then the
+manifest, under the directory's writer lock. A reader never sees a partial file, and a crash in
+between leaves an orphan, never a dangling entry.
+
+- `Publish` — no flush. A process crash loses nothing that was sealed. A power loss before the
+  OS writes the pages back can tear a segment, and `open` then refuses it by CRC.
+- `Flush` — FlushFileBuffers on the segment and the manifest before their renames: that seal
+  survives a power loss. It does not reach back to earlier `Publish` segments (durable once
+  written back by the OS); set `seal_durability = Flush` when every segment must be.
+
+The writer never starts a thread. A caller that wants a `Flush` seal off its hot path runs the
+appends (or `finish()`) on its own thread.
+
+### Compaction contract
+
+`compact_risk_run(dir, codec, level[, durability])` (3-argument form = `Flush`) reads the run
+fully verified into memory (no mapping is held on files the manifest stops naming), publishes the
+merged segment under a fresh name, then, under the writer lock, re-reads the manifest. It replaces
+the manifest with one naming only the merged segment, or refuses with `SegmentMismatch` when
+anything was published since the run was read (every entry's seq and file CRC are compared). The
+manifest write lives in this lane (`risk_run_archive_publish.cpp`, byte-compatible with
+PersistDirectory's) because `PersistDirectory::publish` can add or replace only one key;
+`PersistDirectory::replace_all` was deferred (ruling 2026-10-24). Superseded files stay on disk
+(a reader may still map them); removing them is offline gc.
+
+Accepted deviation: **the cold tier decodes at open, serially.** P1's container decodes every
+zstd section at open on one thread: 253–335 ms for ~119 MB of compressed sections (the full
+64-step run; 385–556 ms on a busier host). Spans are then allocation-free. A per-section fan-out
+in P1's decoder is the suggested follow-up.
 
 ## Tool: `atx-vol-history-store`
 
@@ -55,13 +105,16 @@ atx-vol-history-store timeline build --db <SurfaceDb root> --out <store root> [-
 atx-vol-history-store timeline inspect <store root>
 atx-vol-history-store timeline bench --out C:\atx-cache\persist\p2 [--uids 100 --days 22 --buckets 11]
 atx-vol-history-store riskrun inspect <run dir>
-atx-vol-history-store riskrun bench --out C:\atx-cache\persist\p2 [--legs 10000 --steps 64]
+atx-vol-history-store riskrun bench --out C:\atx-cache\persist\p2 [--legs 10000 --steps 64 --segment-mib 64]
 ```
 
 `--out` is required for the bench verbs (no absolute default is compiled in; the umbrella
 path-literal guard forbids one outside `C:\atx-data`), and outputs under `C:\atx-data` are refused.
-Bench JSON: `schema_version`, `host_cpu_busy` (system CPU busy fraction over the run), `preset` (the
-label passed with `--preset`).
+`riskrun inspect` and the bench read runs through the public API only (`RiskRunArchive`,
+`PersistDirectory`, `PersistFile`). Bench JSON (schema 2): `schema_version`, `host_cpu_busy` (system
+CPU busy fraction over the run), `preset` (the label passed with `--preset`), and for risk runs
+`seal_ms_publish` / `seal_ms_flush` (the same run recorded with each streaming durability) plus
+`seal_split` (framing, Publish write + rename, Flush publish of one segment image).
 
 ## Measured (lane evidence, `vol-rel`, i7-1260P, host shared with build lanes)
 
@@ -77,13 +130,29 @@ Unqualified lane numbers — the perf pins come from `vol-rel-avx2` at integrati
 | `view()` incl. record CRC | eSSVI p50 3.2 us / p99 14.1 us; ConvexDense p50 3.6 us / p99 16.8 us (target <= 3 us p50) |
 | `project_series` over 242 refs, timeline / owned | eSSVI 15.5 / 15.1 ms = 1.02x; ConvexDense 14.1 / 12.8 ms = 1.11x (target <= 1.1x); bit-equal both |
 
-| RiskRun (synthetic 10,260-leg book, 64 steps; host 63-71% busy) | |
+| RiskRun (synthetic 10,260-leg book, 64 steps, 64 MiB segments; host 45–48% busy) | |
 |---|---|
 | bytes per step | 3.10 MB (frame 1.37 + explain 1.71 + index) |
-| append (frame + explain) | p50 0.47 ms, p99 11.2 ms (target <= 1 ms); first append 23 ms (one-off page pre-fault) |
-| seal of a ~67 MB segment | 165-186 ms = build 65 ms + write/FlushFileBuffers 135 ms (target <= 80 ms: missed, see report) |
-| reopen (3 segments, Lazy) / column span | 2.9 ms / first touch 0.9 ms (column CRC), then p50 28 ns |
-| compaction, 3 segments -> 1 | none 0.85 s; zstd-1+shuffle 1.15 s, 1.66x; zstd-3+shuffle 1.46 s, 1.66x |
+| append (frame + explain) | p50 0.38–0.41 ms, p99 9.4 ms (target <= 1 ms); first append 17 ms (one-off page pre-fault) |
+| reopen (3 segments, Lazy) / column span | 2.0–2.4 ms / first touch 0.6–0.9 ms (column CRC), then p50 19–22 ns |
+| compaction, 3 segments -> 1 | none 0.55–0.78 s; zstd-1+shuffle 0.64–0.89 s, 1.66x; zstd-3+shuffle 0.98–1.18 s, 1.66x |
 | zstd without / with byte shuffle (synthetic values) | zstd-1 1.13x / 1.66x; zstd-3 1.13x / 1.66x |
-| cold-tier reopen (decode 119 MB of zstd at open) | 385-556 ms |
-| 11-state RiskStream, synthetic SpiderRock day, 1,620 legs | step p50 18.8 ms, recording p50 0.10 ms; reopened totals bit-equal; zstd-1 1.71x, zstd-3 1.72x |
+| cold-tier reopen (decode ~119 MB of zstd at open, serial) | 253–335 ms |
+| 11-state RiskStream, synthetic SpiderRock day, 1,620 legs | step p50 14.1–14.8 ms, recording p50 0.06–0.08 ms; reopened totals bit-equal; zstd-1 1.71x, zstd-3 1.72x |
+
+Seal latency by durability and segment size. `seal_ms_*` is the append call that sealed; the
+split frames one segment image with P1's `build_persist_file`, then writes it both ways.
+
+| segment_bytes (segment) | Publish seals | Flush seals | split: framing / write + rename / Flush publish |
+|---|---|---|---|
+| 64 MiB (~70 MB), run A | 115, 113 ms | 127, 125 ms | 46 / 80 / 82 ms |
+| 64 MiB (~70 MB), run B | 135, 134 ms | 140, 135 ms | 66 / 81 / 97 ms |
+| 32 MiB (~36 MB) | 77–113 ms, median 90 | 74–92 ms, median 86 | 22 / 32 / 41 ms |
+| 16 MiB (~18 MB) | 23–48 ms, median 29 | 34–62 ms, median 36.5 | 10 / 7 / 18 ms |
+
+The 80 ms target applies to the Publish seal. At the 64 MiB default it is not met on this host:
+the floor is P1's framing (46–66 ms for 70 MB: a copy plus two CRC passes) plus the OS's cached
+write of a new 70 MB file (~80 ms, i.e. ~0.9 GB/s; Python's raw `WriteFile` of 70 MB measures
+78–92 ms on the same disk). The flush adds little on this NVMe (Flush seals 0–12 ms slower). The
+cached write is non-linear (7 ms for 18 MB, 32 ms for 36 MB, 80 ms for 70 MB), so the target holds
+at 16 MiB segments (median 29 ms). See the lane report for the ruling this needs.

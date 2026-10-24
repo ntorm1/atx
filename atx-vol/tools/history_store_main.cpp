@@ -9,7 +9,7 @@
 //                                          [--buckets 11] [--json <file>]
 //   atx-vol-history-store riskrun  inspect <run dir>
 //   atx-vol-history-store riskrun  bench   --out <dir> [--legs 10000] [--steps 64]
-//                                          [--json <file>]
+//                                          [--segment-mib 64] [--json <file>]
 //
 // Bench outputs are written under --out (required; the lane used C:\atx-cache\persist\p2);
 // a path under C:\atx-data is refused (that store is read-only). Every bench JSON carries
@@ -59,7 +59,7 @@
 #include "atx/vol/api/risk/theo_contract.hpp"
 #include "atx/vol/api/storage/surface_archive.hpp"
 #include "atx/vol/api/storage/surface_db.hpp"
-#include "persist/risk_run_format.hpp"
+#include "persist/risk_run_format.hpp" // kFrameMembers / kExplainMembers (synthetic fill)
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -77,7 +77,7 @@ namespace fs = std::filesystem;
 using namespace atx::vol; // NOLINT(google-build-using-namespace): tool main
 using Clock = std::chrono::steady_clock;
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2; // 2: seal durability split
 
 [[nodiscard]] double seconds_since(Clock::time_point t0) {
   return std::chrono::duration<double>(Clock::now() - t0).count();
@@ -646,31 +646,70 @@ struct TimelineReport {
 // riskrun
 // ═════════════════════════════════════════════════════════════════════════════
 
+// A run's segment files, opened (Read, Full) through the container's public API.
+[[nodiscard]] std::optional<std::vector<PersistFile>> open_segments(const fs::path &dir) {
+  auto d = PersistDirectory::open(dir.string());
+  if (!d) {
+    (void)fail("manifest", d.error());
+    return std::nullopt;
+  }
+  std::vector<PersistFile> out;
+  for (const PersistManifestEntry &e : d->entries()) {
+    auto f = PersistFile::open(d->path(e), PersistKind::RiskRun, risk_run_fingerprint(),
+                               PersistOpenOptions{false, PersistVerify::Full, false, 0});
+    if (!f) {
+      (void)fail("segment", f.error());
+      return std::nullopt;
+    }
+    out.push_back(std::move(*f));
+  }
+  return out;
+}
+
+// Per segment, from the public step metadata: first step, steps, frames, explain rows.
+struct SegmentSummary {
+  std::uint64_t first_step{std::numeric_limits<std::uint64_t>::max()};
+  std::uint64_t steps{0};
+  std::uint64_t frames{0};
+  std::uint64_t rows{0};
+};
+
 [[nodiscard]] int riskrun_inspect(const Args &a) {
   if (a.positional.empty()) {
     std::fprintf(stderr, "usage: riskrun inspect <run dir>\n");
     return 2;
   }
-  auto r = risk_run::Reader::open(a.positional.front());
-  if (!r) return fail("open run", r.error());
-  std::printf("RiskRun %s: steps %zu, segments %zu, var results %zu, legs %zu, book fp %016llx, "
+  const fs::path dir{a.positional.front()};
+  auto run = RiskRunArchive::open(dir.string());
+  if (!run) return fail("open run", run.error());
+  auto files = open_segments(dir);
+  if (!files) return 1;
+  std::vector<SegmentSummary> seg(files->size());
+  for (std::size_t k = 0; k < run->n_steps(); ++k) {
+    const std::optional<RiskRunStepInfo> info = run->step_info(k);
+    if (!info || info->segment >= seg.size()) return 1;
+    SegmentSummary &g = seg[info->segment];
+    g.first_step = std::min<std::uint64_t>(g.first_step, info->step);
+    ++g.steps;
+    g.frames += info->has_frame ? 1u : 0u;
+    g.rows += info->explain_rows;
+  }
+  std::printf("RiskRun %s: steps %zu, segments %zu, var results %zu, legs %zu, "
               "schema fingerprint %016llx\n",
-              a.positional.front().c_str(), r->n_steps(), r->n_segments(), r->n_var(),
-              r->legs().size(), static_cast<unsigned long long>(r->meta(0).book_fingerprint),
-              static_cast<unsigned long long>(risk_run_fingerprint()));
+              dir.string().c_str(), run->n_steps(), files->size(), run->n_var(),
+              run->leg_ids().size(), static_cast<unsigned long long>(risk_run_fingerprint()));
   std::printf("%-4s %-10s %-10s %8s %8s %12s %-6s\n", "seg", "first", "steps", "frames", "rows",
               "bytes", "codec");
-  for (std::size_t s = 0; s < r->n_segments(); ++s) {
-    const risk_run::RiskRunMeta &m = r->meta(s);
-    const PersistSectionEntry *price =
-        r->segment(s).entry(risk_run::type_of(risk_run::Section::FrameF64) +
-                            static_cast<std::uint32_t>(RiskFrameColumn::Price));
-    using ull = unsigned long long;
-    std::printf("%-4zu %-10llu %-10llu %8llu %8llu %12llu %-6s\n", s,
-                static_cast<ull>(m.first_step), static_cast<ull>(m.n_steps),
-                static_cast<ull>(m.n_frames), static_cast<ull>(m.n_explain_rows),
-                static_cast<ull>(r->segment(s).header().file_size),
-                price != nullptr && price->codec != 0u ? "zstd" : "none");
+  using ull = unsigned long long;
+  for (std::size_t i = 0; i < files->size(); ++i) {
+    const PersistFile &f = (*files)[i];
+    const bool zstd = std::any_of(f.sections().begin(), f.sections().end(),
+                                  [](const PersistSectionEntry &e) { return e.codec != 0u; });
+    const SegmentSummary &g = seg[i];
+    std::printf("%-4zu %-10llu %-10llu %8llu %8llu %12llu %-6s\n", i,
+                static_cast<ull>(g.steps == 0u ? 0u : g.first_step), static_cast<ull>(g.steps),
+                static_cast<ull>(g.frames), static_cast<ull>(g.rows),
+                static_cast<ull>(f.header().file_size), zstd ? "zstd" : "none");
   }
   return 0;
 }
@@ -775,12 +814,14 @@ reframe_inputs(const PersistFile &f, PersistCodec codec, PersistFilter filter, i
 
 struct SealSplit {
   std::uint64_t bytes{0};
-  double build_ms{0.0};
-  double publish_ms{0.0};
+  double build_ms{0.0};   // build_persist_file: P1's framing (copy + section / file CRCs)
+  double write_ms{0.0};   // Publish: temp + write + rename, no flush
+  double publish_ms{0.0}; // Flush: publish_persist_file (temp + write + flush + rename)
 };
 
-// Re-frame one segment's sections (uncompressed) and publish the image to a scratch
-// path: what a seal costs, split into its in-memory and its durable halves.
+// Re-frame one segment's sections (uncompressed) and write the image to a scratch
+// path both ways: what a seal costs, split into the framing, the Publish write
+// (through the OS cache) and the durable Flush publish.
 [[nodiscard]] SealSplit seal_split(const PersistFile &f, const fs::path &scratch) {
   SealSplit s;
   auto in = reframe_inputs(f, PersistCodec::None, PersistFilter::None, 3);
@@ -794,6 +835,23 @@ struct SealSplit {
   if (!image) return s;
   s.bytes = image->size();
   std::error_code ec;
+  fs::remove(scratch, ec);
+  const fs::path tmp{scratch.string() + ".tmp-bench"};
+  const auto tw = Clock::now();
+  bool wrote = false;
+  {
+    std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
+    // SAFETY: std::byte -> char view for ostream::write; char may alias any object.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    os.write(reinterpret_cast<const char *>(image->data()),
+             static_cast<std::streamsize>(image->size()));
+    os.close();
+    wrote = !os.fail();
+  }
+  if (wrote) fs::rename(tmp, scratch, ec);
+  s.write_ms = wrote && !ec ? std::chrono::duration<double, std::milli>(Clock::now() - tw).count()
+                            : -1.0;
+  fs::remove(tmp, ec);
   fs::remove(scratch, ec);
   const auto t1 = Clock::now();
   const bool ok = publish_persist_file(scratch.string(), *image).has_value();
@@ -813,10 +871,15 @@ struct RunMeasure {
 
 [[nodiscard]] std::optional<RunMeasure> write_synth_run(const fs::path &dir,
                                                          const PreparedRiskBook &p,
-                                                         std::size_t steps) {
+                                                         std::size_t steps,
+                                                         std::uint64_t segment_bytes,
+                                                         SealDurability seal) {
   std::error_code ec;
   fs::remove_all(dir, ec);
-  auto w = RiskRunWriter::create(dir.string(), p, RiskRunOptions{});
+  RiskRunOptions options;
+  options.segment_bytes = segment_bytes;
+  options.seal_durability = seal; // finish() stays Flush (the default)
+  auto w = RiskRunWriter::create(dir.string(), p, options);
   if (!w) return std::nullopt;
   RunMeasure m;
   RiskFrame frame;
@@ -1070,24 +1133,17 @@ struct ShuffleSplit {
 
 [[nodiscard]] std::optional<ShuffleSplit> shuffle_split_bench(const fs::path &out,
                                                               const fs::path &run) {
-  const PersistOpenOptions read_full{false, PersistVerify::Full, false, 0};
-  auto merged = risk_run::Reader::open((out / "riskrun-bench-none").string(), read_full);
-  if (!merged) {
-    (void)fail("reader", merged.error());
-    return std::nullopt;
-  }
+  auto merged = open_segments(out / "riskrun-bench-none");
+  if (!merged || merged->empty()) return std::nullopt;
   ShuffleSplit s;
-  const PersistFile &f = merged->segment(0);
+  const PersistFile &f = merged->front();
   s.bytes[0] = reframed_size(f, 1, PersistFilter::None);
   s.bytes[1] = reframed_size(f, 1, PersistFilter::ByteShuffle);
   s.bytes[2] = reframed_size(f, 3, PersistFilter::None);
   s.bytes[3] = reframed_size(f, 3, PersistFilter::ByteShuffle);
-  auto first = risk_run::Reader::open(run.string(), read_full);
-  if (!first) {
-    (void)fail("reader", first.error());
-    return std::nullopt;
-  }
-  s.split = seal_split(first->segment(0), out / "seal-split.atxrr");
+  auto first = open_segments(run);
+  if (!first || first->empty()) return std::nullopt;
+  s.split = seal_split(first->front(), out / "seal-split.atxrr");
   return s;
 }
 
@@ -1095,7 +1151,9 @@ struct RiskRunReport {
   std::size_t legs{0};
   std::size_t unique{0};
   std::size_t steps{0};
-  RunMeasure run;
+  std::uint64_t segment_mib{64};
+  RunMeasure run;       // streaming seals Publish (the default), finish() Flush
+  RunMeasure run_flush; // every seal Flush
   ReadMeasure read;
   std::vector<CompactMeasure> compact;
   ShuffleSplit shuffle;
@@ -1140,6 +1198,16 @@ struct RiskRunReport {
   return json;
 }
 
+[[nodiscard]] std::string ms_list(const std::vector<double> &v) {
+  std::string out;
+  std::array<char, 32> b{};
+  for (std::size_t i = 0; i < v.size(); ++i) {
+    std::snprintf(b.data(), b.size(), "%s%.2f", i == 0 ? "" : ", ", v[i]);
+    out += b.data();
+  }
+  return out;
+}
+
 [[nodiscard]] std::string riskrun_json(RiskRunReport &r, const std::string &preset) {
   std::string json = "{\n  \"schema_version\": " + std::to_string(kSchemaVersion) +
                      ",\n  \"kind\": \"persist-history-riskrun-synthetic\",\n";
@@ -1147,25 +1215,25 @@ struct RiskRunReport {
   std::snprintf(
       b.data(), b.size(),
       "  \"preset\": \"%s\",\n  \"host_cpu_busy\": %.3f,\n  \"legs\": %zu, \"unique\": %zu, "
-      "\"steps\": %zu,\n  \"append_ms_p50\": %.3f, \"append_ms_p99\": %.3f,\n  \"seal_ms\": [",
-      preset.c_str(), r.busy, r.legs, r.unique, r.steps, quantile(r.run.append_ms, 0.5),
+      "\"steps\": %zu, \"segment_mib\": %llu,\n  \"append_ms_p50\": %.3f, "
+      "\"append_ms_p99\": %.3f,\n  \"seal_ms_publish\": [",
+      preset.c_str(), r.busy, r.legs, r.unique, r.steps,
+      static_cast<unsigned long long>(r.segment_mib), quantile(r.run.append_ms, 0.5),
       quantile(r.run.append_ms, 0.99));
   json += b.data();
-  for (std::size_t i = 0; i < r.run.seal_ms.size(); ++i) {
-    std::snprintf(b.data(), b.size(), "%s%.2f", i == 0 ? "" : ", ", r.run.seal_ms[i]);
-    json += b.data();
-  }
+  json += ms_list(r.run.seal_ms) + "], \"seal_ms_flush\": [" + ms_list(r.run_flush.seal_ms);
   const SealSplit &split = r.shuffle.split;
   std::snprintf(
       b.data(), b.size(),
-      "], \"finish_ms\": %.2f, \"first_append_ms\": %.2f,\n"
-      "  \"seal_split\": {\"segment_bytes\": %llu, "
-      "\"build_ms\": %.2f, \"publish_fsync_ms\": %.2f},\n"
+      "], \"finish_ms\": %.2f, \"finish_ms_flush_run\": %.2f, \"first_append_ms\": %.2f,\n"
+      "  \"seal_split\": {\"segment_bytes\": %llu, \"build_ms\": %.2f, "
+      "\"write_rename_ms\": %.2f, \"publish_fsync_ms\": %.2f},\n"
       "  \"segments\": %zu, \"run_bytes\": %llu, \"bytes_per_step\": %.0f,\n"
       "  \"reopen_ms_p50\": %.3f, \"column_first_touch_us\": %.1f, \"column_span_ns_p50\": %.1f,\n"
       "  \"compaction\": [",
-      r.run.finish_ms, r.run.first_append_ms, static_cast<unsigned long long>(split.bytes),
-      split.build_ms, split.publish_ms, r.run.segments,
+      r.run.finish_ms, r.run_flush.finish_ms, r.run.first_append_ms,
+      static_cast<unsigned long long>(split.bytes), split.build_ms, split.write_ms,
+      split.publish_ms, r.run.segments,
       static_cast<unsigned long long>(r.run.bytes),
       static_cast<double>(r.run.bytes) / static_cast<double>(r.steps),
       quantile(r.read.reopen_ms, 0.5), r.read.first_touch_us, quantile(r.read.span_ns, 0.5));
@@ -1183,6 +1251,8 @@ struct RiskRunReport {
   fs::create_directories(out, ec);
   RiskRunReport r;
   r.steps = static_cast<std::size_t>(a.num("steps", 64));
+  r.segment_mib = static_cast<std::uint64_t>(std::max(1LL, a.num("segment-mib", 64)));
+  const std::uint64_t segment_bytes = r.segment_mib << 20;
   const CpuSample cpu0 = cpu_sample();
   const RiskBook book = synth_book(static_cast<std::size_t>(a.num("legs", 10000)));
   auto prepared = PreparedRiskBook::create(book);
@@ -1190,12 +1260,15 @@ struct RiskRunReport {
   r.legs = book.n_option_legs() + book.n_share_legs();
   r.unique = prepared->n_unique();
   const fs::path dir = out / "riskrun-bench-run";
-  auto run = write_synth_run(dir, *prepared, r.steps);
-  if (!run) {
+  auto run = write_synth_run(dir, *prepared, r.steps, segment_bytes, SealDurability::Publish);
+  auto run_flush = write_synth_run(out / "riskrun-bench-run-flush", *prepared, r.steps,
+                                   segment_bytes, SealDurability::Flush);
+  if (!run || !run_flush) {
     std::fprintf(stderr, "error: synthetic run failed\n");
     return 1;
   }
   r.run = std::move(*run);
+  r.run_flush = std::move(*run_flush);
   auto read = read_bench(dir, r.steps, r.sink);
   if (!read) return 1;
   r.read = std::move(*read);
