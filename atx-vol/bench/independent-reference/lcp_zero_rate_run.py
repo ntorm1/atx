@@ -12,7 +12,7 @@ import sys
 
 from greek_compare import read_json, require, verify_pilot
 from greek_study import digest
-from lcp_zero_rate_control import MODE, MODEL, fixed_requests, summarize_control
+from lcp_zero_rate_control import MODE, RETAINED_MODE, MODEL, fixed_requests, summarize_control
 
 
 HERE = Path(__file__).resolve().parent
@@ -25,6 +25,8 @@ BASELINE_HASHES = {
 }
 PLAN = "9641ef8d"
 PRIMITIVE = "17ab5fbfd177d728c2abe2d6e2d822a9e802571f"
+RETAINED_PRIMITIVE = "db743583e442e30d78f2406ea64cbb9c2fa90062"
+RETAINED_PLAN = "680db3de"
 FROZEN_FILES = (("lcp_correction.py", PRIMITIVE), ("pde_reference.py", "5df44c59"),
                 ("greek_reference.py", "5df44c59"),
                 ("zero-rate-lcp-correction-plan-v1.md", PLAN))
@@ -34,6 +36,25 @@ SOURCES = (
     "greek_compare.py", "zero-rate-lcp-correction-plan-v1.md", "greek-plan-v2.md",
     "test_lcp_zero_rate_control.py", "test_lcp_stage_adapter.py", "test_lcp_zero_rate_run.py",
 )
+RETAINED_SOURCES = SOURCES + (
+    "lcp_policy_retention.py", "lcp_observe.py", "lcp-policy-retention-plan-v1.md",
+    "lcp-retained-zero-rate-twelve-plan-v1.md", "test_lcp_retained_pde.py",
+)
+
+
+def mode_sources(mode):
+    require(type(mode) is str and mode in (MODE, RETAINED_MODE), "Explicit approved LCP mode")
+    return SOURCES if mode == MODE else RETAINED_SOURCES
+
+
+def frozen_files(mode):
+    mode_sources(mode)
+    return FROZEN_FILES if mode == MODE else FROZEN_FILES + (
+        ("lcp_policy_retention.py", RETAINED_PRIMITIVE),
+        ("lcp_observe.py", "5c163bea621afd1e0257fa2df7f9c354b9def20b"),
+        ("lcp-policy-retention-plan-v1.md", "e8060935"),
+        ("lcp-retained-zero-rate-twelve-plan-v1.md", RETAINED_PLAN),
+    )
 
 
 def git(*args):
@@ -62,16 +83,16 @@ def baseline(directory):
     return corpus, original, decisions[MODEL["id"]]
 
 
-def source_snapshot(output):
+def source_snapshot(output, mode=MODE):
     require(not git("status", "--porcelain").strip(), "Freeze clean source before execution")
-    for name, revision in FROZEN_FILES:
+    for name, revision in frozen_files(mode):
         require(same_text((HERE/name).read_bytes(), git("show", revision+":"+PREFIX+name)),
                 "Reviewed primitive/default/declaration source unchanged")
     output.mkdir(parents=True, exist_ok=False)
     sources = output/"sources"
     sources.mkdir()
     hashes = {}
-    for name in SOURCES:
+    for name in mode_sources(mode):
         (sources/name).write_bytes((HERE/name).read_bytes())
         hashes[PREFIX+name] = digest(sources/name)
     return git("rev-parse", "HEAD").decode().strip(), hashes
@@ -88,14 +109,14 @@ def copy_baseline(source, output):
         (output/"sources"/name).write_bytes((source/"sources"/name).read_bytes())
 
 
-def execute_requests(output, stream):
+def execute_requests(output, stream, mode=MODE):
     from lcp_stage_adapter import StageCollector, private_reference
     import numpy as np
     rows = []
-    for row in fixed_requests():
+    for row in fixed_requests(mode):
         print("starting", row["scheme"], row["label"], flush=True)
-        collector = StageCollector()
-        solve = private_reference(MODE, collector)
+        collector = StageCollector(mode)
+        solve = private_reference(mode, collector)
         try:
             result = solve(row["model"], scheme=row["scheme"], **row["options"])
             row.update(status="computed", result=result)
@@ -120,30 +141,34 @@ def execute_requests(output, stream):
 
 
 def run(output, historical, mode):
-    require(mode == MODE, "Only the explicit approved correction mode is executable here")
+    mode_sources(mode)
     # Set before the private module or the collector imports NumPy/SciPy.
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[name] = "1"
     corpus, original, old_decisions = baseline(historical)
-    head, hashes = source_snapshot(output)
+    head, hashes = source_snapshot(output, mode)
     copy_baseline(historical, output/"historical-v2")
     import numpy
     import scipy
-    manifest = dict(schema="atx-zero-rate-lcp-control-v1", source=head, source_hashes=hashes,
-        lcp_mode=MODE, primitive_source=PRIMITIVE,
-        declaration_commit=git("rev-parse", PLAN).decode().strip(),
+    schema = "atx-zero-rate-lcp-control-v1" if mode == MODE else "atx-zero-rate-retained-lcp-control-v1"
+    declaration = PLAN if mode == MODE else RETAINED_PLAN
+    manifest = dict(schema=schema, source=head, source_hashes=hashes,
+        lcp_mode=mode, primitive_source=PRIMITIVE,
+        declaration_commit=git("rev-parse", declaration).decode().strip(),
         baseline_hashes=BASELINE_HASHES, input_count=715, selected_ids=[MODEL["id"]],
         uncomputed_ids=[case["id"] for case in corpus["cases"] if case["id"] != MODEL["id"]],
-        requested_results=12, requests=fixed_requests(),
+        requested_results=12, requests=fixed_requests(mode),
         started_utc=datetime.now(timezone.utc).isoformat(),
         python=sys.version, executable=sys.executable, platform=platform.platform(),
         numpy=numpy.__version__, scipy=scipy.__version__, completed=False,
         reference_decisions_updated=False, full_144_run=False, accuracy_established=False,
         full_bundle_qualified=False, timing_qualified=False)
+    if mode == RETAINED_MODE:
+        manifest.update(retention_source=RETAINED_PRIMITIVE, effective_linear_solve_cap=256)
     json_write(output/"manifest.json", manifest)
     with (output/"outcomes.jsonl").open("x", encoding="utf-8") as stream:
-        rows = execute_requests(output, stream)
-    summary = summarize_control(rows)
+        rows = execute_requests(output, stream, mode)
+    summary = summarize_control(rows, mode)
     summary["historical_outcomes"] = original
     summary["historical_decisions"] = old_decisions
     summary["other_cold_fields"] = {field: "uncomputed" for field in
@@ -159,6 +184,22 @@ def run(output, historical, mode):
         refused=summary["refused"], outcomes_sha256=digest(output/"outcomes.jsonl"),
         summary_sha256=digest(output/"summary.json"),
         finished_utc=datetime.now(timezone.utc).isoformat())
+    if mode == RETAINED_MODE:
+        # Preserve the incomplete marker until this mode's independent reader
+        # and source/history checks have succeeded. No automatic retry.
+        if not (unchanged and history_unchanged):
+            return 2
+        verify_run(output, _manifest=manifest)
+        if (git("rev-parse", "HEAD").decode().strip() != head or
+                git("status", "--porcelain").strip() or
+                any(digest(ROOT/name) != value for name, value in hashes.items()) or
+                any(digest(historical/name) != value for name, value in BASELINE_HASHES.items())):
+            return 2
+        pending=output/"manifest.complete.json"
+        with pending.open("x", encoding="utf-8") as file:
+            json.dump(manifest, file, indent=2, allow_nan=False)
+        pending.replace(output/"manifest.json")
+        return 0
     json_write(output/"manifest.json", manifest)
     if unchanged and history_unchanged:
         verify_run(output)
@@ -196,14 +237,35 @@ def verify_failure_snapshot(directory, row):
             residual = float(np.max(np.abs(np.minimum(continuation-arrays["rhs"],
                                                       values-arrays["payoff"]))))
             require(residual == work["last_checked_residual"], "Saved vector and residual agree")
+        elif row.get("lcp_mode") == RETAINED_MODE:
+            # An absent initial prefix is numerical evidence, not a label. All
+            # six original arrays are present, so independently inspect them.
+            require(work["reason"] == "nonfinite_original_residual" and work["iterations"] == 0,
+                    "Only initial nonfinite stage has no saved checked vector")
+            with np.errstate(over="ignore", invalid="ignore"):
+                values=arrays["initial"]
+                continuation=arrays["diagonal"]*values
+                continuation[1:]+=arrays["lower"]*values[:-1]
+                continuation[:-1]+=arrays["upper"]*values[1:]
+                continuation-=arrays["rhs"]
+                gap=values-arrays["payoff"]
+            require(not np.isfinite(continuation).all() or not np.isfinite(gap).all(),
+                    "Missing initial state requires actual nonfinite residual operands")
 
 
-def verify_run(directory):
-    manifest = read_json(directory/"manifest.json")
-    require(manifest["schema"] == "atx-zero-rate-lcp-control-v1" and
-            manifest["lcp_mode"] == MODE and manifest["primitive_source"] == PRIMITIVE and
-            manifest["declaration_commit"] == git("rev-parse", PLAN).decode().strip() and
+def verify_run(directory, *, _manifest=None):
+    manifest = read_json(directory/"manifest.json") if _manifest is None else _manifest
+    mode = manifest["lcp_mode"]
+    mode_sources(mode)
+    schema = "atx-zero-rate-lcp-control-v1" if mode == MODE else "atx-zero-rate-retained-lcp-control-v1"
+    declaration = PLAN if mode == MODE else RETAINED_PLAN
+    require(manifest["schema"] == schema and manifest["primitive_source"] == PRIMITIVE and
+            manifest["declaration_commit"] == git("rev-parse", declaration).decode().strip() and
             re.fullmatch("[0-9a-f]{40}", manifest["source"]), "Frozen source/mode declaration")
+    if mode == RETAINED_MODE:
+        require(manifest["retention_source"] == RETAINED_PRIMITIVE and
+                type(manifest["effective_linear_solve_cap"]) is int and
+                manifest["effective_linear_solve_cap"] == 256, "Frozen retention and paired-call cap")
     require(all(manifest[field] is True for field in
                 ("completed", "source_unchanged", "history_unchanged")) and
             all(manifest[field] is False for field in
@@ -212,17 +274,17 @@ def verify_run(directory):
     require(manifest["baseline_hashes"] == BASELINE_HASHES, "Frozen historical artifacts")
     corpus, original, decisions = baseline(directory/"historical-v2")
     require(manifest["requested_results"] == 12 and manifest["input_count"] == 715 and
-            manifest["selected_ids"] == [MODEL["id"]] and manifest["requests"] == fixed_requests()
+            manifest["selected_ids"] == [MODEL["id"]] and manifest["requests"] == fixed_requests(mode)
             and manifest["uncomputed_ids"] == [case["id"] for case in corpus["cases"]
                                                 if case["id"] != MODEL["id"]],
             "All twelve requests and all714 uncomputed contracts")
     hashes = manifest["source_hashes"]
-    require(set(hashes) == {PREFIX+name for name in SOURCES}, "Complete source denominator")
+    require(set(hashes) == {PREFIX+name for name in mode_sources(mode)}, "Complete source denominator")
     for name, value in hashes.items():
         archived = directory/"sources"/Path(name).name
         require(digest(archived) == value and same_text(archived.read_bytes(),
                 git("show", manifest["source"]+":"+name)), "Archived source/Git join")
-    for name, revision in FROZEN_FILES:
+    for name, revision in frozen_files(mode):
         require(same_text((directory/"sources"/name).read_bytes(),
                          git("show", revision+":"+PREFIX+name)),
                 "Actual archived primitive/default/declaration equals reviewed revision")
@@ -237,7 +299,7 @@ def verify_run(directory):
         suffix = ".jsonl" if name == "outcomes" else ".json"
         require(digest(directory/(name+suffix)) == manifest[name+"_sha256"], "Result digest")
     rows = [json.loads(line) for line in (directory/"outcomes.jsonl").read_text().splitlines()]
-    summary = summarize_control(rows)
+    summary = summarize_control(rows, mode)
     for row in rows:
         verify_failure_snapshot(directory, row)
     summary.update(historical_outcomes=original, historical_decisions=decisions,
@@ -255,7 +317,7 @@ if __name__ == "__main__":
     actions.add_argument("--output", type=Path)
     actions.add_argument("--verify", type=Path)
     parser.add_argument("--baseline", type=Path)
-    parser.add_argument("--mode", choices=(MODE,))
+    parser.add_argument("--mode", choices=(MODE, RETAINED_MODE))
     args = parser.parse_args()
     if args.verify:
         require(args.baseline is None and args.mode is None, "Verification uses archived inputs")
@@ -263,5 +325,5 @@ if __name__ == "__main__":
         print(json.dumps({key: result[key] for key in
                           ("requested", "computed", "refused", "solver_controls_passed")}))
     else:
-        require(args.baseline is not None and args.mode == MODE, "Explicit baseline/mode required")
+        require(args.baseline is not None and args.mode in (MODE, RETAINED_MODE), "Explicit baseline/mode required")
         raise SystemExit(run(args.output, args.baseline, args.mode))
