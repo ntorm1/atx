@@ -21,6 +21,9 @@ void bind_dispersion(py::module_ &m);
 void bind_fit(py::module_ &m);
 void bind_quote_slice(py::module_ &m);
 void bind_fit_archive(py::module_ &m);
+void bind_region(py::module_ &m);
+void bind_serve(py::module_ &m);
+void bind_served_analytics(py::module_ &m);
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
@@ -72,6 +75,12 @@ PYBIND11_MODULE(_core, m) {
   // Lane PY (2026-10-23). After quote_slice: the archive decodes QuoteSliceFit and reads
   // its enums; FitArchiveError subclasses the AtxError registered above.
   bind_fit_archive(m);
+  // The exercise-region classifier and the D1 discrete-dividend batch (numpy batches).
+  bind_region(m);
+  // Serving records and the live book; reuses FittedVolCurve from bind_fit_archive.
+  bind_serve(m);
+  // A1 served analytics over a ServeBook (needs the serve types above).
+  bind_served_analytics(m);
 
   // Reflection for the enum-completeness tests (common.hpp): {value: C++ name}.
   m.def(
