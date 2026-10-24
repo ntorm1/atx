@@ -221,7 +221,7 @@ TEST(CashStockCubic, PureAffineTailAndInvalidTupleRemainExplicit) {
   EXPECT_FALSE(cubic_point(*curve, 1., static_cast<WeightPrecision>(42), {}, work));
 }
 
-TEST(CashStockCubic, WeightedZeroIsValidButCancelledMiddleCoefficientRefuses) {
+TEST(CashStockCubic, WeightedZeroAndProvedCubicZeroAreDistinctFromUnprovedCancellation) {
   const std::array zero{HermiteCell{0., 1., 0., 0., 0., 0.}};
   const std::array cubic{HermiteCell{0., 1., 0., 1., 0., 3.}};
   CubicOwnerWork work;
@@ -236,13 +236,101 @@ TEST(CashStockCubic, WeightedZeroIsValidButCancelledMiddleCoefficientRefuses) {
     EXPECT_EQ(R(result->value), 0);
     EXPECT_EQ(R(result->delta), 0);
     EXPECT_EQ(R(result->delta_absolute_sum), 0);
-    EXPECT_FALSE(cubic_cell_contribution(*c, 0, request, precision, {}, work));
+    auto legacy = CubicOwnerBudget{};
+    legacy.exact_zero.max_workspace_bytes = 0;
+    EXPECT_FALSE(cubic_cell_contribution(*c, 0, request, precision, legacy, work));
     EXPECT_EQ(work.weights.moments.moment_attempts, 4U);
     ASSERT_EQ(work.coefficient_records, 3U);
     EXPECT_EQ(work.coefficients[2].kind, CubicCoefficient::MiddleSlope);
     EXPECT_EQ(R(work.coefficients[2].result), 0);
     EXPECT_EQ(R(work.coefficients[2].absolute_sum), 6);
     EXPECT_EQ(work.coefficients[2].condition, "unbounded");
+    result = cubic_cell_contribution(*c, 0, request, precision, {}, work);
+    ASSERT_TRUE(result) << result.error().message();
+    ASSERT_TRUE(work.middle_proof);
+    EXPECT_TRUE(work.middle_proof->is_zero());
+    EXPECT_TRUE(work.coefficients[2].exact_dyadic_zero);
+    EXPECT_FALSE(work.coefficients[2].identical_input_zero);
+    EXPECT_EQ(R(work.coefficients[2].absolute_sum), 0);
+    LocalWeightWork weight_work;
+    auto weights = cubic_local_weight_control(request, precision, {}, weight_work);
+    ASSERT_TRUE(weights);
+    const R expected(weights->weights.scaled_moments[3]);
+    EXPECT_LT(abs(R(result->value)-expected), R("1e-85"));
+    EXPECT_LT(abs(R(result->delta)-3*expected), R("1e-85"));
+  }
+}
+
+TEST(CashStockCubic, RoundedZeroWithNonzeroExactNumeratorStillRefuses) {
+  const std::array cells{HermiteCell{0., 1., 0., 1., 1e-300, 3.}};
+  CubicOwnerWork work;
+  auto curve = StockCubic::make(cells, {1., 1., 3.}, {}, work);
+  ASSERT_TRUE(curve);
+  const WeightRequest request{0., 1., 1., .5, .2, .03, .01};
+  for (const auto precision : precisions) {
+    EXPECT_FALSE(cubic_cell_contribution(*curve, 0, request, precision, {}, work));
+    ASSERT_TRUE(work.middle_proof);
+    EXPECT_EQ(work.middle_proof->sign, -1);
+    EXPECT_EQ(work.dyadic_zero.status, DyadicZeroStatus::Nonzero);
+    ASSERT_EQ(work.coefficient_records, 3U);
+    EXPECT_EQ(R(work.coefficients[2].result), 0);
+    EXPECT_EQ(work.coefficients[2].condition, "unbounded");
+    EXPECT_FALSE(work.coefficients[2].exact_dyadic_zero);
+  }
+}
+
+TEST(CashStockCubic, ExactNonzeroOrUnavailableProofPreservesOriginalOutputBits) {
+  const std::array cells{HermiteCell{0., 1., -3., -1., 2., 2.}};
+  CubicOwnerWork work;
+  auto curve = StockCubic::make(cells, {1., -1., 2.}, {}, work);
+  ASSERT_TRUE(curve);
+  const WeightRequest request{0., 1., 1., .5, .2, .03, .01};
+  for (const auto precision : precisions) {
+    auto legacy = CubicOwnerBudget{};
+    legacy.cell.max_workspace_bytes = 0; // zero-lower original moment route
+    legacy.exact_zero.max_workspace_bytes = 0;
+    auto original = cubic_cell_contribution(*curve, 0, request, precision, legacy, work);
+    ASSERT_TRUE(original);
+    const auto old_reservation = work.workspace_bytes;
+    auto enabled = legacy;
+    enabled.exact_zero = {};
+    auto current = cubic_cell_contribution(*curve, 0, request, precision, enabled, work);
+    ASSERT_TRUE(current);
+    ASSERT_TRUE(work.middle_proof);
+    EXPECT_FALSE(work.middle_proof->is_zero());
+    EXPECT_EQ(current->value, original->value);
+    EXPECT_EQ(current->delta, original->delta);
+    EXPECT_EQ(current->maximum_condition, original->maximum_condition);
+    EXPECT_EQ(current->value_absolute_sum, original->value_absolute_sum);
+    EXPECT_EQ(current->delta_absolute_sum, original->delta_absolute_sum);
+    enabled.max_workspace_bytes = old_reservation;
+    current = cubic_cell_contribution(*curve, 0, request, precision, enabled, work);
+    ASSERT_TRUE(current);
+    EXPECT_FALSE(work.middle_proof);
+    EXPECT_EQ(work.dyadic_zero.status, DyadicZeroStatus::WorkspaceRefused);
+    EXPECT_EQ(work.workspace_bytes, old_reservation);
+    EXPECT_EQ(current->value, original->value);
+    EXPECT_EQ(current->delta, original->delta);
+  }
+}
+
+TEST(CashStockCubic, NegativeCubicProofPreservesSignedValueAndDelta) {
+  const std::array cells{HermiteCell{0., 1., 0., -1., 0., -3.}};
+  CubicOwnerWork work;
+  auto curve = StockCubic::make(cells, {1., -1., -3.}, {}, work);
+  ASSERT_TRUE(curve);
+  const WeightRequest request{0., 1., 1., .5, .2, .03, .01};
+  for (const auto precision : precisions) {
+    auto result = cubic_cell_contribution(*curve, 0, request, precision, {}, work);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(work.middle_proof);
+    EXPECT_TRUE(work.middle_proof->is_zero());
+    LocalWeightWork weight_work;
+    auto weights = cubic_local_weight_control(request, precision, {}, weight_work);
+    ASSERT_TRUE(weights);
+    const R expected = -R(weights->weights.scaled_moments[3]);
+    EXPECT_LT(abs(R(result->value)-expected), R("1e-85"));
+    EXPECT_LT(abs(R(result->delta)-3*expected), R("1e-85"));
   }
 }
 

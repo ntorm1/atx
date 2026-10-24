@@ -36,7 +36,9 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
         ${CASH_GAUSSIAN_DIR}/semigroup.cpp ${CASH_GAUSSIAN_DIR}/followup_test.cpp
         ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_weights_test.cpp
         ${CASH_GAUSSIAN_DIR}/cubic_local_weights_test.cpp
-        ${CASH_GAUSSIAN_DIR}/stock_cubic.cpp ${CASH_GAUSSIAN_DIR}/stock_cubic_test.cpp)
+        ${CASH_GAUSSIAN_DIR}/stock_cubic.cpp ${CASH_GAUSSIAN_DIR}/stock_cubic_test.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_dyadic_zero.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_dyadic_zero_test.cpp)
     target_link_libraries(atx-vol-cash-gaussian-research-tests PRIVATE
         atx::vol atx::core atx_warnings GTest::gtest_main)
     target_include_directories(atx-vol-cash-gaussian-research-tests SYSTEM PRIVATE

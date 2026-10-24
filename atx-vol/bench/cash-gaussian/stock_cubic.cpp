@@ -69,6 +69,13 @@ class Arithmetic {
     condition(value, absolute_sum);
     return value;
   }
+  R proved_middle_zero() {
+    // Symbolic elimination precedes the floating coefficient sum. The separate
+    // exact proof retains the original six input bit patterns and numerator.
+    record(CubicCoefficient::MiddleSlope, R(0), R(0), false);
+    work_.coefficients[work_.coefficient_records-1].exact_dyadic_zero = true;
+    return R(0);
+  }
   template <std::size_t N>
   R sum(const std::array<R, N> &terms, R &absolute_sum) {
     R value = 0;
@@ -112,6 +119,12 @@ class Arithmetic {
 };
 
 template <unsigned Digits>
+std::size_t scalar_reservation(const StockCubic &curve) {
+  return curve.cells().size()*sizeof(HermiteCell)+sizeof(CubicAffineTail)+
+      128*sizeof(Real<Digits>)+8192;
+}
+
+template <unsigned Digits>
 bool reserve(const StockCubic &curve, const CubicOwnerBudget &budget,
              CubicOwnerWork &work, bool weighted) {
   if (curve.cells().size() > maximum_cells ||
@@ -119,8 +132,7 @@ bool reserve(const StockCubic &curve, const CubicOwnerBudget &budget,
       (curve.cells().empty() && curve.tail().lower != 0.)) return false;
   // Fixed precision objects, bounded strings, and the owner's existing tuples.
   // Weighted evaluation adds the reviewed cell workspace reservation sequentially.
-  const auto bytes = curve.cells().size()*sizeof(HermiteCell)+sizeof(CubicAffineTail)+
-      128*sizeof(Real<Digits>)+8192;
+  const auto bytes = scalar_reservation<Digits>(curve);
   const auto cell_bytes = weighted ? std::min<std::size_t>(budget.cell.max_workspace_bytes,
                                                         1048576) : 0;
   const auto cap = std::min(budget.max_workspace_bytes, maximum_workspace);
@@ -256,7 +268,27 @@ Result<CubicContribution> contribution(const StockCubic &curve, std::size_t inde
   const R w2 = math.convert(w.value[2]), w3 = math.convert(w.value[3]);
   const R d0 = math.convert(w.derivative[0]), d1 = math.convert(w.derivative[1]);
   const R d2 = math.convert(w.derivative[2]);
-  const R middle = math.coefficient_sum(std::array<R, 3>{3*delta/h, -m0, -m1});
+  const DyadicZeroRequest exact_request{cell.lower, cell.upper, cell.value_lower,
+      cell.value_upper, cell.slope_lower, cell.slope_upper};
+  auto proof_budget = budget.exact_zero;
+  const auto frame = scalar_reservation<Digits>(curve);
+  const auto remaining = std::min(budget.max_workspace_bytes, maximum_workspace)-frame;
+  proof_budget.max_workspace_bytes = std::min(proof_budget.max_workspace_bytes, remaining);
+  const auto proof_bytes = dyadic_zero_workspace_requirement();
+  if (proof_budget.max_workspace_bytes >= proof_bytes)
+    work.workspace_bytes = std::max(work.workspace_bytes, frame+proof_bytes);
+  auto proof = prove_middle_slope_zero(exact_request, proof_budget, work.dyadic_zero);
+  if (proof) work.middle_proof = std::move(*proof);
+  const std::array expected_bits{std::bit_cast<std::uint64_t>(cell.lower),
+      std::bit_cast<std::uint64_t>(cell.upper), std::bit_cast<std::uint64_t>(cell.value_lower),
+      std::bit_cast<std::uint64_t>(cell.value_upper),
+      std::bit_cast<std::uint64_t>(cell.slope_lower),
+      std::bit_cast<std::uint64_t>(cell.slope_upper)};
+  const bool proved_zero = work.middle_proof && work.middle_proof->is_zero() &&
+      work.middle_proof->input_bits == expected_bits &&
+      work.dyadic_zero.status == DyadicZeroStatus::ProvenZero;
+  const R middle = proved_zero ? math.proved_middle_zero() :
+      math.coefficient_sum(std::array<R, 3>{3*delta/h, -m0, -m1});
   R value_abs, delta_abs;
   const R value = math.sum(std::array<R, 4>{v0*mass, delta*(w2+w3),
       (h/3)*m0*w1, -(h/3)*m1*w2}, value_abs);

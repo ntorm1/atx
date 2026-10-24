@@ -397,3 +397,61 @@ weighted affine moment identities, genuine kinks, exact-zero versus cancelling
 sums, malformed inputs, low-budget partial work/reset and owned snapshots.
 Receipts remain under `E/calendar/cash-cubic-owner-v1/`; no numerical study
 matrix, option run or new reference decision was executed.
+
+## Exact dyadic middle-coefficient proof
+
+The next isolated component removes only a rigorously proved algebraic zero
+from the middle derivative coefficient. It does not admit a nearly cancelling
+floating sum. From the six original binary64 endpoint bits it constructs
+
+```
+N = [3*(v1-v0) - (b-a)*(m0+m1)] * 2^2148.
+```
+
+Every finite binary64 input is an exact integer multiple of `2^-1074`, so N is
+an integer. A zero N proves the middle coefficient is zero because `b>a`.
+The owner checks the proof's six input identities before symbolic elimination
+and records that elimination separately from floating cancellation. A nonzero,
+unavailable or resource-refused proof uses the unchanged original coefficient
+sum. Exact-zero/all-zero semantics and all other condition guards stay intact.
+The prior x^3 refusal remains tested with proof workspace disabled; enabling
+the exact proof recovers positive and negative cubic finite-cell identities.
+The adversary `h=delta=1, m0=1e-300, m1=3` remains refused at both precisions:
+its floating middle sum vanishes, but its exact numerator is negative.
+
+`cubic_dyadic_zero.cpp` uses checked fixed8192-bit integers with expression
+templates disabled. Its bounded split-product construction is specified in
+[the prospective amendment](cubic-dyadic-split-amendment-v1.md). The installed
+Boost backend uses32-bit limbs; the rejected unsplit implementation would
+enter an allocating Karatsuba path. Its failed compile guard and source are
+retained. The replacement computes four nonnegative half-products below the
+actual Karatsuba threshold, then restores the sign. It changes no Boost macro
+or shared dependency. All intermediate magnitudes remain below4200 bits.
+
+The proof retains its original input bits and canonical numerator sign, odd
+hex magnitude and power of two. Fixed budgets cover six decodes, five products,
+eight sums, thirteen shifts, two masks and32 bit scans. These are logical
+integer operations, not limb instructions; sign changes and one bounded
+encoding are recorded separately. A mandatory construction reservation covers
+21 integer objects, eight temporary objects and4096 bytes of string/metadata
+scratch before integer construction. It stays below the64KiB proof ceiling;
+allocator metadata and process resident memory are not measured. The owner
+charges this sequential scratch against its existing global reservation.
+Refusals retain partial work without returning a partial proof.
+
+The16 compile-time numerator fixtures were frozen before implementation and
+were not regenerated after the split amendment. An independent Python
+`Fraction.from_float` calculation validates all six input bits and exact
+numerators. Cases include both signs, signed zero, subnormals, maximum finite
+exponents and adjacent high/low/unit cells. The six initial stub controls fail
+at runtime; the unsplit compile failure is separate evidence. Four primitive
+groups and16 owner groups now pass, with65 total native research tests,
+three Python groups and all four owning PCH-off translation units passing.
+Nonzero proof and exhausted-proof-workspace controls preserve original value,
+Delta and condition strings exactly. No allocation-failure injection or
+sanitizer run is claimed.
+
+Evidence remains under `E/calendar/cash-cubic-dyadic-zero-v1/`. This component
+does not supply full-tail propagation, an option price, a repeated matrix or
+a full-price/Greek error bound. No exporter,324-case or18-option study has run.
+The original50/150/32,18+5 and both fixed24 histories remain unchanged.

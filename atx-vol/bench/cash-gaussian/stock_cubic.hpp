@@ -2,9 +2,11 @@
 
 // Private Stage A representation/control. No option rollback or production dispatch.
 #include "cubic_local_weights.hpp"
+#include "cubic_dyadic_zero.hpp"
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,6 +27,7 @@ struct CubicOwnerBudget {
   std::size_t max_moments = 262144;
   std::size_t max_workspace_bytes = 64 * 1024 * 1024;
   LocalWeightBudget cell;
+  DyadicZeroBudget exact_zero;
 };
 
 enum class CubicCoefficient { Width, ValueIncrement, CoordinateOffset, TailOffset, MiddleSlope };
@@ -33,6 +36,7 @@ struct CubicCoefficientRecord {
   CubicCoefficient kind = CubicCoefficient::Width;
   std::string result, absolute_sum, condition;
   bool identical_input_zero = false;
+  bool exact_dyadic_zero = false;
 };
 
 struct CubicOwnerWork {
@@ -42,6 +46,8 @@ struct CubicOwnerWork {
   // excludes allocator metadata. It is not measured resident memory.
   std::size_t workspace_bytes = 0;
   LocalWeightWork weights;
+  DyadicZeroWork dyadic_zero;
+  std::optional<DyadicZeroProof> middle_proof;
   // Fixed bound: point location has two differences, cell evaluation has two.
   std::array<CubicCoefficientRecord, 4> coefficients;
   std::size_t coefficient_records = 0;
