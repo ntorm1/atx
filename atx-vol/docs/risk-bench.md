@@ -72,13 +72,15 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 | `--dump-steps N` | 1 | steps written to `--dump-legs`: the first N, 0 = every step |
 | `--seed N` | 1 | book selection seed |
 | `--n-sigma N` | policy (12) | family kernel: sigma-node ceiling `FamilyKernelPolicy::n_sigma` |
-| `--n-sigma-min N` | policy (5) | adaptive node floor `n_sigma_min`, capped at `n_sigma` (≥ `n_sigma`: the fixed count) |
+| `--n-sigma-min N` | policy (5) | adaptive node floor `n_sigma_min`, capped at `n_sigma` (both floors ≥ `n_sigma`: the fixed count) |
 | `--sigma-box-pad X` | policy (0.05) | sigma box pad |
 | `--sigma-node-spacing X` | policy (0.06) | adaptive log-sigma node spacing |
 | `--family-economics on\|off` | policy (on) | route groups whose family cannot amortize to cold-analytic (`FamilyUneconomic`) |
 | `--family-node-cost-us X` | policy (73) | economics: cost of one sigma node |
 | `--cold-lane-cost-us X` | policy (270) | economics: cost of one cold-analytic lane |
 | `--family-schedule static\|dynamic` | policy (dynamic) | block fan-out: `run_blocks` / `run_dynamic` |
+| `--short-box-tau X` | policy (0.3) | blocks with T < X years take the short-tenor floor; 0 = off |
+| `--n-sigma-min-short N` | policy (4) | the short-tenor node floor `n_sigma_min_short`, capped at `n_sigma` |
 | `--help` | | usage |
 
 Exit codes: **0** success, **1** runtime error (missing store, engine error, write
@@ -365,7 +367,7 @@ a ParseError, never read with guessed defaults).
 | `inputs.host_threads` | uint | `std::thread::hardware_concurrency()` |
 | `inputs.time` | string | `calendar365` / `voltime` (`--time`) |
 | `inputs.carry_mode` | string | `implied_from_calls` (`--store`) / `published` (`--synthetic`) |
-| `inputs.family_policy` | string | the effective `FamilyKernelPolicy` of the main stream (`n_sigma`, `n_sigma_min`, pad, spacing, economics and its two constants, schedule); empty under `--kernel cold` |
+| `inputs.family_policy` | string | the effective `FamilyKernelPolicy` of the main stream (`n_sigma`, `n_sigma_min`, pad, spacing, economics and its two constants, schedule, `short_box_tau` and `n_sigma_min_short`); empty under `--kernel cold` |
 | `synthetic_store.generated` | bool | the store was written by this run |
 | `synthetic_store.seconds`, `.rows` | number, uint | generation wall clock, rows written |
 | `book.n_option_legs`, `.n_unique_options`, `.n_share_legs`, `.n_underliers` | uint | from `RiskBook` |

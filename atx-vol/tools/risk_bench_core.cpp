@@ -213,19 +213,28 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
 // The family-policy flag `flag` into `a`, or nullopt when `flag` is not one of them.
 [[nodiscard]] std::optional<Status> parse_family_flag(ArgCursor &c, std::string_view flag,
                                                       RiskBenchArgs &a) {
-  if (flag == "--n-sigma" || flag == "--n-sigma-min") {
+  constexpr std::array<std::pair<std::string_view, std::optional<std::uint16_t> RiskBenchArgs::*>,
+                       3>
+      kCounts{{{"--n-sigma", &RiskBenchArgs::n_sigma},
+               {"--n-sigma-min", &RiskBenchArgs::n_sigma_min},
+               {"--n-sigma-min-short", &RiskBenchArgs::n_sigma_min_short}}};
+  for (const auto &[name, field] : kCounts) {
+    if (flag != name) {
+      continue;
+    }
     std::uint16_t n{0};
     if (Status st = set_number(c, flag, n); !st.has_value()) {
       return st;
     }
-    (flag == "--n-sigma" ? a.n_sigma : a.n_sigma_min) = n;
+    a.*field = n;
     return Ok();
   }
-  constexpr std::array<std::pair<std::string_view, std::optional<double> RiskBenchArgs::*>, 4>
+  constexpr std::array<std::pair<std::string_view, std::optional<double> RiskBenchArgs::*>, 5>
       kDoubles{{{"--sigma-box-pad", &RiskBenchArgs::sigma_box_pad},
                 {"--sigma-node-spacing", &RiskBenchArgs::sigma_node_spacing},
                 {"--family-node-cost-us", &RiskBenchArgs::family_node_cost_us},
-                {"--cold-lane-cost-us", &RiskBenchArgs::cold_lane_cost_us}}};
+                {"--cold-lane-cost-us", &RiskBenchArgs::cold_lane_cost_us},
+                {"--short-box-tau", &RiskBenchArgs::short_box_tau}}};
   for (const auto &[name, field] : kDoubles) {
     if (flag != name) {
       continue;
@@ -344,7 +353,9 @@ std::string risk_bench_usage() {
          "  family-kernel policy overrides (FamilyKernelPolicy defaults when absent):\n"
          "  --n-sigma N          sigma-node ceiling n_sigma\n"
          "  --n-sigma-min N      adaptive node floor n_sigma_min, capped at n_sigma\n"
-         "                       (>= n_sigma: the fixed count n_sigma)\n"
+         "                       (both floors >= n_sigma: the fixed count n_sigma)\n"
+         "  --short-box-tau X    blocks with T < X (years) take the short floor; 0 = off\n"
+         "  --n-sigma-min-short N  the short floor n_sigma_min_short, capped at n_sigma\n"
          "  --sigma-box-pad X    sigma box pad\n"
          "  --sigma-node-spacing X  adaptive log-sigma node spacing\n"
          "  --family-economics on|off  route uneconomic groups cold-analytic\n"

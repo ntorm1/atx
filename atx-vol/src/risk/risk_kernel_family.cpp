@@ -177,12 +177,14 @@ struct BlockCarry {
 }
 
 // FamilyKernelPolicy "ADAPTIVE NODE COUNT": ceil(log(hi / lo) / spacing) + 1 clamped to
-// [floor, n_sigma], floor = min(n_sigma_min, n_sigma) (the ceiling wins). Clamped in
-// double before the cast (an out-of-range float-to-integer conversion is UB); a
-// non-finite ratio takes the floor count.
-[[nodiscard]] std::uint16_t node_count(const FamilyKernelPolicy &p, double lo,
+// [floor, n_sigma], floor = min(n_sigma_min, n_sigma) (the ceiling wins), or
+// min(n_sigma_min_short, n_sigma) for a block of tenor T < short_box_tau ("SHORT-TENOR
+// NODE FLOOR"). Clamped in double before the cast (an out-of-range float-to-integer
+// conversion is UB); a non-finite ratio takes the floor count.
+[[nodiscard]] std::uint16_t node_count(const FamilyKernelPolicy &p, double T, double lo,
                                        double hi) noexcept {
-  const std::uint16_t floor = std::min(p.n_sigma_min, p.n_sigma);
+  const std::uint16_t block_floor = T < p.short_box_tau ? p.n_sigma_min_short : p.n_sigma_min;
+  const std::uint16_t floor = std::min(block_floor, p.n_sigma);
   const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
   if (!(want > static_cast<double>(floor))) {
     return floor;
@@ -266,7 +268,7 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
     lo = std::max(centre * (1.0 - pad), floor);
     hi = centre * (1.0 + pad);
   }
-  const std::uint16_t n_nodes = node_count(c.policy, lo, hi);
+  const std::uint16_t n_nodes = node_count(c.policy, carry.T, lo, hi);
   if (family_uneconomic(c, n_eligible, n_nodes)) {
     for (std::uint32_t r = grp.begin; r < grp.end; ++r) {
       if (eligible(c, r)) {

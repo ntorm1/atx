@@ -213,6 +213,7 @@ TEST(RiskBenchE2E, SyntheticRunProducesReport) {
   EXPECT_TRUE(rep->summary.determinism_bit_equal);
   // Lane A2: the report echoes the effective family policy.
   EXPECT_NE(rep->family_policy.find("n_sigma_min"), std::string::npos) << rep->family_policy;
+  EXPECT_NE(rep->family_policy.find("short_box_tau"), std::string::npos) << rep->family_policy;
   EXPECT_TRUE(std::isfinite(rep->summary.explained_ratio));
   EXPECT_EQ(rep->time, "calendar365");
   EXPECT_EQ(rep->carry_mode, "published");

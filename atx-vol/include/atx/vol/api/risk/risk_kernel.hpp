@@ -82,10 +82,10 @@ struct FamilyKernelPolicy {
   //
   // ADAPTIVE NODE COUNT. A group's family gets
   //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, floor, n_sigma),
-  //   floor = min(n_sigma_min, n_sigma)
+  //   floor = min(n_sigma_min, n_sigma)   (a short block: SHORT-TENOR NODE FLOOR below)
   // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the ceiling
   // and caps the floor (n_sigma = 4 solves every family at 4 nodes under the default
-  // floor); n_sigma_min >= n_sigma (and pad 0.25) restores the pre-A2 fixed count.
+  // floor); both floors >= n_sigma (and pad 0.25) restore the pre-A2 fixed count.
   // Calibrated against the 1e-6 family-vs-cold price gate on BOTH bench stores
   // (atx-vol-risk-bench --kernel both, cold.max_rel_price_family; lane A2 report) and the
   // fixture books (RiskKernel.DISABLED_AdaptiveNodeSpacingSweep): the binding regime is a
@@ -117,6 +117,25 @@ struct FamilyKernelPolicy {
   // slots and counters, so both give the same bits for any thread count. Dynamic is the
   // default: faster on both bench stores at 8 threads on a 4P + 8E host (lane A2).
   bool dynamic_schedule{true};
+
+  // ── Appended by lane A2 lever 6 (2026-10-24, additive): T-aware node floor ──
+  //
+  // SHORT-TENOR NODE FLOOR. A box at the floor count misses the cold price by more the
+  // longer its tenor (4 nodes over a log box width <= 3 h, licensed store, one step:
+  // worst 3.1e-7 below 0.3 y, 7.1e-7 at 0.6 - 1 y, 9.6e-7 at 1 - 3 y; a 4-node floor at
+  // every tenor misses the 1e-6 gate over ten steps, 1.12e-6), so the long-dated narrow
+  // boxes set n_sigma_min and a short block can take a lower floor: a block with
+  // T < short_box_tau takes floor = min(n_sigma_min_short, n_sigma) in the ADAPTIVE NODE
+  // COUNT rule. short_box_tau 0 turns it off (the lever-2 rule). The block's own T (the
+  // one its family is built on) decides, so the floor is the same for any thread count.
+  // Calibrated on BOTH bench stores over ten steps (--kernel both, 8 threads; lane A2
+  // report, lever 6): short_box_tau 0 / 0.15 / 0.3 / 0.45 / 0.6 / 1 gives the licensed
+  // price gate 1.2 / 3.7 / 3.7 / 4.4 / 5.9 / 7.2e-7 (synthetic 0.28e-7, then 3.6e-7 for
+  // every tau > 0) at 13245 / 12543 / 12300 / 12122 / 12048 / 11772 licensed nodes; 0.3
+  // is the knee of the volga gap (max |dvolga| 0.43 / 0.43 / 0.51 / 0.86 / 1.31 / 2.74,
+  // its worst lane at 0.3 within 7.8e-4 relative, the long-dated lanes' 1.2e-3).
+  double short_box_tau{0.3};          // years, finite >= 0; 0 = off
+  std::uint16_t n_sigma_min_short{4}; // >= 4; capped at n_sigma
 };
 
 struct ColdKernelPolicy {
