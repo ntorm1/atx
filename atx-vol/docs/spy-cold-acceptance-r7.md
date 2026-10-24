@@ -667,3 +667,48 @@ profile. These are diagnostic subspans from that run, not additional costs to
 sum with the newer whole-fit totals. Batched cold probes and sparse-factor
 workspace reuse remain experiments until complete correctness and measured gains
 are established. No subsecond or world-leading claim follows from this result.
+
+
+## Current implementation queue and independent pricing frontier (2026-10-24)
+
+The existing family=always candidate has a second, valid quiet development trial:
+1.1198819 s native and1.2759514 s process wall, sibling0%, predictions matching
+its all13-gate audit. The sparse60-row expiry now costs7.795ms including7.143ms
+family construction, versus26.165ms in the earlier inverse-candidate stage.
+Whole-fit timings overlap; this is not a statistically established overall gain.
+The first trial (1.4844s, sibling8.333%) fails the predefined idle gate and is
+retained, not removed. See economic-direct-family-always-v{1,2}-dev-profile.
+Both the1.120 development binary and1.406 release binary are now archived under
+SHA256 in the r7 evidence root's binaries directory before subsequent rebuilds.
+
+The pinned six-profile public comparison adds useful intermediate choices:
+Screen15.546us and accurate Fast58.351us per cold put on the same252-contract
+common domain, both252/252 within the synthetic0.001USD price budget. Across
+357 diagnostic contracts each has350 passes and7 explicitly unsupported
+q<r<0 double-boundary cases. Screen still has8 failures and39 unresolved cases
+at0.0001USD on that broad set; the user-approved SPY spread-scaled budget remains
+separate. Tight reference disagreements are not passes. See
+C:/atx-wt/pool-3/atx-vol/docs/quantlib-american-frontier-20261024.md and its hashed
+manifest. Both original and follow-up measurements are retained; the close
+Reference-versus-QuantLib-fast ranking reverses across runs, so balanced-order,
+multi-process comparisons are required before a durable ranking claim.
+
+| Work package | Current evidence and next action | Promotion gate |
+| --- | --- | --- |
+| Complete cold fit | Early Fast residual proposals are source-reviewed; original full search remains fallback. Screen proposals are a separate experiment. | All13 actual-API gates on exact final binary, same raw price budgets, all33/12866 served, then quiet ThinLTO trials. |
+| Calendar memory | Cached/packed factor prototype has exact factor/solve/output parity but no convincing speed gain; retain it as an unpromoted experiment. Compact stored constraint rows112?64bytes is being tested with original Eigen. | Exact objective/constraints/output parity, contradiction diagnostics, full fit latency. |
+| Calendar termination | Full unchanged publication certificate first passes at sweep35 of36; only one iteration is potentially removable. | Keep current stopping rule; no semantic weakening for this small opportunity. |
+| Family probes | Three quiet replay processes save only10?13ms with151 mandatory scalar retries on549 probes. | Deferred; original scalar validation remains in production. |
+| Public pricing | Six-profile continuous-carry comparison measured with archived v2 executable, complete denominators and explicit reuse costs. | Independent method refinement, balanced process/order repeats, calls and difficult-regime expansion. |
+| Independent reference | New offline exact-discrete-LCP reference passes5 prerequisite tests and peer review;35 selected cases retain six separate time/space/domain grids. | Resolve each price by declared empirical refinement plus independent checks; no rigorous error bound or blanket oracle label. |
+| American analytics | Current live serving uses sigma/q family edge typing. Public sigma-only Greek bundle has documented near-edge theta errors; caller audit/reproducer active. | Explicit validity/refusal or validated fallback per public output, then same-model price/Greek corpus and qualified timing. |
+| Cash dividends | Existing lattice routes remain distinct from continuous-carry and aggregate-forward fits. | Dated-event reference, independent jump/exercise convergence, then amortized family/batch optimization; no continuous-yield substitution in scoring. |
+| Publication/archive | R1/R2 serving fixes integrated and77 tests pass. R3 rejects unsafe unpersisted record versions. | Full versioned archive persistence remains outstanding; typed refusal is a safe interim closure. |
+| Final qualification | No subsecond qualification, default promotion or main merge yet. |100 distinct fresh-process one-core/one-worker successful trials, every cold fit<1s, frozen input/policy/binary, idle sibling, exact joined correctness receipt. |
+
+The independent PDE pilot explicitly remains insufficient for the tighter public
+reference disagreement: long-maturity80%-volatility cases have empirical
+indicators around0.00036USD. Its two European control groups differ from closed
+forms by at most3.82e-6 and4.19e-6USD. Finite double-boundary PDE results do not
+create shipping double-boundary support. Greek and cash-dividend accuracy remain
+separate requirements; a price residual cannot certify a hedge sensitivity.
