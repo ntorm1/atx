@@ -1,0 +1,188 @@
+{
+  "repository": "https://github.com/lballabio/QuantLib",
+  "commit": "e96579fd471b2e9f6bc974c96674d1ccfff248fa",
+  "archive_url": "https://codeload.github.com/lballabio/QuantLib/zip/e96579fd471b2e9f6bc974c96674d1ccfff248fa",
+  "archive_sha256": "8bed6b9277b404a48a6e90dce71e02ecb7e2b71214af82c31650446a491b1981",
+  "archive_bytes": 11432788,
+  "tree_sha256": "d7424fe8d2b9145c40d7133b41ee8426a135d0e039e40f871a062b5fc9a2e206",
+  "tree_scope": "Every file recursively under ql plus LICENSE.TXT, sorted relative path NUL and raw content SHA256 bytes",
+  "license": "QuantLib license; original LICENSE.TXT retained in source cache",
+  "selected_sources": [
+    {
+      "path": "ql/errors.cpp",
+      "sha256": "342f04dfcfce966ded3626c7adc8daf81847b9431a16906488223cba0ee77a3e"
+    },
+    {
+      "path": "ql/event.cpp",
+      "sha256": "e4e1f317cb55117f128e3b22de36ef83ce02436728456704ba267cd199f9b208"
+    },
+    {
+      "path": "ql/exercise.cpp",
+      "sha256": "70a7cbc82d4497a65738bc31c6738d482f11a9929b1fff02a8ef734a1e31ff48"
+    },
+    {
+      "path": "ql/instrument.cpp",
+      "sha256": "93a441bb9e1bb142eb9232561a5faabdb8ac11f82ceff81f48585f94dd9d14ab"
+    },
+    {
+      "path": "ql/interestrate.cpp",
+      "sha256": "d70b923a7bbc62a5ccb485a0b18a4b54ead6e203a6b8bc99590b5cf7840c8999"
+    },
+    {
+      "path": "ql/quote.cpp",
+      "sha256": "6fa79781b05c204b5840edb7dc5932fef329a6e510f128d262f111ee8c627a1c"
+    },
+    {
+      "path": "ql/settings.cpp",
+      "sha256": "cd4f7a6ced6a190ae1777054f6ee4e4ad3dc2ee97274f1614db69d46c49bdae6"
+    },
+    {
+      "path": "ql/stochasticprocess.cpp",
+      "sha256": "06be45181e63cb3729f1052ba41e80953dbf89e4e23d214652de7ae74a0e1a6b"
+    },
+    {
+      "path": "ql/termstructure.cpp",
+      "sha256": "b26f60e60ffbcd6803922afd26b7c673fc1e7b6baaa87eff5c7c4eb0f1c0c95d"
+    },
+    {
+      "path": "ql/patterns/observable.cpp",
+      "sha256": "a499741d07f34b457570bb60f14b3c034e7750c482381307a52607b5a4ea953c"
+    },
+    {
+      "path": "ql/instruments/oneassetoption.cpp",
+      "sha256": "c0fd5ca0984c47519d6dec53bb498f2b3ff9a510cc5defcd96b38fa6e49668dc"
+    },
+    {
+      "path": "ql/instruments/payoffs.cpp",
+      "sha256": "99c6bb7cb5db8d4ef64973cfb83cde2452bc81c4a16b23167426424469184dc8"
+    },
+    {
+      "path": "ql/processes/blackscholesprocess.cpp",
+      "sha256": "5788a3b0bfd77ba17e97a306892a82692403fef57f3a99c739508659c1678840"
+    },
+    {
+      "path": "ql/termstructures/yieldtermstructure.cpp",
+      "sha256": "7d7b65acef7577e2b7098fd137d1c667acff2c1389763e71faa96b6a5275a23f"
+    },
+    {
+      "path": "ql/termstructures/yield/flatforward.cpp",
+      "sha256": "b2410ecff6683bcb46709a66d431d82deab9afd06eefdbbccb98dd669d99c8bd"
+    },
+    {
+      "path": "ql/termstructures/volatility/equityfx/blackvoltermstructure.cpp",
+      "sha256": "ea7c186f4625bf726a48bd7ea14c50cad3034c49aa888c2cd454b39b8d7b4c2c"
+    },
+    {
+      "path": "ql/termstructures/volatility/equityfx/localvolsurface.cpp",
+      "sha256": "6108975ca1eddc1203eb5c4dd296ddbd21f2281e39f412b641a036ebf6ba4a32"
+    },
+    {
+      "path": "ql/termstructures/volatility/equityfx/localvoltermstructure.cpp",
+      "sha256": "6411ed9f18b53d4201a3410de4de9c9c5b93d1c53202dd7656acc551ddf4dcd6"
+    },
+    {
+      "path": "ql/time/date.cpp",
+      "sha256": "bdfe26a109c106b55fea9ff4055f45f9ef42a6ab122021a296900994b762a3fe"
+    },
+    {
+      "path": "ql/time/period.cpp",
+      "sha256": "ab1b705837830dd483c728bb969832ffd4c625043843a4e130a8bfcfae4446d8"
+    },
+    {
+      "path": "ql/time/calendar.cpp",
+      "sha256": "5027b36b8dd303c7dc060db760d4c618c4818711edcbdcd93eae07cce62cc8f9"
+    },
+    {
+      "path": "ql/time/businessdayconvention.cpp",
+      "sha256": "5883787cd893a9fbcf2dc019025704eae3c8c921c72f4cfeba8c774b432bb85b"
+    },
+    {
+      "path": "ql/time/timeunit.cpp",
+      "sha256": "30a75064e2d3f95fc5acf216475760a9d9a14e3151bde5e4429b7e584c3a88ce"
+    },
+    {
+      "path": "ql/time/frequency.cpp",
+      "sha256": "9236221a05e5f974cfd93de07aebfb0cab3ddf325b99cd6fcb5eb2910889ffec"
+    },
+    {
+      "path": "ql/time/daycounters/actual365fixed.cpp",
+      "sha256": "93f26a726f089e216da520c13233e9940a70903ce43007d3150327dfdbf02ebb"
+    },
+    {
+      "path": "ql/math/distributions/normaldistribution.cpp",
+      "sha256": "6ab62f73f6f048a8eca085443c0a2d2826dd0fb038fe5a88a10a2767662ef2d6"
+    },
+    {
+      "path": "ql/math/distributions/gammadistribution.cpp",
+      "sha256": "d27e79f9f1cd4b5e4e1f278d22e70354b7feb6719d3eb1d1c2f8065867f29e7b"
+    },
+    {
+      "path": "ql/math/errorfunction.cpp",
+      "sha256": "63e46e0252ca91bed5d2b67f17518869e6928997d0f9a00099fc369064ebddc1"
+    },
+    {
+      "path": "ql/math/integrals/integral.cpp",
+      "sha256": "f2af3a502cc3b606938ff1f742693bd21c977c8bae20648f7da0e6105fd497bb"
+    },
+    {
+      "path": "ql/math/integrals/gaussianquadratures.cpp",
+      "sha256": "959b20beb2af0e32da6d26ee24c0466d5558fd9476daf1187c5bd780140fd740"
+    },
+    {
+      "path": "ql/math/integrals/gaussianorthogonalpolynomial.cpp",
+      "sha256": "8d38a7412fb90fae9f8f1588d230f52c0afb8d5ed8a0d2469b7f919876b8f38e"
+    },
+    {
+      "path": "ql/math/interpolations/chebyshevinterpolation.cpp",
+      "sha256": "fc368a8f8f727302be9a4921e7c6c6a6ffe0298ac08ae42e4b9b4c6a976aba4f"
+    },
+    {
+      "path": "ql/math/matrixutilities/tqreigendecomposition.cpp",
+      "sha256": "950e753ab119a1b75cbfd453c8e1c9a8df148475d9225e3f9b4f150e7efebe9e"
+    },
+    {
+      "path": "ql/math/matrixutilities/symmetricschurdecomposition.cpp",
+      "sha256": "e0b4023b4d295b3c214088049bc30869053d440639cf76d0ad71e7abd247952c"
+    },
+    {
+      "path": "ql/pricingengines/blackcalculator.cpp",
+      "sha256": "e0ab25592205ae9156e9f3d72c68098f99caf1bd9e5cbb236795552e24fe9f8c"
+    },
+    {
+      "path": "ql/pricingengines/vanilla/qdplusamericanengine.cpp",
+      "sha256": "e6936fc111ff3e0ac791a0593730071c4382eea3b179f2ff8ac2953db2f1b5af"
+    },
+    {
+      "path": "ql/pricingengines/vanilla/qdfpamericanengine.cpp",
+      "sha256": "7a13ddfd9311b264f0a86e2b89922097c0ecc1065c9313ff77766a058cd37e33"
+    },
+    {
+      "path": "ql/termstructures/voltermstructure.cpp",
+      "sha256": "3f1f98c2351c22848eefdb6c6a90f32b794efaf0036dc78529a4bdc439be6947"
+    },
+    {
+      "path": "ql/processes/eulerdiscretization.cpp",
+      "sha256": "015349716f686eba08253bdaf5fcccf332ca907361d918dabbce169ee2f8a9b9"
+    },
+    {
+      "path": "ql/termstructures/volatility/smilesection.cpp",
+      "sha256": "35ea79381bdc4c37ae3b85b25ebf48c3f55cc10590fab83685961b94dd2a17e3"
+    },
+    {
+      "path": "ql/utilities/dataformatters.cpp",
+      "sha256": "b571f8c938d195ef45aecc07a4624a1b528837bf8284253b3bca3976d8b9a1a2"
+    },
+    {
+      "path": "ql/pricingengines/blackformula.cpp",
+      "sha256": "ce3be75f94a5821dc80cf425bce6d483080371b3a494a82f616f25a6dc763a4d"
+    }
+  ],
+  "commit_date_utc": "2026-10-23T16:26:33Z",
+  "license_sha256": "2fe1326b5d2a234768fe912e378606946732709679fa25a254b02d5b3b00d76d",
+  "reference_files": [
+    {
+      "path": "test-suite/americanoption.cpp",
+      "sha256": "ee4bd6eb8afda97abc7667125e57dc97c8b3366ff4dc1abfc04189617fb554a9"
+    }
+  ]
+}
