@@ -374,3 +374,52 @@ swap of an identified row for a formerly price-only row.
 The separate development cold fit was **22.1222 seconds**, with 8.57% measured
 SMT-sibling activity. It is neither a quiet latency qualification nor a subsecond
 result. The expensive API/cold-reference audit is correctness evidence only.
+
+## Economic candidate: complete API audit at 13.03-second development fit
+
+Source `0a5b2bc1acfe0d0cc45caa0e9aa0a5925fb386ff` with explicit policy
+`bench/policies/spy-c4-economic-candidate.json` passes all 12 independent
+correctness gates in `acceptance/integrated-economic-v1-audit/verification-economic-v1.json`.
+The policy adds only the approved `.001` dollar cap and `.01` raw-spread fraction
+to each of the three prior candidate profiles. This is an opt-in candidate;
+historical default controls are unchanged.
+
+All 33 valid expiries and 12,866 eligible rows remain served, with 12,851 inside
+the original boxes (99.88341365%). Every served price string matches wave1;
+there are zero price changes. There are zero API shape/parity/calendar,
+between-node terminal-floor, raw-model or CSV/API metadata failures. All 12,430
+identified node IVs pass the original-row cold Reference price budget, maximum
+error **$0.0007096053236/share** (70.9605% of the row's budget), with no reliance
+on the separate roundoff allowance. Median/p95/p99 price residuals are
+`5.04485e-13` / `1.33296e-5` / `0.0002830024` USD.
+
+The frozen identification coverage passes with **zero demotions**. There are
+12,430 identified rows and 436 price-only rows: 247 baseline price-only rows now
+return identified values (196 formerly `low_vega`, 51 `unidentified_interval`).
+The strict IV diagnostic still reports 1,271 failures and 11,159 strict straddles;
+245 of the 247 newly identified values fail that tighter diagnostic. These are
+acceptable under the explicitly approved price contract, and do not establish
+strict IV or Greek accuracy. Maximum local `abs(residual/vega)` estimate is
+0.001899584 IV units; it remains a local conditioning diagnostic.
+
+The same frozen binary's separate one-core development profile was **13.0317839
+seconds**, one fit worker on performance core 6 with 3.42385% measured sibling
+activity. It is not a ThinLTO/100-trial qualification and remains far above the
+subsecond goal. The audit's additional cold/reference queries are excluded from
+that performance figure. `summary-v1.json` joins the audit hashes, comparison
+counts and these results.
+
+Exact evidence hashes:
+
+- Binary: `b7b78bb058944f716d9fe5f47e7d3d797ba01649555696cc53508190ff996b74`.
+- Policy: `007fc30921f0f87ea37dd3c59589bd5a00a8a6ea6cd8749560a35a2eb14b931a`.
+- Native audit: `0fb3e3cac9a2d35ec0708e13f0601afac4771eafa758241554867fc0c666f4ff`.
+- Audit/profile predictions, identical:
+  `8581165c8410f73d4284ab5222650c8d9728f0eb998ad5f7adf3cbcd0b3706aa`.
+- Verification: `409cf65eb5aad4e818d737bf4f4a18e134d82583b330e6e8f94047ca2ae099ce`.
+
+The integrated validation receipts report 11 native CLI cases, 19 archive cases,
+45 pricing cases and 322 quote-slice cases passing (two explicit opt-in tests
+skipped). Source review covers policy/provenance, copied trial budget state,
+catalog validation and explicit archive refusal/rollback for the new unpersisted
+fields. These checks support this candidate; they are not a latency qualification.
