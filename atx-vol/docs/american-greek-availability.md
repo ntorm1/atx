@@ -358,3 +358,14 @@ record-final,session-red,session-final,book-red,book-final,hygiene}.*.
 No numerical formula, admission rule, accuracy budget or timing claim changed.
 Python ServeBook mask export and additive backtest price coverage/carry remain
 follow-up work.
+
+The Python ServeBook chain result now exports the native fixed-five requested
+and supported masks as owning uint32 arrays, preserving its separate six-axis
+record reasons. Native enum buffers are converted after reacquiring the GIL;
+no enum object aliases NumPy integer storage. One runtime RED reproduced the
+missing keys; all 25 focused serve/session/contract tests and the owning binding
+PCH-off object pass. Mixed served/refused rows, direct-answer agreement, empty
+shapes and array lifetime remain explicit. The staged native module is SHA256
+bc64fef5a93f3b7abeb79419d359acd9aa4e6d8b6b30ba008268dab536293c47.
+Evidence is repair-iv/greek-tick-python-{red,final,hygiene}.*. This is availability
+propagation only; additive backtest price coverage/carry remains separate.

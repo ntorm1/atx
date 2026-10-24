@@ -573,10 +573,11 @@ void bind_book(py::module_ &m) {
                 theta(static_cast<py::ssize_t>(n));
             py::array_t<std::uint8_t> tick(static_cast<py::ssize_t>(n));
             std::vector<TickStatus> ticks(n);
+            std::vector<GreekFieldMask> requested(n), supported(n);
             std::vector<ServedChainStatement> statements(n);
             const ChainTickOutputs out{
                 {price.mutable_data(), n}, {delta.mutable_data(), n}, {gamma.mutable_data(), n},
-                {vega.mutable_data(), n},  {theta.mutable_data(), n}, ticks};
+                {vega.mutable_data(), n},  {theta.mutable_data(), n}, ticks, requested, supported};
             const ServedChainView chain{{expiry_id.data(), n}, k, sides};
             Status status;
             {
@@ -595,6 +596,8 @@ void bind_book(py::module_ &m) {
             py::array_t<bool> sampled(static_cast<py::ssize_t>(n));
             py::array_t<std::uint8_t> greek_reasons(py::array::ShapeContainer{
                 static_cast<py::ssize_t>(n), static_cast<py::ssize_t>(kServeGreekCount)});
+            py::array_t<std::uint32_t> requested_column(static_cast<py::ssize_t>(n)),
+                supported_column(static_cast<py::ssize_t>(n));
             for (std::size_t i = 0; i < n; ++i) {
               const ServedChainStatement &s = statements[i];
               cert.mutable_data()[i] = s.certificate_usd;
@@ -608,6 +611,8 @@ void bind_book(py::module_ &m) {
               map_cls.mutable_data()[i] = static_cast<std::uint8_t>(s.map_certificate_class);
               reason.mutable_data()[i] = static_cast<std::uint8_t>(s.price_only_reason);
               sampled.mutable_data()[i] = s.sampled;
+              requested_column.mutable_data()[i] = static_cast<std::uint32_t>(requested[i]);
+              supported_column.mutable_data()[i] = static_cast<std::uint32_t>(supported[i]);
               for (std::size_t j = 0; j < kServeGreekCount; ++j)
                 greek_reasons.mutable_data()[kServeGreekCount * i + j] =
                     static_cast<std::uint8_t>(s.greek_reasons[j]);
@@ -631,6 +636,8 @@ void bind_book(py::module_ &m) {
             d["iv_upper"] = std::move(iv_hi);
             d["sampled"] = std::move(sampled);
             d["greek_reasons"] = std::move(greek_reasons);
+            d["requested"] = std::move(requested_column);
+            d["supported"] = std::move(supported_column);
             d["version"] = reader.pinned().number;
             return d;
           },
@@ -639,7 +646,9 @@ void bind_book(py::module_ &m) {
           py::arg("tier_max") = ServeTier::Family,
           "Every contract from ONE pinned version: numpy columns (price, Greeks, tick_status) "
           "plus each ServedChainStatement field as a column (status / route / tier / "
-          "certificate_class / map_certificate_class / price_only_reason hold enum values).")
+          "certificate_class / map_certificate_class / price_only_reason hold enum values), "
+          "and owning uint32 requested/supported masks for Price/Delta/Gamma/Vega/Theta. "
+          "Availability is independent of route status and qualified Greek accuracy.")
       .def_property_readonly("pinned_version",
                              [](const ServeBookReader &r) { return r.pinned().number; })
       .def("refresh", &ServeBookReader::refresh);

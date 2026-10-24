@@ -700,7 +700,8 @@ export owning uint32 mask arrays plus uint8 `cold_reasons` `(N,9)` and
 Cold reasons use `AmericanGreekReason`; book reasons use `ServeGreekReason`
 (including Phi, a different axis from Vanna). The inactive reason payload is
 NotRequested. `ServeBookReader.serve_chain` also exports its verbatim `(N,6)`
-`greek_reasons`. A valid price may coexist with refused Greeks: route/model
+`greek_reasons` and owning uint32 `(N,)` `requested`/`supported` masks for the
+same five common axes. A valid price may coexist with refused Greeks: route/model
 statuses such as ESTIMATE or FALLBACK do not imply full Greek availability or
 qualified accuracy. PriceOnly book answers support only Price.
 The session keeps the surface alive and co-owns the book. The `VolaSession` overload and
