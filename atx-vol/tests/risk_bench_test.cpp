@@ -167,9 +167,12 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
   EXPECT_FALSE(d->sigma_node_spacing.has_value());
   EXPECT_FALSE(d->family_economics.has_value());
   EXPECT_FALSE(d->family_dynamic_schedule.has_value());
+  EXPECT_FALSE(d->family_node_cost_us.has_value());
+  EXPECT_FALSE(d->cold_lane_cost_us.has_value());
   const auto a = parse({"--store", "s", "--n-sigma", "12", "--n-sigma-min", "12",
                         "--sigma-box-pad", "0.25", "--sigma-node-spacing", "0.1",
-                        "--family-economics", "off", "--family-schedule", "dynamic"});
+                        "--family-economics", "off", "--family-schedule", "dynamic",
+                        "--family-node-cost-us", "33", "--cold-lane-cost-us", "140.5"});
   ASSERT_TRUE(a.has_value()) << a.error().to_string();
   EXPECT_EQ(a->n_sigma, std::optional<std::uint16_t>{12});
   EXPECT_EQ(a->n_sigma_min, std::optional<std::uint16_t>{12});
@@ -177,6 +180,8 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
   EXPECT_EQ(a->sigma_node_spacing, std::optional<double>{0.1});
   EXPECT_EQ(a->family_economics, std::optional<bool>{false});
   EXPECT_EQ(a->family_dynamic_schedule, std::optional<bool>{true});
+  EXPECT_EQ(a->family_node_cost_us, std::optional<double>{33.0});
+  EXPECT_EQ(a->cold_lane_cost_us, std::optional<double>{140.5});
   const auto b = parse({"--store", "s", "--family-economics", "on", "--family-schedule", "static"});
   ASSERT_TRUE(b.has_value()) << b.error().to_string();
   EXPECT_EQ(b->family_economics, std::optional<bool>{true});
@@ -189,6 +194,7 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
       {"--store", "s", "--sigma-node-spacing"},
       {"--store", "s", "--family-economics", "yes"},
       {"--store", "s", "--family-schedule", "auto"},
+      {"--store", "s", "--cold-lane-cost-us", "inf"},
   };
   for (const auto &argv : bad) {
     const auto r = parse(argv);
@@ -196,7 +202,8 @@ TEST(RiskBenchArgs, FamilyPolicyFlags) {
     EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
   }
   for (const char *flag : {"--n-sigma", "--n-sigma-min", "--sigma-box-pad",
-                           "--sigma-node-spacing", "--family-economics", "--family-schedule"}) {
+                           "--sigma-node-spacing", "--family-economics", "--family-schedule",
+                           "--family-node-cost-us", "--cold-lane-cost-us"}) {
     EXPECT_NE(rb::risk_bench_usage().find(flag), std::string::npos) << flag;
   }
 }

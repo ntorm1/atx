@@ -103,6 +103,8 @@ struct Snapshot {
   p.sigma_box_pad = args.sigma_box_pad.value_or(p.sigma_box_pad);
   p.sigma_node_spacing = args.sigma_node_spacing.value_or(p.sigma_node_spacing);
   p.family_economics = args.family_economics.value_or(p.family_economics);
+  p.family_node_cost_us = args.family_node_cost_us.value_or(p.family_node_cost_us);
+  p.cold_lane_cost_us = args.cold_lane_cost_us.value_or(p.cold_lane_cost_us);
   p.dynamic_schedule = args.family_dynamic_schedule.value_or(p.dynamic_schedule);
   return p;
 }

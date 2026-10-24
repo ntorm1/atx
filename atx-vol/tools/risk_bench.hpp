@@ -77,6 +77,8 @@ struct RiskBenchArgs {
   std::optional<double> sigma_box_pad;         // --sigma-box-pad X
   std::optional<double> sigma_node_spacing;    // --sigma-node-spacing X (log sigma)
   std::optional<bool> family_economics;        // --family-economics on|off
+  std::optional<double> family_node_cost_us;   // --family-node-cost-us X
+  std::optional<double> cold_lane_cost_us;     // --cold-lane-cost-us X
   std::optional<bool> family_dynamic_schedule; // --family-schedule static|dynamic
 
   // The store the run reads: the synthetic dir when set, else --store.

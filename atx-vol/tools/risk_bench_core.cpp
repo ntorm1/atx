@@ -214,13 +214,21 @@ constexpr std::array<BoolFlag, 4> kBoolFlags{{{"--help", &RiskBenchArgs::help},
     (flag == "--n-sigma" ? a.n_sigma : a.n_sigma_min) = n;
     return Ok();
   }
-  if (flag == "--sigma-box-pad" || flag == "--sigma-node-spacing") {
+  constexpr std::array<std::pair<std::string_view, std::optional<double> RiskBenchArgs::*>, 4>
+      kDoubles{{{"--sigma-box-pad", &RiskBenchArgs::sigma_box_pad},
+                {"--sigma-node-spacing", &RiskBenchArgs::sigma_node_spacing},
+                {"--family-node-cost-us", &RiskBenchArgs::family_node_cost_us},
+                {"--cold-lane-cost-us", &RiskBenchArgs::cold_lane_cost_us}}};
+  for (const auto &[name, field] : kDoubles) {
+    if (flag != name) {
+      continue;
+    }
     const std::optional<std::string_view> v = c.value();
     const std::optional<double> x = v.has_value() ? parse_finite(*v) : std::nullopt;
     if (!x.has_value()) {
       return Status{Err(usage_error("bad or missing value for " + std::string{flag}))};
     }
-    (flag == "--sigma-box-pad" ? a.sigma_box_pad : a.sigma_node_spacing) = *x;
+    a.*field = *x;
     return Ok();
   }
   if (flag == "--family-economics") {
@@ -330,6 +338,7 @@ std::string risk_bench_usage() {
          "  --sigma-box-pad X    sigma box pad\n"
          "  --sigma-node-spacing X  adaptive log-sigma node spacing\n"
          "  --family-economics on|off  route uneconomic groups cold-analytic\n"
+         "  --family-node-cost-us X / --cold-lane-cost-us X  the economics cost constants\n"
          "  --family-schedule static|dynamic  block fan-out: run_blocks | run_dynamic\n"
          "  --help               this text\n"
          "exit: 0 ok, 1 runtime error, 2 usage error\n";
