@@ -113,6 +113,9 @@ enables `graded.terminal_floor_recovery`: the library enforces terminal floors a
 widens only directly conflicting asks in its projection boxes, while scoring
 against the original input quotes. Reports expose the number and largest dollar
 amount of ask corrections, plus native repaired-price inversion counters.
+Ask-correction counts belong to each repair attempt: a quote normalized in both
+slice and joint projection can appear twice. Unique departures are counted from
+the final raw-input comparison, never by summing repair counters.
 It is a candidate,
 not a qualified or default-promoted policy. No host-dependent wall budget is used.
 
