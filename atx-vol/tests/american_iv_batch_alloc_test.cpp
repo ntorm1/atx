@@ -18,6 +18,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "pricing/american_iv_batch.hpp"
+#include "pricing/american_iv_candidate_capture.hpp"
 #include "pricing/american_sigma_q_family.hpp"
 #include "support/alloc_counter.hpp"
 
@@ -26,6 +27,51 @@ namespace {
 
 namespace sq = sigma_q_family_detail;
 namespace ib = iv_batch;
+
+TEST(IvCandidateCaptureAlloc, EscapingAllocationFailureRecordsOnlyAttemptedPhase) {
+  research::IvPriceCandidateTrace trace;
+  // Register the always-on ledger and exercise the error path before injection.
+  EXPECT_FALSE(research::american_implied_vol_price_candidate_traced(
+      10., -100., 100., 1., .05, 0., Side::Put, IvOpts{}, .001, trace));
+  testkit::alloc_counter_arm();
+  testkit::alloc_counter_fail_once_at(1);
+  const auto answer = research::american_implied_vol_price_candidate_traced(
+      10., -100., 100., 1., .05, 0., Side::Put, IvOpts{}, .001, trace);
+  const auto allocations = testkit::alloc_counter_disarm();
+  EXPECT_FALSE(answer);
+  EXPECT_EQ(allocations, 1u);
+  EXPECT_TRUE(trace.complete);
+  EXPECT_EQ(trace.outcome, research::IvCandidateOutcome::AllocationFailure);
+  EXPECT_TRUE(trace.phases[0].visited);
+  EXPECT_TRUE(trace.phases[0].complete);
+  EXPECT_EQ(trace.phases[0].outcome, research::IvCandidatePhaseOutcome::AllocationFailure);
+  EXPECT_FALSE(trace.phases[0].error);
+  for (std::size_t i = 1; i < trace.phases.size(); ++i) {
+    EXPECT_FALSE(trace.phases[i].visited);
+    EXPECT_FALSE(trace.phases[i].complete);
+  }
+  EXPECT_EQ(trace.work, (research::IvCandidateWork{}));
+}
+
+TEST(IvCandidateCaptureAlloc, BoundedObservationAddsNoAllocation) {
+  if (!research::iv_candidate_capture_enabled()) GTEST_SKIP() << "explicit capture build required";
+  research::IvPriceCandidateTrace warm;
+  EXPECT_FALSE(research::american_implied_vol_price_candidate_traced(
+      10., 100., 100., 1., .05, 0., Side::Put, IvOpts{}, 0., warm));
+  std::array<research::IvCandidateCaptureRecord, 1> records;
+  std::array<research::IvCandidateCacheLifetime, 1> caches;
+  research::IvCandidateCapture capture(records, caches);
+  const auto allocations = testkit::count_allocations([&] {
+    research::IvCandidateCaptureScope scope(capture);
+    IvPriceSeedFloorCache cache;
+    (void)american_implied_vol_price_candidate(10., 100., 100., 1., .05, 0., Side::Put,
+        IvOpts{}, 0., nullptr, IvPriceProposalKernel::ScreenThenFast, &cache);
+  });
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_TRUE(capture.valid());
+  ASSERT_EQ(capture.records().size(), 1u);
+  EXPECT_EQ(capture.records()[0].trace.outcome, research::IvCandidateOutcome::InvalidControls);
+}
 
 TEST(IvBatchAlloc, QueryLoopAllocatesNothing) {
   constexpr std::size_t n = 30;

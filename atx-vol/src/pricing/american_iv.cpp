@@ -22,6 +22,9 @@
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_seed_batch.hpp"
 #include "pricing/american_iv_candidate_trace.hpp"
+#ifdef ATX_VOL_CAPTURE_PRICE_CANDIDATES
+#include "pricing/american_iv_candidate_capture.hpp"
+#endif
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
 #if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
 #include "pricing/american_iv_seed_capture.hpp"
@@ -2923,8 +2926,27 @@ struct IvPriceSeedFloorCache::State {
   // Declared after geometry so the borrowed handle is destroyed first.
   std::unique_ptr<AlBoundaryHandle> handle;
 };
-IvPriceSeedFloorCache::IvPriceSeedFloorCache() noexcept = default;
-IvPriceSeedFloorCache::~IvPriceSeedFloorCache() = default;
+IvPriceSeedFloorCache::IvPriceSeedFloorCache() noexcept {
+#ifdef ATX_VOL_CAPTURE_PRICE_CANDIDATES
+  research::candidate_capture_cache_created(this);
+#endif
+}
+IvPriceSeedFloorCache::~IvPriceSeedFloorCache() {
+#ifdef ATX_VOL_CAPTURE_PRICE_CANDIDATES
+  research::candidate_capture_cache_destroyed(this);
+#endif
+}
+IvPriceSeedFloorSnapshot IvPriceSeedFloorCache::snapshot() const noexcept {
+  IvPriceSeedFloorSnapshot result;
+  result.preparations = preparations_;
+  result.hits = hits_;
+  for (std::size_t i = 0; i < states_.size(); ++i) {
+    if (const auto &state = states_[i])
+      result.slots[i] = {true, state->anchor, state->T, state->r, state->q,
+                        state->side, state->opts};
+  }
+  return result;
+}
 std::optional<double> IvPriceSeedFloorCache::price(double S, double K, double T, double r,
     double q, Side side, const std::optional<AlOpts> &opts) noexcept {
   if (!(S > 0.0 && K > 0.0 && T > 0.0) || !std::isfinite(S) ||
@@ -3209,12 +3231,14 @@ public:
         opts.refuse_non_monotone, opts.strategy, opts.seed_profile};
     trace_.kernel = kernel;
     trace_.floor_cache_present = floor_cache != nullptr;
+    if (floor_cache_ != nullptr) trace_.floor_before = floor_cache_->snapshot();
   }
   ~CandidateObservation() {
     trace_.work = candidate_delta(work_);
     trace_.floor_preparations = preparations() - preparations_;
     trace_.floor_hits = hits() - hits_;
     trace_.stats = stats_;
+    if (floor_cache_ != nullptr) trace_.floor_after = floor_cache_->snapshot();
     trace_.elapsed_ns = candidate_elapsed(start_);
     trace_.complete = true;
   }
@@ -3385,6 +3409,14 @@ std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
     IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache) noexcept {
+#ifdef ATX_VOL_CAPTURE_PRICE_CANDIDATES
+  if (auto *trace = research::candidate_capture_record(floor_cache)) {
+    const auto answer = research::american_implied_vol_price_candidate_traced(price,
+        S, K, T, r, q, side, opts, max_price_error, *trace, proposal_kernel, floor_cache);
+    if (stats != nullptr) *stats = trace->stats;
+    return answer;
+  }
+#endif
   NoCandidateObservation observation;
   return price_candidate_observed(price, S, K, T, r, q, side, opts, max_price_error,
       stats, proposal_kernel, floor_cache, observation);

@@ -96,6 +96,7 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/american_sigma_q_family_greeks.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
+    src/pricing/american_iv_candidate_capture.cpp
     # K3 (r5): the (sigma, q) family's error envelope and root-acceptance context
     src/pricing/american_family_error.cpp
     src/pricing/dividend.cpp
@@ -1116,6 +1117,11 @@ if(ATX_BUILD_TOOLS)
     endif()
     option(ATX_VOL_BUILD_GREEK_AUDIT "Build offline Greek corpus diagnostics" OFF)
     option(ATX_VOL_CAPTURE_COLD_SEEDS "Research-only cold seed CSV observation" OFF)
+    option(ATX_VOL_CAPTURE_PRICE_CANDIDATES "Research-only bounded proposal/proof capture" OFF)
+    if(ATX_VOL_CAPTURE_PRICE_CANDIDATES)
+        set_property(SOURCE src/pricing/american_iv.cpp src/pricing/american_iv_candidate_capture.cpp
+            APPEND PROPERTY COMPILE_DEFINITIONS ATX_VOL_CAPTURE_PRICE_CANDIDATES=1)
+    endif()
     if(ATX_VOL_CAPTURE_COLD_SEEDS AND ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
         message(FATAL_ERROR "Scalar cold-seed capture cannot observe an empirical-vector binary")
     endif()

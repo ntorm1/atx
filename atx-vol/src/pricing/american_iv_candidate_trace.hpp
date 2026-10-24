@@ -61,6 +61,7 @@ struct IvPriceCandidateTrace {
   std::uint64_t elapsed_ns = 0;
   IvCandidateWork work{};
   std::uint64_t floor_preparations = 0, floor_hits = 0;
+  IvPriceSeedFloorSnapshot floor_before, floor_after;
 };
 
 // Runs precisely the original conditional proposal/proof chain with owned

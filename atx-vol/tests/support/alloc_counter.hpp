@@ -17,6 +17,9 @@
 namespace atx::vol::testkit {
 
 void alloc_counter_arm() noexcept;
+// After arming, fail exactly the allocation with this one-based ordinal on the
+// calling thread. Zero disables injection. Disarming also clears injection.
+void alloc_counter_fail_once_at(std::uint64_t ordinal) noexcept;
 [[nodiscard]] std::uint64_t alloc_counter_disarm() noexcept;
 
 template <class Fn> [[nodiscard]] std::uint64_t count_allocations(Fn &&fn) {

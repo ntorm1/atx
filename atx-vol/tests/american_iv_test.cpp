@@ -30,6 +30,7 @@
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_seed_batch.hpp"
 #include "pricing/american_iv_candidate_trace.hpp"
+#include "pricing/american_iv_candidate_capture.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/core/types.hpp"
 
@@ -4908,4 +4909,138 @@ TEST(AmericanIvCandidateTrace, InvalidRequestPreservesErrorsAndSkipsEveryProof) 
     EXPECT_EQ(trace.phases[i].outcome, research::IvCandidatePhaseOutcome::NotVisited);
   }
   EXPECT_EQ(trace.work, (research::IvCandidateWork{}));
+}
+
+TEST(AmericanIvCandidateCapture, ReusedCacheAddressGetsDistinctClosedLifetimes) {
+  using namespace atx::vol;
+  if (!research::iv_candidate_capture_enabled()) GTEST_SKIP() << "explicit capture build required";
+  std::array<research::IvCandidateCaptureRecord, 2> records;
+  std::array<research::IvCandidateCacheLifetime, 2> caches;
+  research::IvCandidateCapture capture(records, caches);
+  const double price = cold_al(773., 780., 1. / 365., .35, .045, .01, Side::Put);
+  const auto expected = american_implied_vol_price_candidate(price, 773., 780.,
+      1. / 365., .045, .01, Side::Put, IvOpts{}, .001);
+  ASSERT_TRUE(expected);
+  {
+    research::IvCandidateCaptureScope scope(capture);
+    ASSERT_TRUE(scope.attached());
+    std::optional<IvPriceSeedFloorCache> cache;
+    for (std::size_t i = 0; i < 2; ++i) {
+      cache.emplace(); // the same optional storage, a distinct owner lifetime
+      ASSERT_TRUE(cache->price(773., 780., 1. / 365., .045, .01, Side::Put, std::nullopt));
+      const auto answer = american_implied_vol_price_candidate(price, 773., 780.,
+          1. / 365., .045, .01, Side::Put, IvOpts{}, .001, nullptr,
+          IvPriceProposalKernel::ScreenThenFast, &*cache);
+      ASSERT_TRUE(answer);
+      EXPECT_TRUE(same_double(*answer, *expected));
+      cache.reset();
+    }
+  }
+  ASSERT_TRUE(capture.valid());
+  ASSERT_EQ(capture.records().size(), 2u);
+  ASSERT_EQ(capture.cache_lifetimes().size(), 2u);
+  EXPECT_NE(records[0].cache_id, records[1].cache_id);
+  EXPECT_EQ(caches[0].address, caches[1].address);
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    EXPECT_EQ(records[i].sequence, i);
+    EXPECT_TRUE(records[i].trace.complete);
+    EXPECT_TRUE(caches[i].closed);
+    EXPECT_EQ(caches[i].created_before_call, i);
+    EXPECT_EQ(caches[i].closed_after_calls, i + 1);
+    EXPECT_EQ(records[i].trace.floor_before.preparations, 1u);
+    EXPECT_EQ(records[i].trace.floor_before.hits, 0u);
+    EXPECT_EQ(records[i].trace.floor_after.preparations, 1u);
+    EXPECT_EQ(records[i].trace.floor_after.hits, 1u);
+    EXPECT_TRUE(records[i].trace.floor_before.slots[1].prepared); // put slot
+    EXPECT_DOUBLE_EQ(records[i].trace.floor_before.slots[1].anchor, 780.);
+    EXPECT_DOUBLE_EQ(records[i].trace.floor_before.slots[1].T, 1. / 365.);
+    EXPECT_FALSE(records[i].trace.floor_before.slots[1].opts);
+  }
+}
+
+TEST(AmericanIvCandidateCapture, ExhaustionAndIncompleteRecordsCannotBecomeEvidence) {
+  using namespace atx::vol;
+  if (!research::iv_candidate_capture_enabled()) GTEST_SKIP() << "explicit capture build required";
+  std::array<research::IvCandidateCaptureRecord, 1> records;
+  std::array<research::IvCandidateCacheLifetime, 1> caches;
+  const double price = cold_al(773., 780., 1. / 365., .35, .045, .01, Side::Put);
+  for (int failure = 0; failure < 3; ++failure) {
+    const bool overflow = failure == 2;
+    research::IvCandidateCapture capture(records, caches);
+    {
+      research::IvCandidateCaptureScope scope(capture);
+      for (unsigned i = 0; i < (overflow ? 2u : 1u); ++i)
+        EXPECT_TRUE(american_implied_vol_price_candidate(price, 773., 780.,
+            1. / 365., .045, .01, Side::Put, IvOpts{}, .001));
+      if (failure == 0) records[0].trace.complete = false;
+      if (failure == 1) records[0].trace.phases[0].complete = false;
+    }
+    EXPECT_FALSE(capture.valid());
+    EXPECT_EQ(capture.attempted_calls(), overflow ? 2u : 1u);
+    EXPECT_EQ(capture.records().size(), 1u);
+    EXPECT_EQ(capture.record_overflow(), overflow);
+  }
+}
+
+TEST(AmericanIvCandidateCapture, ForeignOwnersNestedScopesAndOtherThreadsFailClosed) {
+  using namespace atx::vol;
+  if (!research::iv_candidate_capture_enabled()) GTEST_SKIP() << "explicit capture build required";
+  const double price = cold_al(773., 780., 1. / 365., .35, .045, .01, Side::Put);
+  for (int failure = 0; failure < 3; ++failure) {
+    std::array<research::IvCandidateCaptureRecord, 2> records;
+    std::array<research::IvCandidateCacheLifetime, 2> caches;
+    research::IvCandidateCapture capture(records, caches);
+    IvPriceSeedFloorCache foreign_cache;
+    {
+      research::IvCandidateCaptureScope scope(capture);
+      ASSERT_TRUE(scope.attached());
+      if (failure == 0) {
+        EXPECT_TRUE(american_implied_vol_price_candidate(price, 773., 780., 1. / 365.,
+            .045, .01, Side::Put, IvOpts{}, .001, nullptr,
+            IvPriceProposalKernel::ScreenThenFast, &foreign_cache));
+      } else if (failure == 1) {
+        research::IvCandidateCaptureScope nested(capture);
+        EXPECT_FALSE(nested.attached());
+      } else {
+        bool accepted = false;
+        std::thread worker([&] {
+          accepted = american_implied_vol_price_candidate(price, 773., 780., 1. / 365.,
+              .045, .01, Side::Put, IvOpts{}, .001).has_value();
+        });
+        worker.join();
+        EXPECT_TRUE(accepted);
+      }
+    }
+    EXPECT_FALSE(capture.valid());
+  }
+}
+
+TEST(AmericanIvCandidateCapture, ExhaustedOrUnclosedCacheOwnershipCannotBecomeEvidence) {
+  using namespace atx::vol;
+  if (!research::iv_candidate_capture_enabled()) GTEST_SKIP() << "explicit capture build required";
+  for (const bool exhausted : {false, true}) {
+    std::array<research::IvCandidateCaptureRecord, 1> records;
+    std::array<research::IvCandidateCacheLifetime, 1> caches;
+    research::IvCandidateCapture capture(records,
+        std::span(caches).first(exhausted ? 0u : 1u));
+    std::optional<IvPriceSeedFloorCache> cache;
+    {
+      research::IvCandidateCaptureScope scope(capture);
+      cache.emplace();
+      EXPECT_FALSE(american_implied_vol_price_candidate(10., 100., 100., 1., .05,
+          0., Side::Put, IvOpts{}, 0., nullptr,
+          IvPriceProposalKernel::ScreenThenFast, &*cache));
+      if (exhausted) cache.reset();
+    }
+    EXPECT_FALSE(capture.valid());
+    EXPECT_EQ(capture.cache_overflow(), exhausted);
+    if (!exhausted) {
+      ASSERT_EQ(capture.cache_lifetimes().size(), 1u);
+      EXPECT_FALSE(capture.cache_lifetimes()[0].closed);
+      cache.reset(); // after scope cannot retroactively validate its ownership
+      EXPECT_FALSE(capture.valid());
+    }
+    research::IvCandidateCaptureScope second(capture);
+    EXPECT_FALSE(second.attached());
+  }
 }

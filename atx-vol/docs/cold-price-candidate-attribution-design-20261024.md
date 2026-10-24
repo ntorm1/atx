@@ -168,3 +168,40 @@ serialize a capture, or establish the 700/684/16 whole-SPY join. Bounded collect
 exhaustion, incomplete receipt rejection, whole-fit parity and isolated replay
 remain required before using the design for architectural conclusions. Runtime
 allocation-failure injection is also not claimed by these five tests.
+
+## Bounded capture component
+
+The follow-up `american_iv_candidate_capture.hpp/.cpp` adds a default-off
+`ATX_VOL_CAPTURE_PRICE_CANDIDATES` build mode. Only the owning pricing source
+and collector source receive this definition. The ordinary build retains the
+empty observer specialization; enabled builds dispatch to the same traced body
+only while an explicit scope is attached. There is no file I/O in the scope.
+
+The caller owns fixed-capacity record and cache-lifetime buffers. Capture records
+keep ordered call IDs and exact cache-lifetime IDs. Cache construction/destruction
+hooks distinguish reused addresses; a pointer value alone is never a lifetime
+identity. Before/after value snapshots include both actual prepared slot keys,
+raw optional options and preparation/hit counts. This preserves floor work that
+occurred before the first candidate, without inventing an empty initial cache.
+
+Evidence fails closed on record/cache exhaustion, an incomplete call, an unknown
+cache owner, an unclosed cache, scope reuse, nested scopes or foreign-thread
+activity. The scope is single-threaded and all workers must join before it ends.
+Foreign threads touch process-lifetime atomics only, never the scoped buffers.
+Numerical calls still execute their original path when a record cannot be stored;
+failed evidence cannot become a partial successful capture.
+
+Four capture controls and the five trace controls pass with 19 existing
+nonmonotone controls (28 total). The isolated allocation binary additionally
+passes three controls: the original zero-allocation batch query, zero-allocation
+bounded observation after ledger registration, and an injected first-allocation
+failure. That last control was runtime RED with injection disabled; it now records
+only the attempted Screen proposal as AllocationFailure, with no invented later
+phase. The test allocator's fail-once switch is thread-local and resets on
+arm/disarm; ordinary allocation counting is unchanged. These receipts are
+`acceptance/price-candidate-capture-*` under the frozen r7 evidence root.
+
+This component still does not serialize a whole fit or establish the 700/684/16
+join. The executable exporter, independent complete-capture verifier, exact
+whole-fit prediction comparison and full scalar API audit remain separate gates.
+No latency or architectural conclusion follows from these local controls.

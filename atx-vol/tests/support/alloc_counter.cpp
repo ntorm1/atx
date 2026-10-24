@@ -11,18 +11,25 @@
 namespace {
 thread_local bool t_armed = false;
 thread_local std::uint64_t t_count = 0;
+thread_local std::uint64_t t_fail_at = 0;
 } // namespace
 
 namespace atx::vol::testkit {
 
 void alloc_counter_arm() noexcept {
   t_count = 0;
+  t_fail_at = 0;
   t_armed = true;
 }
 
 std::uint64_t alloc_counter_disarm() noexcept {
   t_armed = false;
+  t_fail_at = 0;
   return t_count;
+}
+
+void alloc_counter_fail_once_at(std::uint64_t ordinal) noexcept {
+  t_fail_at = ordinal;
 }
 
 } // namespace atx::vol::testkit
@@ -30,6 +37,10 @@ std::uint64_t alloc_counter_disarm() noexcept {
 void *operator new(std::size_t sz) {
   if (t_armed) {
     ++t_count;
+    if (t_fail_at != 0 && t_count == t_fail_at) {
+      t_fail_at = 0;
+      throw std::bad_alloc();
+    }
   }
   void *p = std::malloc(sz != 0 ? sz : 1);
   if (p == nullptr) {
