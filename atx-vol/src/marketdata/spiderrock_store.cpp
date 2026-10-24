@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <string>
@@ -966,6 +968,7 @@ Result<SpiderRockBucket> load_spiderrock_bucket(const SpiderRockStoreSpec &spec,
   out.date = spec.date;
   out.bucket_et = std::string{bucket_et};
   out.ts_ns = ts_ns;
+  out.carry_mode = spec.carry_mode;
   Decoder d{admitted, out};
   for (const OpenedFile &f : files) {
     ATX_TRY_VOID(decode_file(f, d));
@@ -1014,14 +1017,16 @@ namespace {
   return hi >= lo ? hi - lo : 0.0;
 }
 
+
 [[nodiscard]] Status check_bucket_shape(const SpiderRockBucket &b) {
   const std::size_t n = b.sigma.size();
   const bool core = b.uid.size() == n && b.strike.size() == n && b.expiry_ns.size() == n &&
                     b.side.size() == n && b.uprc.size() == n && b.rate.size() == n &&
                     b.sdiv.size() == n && b.ddiv.size() == n;
-  const bool vendor = (b.vendor_price.empty() || b.vendor_price.size() == n) &&
-                      (b.vendor_delta.empty() || b.vendor_delta.size() == n) &&
-                      (b.ddiv_pv.empty() || b.ddiv_pv.size() == n);
+  auto empty_or_n = [n](const std::vector<double> &v) { return v.empty() || v.size() == n; };
+  const bool vendor = empty_or_n(b.vendor_price) && empty_or_n(b.vendor_delta) &&
+                      empty_or_n(b.vendor_T) && empty_or_n(b.bid) && empty_or_n(b.ask) &&
+                      empty_or_n(b.ddiv_pv);
   if (!core || !vendor) {
     return Err(ErrorCode::InvalidArgument,
                "market_state_from_bucket: bucket columns have inconsistent lengths");
@@ -1029,12 +1034,200 @@ namespace {
   return Ok();
 }
 
+// ── Implied carry (SpiderRockCarryMode::ImpliedFromCalls) ──────────────────
+
+using Clock = std::chrono::steady_clock;
+
+constexpr double kImpliedLoSpot = 0.2; // F bracket [0.2, 5] x spot
+constexpr double kImpliedHiSpot = 5.0;
+constexpr double kImpliedTolRel = 1e-10;
+constexpr int kImpliedMaxSteps = 100;
+constexpr double kImpliedMinSigma = 0.01; // srVol admitted in (0.01, 3]
+constexpr double kImpliedMaxSigma = 3.0;
+
+[[nodiscard]] double norm_cdf(double x) noexcept {
+  return 0.5 * std::erfc(-x / std::numbers::sqrt2);
+}
+
+struct PriceInF {
+  double f;  // price - target
+  double df; // d price / dF = e^{-rT} N(d1) > 0
+  double d1;
+};
+
+// European Black call on the forward, e^{-rT}[F N(d1) - K N(d2)], minus `target`, with
+// its F-derivative; the price is increasing and convex in F, with
+// d2 price / dF2 = e^{-rT} phi(d1) / (F sd) (curvature()).
+struct BlackCallInF {
+  double target;
+  double K;
+  double sd;   // sigma sqrt(T)
+  double disc; // e^{-rT}
+  [[nodiscard]] PriceInF eval(double F) const noexcept {
+    const double d1 = (std::log(F / K) + 0.5 * sd * sd) / sd;
+    const double n1 = norm_cdf(d1);
+    return {disc * (F * n1 - K * norm_cdf(d1 - sd)) - target, disc * n1, d1};
+  }
+  [[nodiscard]] double curvature(double F, double d1) const noexcept {
+    return disc * std::exp(-0.5 * d1 * d1) / (std::sqrt(2.0 * std::numbers::pi) * F * sd);
+  }
+};
+
+// The forward F in the bracket [lo, hi] at which the European Black call prices
+// `fn.target`, to kImpliedTolRel relative, in <= kImpliedMaxSteps price evaluations:
+// Newton steps from `guess`, each safeguarded by the bracket, which shrinks to every
+// evaluated point (a step that would leave it bisects instead). Converged when the Newton
+// correction dx is within the tolerance, or when the step lands inside the bracket and the
+// error it leaves, (f'' / 2 f') dx^2 by Newton's quadratic convergence, is under a
+// thousandth of the tolerance (saving the confirming evaluation). That estimate is trusted
+// only for a step over which d1 moves by <= 0.01, so the curvature at x bounds the
+// curvature along the step: far from the root (deep in the money, f'' ~ 0) it would
+// otherwise accept a linear extrapolation. The bracket ends are NOT priced up front: a
+// target outside [price(lo), price(hi)] never converges, the bracket collapses onto one
+// end without a sign change, and that is nullopt (as are NaN prices and running out of
+// steps). Pure bisection would need ~36 evaluations per call; a warm-started Newton needs
+// ~2, which keeps a bucket's ~75k inversions near the brief's 20 ms.
+[[nodiscard]] std::optional<double> forward_from_call(const BlackCallInF &fn, double lo,
+                                                      double hi, double guess) noexcept {
+  bool lo_bracketed = false; // an evaluated point below the root (price < target)
+  bool hi_bracketed = false; // an evaluated point above it
+  double x = (std::isfinite(guess) && guess > lo && guess < hi) ? guess : 0.5 * (lo + hi);
+  for (int step = 0; step < kImpliedMaxSteps; ++step) {
+    const auto [fx, dfx, d1x] = fn.eval(x);
+    if (!std::isfinite(fx)) {
+      return std::nullopt;
+    }
+    if (fx == 0.0) {
+      return x;
+    }
+    if (fx < 0.0) {
+      lo = x;
+      lo_bracketed = true;
+    } else {
+      hi = x;
+      hi_bracketed = true;
+    }
+    const double dx = dfx > 0.0 ? fx / dfx : std::numeric_limits<double>::infinity();
+    const double newton = x - dx;
+    if (std::abs(dx) <= kImpliedTolRel * x) { // x is in the bracket; so is newton, to tol
+      return newton;
+    }
+    const bool inside = newton > lo && newton < hi;
+    const bool local = std::abs(dx) <= 0.01 * fn.sd * x; // d1 moves <= 0.01 over the step
+    if (inside && local &&
+        0.5 * fn.curvature(x, d1x) / dfx * dx * dx <= 1e-3 * kImpliedTolRel * newton) {
+      return newton;
+    }
+    const double next = inside ? newton : 0.5 * (lo + hi);
+    if (hi - lo <= kImpliedTolRel * next) {
+      return lo_bracketed && hi_bracketed ? std::optional<double>{next} : std::nullopt;
+    }
+    x = next;
+  }
+  return std::nullopt;
+}
+
+// Linear interpolation between the order statistics of sorted `v` at (n - 1) p.
+[[nodiscard]] double sorted_quantile(std::span<const double> v, double p) noexcept {
+  const double pos = p * static_cast<double>(v.size() - 1);
+  const auto i = static_cast<std::size_t>(pos);
+  const double frac = pos - static_cast<double>(i);
+  return i + 1 < v.size() ? v[i] + frac * (v[i + 1] - v[i]) : v[i];
+}
+
+struct ImpliedForward {
+  double forward{kNaN};
+  double iqr_rel{kNaN};
+  std::size_t n_calls{0};
+  bool accepted{false};
+};
+
+// The forward the expiry's OTM calls imply (SpiderRockCarryMode in the header): `run` is
+// the (uid, expiry) rows, `c` its Published row (rate, and the Newton start).
+[[nodiscard]] ImpliedForward implied_forward(const SpiderRockBucket &b,
+                                             std::span<const std::size_t> run, double spot,
+                                             const ExpiryCarry &c, std::vector<double> &fs,
+                                             std::vector<double> &scratch) {
+  ImpliedForward out;
+  const double T = median_of(b.vendor_T, run, scratch); // the clock srPrc was computed on
+  if (!(std::isfinite(T) && T > 0.0 && std::isfinite(c.rate))) {
+    return out;
+  }
+  const double disc = std::exp(-c.rate * T);
+  // Newton starts at the Published forward, then at the previous call's F: the calls of
+  // one expiry imply nearly one forward, so a warm start converges in ~3 evaluations.
+  double guess = (spot - c.pv_divs) * std::exp((c.rate - c.q) * T);
+  fs.clear();
+  for (const std::size_t r : run) {
+    const double K = b.strike[r];
+    const double price = b.vendor_price[r];
+    const double sigma = b.sigma[r];
+    const bool usable = b.side[r] == Side::Call && K >= spot && b.bid[r] > 0.0 &&
+                        b.ask[r] >= b.bid[r] && std::isfinite(price) && price > 0.0 &&
+                        sigma > kImpliedMinSigma && sigma <= kImpliedMaxSigma;
+    if (!usable) {
+      continue;
+    }
+    const BlackCallInF fn{.target = price, .K = K, .sd = sigma * std::sqrt(T), .disc = disc};
+    if (const std::optional<double> F =
+            forward_from_call(fn, kImpliedLoSpot * spot, kImpliedHiSpot * spot, guess)) {
+      fs.push_back(*F);
+      guess = *F;
+    }
+  }
+  out.n_calls = fs.size();
+  if (fs.empty()) {
+    return out;
+  }
+  std::sort(fs.begin(), fs.end());
+  out.forward = sorted_quantile(fs, 0.5);
+  out.iqr_rel = (sorted_quantile(fs, 0.75) - sorted_quantile(fs, 0.25)) / out.forward;
+  out.accepted = out.n_calls >= kImpliedCarryMinCalls && out.iqr_rel <= kImpliedCarryMaxIqrRel;
+  return out;
+}
+
+// ── Per-uid state rows ───────────────────────────────────────────────────────
+
+// Everything one state build threads through its per-uid steps.
+struct StateBuild {
+  const SpiderRockBucket &b;
+  const TimeSpec &time;
+  bool implied; // ImpliedFromCalls AND the vendor price / years / quote columns exist
+  BucketStateReport &rep;
+  std::vector<SpiderRockExpiryForward> *forwards;
+  std::vector<double> scratch{};
+  std::vector<double> fs{};
+};
+
+// T on the state's clock; NaN when the clock refuses (VolTime outside its calendar).
+[[nodiscard]] double state_T(const StateBuild &sb, std::int64_t expiry_ns) {
+  const Result<double> T = time_to_expiry_years(sb.b.ts_ns, expiry_ns, sb.time);
+  return T.has_value() ? *T : kNaN;
+}
+
+// The design-D4 row from the medians over the expiry's rows.
+[[nodiscard]] ExpiryCarry published_carry(StateBuild &sb, std::span<const std::size_t> run,
+                                          const UnderlierState &u) {
+  const SpiderRockBucket &b = sb.b;
+  ExpiryCarry c;
+  c.expiry_ns = b.expiry_ns[run.front()];
+  // D4 wants the PRESENT value: ddivPv when the column exists (an all-NULL expiry falls
+  // back to ddiv), else ddiv.
+  const double pv_ddiv = or_else(median_of(b.ddiv, run, sb.scratch), 0.0);
+  c.pv_divs =
+      b.ddiv_pv.empty() ? pv_ddiv : or_else(median_of(b.ddiv_pv, run, sb.scratch), pv_ddiv);
+  c.rate = or_else(median_of(b.rate, run, sb.scratch), u.flat_rate);
+  c.q = or_else(median_of(b.sdiv, run, sb.scratch), u.flat_q);
+  sb.rep.max_ddiv_spread = std::max(sb.rep.max_ddiv_spread,
+                                    finite_spread(b.ddiv_pv.empty() ? b.ddiv : b.ddiv_pv, run));
+  return c;
+}
+
 // The (uid, expiry) carry rows of one uid; `rows` is the uid's run in key order.
-[[nodiscard]] std::vector<ExpiryCarry> expiry_carries(const SpiderRockBucket &b,
+[[nodiscard]] std::vector<ExpiryCarry> expiry_carries(StateBuild &sb,
                                                       std::span<const std::size_t> rows,
-                                                      const UnderlierState &u,
-                                                      BucketStateReport &rep,
-                                                      std::vector<double> &scratch) {
+                                                      const UnderlierState &u) {
+  const SpiderRockBucket &b = sb.b;
   std::vector<ExpiryCarry> out;
   for (std::size_t lo = 0; lo < rows.size();) {
     std::size_t hi = lo + 1;
@@ -1042,16 +1235,38 @@ namespace {
       ++hi;
     }
     const std::span<const std::size_t> run = rows.subspan(lo, hi - lo);
-    ExpiryCarry c;
-    c.expiry_ns = b.expiry_ns[rows[lo]];
-    // D4 wants the PRESENT value: ddivPv when the column exists (an all-NULL expiry
-    // falls back to ddiv), else ddiv.
-    const double pv_ddiv = or_else(median_of(b.ddiv, run, scratch), 0.0);
-    c.pv_divs = b.ddiv_pv.empty() ? pv_ddiv : or_else(median_of(b.ddiv_pv, run, scratch), pv_ddiv);
-    c.rate = or_else(median_of(b.rate, run, scratch), u.flat_rate);
-    c.q = or_else(median_of(b.sdiv, run, scratch), u.flat_q);
-    rep.max_ddiv_spread = std::max(
-        rep.max_ddiv_spread, finite_spread(b.ddiv_pv.empty() ? b.ddiv : b.ddiv_pv, run));
+    ExpiryCarry c = published_carry(sb, run, u);
+    const double T = state_T(sb, c.expiry_ns);
+    SpiderRockExpiryForward diag;
+    diag.uid = u.uid;
+    diag.expiry_ns = c.expiry_ns;
+    if (T > 0.0 && c.pv_divs < u.spot) {
+      diag.published_forward = (u.spot - c.pv_divs) * std::exp((c.rate - c.q) * T);
+    }
+    if (sb.implied) {
+      const Clock::time_point t0 = Clock::now();
+      const ImpliedForward imp = implied_forward(b, run, u.spot, c, sb.fs, sb.scratch);
+      sb.rep.implied_carry_seconds += std::chrono::duration<double>(Clock::now() - t0).count();
+      diag.implied_forward = imp.forward;
+      diag.n_calls = imp.n_calls;
+      diag.iqr_rel = imp.iqr_rel;
+      if (imp.accepted && T > 0.0) {
+        c.pv_divs = 0.0;
+        c.q = c.rate - std::log(imp.forward / u.spot) / T; // spot e^{(rate - q) T} == F
+        diag.mode = SpiderRockCarryMode::ImpliedFromCalls;
+        if (std::isfinite(diag.published_forward)) {
+          sb.rep.max_implied_vs_published_forward_rel =
+              std::max(sb.rep.max_implied_vs_published_forward_rel,
+                       std::abs(imp.forward / diag.published_forward - 1.0));
+        }
+      }
+    }
+    const bool implied_row = diag.mode == SpiderRockCarryMode::ImpliedFromCalls;
+    sb.rep.n_expiries_implied += implied_row ? 1u : 0u;
+    sb.rep.n_expiries_published += implied_row ? 0u : 1u;
+    if (sb.forwards != nullptr) {
+      sb.forwards->push_back(diag);
+    }
     out.push_back(c);
     lo = hi;
   }
@@ -1093,28 +1308,28 @@ namespace {
   return m;
 }
 
-void add_uid(const SpiderRockBucket &b, std::span<const std::size_t> rows, MarketStateStorage &s,
-             BucketStateReport &rep, std::vector<double> &scratch) {
+void add_uid(StateBuild &sb, std::span<const std::size_t> rows, MarketStateStorage &s) {
+  const SpiderRockBucket &b = sb.b;
   const std::uint32_t uid = b.uid[rows.front()];
-  const double spot = median_of(b.uprc, rows, scratch);
+  const double spot = median_of(b.uprc, rows, sb.scratch);
   if (!(std::isfinite(spot) && spot > 0.0)) {
-    ++rep.n_uids_dropped;
+    ++sb.rep.n_uids_dropped;
     return;
   }
   UnderlierState u;
   u.uid = uid;
   u.spot = spot;
-  u.flat_rate = or_else(median_of(b.rate, rows, scratch), 0.0);
-  u.flat_q = or_else(median_of(b.sdiv, rows, scratch), 0.0);
+  u.flat_rate = or_else(median_of(b.rate, rows, sb.scratch), 0.0);
+  u.flat_q = or_else(median_of(b.sdiv, rows, sb.scratch), 0.0);
   u.carry = CarryFrom::State;
-  std::vector<ExpiryCarry> carries = expiry_carries(b, rows, u, rep, scratch);
+  std::vector<ExpiryCarry> carries = expiry_carries(sb, rows, u);
   const bool any_divs = std::any_of(carries.begin(), carries.end(),
                                     [](const ExpiryCarry &c) { return c.pv_divs > 0.0; });
-  rep.n_uids_with_divs += any_divs ? 1u : 0u;
-  rep.n_expiry_rows += carries.size();
-  MarketStateStorage::MarksColumns marks = uid_marks(b, rows, uid, rep);
-  rep.n_marks += marks.sigma.size();
-  ++rep.n_uids;
+  sb.rep.n_uids_with_divs += any_divs ? 1u : 0u;
+  sb.rep.n_expiry_rows += carries.size();
+  MarketStateStorage::MarksColumns marks = uid_marks(b, rows, uid, sb.rep);
+  sb.rep.n_marks += marks.sigma.size();
+  ++sb.rep.n_uids;
   s.underliers.push_back(u);
   s.term_carries.push_back(std::move(carries));
   s.marks.push_back(std::move(marks));
@@ -1125,6 +1340,13 @@ void add_uid(const SpiderRockBucket &b, std::span<const std::size_t> rows, Marke
 Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                     const TimeSpec &time,
                                                     BucketStateReport *report) {
+  return market_state_from_bucket(bucket, time, report, nullptr);
+}
+
+Result<MarketStateStorage>
+market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
+                         BucketStateReport *report,
+                         std::vector<SpiderRockExpiryForward> *forwards) {
   ATX_TRY_VOID(check_bucket_shape(bucket));
   const std::vector<std::size_t> order =
       key_order(bucket.uid, bucket.expiry_ns, bucket.side, bucket.strike);
@@ -1133,14 +1355,23 @@ Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &buck
   s.time = time;
   BucketStateReport rep;
   rep.pv_divs_from_ddiv_pv = !bucket.ddiv_pv.empty();
-  std::vector<double> scratch;
+  if (forwards != nullptr) {
+    forwards->clear();
+  }
+  // The inversion reads srPrc, years and the quote; a bucket without them (hand-built)
+  // cannot imply anything and keeps every row Published.
+  const std::size_t n = bucket.size();
+  const bool implied = bucket.carry_mode == SpiderRockCarryMode::ImpliedFromCalls &&
+                       bucket.vendor_price.size() == n && bucket.vendor_T.size() == n &&
+                       bucket.bid.size() == n && bucket.ask.size() == n;
+  StateBuild sb{.b = bucket, .time = time, .implied = implied, .rep = rep, .forwards = forwards};
   const std::span<const std::size_t> all{order};
   for (std::size_t lo = 0; lo < all.size();) {
     std::size_t hi = lo + 1;
     while (hi < all.size() && bucket.uid[all[hi]] == bucket.uid[all[lo]]) {
       ++hi;
     }
-    add_uid(bucket, all.subspan(lo, hi - lo), s, rep, scratch);
+    add_uid(sb, all.subspan(lo, hi - lo), s);
     lo = hi;
   }
   // Point every underlier at its carry rows only now: `term_carries` no longer

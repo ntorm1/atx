@@ -92,6 +92,12 @@ struct RiskBenchArgs {
 [[nodiscard]] const char *to_string(BenchKernel kernel) noexcept;
 // "calendar365" | "voltime" (the --time spelling).
 [[nodiscard]] const char *time_name(TimeConvention time) noexcept;
+// "published" | "implied_from_calls".
+[[nodiscard]] const char *carry_mode_name(SpiderRockCarryMode mode) noexcept;
+// The carry mode a run builds its states with (no flag): Published under --synthetic (its
+// vendor columns are priced on exactly the D4 carry, design D20), ImpliedFromCalls under
+// --store (SpiderRock's escrow horizon is not a column; spiderrock_store.hpp).
+[[nodiscard]] SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept;
 
 // ═══ Report ══════════════════════════════════════════════════════════════════
 
@@ -235,6 +241,12 @@ struct BucketLoad {
   // ── Follow-up 2 additions (appended; schema v2) ──
   std::int64_t dropped_forward_framework{0};
   bool pv_divs_from_ddiv_pv{false}; // BucketStateReport::pv_divs_from_ddiv_pv
+  // BucketStateReport's carry accounting (n_expiries_implied + n_expiries_published ==
+  // the ExpiryCarry rows; max_forward_gap_rel = max_implied_vs_published_forward_rel).
+  std::size_t n_expiries_implied{0};
+  std::size_t n_expiries_published{0};
+  double max_forward_gap_rel{0.0};
+  double implied_carry_seconds{0.0};
 };
 
 struct RiskBenchReport {
@@ -257,6 +269,7 @@ struct RiskBenchReport {
   std::size_t requested_shares{0};
   unsigned host_threads{0};
   std::string time;       // time_name(args.time)
+  std::string carry_mode; // carry_mode_name(bench_carry_mode(args))
   // Synthetic store preparation.
   bool synthetic_generated{false};
   double synthetic_seconds{0.0};

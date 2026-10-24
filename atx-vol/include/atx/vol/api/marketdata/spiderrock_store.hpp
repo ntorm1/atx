@@ -44,6 +44,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -68,6 +69,35 @@ public:
 private:
   std::vector<std::string> tickers_; // index = uid - 1
 };
+
+// How market_state_from_bucket writes each (uid, expiry) ExpiryCarry row (lane C
+// follow-up 2; docs/risk-bench.md "Carry modes").
+//
+//   Published         design D4: pv_divs = median ddivPv (else ddiv), rate = median rate,
+//                     q = median sdiv over the expiry's rows — the vendor's published tuple.
+//   ImpliedFromCalls  the forward the vendor's OWN out-of-the-money calls imply. Per
+//                     expiry: every call with strike >= the uid spot, a two-sided quote
+//                     (bid > 0, ask >= bid), a finite srPrc > 0 and srVol in (0.01, 3] is
+//                     inverted for F in srPrc = e^{-rT}[F N(d1) - K N(d2)] (European Black at
+//                     sigma = srVol, r = median rate, T = median vendor `years`; F bracketed in
+//                     [0.2, 5] x spot, 1e-10 relative, <= 100 safeguarded Newton / bisection
+//                     steps). F = the median over those calls, accepted when at least
+//                     kImpliedCarryMinCalls solved and their inter-quartile spread (linear
+//                     interpolation at (n-1)/4 and 3(n-1)/4) is <= kImpliedCarryMaxIqrRel x F.
+//                     The row is then pv_divs = 0, rate = median rate, q = rate - ln(F / spot)
+//                     / T_state with T_state on the STATE's clock, so the engine's
+//                     spot e^{(rate - q) T_state} == F exactly. An expiry that fails the guards
+//                     (or whose T_state is not positive / refused) keeps its Published row.
+//
+// Why: SpiderRock's sdiv is a signed residual and its discrete dividends are escrowed only
+// up to some horizon, a regime that is not a column: on 2026-10-14 the DIA 2028-12-15 calls
+// imply ONE forward 562.2 (+-0.01 % over 440...600 strikes) while the published basis
+// (escrowed ddiv / ddivPv + sdiv) gives 530-532 and misprices the 480 call by ~20.
+enum class SpiderRockCarryMode : std::uint8_t { Published = 0, ImpliedFromCalls = 1 };
+
+// ImpliedFromCalls acceptance guards (see SpiderRockCarryMode).
+inline constexpr std::size_t kImpliedCarryMinCalls = 3;
+inline constexpr double kImpliedCarryMaxIqrRel = 1e-3;
 
 struct SpiderRockStoreSpec {
   std::string store_root;              // the directory holding date=<d>/
@@ -99,6 +129,8 @@ struct SpiderRockStoreSpec {
   // `dropped_non_american`), before the root filter and the top-N count; a NULL
   // framework is not Spot. Dropped rows are counted in `dropped_forward_framework`.
   bool spot_framework_only{true};
+  // Copied into SpiderRockBucket::carry_mode by load_spiderrock_bucket.
+  SpiderRockCarryMode carry_mode{SpiderRockCarryMode::ImpliedFromCalls};
 };
 
 // One bucket decoded to SoA (rows sorted by (uid, expiry_ns, side, strike)).
@@ -163,6 +195,9 @@ struct SpiderRockBucket {
   std::vector<double> syn_spot;       // synSpot: the vendor's synthetic (put-call) spot
   std::vector<double> vendor_years_c; // yearsC (2026-10-14: equals `years` except 0 on
                                       // the same-day expiry)
+  // The carry mode market_state_from_bucket applies (its signature takes no spec): the
+  // loader copies SpiderRockStoreSpec::carry_mode; a hand-built bucket keeps Published (D4).
+  SpiderRockCarryMode carry_mode{SpiderRockCarryMode::Published};
 };
 
 // Vendor-unit scales (see "Vendor Greek UNITS" above): ve = vega * kSpiderRockVegaScale,
@@ -222,10 +257,40 @@ struct BucketStateReport {
   // falls back to the ddiv median), false = the median of `ddiv` (no ddivPv column).
   // `max_ddiv_spread` is measured on the same source column.
   bool pv_divs_from_ddiv_pv{false};
+  // ExpiryCarry rows written per basis (n_expiries_implied + n_expiries_published ==
+  // n_expiry_rows); every row is Published under SpiderRockCarryMode::Published.
+  std::size_t n_expiries_implied{0};
+  std::size_t n_expiries_published{0};
+  // max over implied rows of |F_implied / F_published - 1|, F_published = the Published
+  // row's (spot - pv_divs) e^{(rate - q) T_state}; 0 when no row is implied.
+  double max_implied_vs_published_forward_rel{0.0};
+  double implied_carry_seconds{0.0}; // wall clock of the call inversions (steady_clock)
 };
 [[nodiscard]] Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                                   const TimeSpec &time,
                                                                   BucketStateReport *report = nullptr);
+
+// One (uid, expiry) ExpiryCarry row's basis, for diagnostics (the overload below).
+struct SpiderRockExpiryForward {
+  std::uint32_t uid{0};
+  std::int64_t expiry_ns{0};
+  SpiderRockCarryMode mode{SpiderRockCarryMode::Published}; // the basis the row was written on
+  // Median call-implied forward; NaN when no call solved. Set even when the guards
+  // rejected it (then `mode` is Published).
+  double implied_forward{std::numeric_limits<double>::quiet_NaN()};
+  // The Published row's (spot - pv_divs) e^{(rate - q) T_state}; NaN when T_state is not
+  // positive / refused or pv_divs >= spot.
+  double published_forward{std::numeric_limits<double>::quiet_NaN()};
+  std::size_t n_calls{0};                                 // calls whose F solved
+  double iqr_rel{std::numeric_limits<double>::quiet_NaN()}; // their IQR / median; NaN if none
+};
+
+// market_state_from_bucket that also returns every ExpiryCarry row's basis in `forwards`
+// (cleared first; one entry per row, in (uid, expiry) order; may be null).
+[[nodiscard]] Result<MarketStateStorage>
+market_state_from_bucket(const SpiderRockBucket &bucket, const TimeSpec &time,
+                         BucketStateReport *report,
+                         std::vector<SpiderRockExpiryForward> *forwards);
 
 // ── Synthetic SpiderRock-shaped store ───────────────────────────────────────────
 //

@@ -176,6 +176,20 @@ TEST(RiskBenchArgs, TimeFlag) {
   EXPECT_NE(rb::risk_bench_usage().find("--time voltime|calendar365"), std::string::npos);
 }
 
+// The carry mode follows the store: Published under --synthetic (its vendor columns are
+// priced on the D4 carry), ImpliedFromCalls under --store.
+TEST(RiskBenchArgs, CarryModeFollowsStore) {
+  using atx::vol::SpiderRockCarryMode;
+  EXPECT_EQ(rb::bench_carry_mode(parse({"--store", "s"}).value()),
+            SpiderRockCarryMode::ImpliedFromCalls);
+  EXPECT_EQ(rb::bench_carry_mode(parse({"--synthetic", "s"}).value()),
+            SpiderRockCarryMode::Published);
+  EXPECT_STREQ(rb::carry_mode_name(SpiderRockCarryMode::Published), "published");
+  EXPECT_STREQ(rb::carry_mode_name(SpiderRockCarryMode::ImpliedFromCalls), "implied_from_calls");
+  EXPECT_EQ(rb::report_skeleton(parse({"--store", "s"}).value()).carry_mode,
+            "implied_from_calls");
+}
+
 // ── RiskBenchBook ───────────────────────────────────────────────────────────
 
 class RiskBenchBook : public ::testing::Test {
@@ -471,6 +485,10 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   bl.dropped_nonstandard_root = 31329;
   bl.dropped_forward_framework = 4736;
   bl.pv_divs_from_ddiv_pv = true;
+  bl.n_expiries_implied = 1758;
+  bl.n_expiries_published = 155;
+  bl.max_forward_gap_rel = 0.330673;
+  bl.implied_carry_seconds = 0.0126;
   bl.rows_null_vendor = 12;
   bl.n_uids = 100;
   bl.max_ddiv_spread = 0.125;
@@ -554,6 +572,11 @@ TEST(RiskBenchReport, JsonSchemaV2RoundTrip) {
   EXPECT_EQ(back->bucket_loads[0].dropped_nonstandard_root, 31329);
   EXPECT_EQ(back->bucket_loads[0].dropped_forward_framework, 4736);
   EXPECT_TRUE(back->bucket_loads[0].pv_divs_from_ddiv_pv);
+  EXPECT_EQ(back->bucket_loads[0].n_expiries_implied, 1758u);
+  EXPECT_EQ(back->bucket_loads[0].n_expiries_published, 155u);
+  EXPECT_EQ(back->bucket_loads[0].max_forward_gap_rel, 0.330673);
+  EXPECT_EQ(back->bucket_loads[0].implied_carry_seconds, 0.0126);
+  EXPECT_EQ(back->carry_mode, "published"); // --synthetic
   EXPECT_TRUE(back->summary.determinism_bit_equal);
   EXPECT_EQ(back->summary.cold_speedup_p50, 100.0);
 

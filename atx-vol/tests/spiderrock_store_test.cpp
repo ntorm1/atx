@@ -324,6 +324,11 @@ TEST(SpiderRockStore, ReadsBothStringEncodings) {
   EXPECT_EQ(utf8->bucket_et, "1000");
   EXPECT_EQ(utf8->files_opened.size(), 1u);
   EXPECT_EQ(utf8->rows_read, 3);
+  EXPECT_EQ(utf8->carry_mode, atx::vol::SpiderRockCarryMode::ImpliedFromCalls); // spec's
+  SpiderRockStoreSpec published = spec;
+  published.carry_mode = atx::vol::SpiderRockCarryMode::Published;
+  EXPECT_EQ(atx::vol::load_spiderrock_bucket(published, "1000", table).value().carry_mode,
+            atx::vol::SpiderRockCarryMode::Published);
 
   const auto absent = atx::vol::load_spiderrock_bucket(spec, "1100", table);
   ASSERT_FALSE(absent.has_value());
@@ -871,9 +876,11 @@ TEST(SpiderRockStoreReal, LoadsBucket1000) {
   const auto top = atx::vol::load_spiderrock_bucket(spec, "1000", table);
   const double top_ms = ms_since(t0);
   ASSERT_TRUE(top.has_value()) << top.error().to_string();
+  EXPECT_EQ(top->carry_mode, atx::vol::SpiderRockCarryMode::ImpliedFromCalls); // the default
   BucketStateReport report;
+  std::vector<atx::vol::SpiderRockExpiryForward> forwards;
   t0 = Clock::now();
-  const auto st = atx::vol::market_state_from_bucket(*top, TimeSpec{}, &report);
+  const auto st = atx::vol::market_state_from_bucket(*top, TimeSpec{}, &report, &forwards);
   const double state_ms = ms_since(t0);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
   std::printf("[real 1000 top-100] load %.1f ms, state %.1f ms: kept=%zu null=%lld bad=%lld "
@@ -906,6 +913,55 @@ TEST(SpiderRockStoreReal, LoadsBucket1000) {
   EXPECT_TRUE(report.pv_divs_from_ddiv_pv) << "the licensed drop has ddivPv";
   ASSERT_EQ(top->ddiv_pv.size(), top->size());
   ASSERT_EQ(top->syn_spot.size(), top->size());
+
+  // Carry implied from the vendor's own OTM calls (follow-up 2, item C).
+  std::printf("[carry] implied=%zu published=%zu (rows %zu) max |F_impl/F_pub - 1| = %.6f, "
+              "implied-carry time %.2f ms\n",
+              report.n_expiries_implied, report.n_expiries_published, report.n_expiry_rows,
+              report.max_implied_vs_published_forward_rel, report.implied_carry_seconds * 1e3);
+  EXPECT_EQ(report.n_expiries_implied + report.n_expiries_published, report.n_expiry_rows);
+  EXPECT_GT(report.n_expiries_implied, report.n_expiries_published);
+  ASSERT_EQ(forwards.size(), report.n_expiry_rows);
+  std::vector<const atx::vol::SpiderRockExpiryForward *> implied;
+  std::size_t few_calls = 0;
+  for (const auto &f : forwards) {
+    if (f.mode == atx::vol::SpiderRockCarryMode::ImpliedFromCalls) {
+      implied.push_back(&f);
+    } else {
+      few_calls += f.n_calls < atx::vol::kImpliedCarryMinCalls ? 1u : 0u;
+    }
+  }
+  std::printf("[carry] published fallbacks: %zu with < %zu calls, %zu on the IQR guard\n",
+              few_calls, atx::vol::kImpliedCarryMinCalls,
+              report.n_expiries_published - few_calls);
+  auto gap = [](const atx::vol::SpiderRockExpiryForward *f) {
+    return std::fabs(f->implied_forward / f->published_forward - 1.0);
+  };
+  std::sort(implied.begin(), implied.end(),
+            [&](const auto *a, const auto *b) { return gap(a) > gap(b); });
+  for (std::size_t i = 0; i < implied.size() && i < 8; ++i) {
+    const auto *f = implied[i];
+    std::printf("[carry] gap #%zu %-5s %s F_impl %.4f F_pub %.4f (%+.3f %%) calls=%zu iqr=%.2e\n",
+                i + 1, std::string(table.ticker(f->uid)).c_str(),
+                atx::vol::ns_to_iso_date(f->expiry_ns).c_str(), f->implied_forward,
+                f->published_forward, 100.0 * (f->implied_forward / f->published_forward - 1.0),
+                f->n_calls, f->iqr_rel);
+  }
+  // DIA 2028-12-15: the vendor's calls imply F = 562.2 (the brief's measurement).
+  const std::uint32_t dia = table.find("DIA");
+  ASSERT_NE(dia, 0u) << "DIA is in the top-100";
+  const std::int64_t dia_expiry = atx::vol::expiry_instant_ns("2028-12-15");
+  const auto dia_it = std::find_if(forwards.begin(), forwards.end(), [&](const auto &f) {
+    return f.uid == dia && f.expiry_ns == dia_expiry;
+  });
+  ASSERT_NE(dia_it, forwards.end());
+  std::printf("[carry] DIA 2028-12-15: F_impl %.4f F_pub %.4f mode %s calls=%zu iqr=%.2e\n",
+              dia_it->implied_forward, dia_it->published_forward,
+              dia_it->mode == atx::vol::SpiderRockCarryMode::ImpliedFromCalls ? "implied"
+                                                                              : "published",
+              dia_it->n_calls, dia_it->iqr_rel);
+  EXPECT_EQ(dia_it->mode, atx::vol::SpiderRockCarryMode::ImpliedFromCalls);
+  EXPECT_NEAR(dia_it->implied_forward / 562.2 - 1.0, 0.0, 1e-3);
   for (std::size_t k = 0; k + 1 < kTenorBuckets; ++k) {
     EXPECT_LE(vt.median_by[k], 0.05) << "VolTime vs years, tenor " << kTenorNames[k];
   }
@@ -1310,6 +1366,159 @@ TEST(BucketState, DividendApproximationReported) {
   bad.ddiv_pv.pop_back();
   EXPECT_EQ(atx::vol::market_state_from_bucket(bad, TimeSpec{}).error().code(),
             ErrorCode::InvalidArgument);
+}
+
+// ── BucketState: carry implied from the vendor's calls ─────────────────────
+
+using atx::vol::SpiderRockCarryMode;
+using atx::vol::SpiderRockExpiryForward;
+
+// European Black call on the forward: e^{-rT} [F N(d1) - K N(d2)].
+[[nodiscard]] double black_call(double F, double K, double T, double sigma, double r) {
+  const auto ncdf = [](double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); };
+  const double sd = sigma * std::sqrt(T);
+  const double d1 = (std::log(F / K) + 0.5 * sd * sd) / sd;
+  return std::exp(-r * T) * (F * ncdf(d1) - K * ncdf(d1 - sd));
+}
+
+// One uid (spot 100, rate 0.04, published sdiv 0.01 and ddiv 1.0) and one expiry whose
+// vendor OTM call prices are European Black at the KNOWN forward `F` (a basis the
+// published tuple does not give), vendor `years` = the Calendar365 T of the bucket.
+// Calls at strikes 100, 105, ... (`n_calls` of them, a mild skew in srVol), plus rows the
+// implied carry must ignore: an ITM call (K < spot) and a put, both priced at a wrong
+// forward, and an OTM call without a bid.
+struct ImpliedFixture {
+  SpiderRockBucket bucket;
+  double T{0.0};
+};
+
+[[nodiscard]] ImpliedFixture implied_bucket(double F, std::size_t n_calls) {
+  ImpliedFixture fx;
+  SpiderRockBucket &b = fx.bucket;
+  b.ts_ns = atx::vol::spiderrock_bucket_instant_ns("2026-10-14", "1000").value();
+  const std::int64_t expiry = atx::vol::expiry_instant_ns("2027-01-15");
+  fx.T = atx::vol::time_to_expiry_years(b.ts_ns, expiry, TimeSpec{}).value();
+  constexpr double kRate = 0.04;
+  auto add = [&](Side side, double K, double sigma, double price, double bid) {
+    b.uid.push_back(1);
+    b.expiry_ns.push_back(expiry);
+    b.side.push_back(side);
+    b.strike.push_back(K);
+    b.sigma.push_back(sigma);
+    b.uprc.push_back(100.0);
+    b.rate.push_back(kRate);
+    b.sdiv.push_back(0.01);
+    b.ddiv.push_back(1.0);
+    b.vendor_price.push_back(price);
+    b.vendor_delta.push_back(0.5);
+    b.vendor_gamma.push_back(0.0);
+    b.vendor_vega.push_back(0.0);
+    b.vendor_theta.push_back(0.0);
+    b.vendor_T.push_back(fx.T);
+    b.bid.push_back(bid);
+    b.ask.push_back(price * 1.05 + 0.01);
+  };
+  const double wrong = 0.9 * F; // the forward the ignored rows are priced at
+  add(Side::Call, 95.0, 0.27, black_call(wrong, 95.0, fx.T, 0.27, kRate), 1.0); // ITM
+  add(Side::Put, 100.0, 0.26, black_call(wrong, 100.0, fx.T, 0.26, kRate), 1.0);
+  for (std::size_t i = 0; i < n_calls; ++i) {
+    const double K = 100.0 + 5.0 * static_cast<double>(i);
+    const double sigma = 0.25 - 0.004 * static_cast<double>(i);
+    const double price = black_call(F, K, fx.T, sigma, kRate);
+    add(Side::Call, K, sigma, price, 0.95 * price);
+  }
+  add(Side::Call, 200.0, 0.3, black_call(wrong, 200.0, fx.T, 0.3, kRate), 0.0); // no bid
+  b.carry_mode = SpiderRockCarryMode::ImpliedFromCalls;
+  return fx;
+}
+
+TEST(BucketState, ImpliedCarryReproducesVendorForward) {
+  EXPECT_EQ(SpiderRockBucket{}.carry_mode, SpiderRockCarryMode::Published);
+  EXPECT_EQ(SpiderRockStoreSpec{}.carry_mode, SpiderRockCarryMode::ImpliedFromCalls);
+  constexpr double kF = 101.5;
+  const ImpliedFixture fx = implied_bucket(kF, 5);
+  const double F_pub = (100.0 - 1.0) * std::exp((0.04 - 0.01) * fx.T);
+  ASSERT_GT(std::fabs(kF / F_pub - 1.0), 1e-3) << "the fixture's basis must differ";
+
+  BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards;
+  const auto st = atx::vol::market_state_from_bucket(fx.bucket, TimeSpec{}, &report, &forwards);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  ASSERT_EQ(st->term_carries.size(), 1u);
+  ASSERT_EQ(st->term_carries[0].size(), 1u);
+  const atx::vol::ExpiryCarry &c = st->term_carries[0][0];
+  EXPECT_EQ(c.pv_divs, 0.0);
+  EXPECT_EQ(c.rate, 0.04);
+  const double spot = st->underliers[0].spot;
+  EXPECT_EQ(spot, 100.0);
+  EXPECT_NEAR(spot * std::exp((c.rate - c.q) * fx.T) / kF - 1.0, 0.0, 1e-8);
+  EXPECT_EQ(report.n_expiries_implied, 1u);
+  EXPECT_EQ(report.n_expiries_published, 0u);
+  EXPECT_EQ(report.n_expiry_rows, 1u);
+  EXPECT_NEAR(report.max_implied_vs_published_forward_rel, std::fabs(kF / F_pub - 1.0), 1e-8);
+  EXPECT_GE(report.implied_carry_seconds, 0.0);
+  ASSERT_EQ(forwards.size(), 1u);
+  EXPECT_EQ(forwards[0].uid, 1u);
+  EXPECT_EQ(forwards[0].expiry_ns, st->term_carries[0][0].expiry_ns);
+  EXPECT_EQ(forwards[0].mode, SpiderRockCarryMode::ImpliedFromCalls);
+  EXPECT_EQ(forwards[0].n_calls, 5u) << "ITM call, put and no-bid call are not used";
+  EXPECT_NEAR(forwards[0].implied_forward / kF - 1.0, 0.0, 1e-9);
+  EXPECT_NEAR(forwards[0].published_forward / F_pub - 1.0, 0.0, 1e-12);
+  EXPECT_LT(forwards[0].iqr_rel, 1e-9);
+
+  // The same bucket under Published keeps the D4 row.
+  SpiderRockBucket published = fx.bucket;
+  published.carry_mode = SpiderRockCarryMode::Published;
+  BucketStateReport pub_report;
+  std::vector<SpiderRockExpiryForward> pub_forwards;
+  const auto pub = atx::vol::market_state_from_bucket(published, TimeSpec{}, &pub_report,
+                                                      &pub_forwards);
+  ASSERT_TRUE(pub.has_value()) << pub.error().to_string();
+  EXPECT_EQ(pub->term_carries[0][0].pv_divs, 1.0);
+  EXPECT_EQ(pub->term_carries[0][0].q, 0.01);
+  EXPECT_EQ(pub_report.n_expiries_implied, 0u);
+  EXPECT_EQ(pub_report.n_expiries_published, 1u);
+  ASSERT_EQ(pub_forwards.size(), 1u);
+  EXPECT_EQ(pub_forwards[0].mode, SpiderRockCarryMode::Published);
+  EXPECT_EQ(pub_forwards[0].n_calls, 0u) << "Published mode inverts nothing";
+}
+
+TEST(BucketState, ImpliedCarryFallsBackWhenCallsAreFew) {
+  const ImpliedFixture fx = implied_bucket(101.5, 2);
+  BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards;
+  const auto st = atx::vol::market_state_from_bucket(fx.bucket, TimeSpec{}, &report, &forwards);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  const atx::vol::ExpiryCarry &c = st->term_carries[0][0];
+  EXPECT_EQ(c.pv_divs, 1.0); // the Published (D4) row
+  EXPECT_EQ(c.q, 0.01);
+  EXPECT_EQ(report.n_expiries_implied, 0u);
+  EXPECT_EQ(report.n_expiries_published, 1u);
+  EXPECT_EQ(report.max_implied_vs_published_forward_rel, 0.0);
+  ASSERT_EQ(forwards.size(), 1u);
+  EXPECT_EQ(forwards[0].mode, SpiderRockCarryMode::Published);
+  EXPECT_EQ(forwards[0].n_calls, 2u);
+  EXPECT_LT(forwards[0].n_calls, atx::vol::kImpliedCarryMinCalls);
+  EXPECT_NEAR(forwards[0].implied_forward / 101.5 - 1.0, 0.0, 1e-9) << "solved, not used";
+}
+
+TEST(BucketState, ImpliedCarryRejectsInconsistentCalls) {
+  ImpliedFixture fx = implied_bucket(101.5, 4);
+  // Corrupt the highest-strike call of the four (rows: ITM call, put, 4 calls, no-bid).
+  SpiderRockBucket &b = fx.bucket;
+  b.vendor_price[5] *= 1.3;
+  b.ask[5] *= 1.3;
+  BucketStateReport report;
+  std::vector<SpiderRockExpiryForward> forwards;
+  const auto st = atx::vol::market_state_from_bucket(b, TimeSpec{}, &report, &forwards);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  EXPECT_EQ(st->term_carries[0][0].pv_divs, 1.0); // Published
+  EXPECT_EQ(report.n_expiries_implied, 0u);
+  EXPECT_EQ(report.n_expiries_published, 1u);
+  ASSERT_EQ(forwards.size(), 1u);
+  EXPECT_EQ(forwards[0].mode, SpiderRockCarryMode::Published);
+  EXPECT_EQ(forwards[0].n_calls, 4u);
+  EXPECT_GT(forwards[0].iqr_rel, atx::vol::kImpliedCarryMaxIqrRel);
 }
 
 } // namespace

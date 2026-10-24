@@ -301,6 +301,21 @@ const char *time_name(TimeConvention time) noexcept {
   return "calendar365";
 }
 
+const char *carry_mode_name(SpiderRockCarryMode mode) noexcept {
+  switch (mode) {
+  case SpiderRockCarryMode::Published:
+    return "published";
+  case SpiderRockCarryMode::ImpliedFromCalls:
+    return "implied_from_calls";
+  }
+  return "published";
+}
+
+SpiderRockCarryMode bench_carry_mode(const RiskBenchArgs &args) noexcept {
+  return args.synthetic_dir.empty() ? SpiderRockCarryMode::ImpliedFromCalls
+                                    : SpiderRockCarryMode::Published;
+}
+
 const char *to_string(PlaZone zone) noexcept {
   switch (zone) {
   case PlaZone::Green:
@@ -751,6 +766,7 @@ RiskBenchReport report_skeleton(const RiskBenchArgs &args) {
   r.requested_shares = args.shares;
   r.host_threads = std::thread::hardware_concurrency();
   r.time = time_name(args.time);
+  r.carry_mode = carry_mode_name(bench_carry_mode(args));
   return r;
 }
 
@@ -1544,7 +1560,11 @@ void explain_from(const Fields &e, StepReport &t) {
               {"n_uids_with_divs", jnumber(b.n_uids_with_divs)},
               {"max_ddiv_spread", num(b.max_ddiv_spread)},
               {"dropped_forward_framework", jnumber(b.dropped_forward_framework)},
-              {"pv_divs_from_ddiv_pv", jbool(b.pv_divs_from_ddiv_pv)}});
+              {"pv_divs_from_ddiv_pv", jbool(b.pv_divs_from_ddiv_pv)},
+              {"n_expiries_implied", jnumber(b.n_expiries_implied)},
+              {"n_expiries_published", jnumber(b.n_expiries_published)},
+              {"max_forward_gap_rel", num(b.max_forward_gap_rel)},
+              {"implied_carry_seconds", num(b.implied_carry_seconds)}});
 }
 
 [[nodiscard]] BucketLoad bucket_load_from(const Fields &o) {
@@ -1564,6 +1584,10 @@ void explain_from(const Fields &e, StepReport &t) {
   b.max_ddiv_spread = o.num("max_ddiv_spread");
   b.dropped_forward_framework = o.integer<std::int64_t>("dropped_forward_framework");
   b.pv_divs_from_ddiv_pv = o.boolean("pv_divs_from_ddiv_pv");
+  b.n_expiries_implied = o.integer<std::size_t>("n_expiries_implied");
+  b.n_expiries_published = o.integer<std::size_t>("n_expiries_published");
+  b.max_forward_gap_rel = o.num("max_forward_gap_rel");
+  b.implied_carry_seconds = o.num("implied_carry_seconds");
   return b;
 }
 
@@ -1583,7 +1607,8 @@ void explain_from(const Fields &e, StepReport &t) {
               {"requested_options", jnumber(r.requested_options)},
               {"requested_shares", jnumber(r.requested_shares)},
               {"host_threads", jnumber(r.host_threads)},
-              {"time", jstr(r.time)}});
+              {"time", jstr(r.time)},
+              {"carry_mode", jstr(r.carry_mode)}});
 }
 
 void inputs_from(const Fields &o, RiskBenchReport &r) {
@@ -1603,6 +1628,7 @@ void inputs_from(const Fields &o, RiskBenchReport &r) {
   r.requested_shares = o.integer<std::size_t>("requested_shares");
   r.host_threads = o.integer<unsigned>("host_threads");
   r.time = o.text("time");
+  r.carry_mode = o.text("carry_mode");
 }
 
 void book_from(const Fields &syn, const Fields &book, RiskBenchReport &r) {

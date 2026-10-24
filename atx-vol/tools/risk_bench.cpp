@@ -87,6 +87,10 @@ struct Snapshot {
   b.dropped_nonstandard_root = s.bucket.dropped_nonstandard_root;
   b.dropped_forward_framework = s.bucket.dropped_forward_framework;
   b.pv_divs_from_ddiv_pv = s.report.pv_divs_from_ddiv_pv;
+  b.n_expiries_implied = s.report.n_expiries_implied;
+  b.n_expiries_published = s.report.n_expiries_published;
+  b.max_forward_gap_rel = s.report.max_implied_vs_published_forward_rel;
+  b.implied_carry_seconds = s.report.implied_carry_seconds;
   b.rows_null_vendor = s.bucket.rows_null_vendor;
   b.n_uids = s.report.n_uids;
   b.n_marks = s.report.n_marks;
@@ -601,6 +605,7 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.date = args.date;
   spec.max_underliers = args.underliers;
   spec.time = TimeSpec{args.time}; // every state (and so the kernel) measures T on it
+  spec.carry_mode = bench_carry_mode(args);
   UnderlierTable table;
   ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
   ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));
