@@ -69,13 +69,52 @@ enum class RiskKernelKind : std::uint8_t { Family = 0, Cold = 1 };
 
 struct FamilyKernelPolicy {
   std::uint16_t n_sigma{12};        // Chebyshev sigma nodes per family (4..16)
-  double sigma_box_pad{0.25};       // box = [min sigma * (1 - pad), max sigma * (1 + pad)]
+  double sigma_box_pad{0.05};       // box = [min sigma * (1 - pad), max sigma * (1 + pad)]
+                                    // (lane A2: 0.25 -> 0.05, see ADAPTIVE NODE COUNT)
   double sigma_box_floor{0.02};     // never below kAlSigmaFamilyMinSigma + headroom
   bool cold_near_edge{true};        // family `near_edge` lane => whole lane cold (above)
   bool cold_fallback{true};         // false => refused lanes stay Refused
   bool analytic_cold{true};         // cold route: analytic (true) or FD (false)
   std::optional<AlOpts> al_opts{};  // see "Pricer options precedence"
   unsigned n_threads{0};            // 0 => executor's auto degree
+
+  // ── Appended by lane A2 (2026-10-24, additive): family economics on sparse books ──
+  //
+  // ADAPTIVE NODE COUNT. A group's family gets
+  //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, n_sigma_min, n_sigma)
+  // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the
+  // ceiling; n_sigma_min == n_sigma (and pad 0.25) restores the pre-A2 fixed count.
+  // Calibrated against the 1e-6 family-vs-cold price gate on BOTH bench stores
+  // (atx-vol-risk-bench --kernel both, cold.max_rel_price_family; lane A2 report) and the
+  // fixture books (RiskKernel.DISABLED_AdaptiveNodeSpacingSweep): the binding regime is a
+  // narrow LONG-DATED box (T 0.5 - 2.3 y, log width ~ 0.2), where a 4-node family misses
+  // the gate (licensed 2.9e-6); with n >= 5 and h = 0.06 the worst gap is 9.3e-8
+  // (licensed) / 2.5e-8 (synthetic) at 5.2 / 7.7 nodes per family (12 before), and the
+  // volga gap is back at the 12-node level. The box is rebuilt from each state's own
+  // sigmas, so the pad buys no containment, only width.
+  std::uint16_t n_sigma_min{5};     // in [4, n_sigma]
+  double sigma_node_spacing{0.06};  // target log-sigma spacing h of the rule (> 0)
+  // FAMILY ECONOMICS. A family costs n * family_node_cost_us to build and serves its
+  // lanes at a few us; the cold route costs cold_lane_cost_us per lane. A group with
+  // n * family_node_cost_us >= n_eligible * cold_lane_cost_us (both scaled by the
+  // solve counts of the rho axis when RiskNeeds::rho) is priced cold-analytic
+  // directly and flagged FamilyUneconomic. The decision reads only the group's static
+  // shape (eligible lanes, box) and these constants, never a clock, so it is the same
+  // for any thread count. Active only with cold_fallback and analytic_cold (the
+  // economical route is the analytic one; with no cold route every group is tried).
+  bool family_economics{true};
+  // Measured IN SITU (RiskKernel.DISABLED_FamilyEconomicsCostSetup at 8 concurrent
+  // workers, two samples on a loaded i7-1260P: 82 / 297 and 65 / 243 us; one thread gives
+  // 33-36 / 140-149). Only their ratio (3.7 in situ, 4.2 on one thread) enters the rule.
+  double family_node_cost_us{73.0}; // one sigma node of AlSigmaFamily::prepare
+  double cold_lane_cost_us{270.0};  // one american_greeks_al lane (vega, charm)
+  // BLOCK SCHEDULE. The (uid, expiry) blocks the kernel fans out are very uneven (a
+  // short-tenor cold block, a one-lane family, a forty-lane family): false hands each
+  // worker one contiguous static chunk (pricing_executor run_blocks), true lets workers
+  // claim blocks one at a time (run_dynamic). Every block writes only its own rows,
+  // slots and counters, so both give the same bits for any thread count. Dynamic is the
+  // default: faster on both bench stores at 8 threads on a 4P + 8E host (lane A2).
+  bool dynamic_schedule{true};
 };
 
 struct ColdKernelPolicy {

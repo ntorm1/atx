@@ -124,7 +124,12 @@ TEST(RiskStream, RateMoveTurnsRhoOn) {
   const RiskBook book = RiskBook::create(rt::make_option_legs(), {}).value();
   RiskNeeds needs;
   needs.rho = false;
-  RiskStream stream(book, RiskKernel::family(), needs, ExplainOptions{});
+  // Re-pinned by lane A2: economics off. The family's carry set is this test's witness
+  // that a frame was evaluated with rho; with economics on, the fixture's 2-3-lane groups
+  // are priced cold under rho (the cold lane serves rho too) and build no carry set.
+  FamilyKernelPolicy families;
+  families.family_economics = false;
+  RiskStream stream(book, RiskKernel::family(families), needs, ExplainOptions{});
   ASSERT_TRUE(stream.start(states[0]->state).has_value());
   EXPECT_FALSE(stream.current().needs.rho);
 

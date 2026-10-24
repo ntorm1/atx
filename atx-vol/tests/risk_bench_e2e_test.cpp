@@ -206,8 +206,13 @@ TEST(RiskBenchE2E, SyntheticRunProducesReport) {
     EXPECT_LT(t.parity_delta.sym_rel, 1e-3);
     EXPECT_TRUE(t.determinism_checked);
     EXPECT_TRUE(t.determinism_bit_equal) << t.bucket_from << "->" << t.bucket_to;
+    // Lane A2: every family is solved at a node count inside the policy's [4, 16] range.
+    EXPECT_GE(t.family_nodes, 4u * t.families_built);
+    EXPECT_LE(t.family_nodes, 16u * t.families_built);
   }
   EXPECT_TRUE(rep->summary.determinism_bit_equal);
+  // Lane A2: the report echoes the effective family policy.
+  EXPECT_NE(rep->family_policy.find("n_sigma_min"), std::string::npos) << rep->family_policy;
   EXPECT_TRUE(std::isfinite(rep->summary.explained_ratio));
   EXPECT_EQ(rep->time, "calendar365");
   EXPECT_EQ(rep->carry_mode, "published");
