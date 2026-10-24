@@ -125,3 +125,32 @@ forward-clock enumeration, European Black76 identities, an interior-cash
 independent quadrature comparison, nonconvex/tail crossings, finite overflow,
 moved owners, reset diagnostics and cumulative work refusal. The first PCH-off
 attempt needed CMake regeneration for the new files; that failure is retained.
+
+## Fixed pilot runner and independent reader
+
+The same default-off CMake option builds `atx-vol-cash-gaussian-pilot`. It accepts
+no command-line tuning. It serializes all 50 original inputs and the declared
+32 outcomes, including preparation/rollback refusals, exact price bits, full
+normalized events, exercise clock, stock grid and work counters. It does not
+read any reference value. Unselected original cases are explicitly uncomputed.
+
+`pilot_audit.py` pins the unchanged historical 50-case/150-grid reference file
+by SHA256. It joins every raw model/event bit, reconstructs all event clocks and
+fixed spatial grids, validates resource/count and status consistency, retains
+every refusal and reports the separate spatial/time axes. A 32-ULP allowance
+is used only to reconstruct C++ libm/lerp grid/clock values in Python; raw input,
+cash amounts, event endpoints and serialized output bits receive no such slack.
+The 0.001 comparison includes the old reference's empirical uncertainty. Passing
+it neither promotes this engine to a reference nor establishes a rigorous bound.
+
+```powershell
+& C:/atx-wt/pool-5/scripts/atx-build.ps1 configure -Preset vol-rel `
+  -DATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH=ON
+& C:/atx-wt/pool-5/scripts/atx-build.ps1 build atx-vol-cash-gaussian-pilot `
+  -Preset vol-rel -Jobs 2
+python -m unittest discover -s atx-vol/bench/cash-gaussian -p test_pilot_audit.py
+# Archive the clean source/executable identity, then invoke that binary with no
+# arguments in a new receipt directory; stdout is JSON, stderr lists every result.
+python atx-vol/bench/cash-gaussian/pilot_audit.py --reference <frozen-replay.json> `
+  --report <new-native.json> --output <new-summary.json>
+```
