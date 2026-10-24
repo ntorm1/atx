@@ -131,7 +131,8 @@ constexpr std::uint32_t kConventions = 1;
 }
 
 template <class T> [[nodiscard]] bool same(std::span<const T> a, std::span<const T> b) {
-  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
 }
 
 // The archive's state equals a serial Parquet load with ONE table, mark for mark.
@@ -166,7 +167,8 @@ void expect_state_equals(const MarketState &arc, const MarketStateArchive &archi
 
 TEST(PersistStateStore, BuildsSyntheticDayAndListsBuckets) {
   const SpiderRockStoreSpec spec = spec_of(shared_store(), 5); // top-5 of 8: membership moves
-  const std::vector<std::string> buckets = list_spiderrock_buckets(spec.store_root, spec.date).value();
+  const std::vector<std::string> buckets =
+      list_spiderrock_buckets(spec.store_root, spec.date).value();
   ASSERT_EQ(buckets.size(), 11u);
   const fs::path out = fresh_dir("build");
   auto built = build_state_store_from_spiderrock(spec, buckets, options_of(out, 4));
@@ -218,7 +220,8 @@ TEST(PersistStateStore, RebuildSkipsUpToDateBuckets) {
     EXPECT_EQ((*second)[k].path, (*first)[k].path);
     EXPECT_EQ((*second)[k].marks, (*first)[k].marks);
   }
-  EXPECT_EQ(std::distance(fs::recursive_directory_iterator(out), fs::recursive_directory_iterator{}),
+  EXPECT_EQ(
+      std::distance(fs::recursive_directory_iterator(out), fs::recursive_directory_iterator{}),
             files_after_first)
       << "an up-to-date build writes nothing";
   // force: a new generation, byte-identical (T6 determinism).
@@ -250,7 +253,8 @@ TEST(PersistStateStore, ChangedSourceFileTriggersRebuild) {
   const fs::path out = fresh_dir("out");
   auto first = build_state_store_from_spiderrock(spec, buckets, options_of(out));
   ASSERT_TRUE(first.has_value());
-  const std::uint64_t before = spiderrock_state_source_fingerprint(spec, "1030", kConventions).value();
+  const std::uint64_t before =
+      spiderrock_state_source_fingerprint(spec, "1030", kConventions).value();
   // Touch one parquet file of 1030: same bytes, a new last-write time.
   const fs::path bucket_dir = src / ("date=" + spec.date) / "bucket_et=1030";
   std::size_t touched = 0;
@@ -260,7 +264,8 @@ TEST(PersistStateStore, ChangedSourceFileTriggersRebuild) {
     ++touched;
   }
   ASSERT_GT(touched, 0u);
-  const std::uint64_t after = spiderrock_state_source_fingerprint(spec, "1030", kConventions).value();
+  const std::uint64_t after =
+      spiderrock_state_source_fingerprint(spec, "1030", kConventions).value();
   EXPECT_NE(before, after);
   EXPECT_NE(spiderrock_state_source_fingerprint(spec, "1030", kConventions + 1).value(), after)
       << "the conventions version is a fingerprint input";
@@ -281,7 +286,8 @@ TEST(PersistStateStore, ChangedSourceFileTriggersRebuild) {
 TEST(PersistStateStore, RefusesOutputInsideSourceRoot) {
   const SpiderRockStoreSpec spec = spec_of(shared_store());
   const std::vector<std::string> one{"1000"};
-  for (const fs::path &out : {shared_store(), shared_store() / "derived", shared_store() / "a" / "b"}) {
+  for (const fs::path &out :
+       {shared_store(), shared_store() / "derived", shared_store() / "a" / "b"}) {
     auto r = build_state_store_from_spiderrock(spec, one, options_of(out));
     ASSERT_FALSE(r.has_value()) << out.string();
     EXPECT_EQ(r.error().status, PersistStatus::InvalidArgument);
@@ -430,7 +436,8 @@ TEST(PersistStateStoreReal, ElevenBucketExplainTotalsBitEqual) {
     ASSERT_TRUE(x.has_value() && y.has_value()) << buckets[k];
     EXPECT_EQ(std::memcmp(&(*x)->total, &(*y)->total, sizeof(ExplainTotals)), 0)
         << "explain totals " << buckets[k - 1] << " -> " << buckets[k];
-    EXPECT_TRUE(same(std::span<const double>{(*x)->pnl_total}, std::span<const double>{(*y)->pnl_total}));
+    EXPECT_TRUE(same(std::span<const double>{(*x)->pnl_total},
+                     std::span<const double>{(*y)->pnl_total}));
     std::printf("[persist-real] %s->%s pnl_total %.6f unexplained %.6f n_ok %u (bit-equal)\n",
                 buckets[k - 1].c_str(), buckets[k].c_str(), (*y)->total.pnl_total,
                 (*y)->total.pnl_unexplained, (*y)->total.n_ok);

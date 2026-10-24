@@ -494,8 +494,8 @@ using Img = std::vector<std::byte>;
   c.push_back({"codec-garbage-frame", [](Img &i) {
                  const PersistSectionEntry e = entry_of(i, 5);
                  for (std::uint64_t k = 0; k < e.length; ++k) i[e.offset + k] = std::byte{0x5A};
-                 const std::uint32_t crc = persist_crc32c(
-                     std::span<const std::byte>{i.data() + e.offset, static_cast<std::size_t>(e.length)});
+                 const std::uint32_t crc = persist_crc32c(std::span<const std::byte>{
+                     i.data() + e.offset, static_cast<std::size_t>(e.length)});
                  mutate_entry(i, 5, [&](PersistSectionEntry &x) { x.crc32c = crc; });
                }, V::Framing, S::CodecError});
   c.push_back({"codec-raw-crc", [](Img &i) {
@@ -789,7 +789,8 @@ namespace {
 [[nodiscard]] std::string name_of(const PersistManifestEntry &e) {
   return std::string(e.file_name.data(),
                      static_cast<std::size_t>(
-                         std::find(e.file_name.begin(), e.file_name.end(), '\0') - e.file_name.begin()));
+                         std::find(e.file_name.begin(), e.file_name.end(), '\0') -
+                         e.file_name.begin()));
 }
 
 } // namespace
@@ -827,8 +828,8 @@ TEST(PersistDirectory, PublishesFileThenManifest) {
   EXPECT_EQ(hit->seq, 3u);
   EXPECT_EQ(hit->source_fingerprint, 13u);
   EXPECT_EQ(d->find("1100"), nullptr);
-  auto f = PersistFile::open(d->path(*hit), PersistKind::MarketState, kTestFp,
-                             PersistOpenOptions{true, PersistVerify::Paranoid, false, hit->file_size});
+  const PersistOpenOptions paranoid{true, PersistVerify::Paranoid, false, hit->file_size};
+  auto f = PersistFile::open(d->path(*hit), PersistKind::MarketState, kTestFp, paranoid);
   ASSERT_TRUE(f.has_value());
   EXPECT_EQ(f->footer().file_crc32c, hit->file_crc32c);
   EXPECT_EQ(f->header().header_crc32c, hit->header_crc32c);

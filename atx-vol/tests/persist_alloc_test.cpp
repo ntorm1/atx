@@ -72,7 +72,8 @@ TEST(PersistFile, NoAllocationAfterOpen) {
       {18, 1, PersistDType::U8, 1, "flags", {}, false},
   };
   for (const bool mapped : {true, false}) {
-    for (const PersistVerify v : {PersistVerify::Framing, PersistVerify::Lazy, PersistVerify::Full}) {
+    for (const PersistVerify v :
+         {PersistVerify::Framing, PersistVerify::Lazy, PersistVerify::Full}) {
       PersistOpenOptions o;
       o.mapped = mapped;
       o.verify = v;

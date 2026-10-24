@@ -59,8 +59,8 @@ struct Meta {
 };
 
 // UnderlierRow::mark_flags
-inline constexpr std::uint8_t kRowHasMarks = 1u;       // a ContractMarks entry exists (may be empty)
-inline constexpr std::uint8_t kRowVendorPrice = 2u;    // its vendor_price span is populated
+inline constexpr std::uint8_t kRowHasMarks = 1u;    // a ContractMarks entry exists (maybe empty)
+inline constexpr std::uint8_t kRowVendorPrice = 2u; // its vendor_price span is populated
 inline constexpr std::uint8_t kRowVendorDelta = 4u;
 inline constexpr std::uint8_t kRowKnownFlags = 7u;
 
@@ -207,7 +207,8 @@ static_assert(persist_fields_tile(kDividendFields, sizeof(DividendEvent)));
 static_assert(persist_fields_tile(kPillarFields, sizeof(YieldPillar)));
 static_assert(persist_fields_tile(kSurfaceIndexFields, sizeof(SurfaceIndexRow)));
 static_assert(offsetof(Meta, date) == 176 && offsetof(Meta, bucket_et) == 192);
-static_assert(offsetof(UnderlierRow, marks_begin) == 32 && offsetof(UnderlierRow, surface_slot) == 80);
+static_assert(offsetof(UnderlierRow, marks_begin) == 32);
+static_assert(offsetof(UnderlierRow, surface_slot) == 80);
 
 [[nodiscard]] constexpr std::uint32_t sec(MarketStateSection s) noexcept {
   return static_cast<std::uint32_t>(s);
@@ -252,8 +253,9 @@ inline constexpr std::uint64_t kFingerprint =
 
 // The seven extras columns, in section order (MarkExtrasColumns member order).
 inline constexpr MarketStateSection kExtrasSections[] = {
-    MarketStateSection::Bid,         MarketStateSection::Ask,        MarketStateSection::VendorGamma,
-    MarketStateSection::VendorVega,  MarketStateSection::VendorTheta, MarketStateSection::VendorT,
+    MarketStateSection::Bid,         MarketStateSection::Ask,
+    MarketStateSection::VendorGamma, MarketStateSection::VendorVega,
+    MarketStateSection::VendorTheta, MarketStateSection::VendorT,
     MarketStateSection::RowUprc,
 };
 

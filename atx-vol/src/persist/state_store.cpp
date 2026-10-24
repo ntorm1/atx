@@ -139,7 +139,8 @@ struct Run {
       hi = mid;
     }
   }
-  for (std::size_t r = lo; r < run.end && b.expiry_ns[r] == e && b.side[r] == s && b.strike[r] == k; ++r) {
+  for (std::size_t r = lo;
+       r < run.end && b.expiry_ns[r] == e && b.side[r] == s && b.strike[r] == k; ++r) {
     if (std::bit_cast<std::uint64_t>(b.sigma[r]) == std::bit_cast<std::uint64_t>(sigma)) return r;
   }
   return std::nullopt;
@@ -148,14 +149,17 @@ struct Run {
 [[nodiscard]] PersistResult<std::vector<MarkExtrasColumns>>
 extras_for(const SpiderRockBucket &b, const MarketStateStorage &s) {
   const std::vector<Run> runs = uid_runs(b);
-  const std::vector<double> *cols[] = {&b.bid,          &b.ask,      &b.vendor_gamma, &b.vendor_vega,
-                                       &b.vendor_theta, &b.vendor_T, &b.uprc};
+  const std::vector<double> *cols[] = {&b.bid,         &b.ask,          &b.vendor_gamma,
+                                       &b.vendor_vega, &b.vendor_theta, &b.vendor_T,
+                                       &b.uprc};
   std::vector<MarkExtrasColumns> out(s.marks.size());
   for (std::size_t mi = 0; mi < s.marks.size(); ++mi) {
     const auto &m = s.marks[mi];
     const auto run = std::lower_bound(runs.begin(), runs.end(), m.uid,
                                       [](const Run &r, std::uint32_t u) { return r.uid < u; });
-    if (run == runs.end() || run->uid != m.uid) return persist_error(PersistStatus::IndexBounds, 0, m.uid);
+    if (run == runs.end() || run->uid != m.uid) {
+      return persist_error(PersistStatus::IndexBounds, 0, m.uid);
+    }
     std::vector<double> *dst[] = {&out[mi].bid,          &out[mi].ask,      &out[mi].vendor_gamma,
                                   &out[mi].vendor_vega,  &out[mi].vendor_theta,
                                   &out[mi].vendor_T,     &out[mi].uprc};
@@ -230,8 +234,11 @@ void load_wave(const SpiderRockStoreSpec &spec, std::span<Slot *const> wave) {
 }
 
 [[nodiscard]] std::optional<StateStoreBucketReport>
-try_skip(const Slot &slot, const fs::path &day, const StateStoreBuildOptions &opt, UnderlierTable &table) {
-  if (opt.force || !slot.existing || slot.existing->source_fingerprint != slot.fp) return std::nullopt;
+try_skip(const Slot &slot, const fs::path &day, const StateStoreBuildOptions &opt,
+         UnderlierTable &table) {
+  if (opt.force || !slot.existing || slot.existing->source_fingerprint != slot.fp) {
+    return std::nullopt;
+  }
   auto dir = PersistDirectory::open(day.string());
   if (!dir) return std::nullopt;
   PersistOpenOptions o = kMarketStateOpenDefaults;
@@ -316,9 +323,13 @@ publish_slot(const SpiderRockStoreSpec &spec, Slot &slot, const fs::path &day,
     return persist_error(PersistStatus::InvalidArgument);
   }
   for (std::size_t i = 0; i < buckets.size(); ++i) {
-    if (!bucket_ok(buckets[i])) return persist_error(PersistStatus::InvalidArgument, kPersistNone, i);
+    if (!bucket_ok(buckets[i])) {
+      return persist_error(PersistStatus::InvalidArgument, kPersistNone, i);
+    }
     for (std::size_t j = 0; j < i; ++j) {
-      if (buckets[j] == buckets[i]) return persist_error(PersistStatus::DuplicateKey, kPersistNone, i);
+      if (buckets[j] == buckets[i]) {
+        return persist_error(PersistStatus::DuplicateKey, kPersistNone, i);
+      }
     }
   }
   return {};
@@ -326,15 +337,17 @@ publish_slot(const SpiderRockStoreSpec &spec, Slot &slot, const fs::path &day,
 
 } // namespace
 
-PersistResult<std::uint64_t> spiderrock_state_source_fingerprint(const SpiderRockStoreSpec &spec,
-                                                                 std::string_view bucket_et,
-                                                                 std::uint32_t conventions_version) {
+PersistResult<std::uint64_t>
+spiderrock_state_source_fingerprint(const SpiderRockStoreSpec &spec, std::string_view bucket_et,
+                                    std::uint32_t conventions_version) {
   const fs::path dir = bucket_dir(spec, bucket_et);
   std::error_code ec;
   if (!fs::is_directory(dir, ec)) return persist_error(PersistStatus::NotFound);
   std::vector<fs::path> files;
   for (const auto &entry : fs::directory_iterator(dir, ec)) {
-    if (entry.is_regular_file(ec) && entry.path().extension() == ".parquet") files.push_back(entry.path());
+    if (entry.is_regular_file(ec) && entry.path().extension() == ".parquet") {
+      files.push_back(entry.path());
+    }
   }
   if (ec) return persist_error(PersistStatus::IoError);
   if (files.empty()) return persist_error(PersistStatus::NotFound);
@@ -349,9 +362,9 @@ PersistResult<std::uint64_t> spiderrock_state_source_fingerprint(const SpiderRoc
   for (const std::string &u : spec.underliers) h = fold_str(h, u);
   h = fold_le(h, spec.max_underliers, 8);
   h = fold_le(h, static_cast<std::uint8_t>(spec.time.convention), 1);
-  for (const double v : {spec.time.vol_time.alpha, spec.time.vol_time.trading_hours_per_year,
-                         spec.time.vol_time.nontrading_hours_per_year,
-                         spec.time.vol_time.session_open_hour_et, spec.time.vol_time.session_span_hours}) {
+  const VolTimeParams &vt = spec.time.vol_time;
+  for (const double v : {vt.alpha, vt.trading_hours_per_year, vt.nontrading_hours_per_year,
+                         vt.session_open_hour_et, vt.session_span_hours}) {
     h = fold_le(h, std::bit_cast<std::uint64_t>(v), 8);
   }
   h = fold_le(h, spec.american_only ? 1u : 0u, 1);
@@ -371,9 +384,12 @@ PersistResult<std::uint64_t> spiderrock_state_source_fingerprint(const SpiderRoc
 }
 
 PersistResult<std::vector<StateStoreBucketReport>>
-build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec, std::span<const std::string> buckets_et,
+build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec,
+                                  std::span<const std::string> buckets_et,
                                   const StateStoreBuildOptions &options) {
-  if (PersistOutcome ok = check_build(spec, buckets_et, options); !ok) return tl::unexpected(ok.error());
+  if (PersistOutcome ok = check_build(spec, buckets_et, options); !ok) {
+    return tl::unexpected(ok.error());
+  }
   const fs::path day = day_dir(fs::path{options.out_root}, spec.date);
   auto existing = PersistDirectory::open(day.string());
   if (!existing && existing.error().status != PersistStatus::NotFound) {
@@ -386,7 +402,9 @@ build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec, std::span<con
     if (!fp) return tl::unexpected(fp.error());
     slots[i].fp = *fp;
     if (existing) {
-      if (const PersistManifestEntry *e = existing->find(buckets_et[i]); e != nullptr) slots[i].existing = *e;
+      if (const PersistManifestEntry *e = existing->find(buckets_et[i]); e != nullptr) {
+        slots[i].existing = *e;
+      }
     }
   }
   const auto skippable = [&](const Slot &s) {
@@ -406,7 +424,8 @@ build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec, std::span<con
       // A wave: k plus the next buckets that certainly need a load (no up-to-date
       // generation), up to max_parallel_buckets in flight; they are published in order.
       std::vector<Slot *> wave{&slots[k]};
-      for (std::size_t j = k + 1; j < slots.size() && wave.size() < options.max_parallel_buckets; ++j) {
+      for (std::size_t j = k + 1;
+           j < slots.size() && wave.size() < options.max_parallel_buckets; ++j) {
         if (!skippable(slots[j])) wave.push_back(&slots[j]);
       }
       load_wave(spec, wave);
@@ -421,7 +440,9 @@ build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec, std::span<con
 
 PersistResult<StateStore> StateStore::open(std::string_view root) {
   std::error_code ec;
-  if (!fs::is_directory(fs::path{std::string(root)}, ec)) return persist_error(PersistStatus::NotFound);
+  if (!fs::is_directory(fs::path{std::string(root)}, ec)) {
+    return persist_error(PersistStatus::NotFound);
+  }
   StateStore s;
   s.root_ = std::string(root);
   return s;
@@ -436,7 +457,8 @@ PersistResult<std::vector<std::string>> StateStore::buckets(std::string_view dat
   return out;
 }
 
-PersistResult<MarketStateArchive> StateStore::open_bucket(std::string_view date, std::string_view bucket_et,
+PersistResult<MarketStateArchive> StateStore::open_bucket(std::string_view date,
+                                                          std::string_view bucket_et,
                                                           const PersistOpenOptions &options) const {
   if (!date_ok(date) || !bucket_ok(bucket_et)) return persist_error(PersistStatus::InvalidArgument);
   auto dir = PersistDirectory::open(day_dir(fs::path{root_}, date).string());

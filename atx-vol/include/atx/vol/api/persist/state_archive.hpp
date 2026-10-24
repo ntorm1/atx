@@ -124,7 +124,8 @@ struct MarketStateWriteInput {
 // {0, 1}, a yield pointer that does not point into `storage->yield_curves`, missing /
 // non-reproducing pillars, a view-backed or foreign-uid surface, or an oversized
 // date / bucket string. The round trip is canonical: rows come back sorted by uid.
-[[nodiscard]] PersistResult<std::vector<std::byte>> encode_market_state(const MarketStateWriteInput &input);
+[[nodiscard]] PersistResult<std::vector<std::byte>>
+encode_market_state(const MarketStateWriteInput &input);
 
 // ── Reader ───────────────────────────────────────────────────────────────────
 
@@ -254,6 +255,7 @@ private:
 // sdiv / ddiv are NOT stored per row (the state carries them per expiry) and come back
 // empty. InvalidArgument when the archive has no extras (the selector needs bid / ask)
 // or no vendor delta.
-[[nodiscard]] Result<SpiderRockBucket> selection_bucket_from_archive(const MarketStateArchive &archive);
+[[nodiscard]] Result<SpiderRockBucket>
+selection_bucket_from_archive(const MarketStateArchive &archive);
 
 } // namespace atx::vol

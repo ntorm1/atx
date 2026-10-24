@@ -238,8 +238,9 @@ struct HostLoad {
 // proxy; legal because ATXVPF files are 4096-byte multiples). GB/s, or -1.
 [[nodiscard]] double unbuffered_read_gbps(const std::string &path, std::uint64_t size) {
 #if defined(_WIN32)
-  HANDLE h = ::CreateFileW(fs::path{path}.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  HANDLE h = ::CreateFileW(fs::path{path}.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING,
+                           FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (h == INVALID_HANDLE_VALUE) return -1.0;
   constexpr DWORD kChunk = 8u << 20;
   void *buf = ::VirtualAlloc(nullptr, kChunk, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -329,8 +330,8 @@ void write_text(const std::string &path, const std::string &text) {
       auto h = atx::core::sha256_file(b.path);
       sha = h ? *h : std::string("?");
     }
-    std::printf("%-6s %10zu %12zu %8.3f %8.3f %8.3f %4s  %s\n", b.bucket_et.c_str(), b.marks, b.bytes,
-                b.load_s, b.encode_s, b.publish_s, b.skipped ? "yes" : "no",
+    std::printf("%-6s %10zu %12zu %8.3f %8.3f %8.3f %4s  %s\n", b.bucket_et.c_str(), b.marks,
+                b.bytes, b.load_s, b.encode_s, b.publish_s, b.skipped ? "yes" : "no",
                 a.sha256 ? sha.c_str() : b.path.c_str());
     js << (i ? "," : "") << "{\"bucket\":\"" << b.bucket_et << "\",\"marks\":" << b.marks
        << ",\"bytes\":" << b.bytes << ",\"skipped\":" << (b.skipped ? "true" : "false")
@@ -348,7 +349,8 @@ void write_text(const std::string &path, const std::string &text) {
 // ── inspect / verify ────────────────────────────────────────────────────────
 
 [[nodiscard]] const char *dtype_name(std::uint8_t d) {
-  constexpr const char *kNames[] = {"bytes", "u8", "u16", "u32", "u64", "i32", "i64", "f32", "f64", "pod"};
+  constexpr const char *kNames[] = {"bytes", "u8",  "u16", "u32", "u64",
+                                    "i32",   "i64", "f32", "f64", "pod"};
   return d < std::size(kNames) ? kNames[d] : "?";
 }
 
@@ -357,7 +359,8 @@ void write_text(const std::string &path, const std::string &text) {
     usage();
     return kExitUsage;
   }
-  auto archive = MarketStateArchive::open(a.file, PersistOpenOptions{true, PersistVerify::Framing, false, 0});
+  auto archive =
+      MarketStateArchive::open(a.file, PersistOpenOptions{true, PersistVerify::Framing, false, 0});
   if (!archive) {
     std::fprintf(stderr, "inspect: %s\n", to_status(archive.error()).error().to_string().c_str());
     return kExitFail;
@@ -366,7 +369,8 @@ void write_text(const std::string &path, const std::string &text) {
   const PersistHeader &h = f.header();
   std::printf("file            %s\n", a.file.c_str());
   std::printf("kind            %s  schema %016llx  source %016llx\n",
-              to_string(static_cast<PersistKind>(h.kind)), static_cast<unsigned long long>(h.schema_fingerprint),
+              to_string(static_cast<PersistKind>(h.kind)),
+              static_cast<unsigned long long>(h.schema_fingerprint),
               static_cast<unsigned long long>(h.source_fingerprint));
   std::printf("file_size       %llu  sections %u  writer %.32s  created %lld\n",
               static_cast<unsigned long long>(h.file_size), h.section_count, h.writer_name.data(),
@@ -374,16 +378,19 @@ void write_text(const std::string &path, const std::string &text) {
   std::printf("date / bucket   %.*s / %.*s  conventions v%u  extras %s  uid table %u\n",
               static_cast<int>(archive->date().size()), archive->date().data(),
               static_cast<int>(archive->bucket_et().size()), archive->bucket_et().data(),
-              archive->conventions_version(), archive->has_extras() ? "yes" : "no", archive->uid_table_size());
+              archive->conventions_version(), archive->has_extras() ? "yes" : "no",
+              archive->uid_table_size());
   const MarketState &st = archive->state();
-  std::printf("state           ts %lld  underliers %zu  marks %zu\n", static_cast<long long>(st.ts_ns()),
-              st.n_underliers(), archive->n_marks());
-  std::printf("%5s %-6s %8s %12s %12s %5s %5s\n", "type", "dtype", "stride", "count", "length", "codec", "req");
+  std::printf("state           ts %lld  underliers %zu  marks %zu\n",
+              static_cast<long long>(st.ts_ns()), st.n_underliers(), archive->n_marks());
+  std::printf("%5s %-6s %8s %12s %12s %5s %5s\n", "type", "dtype", "stride", "count", "length",
+              "codec", "req");
   std::uint64_t core = 0;
   std::uint64_t extras = 0;
   for (const PersistSectionEntry &e : f.sections()) {
-    std::printf("%5u %-6s %8u %12llu %12llu %5u %5s\n", e.type, dtype_name(e.dtype), e.element_stride,
-                static_cast<unsigned long long>(e.element_count), static_cast<unsigned long long>(e.length),
+    std::printf("%5u %-6s %8u %12llu %12llu %5u %5s\n", e.type, dtype_name(e.dtype),
+                e.element_stride, static_cast<unsigned long long>(e.element_count),
+                static_cast<unsigned long long>(e.length),
                 e.codec, (e.flags & kPersistSectionRequired) != 0u ? "yes" : "no");
     if (e.type >= 16 && e.type <= 21) core += e.raw_length;
     if (e.type >= 32 && e.type <= 38) extras += e.raw_length;
@@ -395,9 +402,11 @@ void write_text(const std::string &path, const std::string &text) {
 }
 
 [[nodiscard]] int verify_one(const std::string &path) {
-  auto archive = MarketStateArchive::open(path, PersistOpenOptions{true, PersistVerify::Paranoid, false, 0});
+  auto archive =
+      MarketStateArchive::open(path, PersistOpenOptions{true, PersistVerify::Paranoid, false, 0});
   if (!archive) {
-    std::printf("FAIL %s: %s\n", path.c_str(), to_status(archive.error()).error().to_string().c_str());
+    std::printf("FAIL %s: %s\n", path.c_str(),
+                to_status(archive.error()).error().to_string().c_str());
     return kExitFail;
   }
   if (auto ok = archive->file().verify_all(); !ok) {
@@ -464,8 +473,8 @@ struct CodecRow {
                                          src.header().schema_fingerprint, PersistVerify::Framing);
   const double dec = since(t1);
   if (!decoded) return std::nullopt;
-  return CodecRow{level, shuffle, static_cast<double>(raw) / static_cast<double>(image->size()), enc,
-                  static_cast<double>(raw) / dec / 1e9};
+  const double ratio = static_cast<double>(raw) / static_cast<double>(image->size());
+  return CodecRow{level, shuffle, ratio, enc, static_cast<double>(raw) / dec / 1e9};
 }
 
 [[nodiscard]] int cmd_bench(const Args &a) {
@@ -487,7 +496,8 @@ struct CodecRow {
       return kExitFail;
     }
     auto storage = market_state_from_bucket(*bucket, spec.time);
-    auto state = storage ? make_market_state(*storage) : Result<MarketState>{tl::unexpected(storage.error())};
+    auto state = storage ? make_market_state(*storage)
+                         : Result<MarketState>{tl::unexpected(storage.error())};
     parquet.push_back(since(t0));
     if (!state) return kExitFail;
     marks = 0;
@@ -533,10 +543,10 @@ struct CodecRow {
   const Stats pq = stats_of(parquet);
   std::printf("bucket %s  marks %zu  file %llu bytes  (%s)\n", a.bucket.c_str(), marks,
               static_cast<unsigned long long>(file_size), file_path.c_str());
-  std::printf("host  busy %.1f%%  avail %.2f GB  cpus %u\n", host_before.busy * 100.0, host_before.avail_gb,
-              host_before.cpus);
-  std::printf("parquet load + state build  runs %d  min %.4f  p50 %.4f  p95 %.4f s\n", a.parquet_runs, pq.min,
-              pq.p50, pq.p95);
+  std::printf("host  busy %.1f%%  avail %.2f GB  cpus %u\n", host_before.busy * 100.0,
+              host_before.avail_gb, host_before.cpus);
+  std::printf("parquet load + state build  runs %d  min %.4f  p50 %.4f  p95 %.4f s\n",
+              a.parquet_runs, pq.min, pq.p50, pq.p95);
   js << "{\"schema_version\":1,\"tool\":\"atx-vol-state-store bench\",\"preset\":\"" << a.preset
      << "\",\"date\":\"" << a.date << "\",\"bucket\":\"" << a.bucket << "\",\"top\":" << a.top
      << ",\"marks\":" << marks << ",\"file_bytes\":" << file_size << ",\"host\":{\"busy\":"
@@ -557,8 +567,8 @@ struct CodecRow {
     }
     const Stats s = stats_of(t);
     if (std::string_view{levels[li].name} == "full") full_p50 = s.p50;
-    std::printf("open + state()  %-15s runs %d  min %.3f  p50 %.3f  p95 %.3f ms\n", levels[li].name, a.runs,
-                s.min, s.p50, s.p95);
+    std::printf("open + state()  %-15s runs %d  min %.3f  p50 %.3f  p95 %.3f ms\n",
+                levels[li].name, a.runs, s.min, s.p50, s.p95);
     js << (li ? "," : "") << "\"" << levels[li].name << "\":{\"min\":" << fmt("%.4f", s.min)
        << ",\"p50\":" << fmt("%.4f", s.p50) << ",\"p95\":" << fmt("%.4f", s.p95) << "}";
   }
@@ -580,7 +590,8 @@ struct CodecRow {
   std::printf("bytes / mark  core %.2f  extras %.2f  file %.2f\n", static_cast<double>(core) / per,
               static_cast<double>(extras) / per, static_cast<double>(file_size) / per);
   js << "},\"speedup_full_vs_parquet\":" << fmt("%.2f", speedup) << ",\"no_buffering_gbps\":"
-     << fmt("%.3f", nb.p50) << ",\"bytes_per_mark\":{\"core\":" << fmt("%.3f", static_cast<double>(core) / per)
+     << fmt("%.3f", nb.p50) << ",\"bytes_per_mark\":{\"core\":"
+     << fmt("%.3f", static_cast<double>(core) / per)
      << ",\"extras\":" << fmt("%.3f", static_cast<double>(extras) / per) << "},\"codecs\":[";
   // 6. Cold-tier codecs (informational).
   if (a.codecs) {
@@ -591,10 +602,12 @@ struct CodecRow {
       for (const bool shuffle : {false, true}) {
         const auto row = src ? codec_row(*src, level, shuffle) : std::nullopt;
         if (!row) continue;
-        std::printf("zstd-%d %-10s ratio %.3f  encode %.3f s (8 threads)  decode %.2f GB/s\n", level,
-                    shuffle ? "+shuffle" : "", row->ratio, row->encode_s, row->decode_gbps);
-        js << (first ? "" : ",") << "{\"level\":" << level << ",\"shuffle\":" << (shuffle ? "true" : "false")
-           << ",\"ratio\":" << fmt("%.4f", row->ratio) << ",\"encode_s\":" << fmt("%.4f", row->encode_s)
+        std::printf("zstd-%d %-10s ratio %.3f  encode %.3f s (8 threads)  decode %.2f GB/s\n",
+                    level, shuffle ? "+shuffle" : "", row->ratio, row->encode_s, row->decode_gbps);
+        js << (first ? "" : ",") << "{\"level\":" << level
+           << ",\"shuffle\":" << (shuffle ? "true" : "false")
+           << ",\"ratio\":" << fmt("%.4f", row->ratio)
+           << ",\"encode_s\":" << fmt("%.4f", row->encode_s)
            << ",\"decode_gbps\":" << fmt("%.3f", row->decode_gbps) << "}";
         first = false;
       }
@@ -602,7 +615,8 @@ struct CodecRow {
     std::printf("zstd library %u\n", persist_detail::zstd_version_number());
   }
   const HostLoad host_after = sample_host();
-  std::printf("host after  busy %.1f%%  avail %.2f GB\n", host_after.busy * 100.0, host_after.avail_gb);
+  std::printf("host after  busy %.1f%%  avail %.2f GB\n", host_after.busy * 100.0,
+              host_after.avail_gb);
   js << "],\"host_after\":{\"busy\":" << fmt("%.4f", host_after.busy) << ",\"avail_gb\":"
      << fmt("%.3f", host_after.avail_gb) << "}}\n";
   write_text(a.json, js.str());

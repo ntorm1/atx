@@ -112,13 +112,15 @@ struct HandMarket {
   s.underliers[1] = UnderlierState{2, 55.25, 0.035, nullptr, 0.0, {}, {}, CarryFrom::State};
   s.underliers[2] = UnderlierState{5, 210.0, 0.042, nullptr, 0.013, {}, {}, CarryFrom::State};
   h->pillars.push_back({{0.1, 0.5, 1.0, 2.0}, {0.040, 0.041, 0.043, 0.045}});
-  s.yield_curves.push_back(YieldCurve::create(h->pillars[0].t_years, h->pillars[0].zero_rates).value());
+  s.yield_curves.push_back(
+      YieldCurve::create(h->pillars[0].t_years, h->pillars[0].zero_rates).value());
   s.term_carries.resize(3);
   s.term_carries[1] = {{kTs + 86400000000000LL * 30, 0.12, 0.036, 0.001},
                        {kTs + 86400000000000LL * 60, 0.24, 0.037, 0.002},
                        {kTs + 86400000000000LL * 90, 0.31, 0.038, 0.002}};
   s.dividend_schedules.resize(3);
-  s.dividend_schedules[2] = {{kTs + 86400000000000LL * 20, 1.25}, {kTs + 86400000000000LL * 110, 1.3}};
+  constexpr std::int64_t kDay = 86400000000000LL;
+  s.dividend_schedules[2] = {{kTs + kDay * 20, 1.25}, {kTs + kDay * 110, 1.3}};
   s.marks.push_back(marks_for(7, 101.5, false, true));
   s.marks.push_back(marks_for(2, 55.25, true, true));
   // Wire the borrowed views only now: every vector is final.
@@ -179,7 +181,8 @@ struct HandMarket {
          std::less<const std::byte *>{}(b, region.data() + region.size());
 }
 
-void expect_resolved_equal(const ResolvedContract &a, const ResolvedContract &b, std::string_view what) {
+void expect_resolved_equal(const ResolvedContract &a, const ResolvedContract &b,
+                           std::string_view what) {
   EXPECT_TRUE(bits(a.T, b.T)) << what;
   EXPECT_TRUE(bits(a.sigma, b.sigma)) << what;
   EXPECT_TRUE(bits(a.forward, b.forward)) << what;
@@ -193,7 +196,8 @@ void expect_resolved_equal(const ResolvedContract &a, const ResolvedContract &b,
 }
 
 template <class T> [[nodiscard]] bool same(std::span<const T> a, std::span<const T> b) {
-  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
 }
 
 // ── Image surgery: change a column's bytes and re-seal every CRC that guards it ──
@@ -205,11 +209,13 @@ void reseal_section(std::vector<std::byte> &img, std::uint32_t type) {
     PersistSectionEntry e{};
     std::memcpy(&e, img.data() + 256 + 64 * i, sizeof e);
     if (e.type != type) continue;
-    e.crc32c = persist_crc32c(std::span<const std::byte>{img.data() + e.offset, static_cast<std::size_t>(e.length)});
+    e.crc32c = persist_crc32c(
+        std::span<const std::byte>{img.data() + e.offset, static_cast<std::size_t>(e.length)});
     e.raw_crc32c = e.crc32c;
     std::memcpy(img.data() + 256 + 64 * i, &e, sizeof e);
   }
-  h.section_table_crc32c = persist_crc32c(std::span<const std::byte>{img.data() + 256, 64u * h.section_count});
+  h.section_table_crc32c =
+      persist_crc32c(std::span<const std::byte>{img.data() + 256, 64u * h.section_count});
   h.header_crc32c = 0;
   h.header_crc32c = persist_crc32c(std::as_bytes(std::span{&h, 1}));
   std::memcpy(img.data(), &h, sizeof h);
@@ -267,7 +273,8 @@ struct LoadedBucket {
   BucketStateReport report;
 };
 
-[[nodiscard]] std::unique_ptr<LoadedBucket> load_bucket(std::string_view bucket, UnderlierTable &table) {
+[[nodiscard]] std::unique_ptr<LoadedBucket> load_bucket(std::string_view bucket,
+                                                       UnderlierTable &table) {
   auto out = std::make_unique<LoadedBucket>();
   out->bucket = load_spiderrock_bucket(store_spec(), bucket, table).value();
   out->storage = market_state_from_bucket(out->bucket, TimeSpec{}, &out->report).value();
@@ -406,7 +413,8 @@ TEST(PersistStateArchive, ResolveMatchesInMemoryStateOnEveryMark) {
     for (const double T : {0.02, 0.1, 0.5, 1.5}) {
       const auto cx = mem.carry_at(u.uid, T);
       const auto cy = arc.carry_at(u.uid, T);
-      EXPECT_TRUE(bits(cx.forward, cy.forward) && bits(cx.q_eff, cy.q_eff) && bits(cx.rate, cy.rate));
+      EXPECT_TRUE(bits(cx.forward, cy.forward) && bits(cx.q_eff, cy.q_eff) &&
+                  bits(cx.rate, cy.rate));
       EXPECT_EQ(cx.status, cy.status);
     }
   }
@@ -455,7 +463,8 @@ TEST(PersistStateArchive, TermCarryAndDividendsAreZeroCopy) {
   EXPECT_TRUE(inside(two->term_carry.data(), backing));
   EXPECT_TRUE(inside(five->cash_divs.data(), backing));
   EXPECT_TRUE(same(two->term_carry, std::span<const ExpiryCarry>{h->storage.term_carries[1]}));
-  EXPECT_TRUE(same(five->cash_divs, std::span<const DividendEvent>{h->storage.dividend_schedules[2]}));
+  EXPECT_TRUE(
+      same(five->cash_divs, std::span<const DividendEvent>{h->storage.dividend_schedules[2]}));
 }
 
 TEST(PersistStateArchive, YieldCurveRebuiltAtOpen) {
@@ -505,7 +514,8 @@ TEST(PersistStateArchive, ExtrasAlignWithMarks) {
     EXPECT_TRUE(same<double>(x.uprc, want.uprc));
     if (want.vendor_T.empty()) {
       ASSERT_EQ(x.vendor_T.size(), x.bid.size());
-      EXPECT_TRUE(std::all_of(x.vendor_T.begin(), x.vendor_T.end(), [](double v) { return std::isnan(v); }));
+      EXPECT_TRUE(std::all_of(x.vendor_T.begin(), x.vendor_T.end(),
+                              [](double v) { return std::isnan(v); }));
     } else {
       EXPECT_TRUE(same<double>(x.vendor_T, want.vendor_T));
     }
@@ -609,7 +619,8 @@ TEST(PersistStateArchive, MovedArchiveKeepsStateValid) {
   ASSERT_TRUE(other.has_value());
   *other = std::move(b);
   EXPECT_EQ(&other->state(), where);
-  EXPECT_TRUE(bits(other->state().underlier(7)->yield->disc(0.7), h->storage.yield_curves[0].disc(0.7)));
+  EXPECT_TRUE(bits(other->state().underlier(7)->yield->disc(0.7),
+                   h->storage.yield_curves[0].disc(0.7)));
 }
 
 TEST(PersistStateArchive, RefusesUnsortedMarks) {
@@ -617,7 +628,8 @@ TEST(PersistStateArchive, RefusesUnsortedMarks) {
   auto image = encode_market_state(input_of(*h));
   ASSERT_TRUE(image.has_value());
   std::vector<std::byte> img = *image;
-  const PersistSectionEntry strike = entry_of(img, static_cast<std::uint32_t>(MarketStateSection::Strike));
+  const PersistSectionEntry strike =
+      entry_of(img, static_cast<std::uint32_t>(MarketStateSection::Strike));
   // Rows 0..2 of the first uid are ascending strikes of one (expiry, side): swap 1 and 2.
   double k1 = 0.0;
   double k2 = 0.0;
@@ -680,7 +692,8 @@ TEST(PersistStateArchive, ExplainOverArchivedStatesMatchesInMemory) {
   for (const auto &mc : loaded[0]->storage.marks) {
     for (std::size_t i = 0; i < mc.sigma.size(); i += 3) {
       const double qty = (id % 2u == 0u ? -1.0 : 1.0) * static_cast<double>(1 + id % 4u);
-      legs.push_back(OptionLeg{id++, mc.uid, mc.strike[i], mc.expiry_ns[i], mc.side[i], qty, 100.0});
+      legs.push_back(
+          OptionLeg{id++, mc.uid, mc.strike[i], mc.expiry_ns[i], mc.side[i], qty, 100.0});
     }
   }
   const std::vector<ShareLeg> shares{{9001u, 1u, 120.0}, {9002u, 2u, -35.0}};

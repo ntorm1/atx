@@ -70,7 +70,8 @@ constexpr std::uint64_t kMaxSeqProbe = 1u << 16;
 
 // The NUL-terminated prefix of a fixed-capacity name; "" when it has no terminator
 // (a full-width name is refused: every writer leaves room for one).
-template <std::size_t N> [[nodiscard]] std::string_view fixed_name(const std::array<char, N> &a) noexcept {
+template <std::size_t N>
+[[nodiscard]] std::string_view fixed_name(const std::array<char, N> &a) noexcept {
   const auto end = std::find(a.begin(), a.end(), '\0');
   if (end == a.end()) return {};
   // Everything after the terminator must be NUL too (zero-filled padding).
@@ -89,7 +90,9 @@ template <std::size_t N> void put_name(std::array<char, N> &a, std::string_view 
     const PersistManifestEntry &e = entries[i];
     const std::string_view key = fixed_name(e.key);
     const std::string_view name = fixed_name(e.file_name);
-    if (!key_ok(key) || name.empty()) return persist_error(S::RecordInvalid, kPersistManifestEntriesSection, i);
+    if (!key_ok(key) || name.empty()) {
+      return persist_error(S::RecordInvalid, kPersistManifestEntriesSection, i);
+    }
     if (e.kind < static_cast<std::uint32_t>(PersistKind::MarketState) ||
         e.kind > static_cast<std::uint32_t>(PersistKind::RiskRun)) {
       return persist_error(S::RecordInvalid, kPersistManifestEntriesSection, i);
@@ -104,7 +107,9 @@ template <std::size_t N> void put_name(std::array<char, N> &a, std::string_view 
       return persist_error(S::IndexUnsorted, kPersistManifestEntriesSection, i);
     }
     for (std::size_t j = 0; j < i; ++j) {
-      if (entries[j].seq == e.seq) return persist_error(S::DuplicateKey, kPersistManifestEntriesSection, i);
+      if (entries[j].seq == e.seq) {
+        return persist_error(S::DuplicateKey, kPersistManifestEntriesSection, i);
+      }
     }
   }
   return {};
@@ -144,7 +149,8 @@ manifest_image(std::span<const PersistManifestEntry> entries) {
   // validated in place (open_bytes needs 8-byte alignment).
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
   if (reinterpret_cast<std::uintptr_t>(image.data()) % 8u == 0u) {
-    return PersistFile::open_bytes(image, nullptr, kind, h.schema_fingerprint, PersistVerify::Framing);
+    return PersistFile::open_bytes(image, nullptr, kind, h.schema_fingerprint,
+                                   PersistVerify::Framing);
   }
   auto copy = std::make_shared<std::vector<std::uint64_t>>((image.size() + 7u) / 8u);
   std::memcpy(copy->data(), image.data(), image.size());
@@ -201,7 +207,9 @@ PersistResult<PersistDirectory> PersistDirectory::open(std::string_view dir) {
   auto file = PersistFile::open(manifest.string(), PersistKind::Manifest, kManifestFingerprint,
                                 PersistOpenOptions{false, PersistVerify::Paranoid, false, 0});
   if (!file) return tl::unexpected(file.error());
-  if (PersistOutcome ok = file->check_schema(kManifestSchema); !ok) return tl::unexpected(ok.error());
+  if (PersistOutcome ok = file->check_schema(kManifestSchema); !ok) {
+    return tl::unexpected(ok.error());
+  }
   auto rows = file->typed<PersistManifestEntry>(kPersistManifestEntriesSection);
   if (!rows) return tl::unexpected(rows.error());
   if (PersistOutcome ok = check_entries(*rows); !ok) return tl::unexpected(ok.error());

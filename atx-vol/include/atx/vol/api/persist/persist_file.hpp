@@ -137,7 +137,8 @@ public:
   // The (decoded) payload of `type`. MissingSection when absent; under Lazy the first
   // touch verifies the stored CRC (SectionChecksum on mismatch, and every later touch
   // reports the same verdict).
-  [[nodiscard]] PersistResult<std::span<const std::byte>> section(std::uint32_t type) const noexcept;
+  [[nodiscard]] PersistResult<std::span<const std::byte>>
+  section(std::uint32_t type) const noexcept;
 
   // Typed zero-copy view. SectionStride when the stored stride is not sizeof(T) or the
   // stored dtype is not persist_dtype_of<T>(); Misaligned when the payload address is
@@ -173,7 +174,8 @@ public:
   // UnsupportedSectionMajor, another dtype / stride -> SectionStride; a present
   // UNKNOWN section flagged Required -> UnsupportedSection; an unknown optional section
   // is skipped. Allocation-free.
-  [[nodiscard]] PersistOutcome check_schema(std::span<const PersistSectionSpec> schema) const noexcept;
+  [[nodiscard]] PersistOutcome
+  check_schema(std::span<const PersistSectionSpec> schema) const noexcept;
 
   // Verify every not-yet-verified section CRC and the whole-file CRC now (what a
   // `verify` CLI calls on a Framing / Lazy open). Allocation-free.

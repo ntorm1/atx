@@ -62,7 +62,8 @@ template <std::size_t N>
   return std::string_view{a.data(), static_cast<std::size_t>(end - a.begin())};
 }
 
-[[nodiscard]] std::span<const double> extras_column(const MarkExtrasColumns &e, std::size_t k) noexcept {
+[[nodiscard]] std::span<const double> extras_column(const MarkExtrasColumns &e,
+                                                    std::size_t k) noexcept {
   switch (k) {
   case 0: return e.bid;
   case 1: return e.ask;
@@ -201,8 +202,9 @@ struct Encoded {
     if (i > 0 && owned[i].first == owned[i - 1].first) {
       return persist_error(PersistStatus::InvalidArgument, sec(MS::SurfaceArchive), owned[i].first);
     }
-    const auto row = std::lower_bound(out.rows.begin(), out.rows.end(), owned[i].first,
-                                      [](const sf::UnderlierRow &r, std::uint32_t u) { return r.uid < u; });
+    const auto row =
+        std::lower_bound(out.rows.begin(), out.rows.end(), owned[i].first,
+                         [](const sf::UnderlierRow &r, std::uint32_t u) { return r.uid < u; });
     if (row == out.rows.end() || row->uid != owned[i].first) {
       return persist_error(PersistStatus::InvalidArgument, sec(MS::SurfaceArchive), owned[i].first);
     }
@@ -259,8 +261,9 @@ void fill_meta(const MarketStateWriteInput &in, sf::Meta &m) {
   }
   std::vector<std::size_t> order(s.underliers.size());
   for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
-  std::sort(order.begin(), order.end(),
-            [&](std::size_t a, std::size_t b) { return s.underliers[a].uid < s.underliers[b].uid; });
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    return s.underliers[a].uid < s.underliers[b].uid;
+  });
   std::vector<std::pair<std::uint32_t, std::size_t>> marks_of;
   for (std::size_t i = 0; i < s.marks.size(); ++i) marks_of.emplace_back(s.marks[i].uid, i);
   std::sort(marks_of.begin(), marks_of.end());
@@ -279,18 +282,20 @@ void fill_meta(const MarketStateWriteInput &in, sf::Meta &m) {
     row.divs_count = static_cast<std::uint32_t>(u.cash_divs.size());
     out.divs.insert(out.divs.end(), u.cash_divs.begin(), u.cash_divs.end());
     if (PersistOutcome ok = add_yield(in, u, row, out); !ok) return tl::unexpected(ok.error());
-    const std::string_view ticker =
-        u.uid >= 1 && u.uid - 1 < in.tickers_by_uid.size() ? std::string_view{in.tickers_by_uid[u.uid - 1]}
-                                                           : std::string_view{};
+    const std::string_view ticker = u.uid >= 1 && u.uid - 1 < in.tickers_by_uid.size()
+                                        ? std::string_view{in.tickers_by_uid[u.uid - 1]}
+                                        : std::string_view{};
     row.ticker_offset = static_cast<std::uint32_t>(out.strings.size());
     row.ticker_length = static_cast<std::uint32_t>(ticker.size());
     out.strings += ticker;
     const auto hit = std::lower_bound(marks_of.begin(), marks_of.end(),
                                       std::pair<std::uint32_t, std::size_t>{u.uid, 0});
     if (hit != marks_of.end() && hit->first == u.uid) {
-      if (PersistOutcome ok = add_marks(in, hit->second, row, out); !ok) return tl::unexpected(ok.error());
+      if (PersistOutcome ok = add_marks(in, hit->second, row, out); !ok) {
+        return tl::unexpected(ok.error());
+      }
     }
-    row.marks_begin = (row.mark_flags & sf::kRowHasMarks) != 0u ? row.marks_begin : out.sigma.size();
+    if ((row.mark_flags & sf::kRowHasMarks) == 0u) row.marks_begin = out.sigma.size();
     out.rows.push_back(row);
   }
   if (PersistOutcome ok = add_surfaces(in, out); !ok) return tl::unexpected(ok.error());
@@ -330,7 +335,9 @@ PersistResult<std::vector<std::byte>> encode_market_state(const MarketStateWrite
   }
   // Everything MarketState refuses (unsorted marks, bad sides, duplicate uids, ...) is
   // refused here too, before anything is written.
-  if (auto st = make_market_state(*in.storage); !st) return persist_error(PersistStatus::InvalidArgument);
+  if (auto st = make_market_state(*in.storage); !st) {
+    return persist_error(PersistStatus::InvalidArgument);
+  }
   auto enc = encode_rows(in);
   if (!enc) return tl::unexpected(enc.error());
   const Encoded &e = *enc;
@@ -338,11 +345,14 @@ PersistResult<std::vector<std::byte>> encode_market_state(const MarketStateWrite
   std::vector<PersistSectionInput> s;
   s.push_back(section_of(MS::Meta, PersistDType::Pod, sizeof(sf::Meta), true,
                          std::as_bytes(std::span{&meta, 1})));
-  s.push_back(section_of(MS::Underliers, PersistDType::Pod, sizeof(sf::UnderlierRow), true, bytes_of(e.rows)));
+  s.push_back(section_of(MS::Underliers, PersistDType::Pod, sizeof(sf::UnderlierRow), true,
+                         bytes_of(e.rows)));
   s.push_back(section_of(MS::Strings, PersistDType::Bytes, 1, true,
                          std::as_bytes(std::span<const char>{e.strings.data(), e.strings.size()})));
-  s.push_back(section_of(MS::TermCarry, PersistDType::Pod, sizeof(ExpiryCarry), true, bytes_of(e.carry)));
-  s.push_back(section_of(MS::CashDivs, PersistDType::Pod, sizeof(DividendEvent), true, bytes_of(e.divs)));
+  s.push_back(section_of(MS::TermCarry, PersistDType::Pod, sizeof(ExpiryCarry), true,
+                         bytes_of(e.carry)));
+  s.push_back(section_of(MS::CashDivs, PersistDType::Pod, sizeof(DividendEvent), true,
+                         bytes_of(e.divs)));
   s.push_back(section_of(MS::YieldPillars, PersistDType::Pod, sizeof(sf::YieldPillar), true,
                          bytes_of(e.pillars)));
   if (!e.uid_table.empty()) {
@@ -361,7 +371,8 @@ PersistResult<std::vector<std::byte>> encode_market_state(const MarketStateWrite
   }
   if (meta.has_extras != 0u) {
     for (std::size_t k = 0; k < kExtras; ++k) {
-      s.push_back(section_of(sf::kExtrasSections[k], PersistDType::F64, 8, false, bytes_of(e.extras[k])));
+      s.push_back(section_of(sf::kExtrasSections[k], PersistDType::F64, 8, false,
+                             bytes_of(e.extras[k])));
     }
   }
   if (meta.n_surfaces != 0u) {
@@ -409,14 +420,16 @@ struct ArchiveCore {
   MarketState state;
 
   [[nodiscard]] const sf::UnderlierRow *row_of(std::uint32_t uid) const noexcept {
-    const auto it = std::lower_bound(rows.begin(), rows.end(), uid,
-                                     [](const sf::UnderlierRow &r, std::uint32_t u) { return r.uid < u; });
+    const auto it =
+        std::lower_bound(rows.begin(), rows.end(), uid,
+                         [](const sf::UnderlierRow &r, std::uint32_t u) { return r.uid < u; });
     return it == rows.end() || it->uid != uid ? nullptr : &*it;
   }
 };
 
 template <class T>
-[[nodiscard]] PersistResult<std::span<const T>> column(const PersistFile &f, MS type, std::uint64_t n) {
+[[nodiscard]] PersistResult<std::span<const T>> column(const PersistFile &f, MS type,
+                                                      std::uint64_t n) {
   auto v = f.typed<T>(sec(type));
   if (!v) return tl::unexpected(v.error());
   if (v->size() != n) return persist_error(PersistStatus::SectionStride, sec(type), v->size());
@@ -476,7 +489,8 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
   auto sides = f.typed<Side>(sec(MS::Side));
   if (!sides) return tl::unexpected(sides.error());
   a.side = *sides;
-  const auto optional_col = [&](MS type, bool present, std::span<const double> &out) -> PersistOutcome {
+  const auto optional_col = [&](MS type, bool present,
+                                std::span<const double> &out) -> PersistOutcome {
     if (!present) {
       return f.entry(sec(type)) == nullptr ? PersistOutcome{}
                                            : persist_error(PersistStatus::RecordInvalid, sec(type));
@@ -486,10 +500,16 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
     out = *c;
     return {};
   };
-  if (PersistOutcome ok = optional_col(MS::VendorPrice, m.has_vendor_price != 0u, a.vprice); !ok) return ok;
-  if (PersistOutcome ok = optional_col(MS::VendorDelta, m.has_vendor_delta != 0u, a.vdelta); !ok) return ok;
+  if (PersistOutcome ok = optional_col(MS::VendorPrice, m.has_vendor_price != 0u, a.vprice); !ok) {
+    return ok;
+  }
+  if (PersistOutcome ok = optional_col(MS::VendorDelta, m.has_vendor_delta != 0u, a.vdelta); !ok) {
+    return ok;
+  }
   for (std::size_t k = 0; k < kExtras; ++k) {
-    if (PersistOutcome ok = optional_col(sf::kExtrasSections[k], m.has_extras != 0u, a.extras[k]); !ok) {
+    if (PersistOutcome ok =
+            optional_col(sf::kExtrasSections[k], m.has_extras != 0u, a.extras[k]);
+        !ok) {
       return ok;
     }
   }
@@ -502,7 +522,8 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
     auto idx = column<sf::SurfaceIndexRow>(f, MS::SurfaceIndex, m.n_surfaces);
     if (!idx) return tl::unexpected(idx.error());
     a.surface_index = *idx;
-  } else if (f.entry(sec(MS::SurfaceIndex)) != nullptr || f.entry(sec(MS::SurfaceArchive)) != nullptr) {
+  } else if (f.entry(sec(MS::SurfaceIndex)) != nullptr ||
+             f.entry(sec(MS::SurfaceArchive)) != nullptr) {
     return persist_error(PersistStatus::RecordInvalid, sec(MS::SurfaceIndex));
   }
   return {};
@@ -536,8 +557,8 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
       return persist_error(S::IndexBounds, u, i);
     }
     cursor += r.marks_count;
-    if (r.surface_slot != kPersistNone &&
-        (r.surface_slot >= a.surface_index.size() || a.surface_index[r.surface_slot].uid != r.uid)) {
+    if (r.surface_slot != kPersistNone && (r.surface_slot >= a.surface_index.size() ||
+                                           a.surface_index[r.surface_slot].uid != r.uid)) {
       return persist_error(S::IndexBounds, sec(MS::SurfaceIndex), i);
     }
   }
@@ -566,8 +587,9 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
     for (std::size_t i = b + 1; i < b + r.marks_count; ++i) {
       const std::int64_t e0 = a.expiry[i - 1];
       const std::int64_t e1 = a.expiry[i];
-      const bool less = e1 < e0 || (e1 == e0 && (a.side[i] < a.side[i - 1] ||
-                                                 (a.side[i] == a.side[i - 1] && a.strike[i] < a.strike[i - 1])));
+      const bool side_less = a.side[i] < a.side[i - 1];
+      const bool strike_less = a.side[i] == a.side[i - 1] && a.strike[i] < a.strike[i - 1];
+      const bool less = e1 < e0 || (e1 == e0 && (side_less || strike_less));
       if (less) return persist_error(PersistStatus::IndexUnsorted, sec(MS::Strike), i);
     }
   }
@@ -658,7 +680,9 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
   if (PersistOutcome ok = a.file->check_schema(sf::kSchema); !ok) return ok;
   auto meta = a.file->typed<sf::Meta>(sec(MS::Meta));
   if (!meta) return tl::unexpected(meta.error());
-  if (meta->size() != 1) return persist_error(PersistStatus::RecordInvalid, sec(MS::Meta), meta->size());
+  if (meta->size() != 1) {
+    return persist_error(PersistStatus::RecordInvalid, sec(MS::Meta), meta->size());
+  }
   a.meta = (*meta)[0];
   if (PersistOutcome ok = check_meta(a.meta); !ok) return ok;
   if (PersistOutcome ok = map_sections(a); !ok) return ok;
@@ -676,7 +700,8 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
 
 struct MarketStateArchive::Impl final : ArchiveCore {};
 
-MarketStateArchive::MarketStateArchive(std::unique_ptr<Impl> impl) noexcept : impl_{std::move(impl)} {}
+MarketStateArchive::MarketStateArchive(std::unique_ptr<Impl> impl) noexcept
+    : impl_{std::move(impl)} {}
 MarketStateArchive::MarketStateArchive(MarketStateArchive &&) noexcept = default;
 MarketStateArchive &MarketStateArchive::operator=(MarketStateArchive &&) noexcept = default;
 MarketStateArchive::~MarketStateArchive() = default;
@@ -718,7 +743,9 @@ std::uint32_t MarketStateArchive::uid_table_size() const noexcept {
 
 MarkExtras MarketStateArchive::extras(std::uint32_t uid) const noexcept {
   const sf::UnderlierRow *r = impl_->row_of(uid);
-  if (r == nullptr || impl_->meta.has_extras == 0u || (r->mark_flags & sf::kRowHasMarks) == 0u) return {};
+  if (r == nullptr || impl_->meta.has_extras == 0u || (r->mark_flags & sf::kRowHasMarks) == 0u) {
+    return {};
+  }
   const auto b = static_cast<std::size_t>(r->marks_begin);
   const auto c = static_cast<std::size_t>(r->marks_count);
   const auto &x = impl_->extras;
@@ -735,7 +762,9 @@ bool MarketStateArchive::has_extras() const noexcept { return impl_->meta.has_ex
 std::uint32_t MarketStateArchive::conventions_version() const noexcept {
   return impl_->meta.conventions_version;
 }
-std::string_view MarketStateArchive::date() const noexcept { return get_text(impl_->meta.date).value_or(""); }
+std::string_view MarketStateArchive::date() const noexcept {
+  return get_text(impl_->meta.date).value_or("");
+}
 std::string_view MarketStateArchive::bucket_et() const noexcept {
   return get_text(impl_->meta.bucket_et).value_or("");
 }
@@ -774,7 +803,8 @@ PersistResult<MarketStateStorage> MarketStateArchive::materialize() const {
   for (std::size_t i = 0; i < s.underliers.size(); ++i) {
     s.underliers[i].cash_divs = s.dividend_schedules[i];
     s.underliers[i].term_carry = s.term_carries[i];
-    s.underliers[i].yield = a.curve_of_row[i] == kPersistNone ? nullptr : &s.yield_curves[a.curve_of_row[i]];
+    const std::uint32_t curve = a.curve_of_row[i];
+    s.underliers[i].yield = curve == kPersistNone ? nullptr : &s.yield_curves[curve];
   }
   s.marks.reserve(a.marks.size());
   for (const ContractMarks &m : a.marks) {
