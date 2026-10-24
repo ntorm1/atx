@@ -72,7 +72,10 @@ diagnostic, not a rigorous error bound. Exact rows classify tolerance against th
 exact binary64 `1e-10`, not a rounded decimal substitute. The original terminal
 comparison uses full value bits and is diagnostic, not a convergence assertion.
 
-At most two states per stage and 131,064 total rows receive the exact audit. Each
+At most two states per stage and 131,064 distinct rows receive each exact audit
+pass. Export computes these once and the independent reader recomputes them once
+before publication: at most262,128 row evaluations across the two automatic
+passes. A separately invoked reader has the same per-pass limit. Each
 row has only three products and bounded binary64 operands; process rows
 sequentially. Summaries include at most three lists of row IDs per state and
 fixed extrema/digests; cap each stage's JSON at1MiB. Do not export huge per-row
