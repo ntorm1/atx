@@ -37,6 +37,13 @@ dates on every cash-free segment. Zero volatility and zero stock receive their
 explicit supported limiting behavior, not an invented positive volatility.
 Non-liquidator models remain unsupported in this first owner.
 
+Zero-volatility rollback uses affine stock-PWL composition: divide each knot by
+`exp((rate-yield)*dt)`, discount its value, and propagate the linear tail. This
+avoids constructing a degenerate positive-volatility logarithmic grid. The
+put exercise clock remains the declared discrete clock. Zero stock uses its
+absorbing state on the same clock, with exact discount and exercise comparisons.
+These limiting branches do not invent a grid width or a volatility floor.
+
 The fixed stock grid contains zero, spot and strike plus logarithmic nodes. For
 `N` positive-grid intervals, its positive endpoints are
 

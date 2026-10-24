@@ -90,3 +90,38 @@ continuous yield. General puts use nested exercise dates; no call-domain theorem
 is silently applied to them. The original all-50 input manifest and all-150
 baseline results remain unchanged. Other cash models receive explicit unsupported
 or uncomputed status until independently implemented.
+
+## Independent event owner
+
+`EventOwner` owns raw and normalized events, its fixed stock grid and descending
+exercise clock. It independently validates the liquidator model, stable-groups
+exact-equal event dates and applies the documented relative expiry window. It
+uses no PDE/Markov adapter, grid, jump, interpolation or value. Calls permit an
+event-only American clock only for nonnegative rates and zero continuous yield;
+puts use the independently nested uniform exercise clock in `pilot-plan.md`.
+
+The PWL maximum inserts every finite or infinite-tail crossing with intrinsic.
+Nonconvex continuation functions are allowed. A strict crossing that cannot be
+represented as a distinct binary64 stock knot returns a typed refusal and counts
+the failed intersection; no epsilon or time value is inserted. Zero volatility
+uses affine knot/value rollback. Zero stock stays absorbing. Positive diffusion
+evaluates every represented interval on every fixed stock node, then propagates
+the linear infinite tail. True-tail and repeated-interpolation approximation
+remain unresolved; neither a rigorous price enclosure nor a Bermudan bound is
+claimed for this finite representation.
+
+The owner resets caller-owned work at each price call, then retains completed
+expectations, interval contributions, constructed knots, exercise projections,
+cash jumps and steps even on refusal. Preparation bounds raw events, grid size
+and clock size before large iteration. It does not turn any refused intermediate
+state into a partial price. The frozen 32-outcome pilot is correctness-only;
+wall-clock benchmark claims require a separate reviewed experiment.
+
+Before any American pilot price, the unavailable-owner stub failed all seven
+initial controls. The implemented owner and three additional adversarial groups
+pass 10 owner tests plus the 10 unchanged primitive groups; both new owning
+translation units pass PCH-off checks. The owner checks include deterministic
+forward-clock enumeration, European Black76 identities, an interior-cash
+independent quadrature comparison, nonconvex/tail crossings, finite overflow,
+moved owners, reset diagnostics and cumulative work refusal. The first PCH-off
+attempt needed CMake regeneration for the new files; that failure is retained.
