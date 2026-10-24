@@ -25,7 +25,10 @@ inline Json finite(double value) {
 }
 
 inline Json al_options(const std::optional<AlOpts> &options) {
-  const AlOpts value = options.value_or(AlOpts{});
+  // nullopt selects ACCURATE, not AlOpts{}. al_fast_profile resolves that
+  // preset's equivalent explicit knobs; retain Reference arithmetic here.
+  AlOpts value = options ? *options : al_fast_profile(std::nullopt);
+  if (!options) value.profile = AlProfile::Reference;
   return {{"explicit", options.has_value()}, {"n_collocation", value.n_collocation},
           {"n_quadrature", value.n_quadrature}, {"n_quad_price", value.n_quad_price},
           {"max_newton_iter", value.max_newton_iter}, {"tol", value.tol},

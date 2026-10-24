@@ -103,6 +103,8 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     assert all({"iv_lower", "iv_upper", "vol_convention", "reason"} <= query.keys()
                for query in entry["queries"])
     node_strikes = {node["strike"] for node in entry["nodes"]}
+    assert entry["al_options"] == {"explicit": False, "n_collocation": 12,
+        "n_quadrature": 24, "n_quad_price": 48, "max_newton_iter": 6, "tol": 1e-10, "profile": 0}
     checked = 0
     for query in entry["queries"]:
         if query["strike"] not in node_strikes or query["status"] != "success":

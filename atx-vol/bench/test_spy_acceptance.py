@@ -168,7 +168,7 @@ class ColdNodeRootOracleTests(unittest.TestCase):
     def fixture(self):
         value = surface()
         options = {"explicit": False, "n_collocation": 12, "n_quadrature": 24,
-                   "n_quad_price": 0, "max_newton_iter": 8, "tol": 1e-10, "profile": 0}
+                   "n_quad_price": 48, "max_newton_iter": 6, "tol": 1e-10, "profile": 0}
         value["al_options"] = options
         nodes = {node["strike"] for node in value["nodes"]}
         for query in value["queries"]:
