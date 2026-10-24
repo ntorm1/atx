@@ -570,6 +570,22 @@ def run_audit(args):
     return receipt
 
 
+def one_core_trial(trial):
+    affinity = trial.get("affinity", {})
+    workers = affinity.get("fit_workers", {})
+    cpu = affinity.get("requested_cpu")
+    try:
+        mask = int(affinity.get("process_affinity_mask", "0"), 0)
+    except (TypeError, ValueError):
+        return False
+    return (isinstance(cpu, int) and 0 <= cpu < 64 and mask == 1 << cpu and
+            affinity.get("pinned") is True and affinity.get("is_pcore") is True and
+            affinity.get("current_cpu_at_receipt") == cpu and
+            isinstance(workers, dict) and workers.get("env_ATX_VOL_FIT_WORKERS") == "1" and
+            workers.get("resolved_auto") == 1 and
+            affinity.get("nested_pools", {}).get("surface_expiry_fanout") == 1)
+
+
 def verify(args, eligibility):
     rows = load_quotes(args.input)
     audit_dir = args.audit_dir
@@ -633,8 +649,7 @@ def verify(args, eligibility):
             "same_predictions": manifest.get("predictions_identical") is True and
                 manifest.get("predictions_sha256") == receipt["predictions_sha256"],
             "one_pcore": manifest.get("pcore_proof") is True and bool(trials) and
-                all(t.get("affinity", {}).get("fit_workers") == 1 and
-                    t.get("affinity", {}).get("pinned") is True for t in trials),
+                all(one_core_trial(trial) for trial in trials),
             "idle_sibling": manifest.get("smt_sibling_idle_all_trials") is True,
             "fast_math_off": manifest.get("fast_math") is False,
             "all_cold_under1second": bool(trials) and all(

@@ -91,5 +91,23 @@ class FinalApiOracleTests(unittest.TestCase):
                             for v in audit.api_violations(document(value))))
 
 
+class ColdClockOracleTests(unittest.TestCase):
+    def test_native_worker_object_and_single_cpu_are_required(self):
+        trial = {"affinity": {"fit_workers": {"env_ATX_VOL_FIT_WORKERS": "1", "resolved_auto": 1},
+                              "pinned": True, "is_pcore": True, "requested_cpu": 6,
+                              "current_cpu_at_receipt": 6, "process_affinity_mask": "0x40",
+                              "nested_pools": {"surface_expiry_fanout": 1}}}
+        self.assertTrue(audit.one_core_trial(trial))
+        two = copy.deepcopy(trial)
+        two["affinity"]["fit_workers"]["resolved_auto"] = 2
+        self.assertFalse(audit.one_core_trial(two))
+        two = copy.deepcopy(trial)
+        two["affinity"]["process_affinity_mask"] = "0xc0"
+        self.assertFalse(audit.one_core_trial(two))
+        two = copy.deepcopy(trial)
+        two["affinity"]["nested_pools"]["surface_expiry_fanout"] = 2
+        self.assertFalse(audit.one_core_trial(two))
+
+
 if __name__ == "__main__":
     unittest.main()
