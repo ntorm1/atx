@@ -1184,6 +1184,7 @@ if(ATX_BUILD_TOOLS)
     target_link_libraries(atx-vol-ddiv-latency PRIVATE atx-vol-bench-clocks atx::vol
         atx::core atx_warnings nlohmann_json::nlohmann_json)
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
+        tools/quote_bench_retained_audit.cpp
         tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp
         tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
     target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings

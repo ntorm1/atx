@@ -479,6 +479,13 @@ set_tests_properties(atx-vol-iv-batch-alloc PROPERTIES
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
 # tools target, hence the guard.
 if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-retained-audit-tests quote_bench_retained_audit_test.cpp
+        ../tools/quote_bench_retained_audit.cpp support/alloc_counter.cpp)
+    target_link_libraries(atx-vol-retained-audit-tests PRIVATE
+        atx::vol atx::core atx_warnings GTest::gtest_main nlohmann_json::nlohmann_json)
+    target_include_directories(atx-vol-retained-audit-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME atx-vol-retained-audit COMMAND atx-vol-retained-audit-tests)
+    set_tests_properties(atx-vol-retained-audit PROPERTIES LABELS "atx_vol_tools")
     add_executable(atx-vol-bench-clocks-tests bench_clocks_test.cpp)
     target_link_libraries(atx-vol-bench-clocks-tests
         PRIVATE atx-vol-bench-clocks atx::vol atx::core atx_warnings GTest::gtest_main)

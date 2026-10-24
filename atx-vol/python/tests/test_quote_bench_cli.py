@@ -58,6 +58,80 @@ def invoke(binary: Path, source: Path, output: Path, *extra: str, env=None):
     )
 
 
+def test_native_post_fit_audit_owns_timed_instance_and_keeps_fit_counters(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                  "serve": {"metadata": True, "floor_price_only": True}}))
+    outputs = {}
+    for name, mode in (("plain", []), ("inline", ["--acceptance-audit"]),
+                       ("post", ["--post-fit-acceptance-audit"])):
+        output, report = tmp_path / (name + ".csv"), tmp_path / (name + ".json")
+        result = invoke(binary, source, output, "--policy", str(policy), "--report", str(report),
+                        "--timing-detail", "--cold-reset", *mode)
+        assert result.returncode == 0, result.stderr
+        outputs[name] = (output.read_bytes(), json.loads(report.read_text()))
+    assert outputs["post"][0] == outputs["plain"][0] == outputs["inline"][0]
+    post = outputs["post"][1]
+    marker = post["bench"]["post_fit_acceptance_audit"]
+    assert marker["schema"] == "atx-vol-post-fit-api-proof-v1"
+    assert marker["phase"] == "after_cold_publication_and_fit_snapshots"
+    assert marker["cold_clock_contract"] == "retained_surface_publication_v1"
+    for key in ("same_retained_instance", "audit_completed", "retention_setup_in_cold",
+                "retained_owner_released_after_audit"):
+        assert marker[key] is True
+    assert marker["refit_count"] == 0
+    assert marker["graded_surface_fit_invocations_before"] == 1
+    assert marker["graded_surface_fit_invocations_after"] == 1
+    for prefix in ("attempted", "retained", "serialized"):
+        assert marker[prefix + "_snapshot_count"] == 1
+        assert marker[prefix + "_member_count"] == 1
+        assert marker[prefix + "_chain_ids"] == [17]
+    assert marker["unsupported_chain_ids"] == marker["missing_owner_chain_ids"] == []
+    for key, path in (("input_sha256", source), ("policy_sha256", policy),
+                      ("executable_sha256", binary), ("prediction_sha256", tmp_path / "post.csv")):
+        assert marker[key] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert marker["audit_s"] > 0
+    assert marker["retained_owner_destruction_s"] >= 0
+    assert post["bench"]["counters"]["solve_ledger"] == (
+        outputs["plain"][1]["bench"]["counters"]["solve_ledger"])
+    assert post["bench"]["counters"]["simd"] == outputs["plain"][1]["bench"]["counters"]["simd"]
+    assert post["graded_stats"]["acceptance_audit"]["phase"] == "post_fit"
+    assert post["graded_stats"]["acceptance_audit"]["snapshots"] == (
+        outputs["inline"][1]["graded_stats"]["acceptance_audit"]["snapshots"])
+    assert "post_fit_acceptance_audit" not in outputs["plain"][1]["bench"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--reps", "2"], ["--acceptance-audit"],
+                                   ["--curve", "essvi"], ["--inverse-replay", "scalar"],
+                                   ["--deam-audit", "--timing-detail"]])
+def test_native_post_fit_audit_rejects_unsupported_mode_before_output(binary, tmp_path, extra):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded"}))
+    output = tmp_path / "output.csv"
+    selected = [] if not extra or "--curve" in extra else ["--policy", str(policy)]
+    result = invoke(binary, source, output, "--report", str(tmp_path / "report.json"),
+                    "--post-fit-acceptance-audit", *selected, *extra)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_native_post_fit_audit_rejects_static_policy_before_output(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1}))
+    output = tmp_path / "output.csv"
+    result = invoke(binary, source, output, "--policy", str(policy),
+                    "--report", str(tmp_path / "report.json"), "--post-fit-acceptance-audit")
+    assert result.returncode != 0
+    assert "admission=graded" in result.stderr
+    assert not output.exists()
+
+
 def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     expected = make_quotes(source)

@@ -20,6 +20,7 @@
 #include "quote_bench_progress.hpp"
 #include "quote_bench_data.hpp"
 #include "quote_bench_acceptance.hpp"
+#include "quote_bench_retained_audit.hpp"
 #include "quote_bench_candidate_capture.hpp"
 #include "quote_bench_joint_row_census.hpp"
 
@@ -77,6 +78,7 @@ struct Arguments {
   bool timing_detail{false}; // opt-in per-chain fit timing counters (graded admission)
   bool deam_audit{false};    // opt-in: every Premium de-Am inversion also runs Search (L2e)
   bool acceptance_audit{false}; // offline actual-API proof; timings are not qualifying
+  bool post_fit_acceptance_audit{false}; // retained instance, after clocks and snapshots
   // Lane B0 benchmark harness (bench_clocks.hpp, docs/benchmark-clocks.md).
   std::size_t reps{1};              // in-process repetitions of the quote-slice run
   bool cold_reset{false};           // reset every market-dependent memo before each rep
@@ -136,6 +138,7 @@ Arguments arguments(int argc, char **argv) {
                    "[--cold-reset] [--affinity CPU [--require-pcore]] "
                    "[--inverse-replay auto|scalar|avx2]\n"
                    "[--acceptance-audit] (offline final API proof; not a timing run)\n"
+                   "[--post-fit-acceptance-audit] (one retained fit; proof after fit clocks)\n"
                    "[--candidate-capture fresh.json] (explicit research build; one-worker offline capture)\n"
                    "[--joint-row-census fresh.json] (explicit research build; one full projection)\n"
                    "Defaults: --policy auto --dividends funding-pv. "
@@ -164,6 +167,10 @@ Arguments arguments(int argc, char **argv) {
     }
     if (key == "--acceptance-audit") {
       args.acceptance_audit = true;
+      continue;
+    }
+    if (key == "--post-fit-acceptance-audit") {
+      args.post_fit_acceptance_audit = true;
       continue;
     }
     if (key == "--deam-audit") {
@@ -258,6 +265,13 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.acceptance_audit && (args.model != "quote-slice" || !args.curve.empty())) {
     throw std::runtime_error("--acceptance-audit requires quote-slice graded policy");
+  }
+  if (args.post_fit_acceptance_audit &&
+      (args.model != "quote-slice" || !args.curve.empty() || args.policy == "auto" ||
+       args.reps != 1U || args.report.empty() || args.acceptance_audit || args.deam_audit ||
+       args.inverse_replay || !args.candidate_capture.empty())) {
+    throw std::runtime_error("--post-fit-acceptance-audit requires one rep, graded quote-slice, "
+        "explicit policy and report; no other audit/capture/replay");
   }
   if (args.timing_detail && args.model != "quote-slice") {
     throw std::runtime_error("--timing-detail requires --model quote-slice");
@@ -1324,8 +1338,10 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
                 const std::map<SnapshotIdentity, std::vector<std::uint64_t>> &snapshot_chains,
                 const std::set<std::uint64_t> &ambiguous, const QuoteSurfaceConfig &surface,
                 std::vector<Prediction> &predictions, RunStatistics &stats,
-                std::set<std::uint64_t> &fitted_chains, std::set<std::uint64_t> &static_fallback) {
+                std::set<std::uint64_t> &fitted_chains, std::set<std::uint64_t> &static_fallback,
+                quote_bench_acceptance::RetainedRun *retained) {
   auto &graded = stats.graded_stats;
+  if (retained) retained->begin(snapshot_chains.size());
   const bool joint_cold = surface.cold_fit != QuoteSurfaceColdFit::ExistingPolicy;
   if (joint_cold) graded["cold_fit"]["requested"] = to_string(surface.cold_fit);
   for (const auto &[identity, ids] : snapshot_chains) {
@@ -1337,6 +1353,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
     }
     if (members.empty()) continue;
     if (members.size() > kQuoteSurfaceMaxExpiries) {
+      if (retained) retained->unsupported(members);
       static_fallback.insert(members.begin(), members.end());
       count_into(graded["static_fallback"], "snapshots");
       count_into(graded["static_fallback"], "chains", members.size());
@@ -1362,8 +1379,10 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       floored.emplace(profile.config);
       floored->call_floor.lines = quote_surface_call_floor_lines(expiries);
     }
+    const auto retained_index = retained ? retained->attempt(identity, members) : 0U;
     const auto start = Clock::now();
     // H1: audit attaches (so not const); C3: the floored config when serve.call_floor is on.
+    if (retained) retained->note_fit_invocation();
     auto fitted = fit_quote_surface(expiries, floored ? *floored : profile.config, surface);
     const double surface_us =
         std::chrono::duration<double, std::micro>(Clock::now() - start).count();
@@ -1606,6 +1625,10 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       graded["acceptance_audit"]["snapshots"].push_back(
           quote_bench_acceptance::surface(*fitted, members));
     }
+    if (retained) {
+      if (fitted) retained->retain(retained_index, std::move(*fitted));
+      else retained->failed(retained_index, fitted.error().to_string());
+    }
   }
 }
 
@@ -1843,7 +1866,7 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
 }
 
 std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &rows,
-                            RunStatistics &stats) {
+                            RunStatistics &stats, quote_bench_acceptance::RetainedRun *retained) {
   stats.acceptance_audit = args.acceptance_audit;
   const auto dividends = args.dividends == "funding-pv"
       ? QuoteSliceDividendModel::AggregateFundingPresentValue
@@ -1875,6 +1898,8 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         {"symbol_overrides", Json::array()}, {"regimes", nullptr}};
   }
   stats.policy_definition["research_build"] = seed_target_provenance();
+  if (retained && (!policy || !policy->graded))
+    throw std::runtime_error("--post-fit-acceptance-audit requires admission=graded policy");
   // B0 cold-calibration clock: the resident snapshot is handed to the fit here.
   const auto cold_start = Clock::now();
   stats.policy_load_seconds = bench::seconds_between(policy_start, cold_start);
@@ -2039,7 +2064,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     QuoteSurfaceConfig surface = policy->surface;
     surface.fit_workers = 0U;
     fit_graded(chains, prepared, snapshot_chains, ambiguous_expiries, surface, predictions, stats,
-               fitted_chains, static_fallback);
+               fitted_chains, static_fallback, retained);
     stats.phases.lap(bench::Stage::Publication);
   }
   // Grade of a static-fallback expiry under graded admission: the pass-A rule
@@ -2234,6 +2259,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       }
     }
   }
+  if (retained) retained->published();
   const auto cold_end = Clock::now();
   stats.phases.lap(bench::Stage::Publication, cold_end);
   stats.cold_calibration_seconds = bench::seconds_between(cold_start, cold_end);
@@ -2670,9 +2696,10 @@ Json rows_json(const std::vector<InputRow> &rows, const std::vector<Prediction> 
 
 // --reps in-process repetitions of the quote-slice run, each preceded by the cold reset
 // under --cold-reset. Rep 1's statistics and predictions are the run's; every later rep
-// must reproduce them bit for bit (predictions_identical_to_rep1).
+// reports bit identity diagnostically (predictions_identical_to_rep1).
 std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputRow> &rows,
-                                 RunStatistics &stats, Json &out) {
+                                 RunStatistics &stats, Json &out,
+                                 quote_bench_acceptance::RetainedRun *retained = nullptr) {
   std::vector<Prediction> first;
   std::vector<double> legacy;
   std::vector<double> cold;
@@ -2687,7 +2714,7 @@ std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputR
     const auto exact_before = counters::snapshot();
     auto predictions = [&] {
       const bench::StageClockArm armed(args.timing_detail ? &trial.deam_clock : nullptr);
-      return run(args, rows, trial);
+      return run(args, rows, trial, retained);
     }();
     const auto work = counters::ledger::snapshot() - ledger_before;
     const auto exact_after = counters::snapshot();
@@ -2753,6 +2780,13 @@ std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputR
                   {"reason", "quote-bench builds no serving tier (records, ladders, primary "
                              "risk), so ready-to-quote is not measured; it is never reported "
                              "as zero"}}}};
+  if (retained) {
+    out["clocks"]["cold_calibration_s"]["contract"] = "retained_surface_publication_v1";
+    out["clocks"]["cold_calibration_s"]["scope"] =
+        "resident snapshot through publication of owned queryable surfaces and predictions; "
+        "includes retention setup; excludes policy load, file I/O, post-fit proof and "
+        "retained-owner destruction";
+  }
   return first;
 }
 
@@ -2887,7 +2921,8 @@ int main(int argc, char **argv) {
     if (args.affinity) pin_fit_worker(args);
     times.setup_s = bench::seconds_between(main_entry, Clock::now());
     Json provenance = Json::object();
-    if (!args.progress.empty() || !args.candidate_capture.empty() || !args.joint_row_census.empty()) {
+    if (!args.progress.empty() || !args.candidate_capture.empty() ||
+        !args.joint_row_census.empty() || args.post_fit_acceptance_audit) {
       const auto &selected_policy = args.progress.empty() ? args.policy : args.common_policy;
       provenance = {{"input", std::filesystem::weakly_canonical(args.input).string()},
           {"input_sha256", quote_bench::file_sha256(args.input)},
@@ -2899,8 +2934,10 @@ int main(int argc, char **argv) {
           {"executable_hash_scope", "argv[0] if directly resolvable; wrapper start receipt "
               "always binds the absolute invoked executable"}};
     }
+    if (args.post_fit_acceptance_audit && !provenance["executable_sha256"].is_string())
+      throw std::runtime_error("Post-fit audit requires a directly resolvable executable path");
     const auto rows = read_rows(args, times.input);
-    if (!args.progress.empty() &&
+    if ((!args.progress.empty() || args.post_fit_acceptance_audit) &&
         provenance["input_sha256"] != quote_bench::file_sha256(args.input)) {
       throw std::runtime_error("Input changed while reading progress-bound cohort");
     }
@@ -2920,6 +2957,8 @@ int main(int argc, char **argv) {
       return 0;
     }
     RunStatistics stats;
+    std::optional<quote_bench_acceptance::RetainedRun> retained;
+    if (args.post_fit_acceptance_audit) retained.emplace(); // empty: no retention allocation
     stats.timing_detail = args.timing_detail;
     counters::fit_timing::arm_deam_audit(args.deam_audit); // before any fit starts
     Json bench_report = {{"schema", "atx-vol-bench-clocks-v2"},
@@ -2947,7 +2986,8 @@ int main(int argc, char **argv) {
         // Capture admission/setup failure invalidates evidence, never the fit.
         return run_reps(args, rows, stats, bench_report);
       }
-      if (!candidate_capture) return run_reps(args, rows, stats, bench_report);
+      if (!candidate_capture)
+        return run_reps(args, rows, stats, bench_report, retained ? &*retained : nullptr);
       const research::IvCandidateCaptureScope capture_scope(*candidate_capture);
       if (!capture_scope.attached()) throw std::runtime_error("Candidate capture scope refused");
       return run_reps(args, rows, stats, bench_report);
@@ -2958,6 +2998,7 @@ int main(int argc, char **argv) {
       bench_report["inverse_replay"] = inverse_replay_json(inverse_stream, *args.inverse_replay);
     }
     const auto cpus_after = bench::sample_cpus();
+    if (retained) retained->snapshots_complete();
     const auto write_start = Clock::now();
     write_predictions(args.output, rows, predictions, stats.graded, stats.metadata);
     const auto outputs_ready = Clock::now();
@@ -2975,6 +3016,32 @@ int main(int argc, char **argv) {
         {"cmake_option", "ATX_VOL_JOINT_ROW_CENSUS_RESEARCH"},
         {"enabled", research::joint_row_census_compiled()}};
     bench_report["process_identity"] = bench::process_identity_json();
+    bool post_fit_complete = true;
+    if (retained) {
+      // All fit clocks/counters and the CPU snapshots are closed before proof.
+      auto marker = retained->audit(stats.graded_stats["acceptance_audit"]);
+      retained->release(marker);
+      marker["input_sha256"] = provenance["input_sha256"];
+      marker["policy_sha256"] = provenance["policy_sha256"];
+      marker["executable_sha256"] = provenance["executable_sha256"];
+      marker["prediction_sha256"] = nullptr;
+      try {
+        marker["prediction_sha256"] = quote_bench::file_sha256(args.output);
+        if (marker["input_sha256"] != quote_bench::file_sha256(args.input) ||
+            marker["policy_sha256"] != quote_bench::file_sha256(args.policy) ||
+            marker["executable_sha256"] != quote_bench::file_sha256(argv[0])) {
+          marker["audit_completed"] = false;
+          marker["failure_reason"] = "post_fit_provenance_changed";
+        }
+      } catch (const std::exception &error) {
+        marker["audit_completed"] = false;
+        marker["failure_reason"] = "post_fit_provenance_unavailable";
+        marker["provenance_error"] = error.what();
+      }
+      post_fit_complete = marker.at("audit_completed").get<bool>();
+      bench_report["post_fit_acceptance_audit"] = std::move(marker);
+      if (!post_fit_complete) bench_report["timing_qualifying"] = false;
+    }
     if (candidate_capture) {
       bench_report["timing_qualifying"] = false;
       Json captured = quote_bench_candidate_capture::report(*candidate_capture, capture_capacity, capture_capacity);
@@ -3037,7 +3104,8 @@ int main(int argc, char **argv) {
       report.close();
       if (!report) throw std::runtime_error("Timing report write failed");
     }
-    return (candidate_capture && !candidate_capture->valid()) || row_capture_failed ? 2 : 0;
+    return !post_fit_complete || row_capture_failed ||
+           (candidate_capture && !candidate_capture->valid()) ? 2 : 0;
   } catch (const std::exception &error) {
     std::cerr << "quote-bench: " << error.what() << '\n';
     return 1;

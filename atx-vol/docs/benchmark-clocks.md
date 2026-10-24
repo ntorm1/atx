@@ -1,9 +1,11 @@
 # Benchmark clocks, stages, counters, affinity and the IV reference contract
 
-Frozen definitions for gate G1 of the vol-sota master plan (lane B0, 2026-10-22; plan
-sections 3.1, 3.2 and 8; deep review F05 and 5.6). Every later speed or IV-accuracy claim
-toward the sub-second SPY fit is measured with these definitions. This page defines
-measurements; it makes no performance claim.
+Historical definitions for gate G1 of the vol-sota master plan (lane B0, 2026-10-22;
+plan sections 3.1, 3.2 and 8; deep review F05 and 5.6), plus the explicitly versioned
+retained-publication boundary in section 11. Comparisons must identify their clock
+contract and use the same boundary. This page defines measurements; it makes no
+performance claim. The economic admission policy treats strict IV error and equality
+between different valid fitted solutions as diagnostics.
 
 Implementation: `tools/bench_clocks.{hpp,cpp}` (clock arithmetic, receipts, cold reset),
 the `bench` object of every `atx-vol-quote-bench --model quote-slice` report
@@ -41,14 +43,16 @@ admission checks), `compute_s` (every rep of `run()`, policy load included),
 `policy_load_s` (rep 1, inside `compute_s`), `write_s` (predictions CSV).
 `unattributed_s` = value - the sum of the other sub-timers.
 
-Warm update and hot query (plan 3.1) are not measured by quote-bench: it has no published
-version to update or query.
+Warm update and hot-query latency (plan 3.1) are not measured by these quote-bench
+clocks. Section 11 retains a published surface for correctness queries only; that
+diagnostic is not a hot-query latency benchmark.
 
 `--reps N` (1..1000) repeats `run()` in-process; `bench.per_rep[]` holds each rep's
 legacy and cold clocks, policy load, de-Am thread-memo entries at start and end, the solve
 ledger delta, the cold-reset receipt and `predictions_identical_to_rep1` (every published
-field, prices and vols bit for bit). Rep 1's statistics, stages, counters and predictions
-are the run's.
+field, prices and vols bit for bit). This equality field is diagnostic, not economic
+qualification. Rep 1's statistics, stages, counters and predictions are the run's.
+The post-fit audit mode in section 11 requires exactly one repetition.
 
 ## 3. Exclusive stages (`bench.stages`, requires `--timing-detail`)
 
@@ -189,9 +193,11 @@ SHA and dirty flag of `-SourceRoot`; `build_info` from the binary's embedded bui
 `-BuildDir`'s `CMakeCache.txt`, with `build_info_source` saying which; `powercfg` active
 scheme; per-trial exit code, clocks, process sub-timers, stages and affinity summary;
 summaries of every clock; `pcore_proof` (every trial on the requested CPU and on a
-performance core); `predictions_identical` with the predictions sha256. Exit 0 only when
-every trial exited 0, the binary is not fast-math, and every trial's predictions are
-byte-identical.
+performance core); `predictions_identical` with every trial's predictions sha256.
+Under the economic admission update, equality is diagnostic and differing hashes
+no longer cause launcher exit 3. Successful collection still requires successful
+processes, no fast-math and every explicitly requested host gate. Qualification
+requires the independent verifier: different solutions need their own full proof.
 
 SMT sibling: `pcore_proof` is the core-type proof only. Each trial also records
 `smt_sibling_busy_max_pct` and `smt_contended` (sibling busier than
@@ -327,3 +333,67 @@ aggregate overflow and raw receipt retention; the full owning executable passes
 20 tests. This does not retrospectively repair archived measurements without raw
 counters. Earlier contaminated runs retain their original unqualified status;
 new quiet-host admission still requires both actual sibling and whole-host gates.
+
+## 11. Retained publication and post-fit actual-API proof (2026-10-24)
+
+`--post-fit-acceptance-audit` is an opt-in tool mode for one graded quote-slice run
+with an explicit policy, predictions and report path. It is incompatible with the
+historical inline `--acceptance-audit`, de-Am audit, inverse replay and candidate
+capture; combined census builds also reject a simultaneous row census.
+The historical inline audit remains a nonqualifying diagnostic inside the fit.
+
+The new mode moves the actual fitted `QuoteSurfaceSlice` vectors into a tool-owned
+container, together with their original member IDs. Capture allocation, identity
+copying and moves occur inside the cold interval. It does not copy or reconstruct
+fits, reload an archive, or run a second fit. Refused slots remain in the retained
+vector. Whole-fit errors, missing owners and unsupported static fallback are
+explicitly incomplete evidence, never silently omitted proof.
+
+The clock contract is `retained_surface_publication_v1`, emitted both in
+`bench.clocks.cold_calibration_s.contract` and the proof marker. Cold latency ends
+after predictions and a still-queryable owned surface have been published. The
+historical graded path destroys its local fitted surface inside the cold interval;
+this new mode retains it. A campaign or control/candidate comparison must not mix
+these lifetime boundaries. No estimated diagnostic or destruction duration is
+subtracted from a larger measured interval.
+
+The execution order is publication and cold stop, return through the fit stage
+clock and counter snapshots, process compute stop and CPU sample, prediction CSV
+write, then actual-API proof on those same retained objects. The existing
+`process_wall_s` still ends when predictions have been written. The proof and final
+report write occur afterward. API queries and cold Reference prices can touch
+diagnostic caches/counters, but cannot contaminate already frozen fit counters or
+CPU intervals.
+
+The same native report contains `graded_stats.acceptance_audit`, with its existing
+`atx-vol-final-api-audit-v1` schema and additional `phase: post_fit`. The new
+`bench.post_fit_acceptance_audit` marker has schema `atx-vol-post-fit-api-proof-v1`
+and phase `after_cold_publication_and_fit_snapshots`. It records:
+
+- attempted, retained and serialized snapshot/member counts and chain IDs;
+- same-instance ownership, retention inside cold, and release after proof;
+- surface-fit invocation counts before/after proof and zero refits;
+- input, policy, executable and this trial's prediction hashes;
+- missing/unsupported IDs, capture failures and completion status;
+- retained vector capacities, `audit_s` and `retained_owner_destruction_s`.
+
+The retained owner is released after proof; its destruction has its own interval.
+This is not all process cleanup: serving records may have another shared owner,
+and rows/statistics remain alive. A completion marker says evidence was produced,
+not that it passes the financial checks. Hash changes or missing evidence produce
+an incomplete marker and nonzero exit where a diagnostic report can be written;
+allocation or serialization failures cannot produce a qualifying receipt.
+
+The root economic verifier validates the marker, process identity, artifact hashes,
+clock definition and every trial's own full thirteen actual-API checks. It does so
+even when a marked trial happens to match another CSV. Historical ordinary trials
+may reuse an already qualified identical-output proof under the separately bound
+binary/input/policy contract. This optional reuse is not a numerical identity
+requirement for new algorithms. The original raw boxes, complete valid-row/slice
+coverage, arbitrage checks, truthful IV semantics and economic price-error budget
+remain unchanged.
+
+Producer controls cover real moved-fit lifetime, lifecycle ordering, failed and
+refused outcomes, duplicate/member shape errors, injected allocation failure, CLI
+admission, actual API/prediction joins and unchanged fit counter snapshots. These
+are correctness tests; no new fit latency is claimed by this change.
