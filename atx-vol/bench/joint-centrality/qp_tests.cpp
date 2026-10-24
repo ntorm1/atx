@@ -1,4 +1,5 @@
 #include "qp_control.hpp"
+#include "fitting/joint_inbox_projection.hpp"
 
 #include <array>
 #include <bit>
@@ -237,6 +238,211 @@ TEST(JointHomogeneousControl, NonfiniteMatrixAndResidualRefuseBeforeFactoring) {
       expect_validation_refusal(f, f.input(), f.output());
     }
   }
+}
+
+constexpr AmericanPriceBounds kQpCarry{100., 1., 1., 98., 100.};
+
+struct CrossingQpFixture {
+  std::array<AmericanPriceNode, 3> near{{{90., 12., 2.}, {100., 7., 6.}, {110., 2., 12.}}};
+  std::array<AmericanPriceNode, 3> far{{{90., 11., 3.}, {100., 5., 6.}, {110., 1., 13.}}};
+  std::array<AmericanPriceBox, 3> boxes{{{10.5, 13., 1.5, 4.}, {4., 7., 4., 8.},
+                                       {.5, 3., 11.5, 14.}}};
+
+  JointProjectionResult run(detail::JointDirectionMode mode, detail::JointInboxProfile *profile,
+                            detail::JointInboxDiagnostics *diagnostics = nullptr,
+                            std::size_t budget = 100) {
+    const std::array<detail::JointInboxSlice, 2> slices{{
+        {near, boxes, kQpCarry}, {far, boxes, kQpCarry}}};
+    return detail::project_joint_in_box(slices, budget, diagnostics, profile, mode);
+  }
+};
+
+void expect_node_bits(const CrossingQpFixture &actual, const CrossingQpFixture &expected) {
+  for (std::size_t i = 0; i < actual.near.size(); ++i) {
+    const auto check = [](const AmericanPriceNode &a, const AmericanPriceNode &b) {
+      expect_same_bits(std::array{a.strike, a.call, a.put},
+                        std::array{b.strike, b.call, b.put});
+    };
+    check(actual.near[i], expected.near[i]);
+    check(actual.far[i], expected.far[i]);
+  }
+}
+
+void expect_result_equal(const JointProjectionResult &a, const JointProjectionResult &b) {
+  EXPECT_EQ(a.outcome, b.outcome);
+  EXPECT_EQ(a.sweeps, b.sweeps);
+  EXPECT_EQ(a.conflict.kind, b.conflict.kind);
+  EXPECT_EQ(a.conflict.slice, b.conflict.slice);
+  EXPECT_EQ(a.conflict.node, b.conflict.node);
+  EXPECT_EQ(a.conflict.other, b.conflict.other);
+  expect_same_bits(std::array{a.conflict.strike, a.conflict.excess},
+                    std::array{b.conflict.strike, b.conflict.excess});
+}
+
+auto centrality_counts(const detail::JointInboxProfile &p) {
+  return std::array{p.centrality_attempts, p.centrality_solves, p.centrality_accepted,
+      p.centrality_zero_target, p.centrality_nonfinite, p.centrality_nonimproving,
+      p.centrality_solve_refused, p.centrality_invalid_target, p.centrality_input_refusals,
+      p.centrality_setup_refusals, p.centrality_allocation_refusals};
+}
+
+void expect_no_centrality_work(const detail::JointInboxProfile &profile) {
+  for (const auto count : centrality_counts(profile)) EXPECT_EQ(count, 0u);
+  EXPECT_EQ(profile.centrality_workspace_bytes, 0u);
+  EXPECT_EQ(profile.centrality_setup_ns, 0u);
+  EXPECT_EQ(profile.centrality_ns, 0u);
+}
+
+void expect_certified_boxes_and_calendar(const CrossingQpFixture &f) {
+  const auto near = AmericanPriceSlice::create(f.near, kQpCarry);
+  const auto far = AmericanPriceSlice::create(f.far, kQpCarry);
+  ASSERT_TRUE(near.has_value());
+  ASSERT_TRUE(far.has_value());
+  EXPECT_TRUE(check_american_calendar(*near, *far).has_value());
+  for (std::size_t i = 0; i < f.boxes.size(); ++i) {
+    for (const AmericanPriceNode node : {f.near[i], f.far[i]}) {
+      EXPECT_GE(node.call, f.boxes[i].call_lo);
+      EXPECT_LE(node.call, f.boxes[i].call_hi);
+      EXPECT_GE(node.put, f.boxes[i].put_lo);
+      EXPECT_LE(node.put, f.boxes[i].put_hi);
+    }
+  }
+}
+
+TEST(JointCentralityQp, LinkedModeAndOptionalProfilePreserveExactResultAndPrices) {
+  ASSERT_TRUE(detail::joint_centrality_compiled());
+  for (const std::size_t budget : {1u, 100u}) {
+    SCOPED_TRACE(budget);
+    CrossingQpFixture compiled, explicit_mode, unprofiled;
+    detail::JointInboxProfile a, b;
+    detail::JointInboxDiagnostics da, db, dc;
+    const auto ra = compiled.run(detail::JointDirectionMode::Compiled, &a, &da, budget);
+    const auto rb = explicit_mode.run(detail::JointDirectionMode::Centrality, &b, &db, budget);
+    const auto rc = unprofiled.run(detail::JointDirectionMode::Centrality, nullptr, &dc, budget);
+    expect_result_equal(ra, rb);
+    expect_result_equal(ra, rc);
+    expect_node_bits(compiled, explicit_mode);
+    expect_node_bits(compiled, unprofiled);
+    expect_same_bits(std::array{da.primal_residual, da.dual_residual, da.duality_gap},
+                      std::array{db.primal_residual, db.dual_residual, db.duality_gap});
+    expect_same_bits(std::array{da.primal_residual, da.dual_residual, da.duality_gap},
+                      std::array{dc.primal_residual, dc.dual_residual, dc.duality_gap});
+    EXPECT_EQ(da.variables, db.variables);
+    EXPECT_EQ(da.constraints, db.constraints);
+    EXPECT_EQ(da.certificate_passed, db.certificate_passed);
+    EXPECT_TRUE(a.centrality_enabled);
+    EXPECT_TRUE(b.centrality_enabled);
+    EXPECT_EQ(centrality_counts(a), centrality_counts(b));
+    EXPECT_EQ(a.centrality_workspace_bytes, b.centrality_workspace_bytes);
+    EXPECT_EQ(a.factorizations, b.factorizations);
+    EXPECT_EQ(a.directions, b.directions);
+    EXPECT_EQ(ra.outcome, budget == 1 ? JointProjectionOutcome::NonConverged
+                                    : JointProjectionOutcome::Feasible);
+  }
+}
+
+TEST(JointCentralityQp, OriginalModeBypassesAllOptionalWorkAndRetainsFeasibleProjection) {
+  CrossingQpFixture f;
+  detail::JointInboxProfile profile;
+  profile.centrality_attempts = 999;
+  profile.centrality_workspace_bytes = 999;
+  profile.centrality_enabled = true;
+  detail::JointInboxDiagnostics diagnostics;
+  ASSERT_EQ(f.run(detail::JointDirectionMode::Original, &profile, &diagnostics).outcome,
+             JointProjectionOutcome::Feasible);
+  EXPECT_FALSE(profile.centrality_enabled);
+  expect_no_centrality_work(profile);
+  EXPECT_GT(profile.factorizations, 0u);
+  EXPECT_EQ(profile.directions, 2u * profile.factorizations);
+  EXPECT_TRUE(diagnostics.certificate_passed);
+  expect_certified_boxes_and_calendar(f);
+}
+
+TEST(JointCentralityQp, CorrectionsUseBoundedExtraSolvesAndPreserveEveryCertificate) {
+  CrossingQpFixture f;
+  detail::JointInboxProfile profile;
+  detail::JointInboxDiagnostics diagnostics;
+  ASSERT_EQ(f.run(detail::JointDirectionMode::Centrality, &profile, &diagnostics).outcome,
+             JointProjectionOutcome::Feasible);
+  EXPECT_TRUE(profile.centrality_enabled);
+  EXPECT_GT(profile.centrality_workspace_bytes, 0u);
+  EXPECT_GT(profile.centrality_attempts, 0u);
+  EXPECT_LE(profile.centrality_attempts, 3u * profile.factorizations);
+  EXPECT_LE(profile.centrality_solves, profile.centrality_attempts);
+  EXPECT_LE(profile.centrality_accepted, profile.centrality_solves);
+  EXPECT_EQ(profile.directions, 2u * profile.factorizations + profile.centrality_solves);
+  EXPECT_LE(profile.directions, 5u * profile.factorizations);
+  EXPECT_EQ(profile.centrality_allocation_refusals, 0u);
+  EXPECT_EQ(profile.centrality_input_refusals, 0u);
+  EXPECT_TRUE(diagnostics.certificate_passed);
+  expect_certified_boxes_and_calendar(f);
+}
+
+TEST(JointCentralityQp, FeasibleAndZeroIterationEarlyReturnsAllocateNoCorrectionWorkspace) {
+  for (const auto mode : {detail::JointDirectionMode::Original,
+                          detail::JointDirectionMode::Centrality}) {
+    std::array<AmericanPriceNode, 3> nodes{{{90., 12., 3.}, {100., 7., 8.}, {110., 2., 13.}}};
+    const std::array<AmericanPriceBox, 3> boxes{{{11., 13., 2., 4.}, {6., 8., 7., 9.},
+                                               {1., 3., 12., 14.}}};
+    const std::array<detail::JointInboxSlice, 1> slices{{{nodes, boxes, kQpCarry}}};
+    for (const std::size_t budget : {0u, 1u}) {
+      const auto before = nodes;
+      detail::JointInboxProfile profile;
+      const auto result = detail::project_joint_in_box(slices, budget, nullptr, &profile, mode);
+      EXPECT_EQ(result.outcome, budget == 0 ? JointProjectionOutcome::InvalidInput
+                                          : JointProjectionOutcome::Feasible);
+      EXPECT_EQ(result.sweeps, 0u);
+      EXPECT_EQ(profile.factorizations, 0u);
+      EXPECT_EQ(profile.directions, 0u);
+      expect_no_centrality_work(profile);
+      for (std::size_t i = 0; i < nodes.size(); ++i) {
+        expect_same_bits(std::array{nodes[i].strike, nodes[i].call, nodes[i].put},
+                          std::array{before[i].strike, before[i].call, before[i].put});
+      }
+    }
+  }
+}
+
+TEST(JointCentralityQp, ExhaustedBudgetPreservesEveryOriginalNodeInBothModes) {
+  for (const auto mode : {detail::JointDirectionMode::Original,
+                          detail::JointDirectionMode::Centrality}) {
+    CrossingQpFixture f;
+    const auto before = f;
+    detail::JointInboxProfile profile;
+    detail::JointInboxDiagnostics diagnostics;
+    const auto result = f.run(mode, &profile, &diagnostics, 1);
+    EXPECT_EQ(result.outcome, JointProjectionOutcome::NonConverged);
+    EXPECT_EQ(result.sweeps, 1u);
+    EXPECT_FALSE(diagnostics.certificate_passed);
+    EXPECT_EQ(profile.factorizations, 1u);
+    expect_node_bits(f, before);
+  }
+}
+
+TEST(JointCentralityQp, InvalidModeRefusesTransactionallyAndResetsDiagnostics) {
+  CrossingQpFixture f;
+  const auto before = f;
+  detail::JointInboxProfile profile;
+  profile.centrality_enabled = true;
+  profile.centrality_attempts = 123;
+  profile.centrality_workspace_bytes = 123;
+  profile.factorizations = 123;
+  profile.directions = 123;
+  detail::JointInboxDiagnostics diagnostics{123, 123, 1., 2., 3., true};
+  const auto result = f.run(static_cast<detail::JointDirectionMode>(999), &profile, &diagnostics);
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::InvalidInput);
+  EXPECT_EQ(result.sweeps, 0u);
+  expect_node_bits(f, before);
+  EXPECT_FALSE(profile.centrality_enabled);
+  expect_no_centrality_work(profile);
+  EXPECT_EQ(profile.factorizations, 0u);
+  EXPECT_EQ(profile.directions, 0u);
+  EXPECT_EQ(diagnostics.variables, 0u);
+  EXPECT_EQ(diagnostics.constraints, 0u);
+  EXPECT_EQ(diagnostics.primal_residual, 0.);
+  EXPECT_EQ(diagnostics.dual_residual, 0.);
+  EXPECT_EQ(diagnostics.duality_gap, 0.);
+  EXPECT_FALSE(diagnostics.certificate_passed);
 }
 
 } // namespace
