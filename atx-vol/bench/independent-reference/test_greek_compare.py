@@ -2,7 +2,7 @@ import copy
 import math
 import unittest
 
-from greek_compare import verify_row
+from greek_compare import same_selected_ids, verify_row
 
 
 MODEL = dict(id="test", S=50., K=100., T=.5, sigma=.2, r=.05, q=0., side="put")
@@ -26,6 +26,11 @@ def row():
 
 
 class GreekCompareTests(unittest.TestCase):
+    def test_native_sorted_ids_preserve_exact_population_without_duplicates(self):
+        self.assertTrue(same_selected_ids(["a", "b"], ["b", "a"]))
+        for actual in (["a"], ["a", "a"], ["a", "other"], ["a", "b", "b"]):
+            self.assertFalse(same_selected_ids(actual, ["b", "a"]))
+
     def test_exact_exercised_receipt_and_truthful_refusal(self):
         verify_row(row(), MODEL)
         refused = row()

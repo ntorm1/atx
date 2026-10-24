@@ -20,6 +20,11 @@ def finite(x):
     return type(x) in (int, float) and math.isfinite(x)
 
 
+def same_selected_ids(actual, expected):
+    # The native FD exporter sorts IDs; model joins below are by exact identity.
+    return len(actual) == len(expected) == len(set(actual)) and set(actual) == set(expected)
+
+
 def verify_row(row, model):
     require(row["id"] == model["id"] and row["model"] == model, "exact model join")
     require(row["scheme"] in SCHEMES and row["label"] in CONFIGS, "fixed scheme/label")
@@ -151,7 +156,7 @@ def compare(pilot, native_path):
     native_manifest = read_json(native_path.parent/"manifest.json")
     require(digest(native_path) == native_manifest["files"][native_path.name], "original native receipt hash")
     native = read_json(native_path)
-    require(native["selected_ids"] == selection, "native exact pilot selection")
+    require(same_selected_ids(native["selected_ids"], selection), "native exact pilot selection")
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent/"american-greeks"))
     import fd_refinement
     fd_refinement.summarize(native, corpus)  # Revalidate actual stencils, options, masks and all48 evaluations.
