@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp"
@@ -288,6 +289,56 @@ TEST(DiscreteDivReferenceValidate, RefusesMalformedInputsWithTypedErrors) {
   EXPECT_FALSE(pde_price(ok, grid).has_value());
 }
 
+TEST(DiscreteDivReferenceValidate, RefusesDriftDominatedCenteredStencils) {
+  const std::vector<CashDividend> none;
+  for (const auto rates : {std::array{.10, .0}, std::array{.0, .10}}) {
+    const Problem p = make(100, 200, 1, .005, rates[0], rates[1], Side::Put,
+                           ExerciseStyle::American, none);
+    ASSERT_TRUE(validate(p)); // valid model; this particular grid cannot price it
+    const auto result = pde_price(p, PdeGrid{});
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code(), ErrorCode::OutOfRange);
+    EXPECT_NE(result.error().to_string().find("centered stencil"), std::string::npos);
+  }
+  // A small volatility alone is not a refusal: the centered drift can be admissible.
+  const Problem admitted = make(100, 100, 1, .005, 0, 0, Side::Put,
+                                ExerciseStyle::American, none);
+  const auto price = pde_price(admitted, PdeGrid{});
+  ASSERT_TRUE(price);
+  EXPECT_TRUE(std::isfinite(price->price));
+}
+
+TEST(DiscreteDivReferenceValidate, RefusesNonfiniteCenteredOperatorFromFiniteInputs) {
+  const std::vector<CashDividend> none;
+  const double large = std::numeric_limits<double>::max();
+  const Problem p = make(100, 100, 1, .2, large, -large, Side::Put,
+                         ExerciseStyle::American, none);
+  ASSERT_TRUE(validate(p));
+  const auto result = pde_price(p, PdeGrid{});
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::OutOfRange);
+  EXPECT_NE(result.error().to_string().find("centered stencil"), std::string::npos);
+}
+
+TEST(DiscreteDivReferenceValidate, RefusesUnsupportedNegativeRateImplicitRows) {
+  const std::vector<CashDividend> none;
+  // Near-zero log drift gives nonnegative centered off-diagonals. A sufficiently
+  // negative discount rate still destroys diagonal dominance of later theta rows.
+  const Problem p = make(100, 100, 1, .2, -300, -300.02, Side::Put,
+                         ExerciseStyle::American, none);
+  ASSERT_TRUE(validate(p));
+  const auto refused = pde_price(p, PdeGrid{});
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::OutOfRange);
+  EXPECT_NE(refused.error().to_string().find("implicit rows"), std::string::npos);
+  const Problem admitted = make(100, 100, 1, .2, -.02, -.04, Side::Put,
+                                ExerciseStyle::American, none);
+  const auto price = pde_price(admitted, PdeGrid{});
+  ASSERT_TRUE(price);
+  EXPECT_TRUE(std::isfinite(price->price));
+  EXPECT_GE(price->price, 0);
+}
+
 // Review m3: every grid count reaches an int through a cast or a shift. Inputs that
 // would overflow one are refused with a typed error BEFORE the cast — previously
 // a sigma tiny against the cash cast ~7e9 to int (UB), and an underflowing sigma
@@ -345,6 +396,22 @@ TEST(DiscreteDivReferenceAxis, RecoversAKnownOrderAndBoundsTheResidual) {
   const double extrapolated = v[3] + axis.correction;
   EXPECT_LE(std::abs(extrapolated - 1.0), axis.uncertainty) << "the bound must hold";
   EXPECT_LT(std::abs(extrapolated - 1.0), std::abs(v[3] - 1.0) / 10.0);
+}
+
+TEST(DiscreteDivReferenceAxis, ObservedOrderIsNotAGenericErrorBound) {
+  const auto sequence = [](double h) {
+    const double h2 = h * h;
+    return h2 + 100.0 * (h2 - 1.0) * (h2 - .25) * (h2 - .0625);
+  };
+  const std::array<double, 3> values{sequence(1), sequence(.5), sequence(.25)};
+  const Axis axis = richardson_axis(values, 2);
+  ASSERT_TRUE(axis.asymptotic); // the implemented empirical observed-order test
+  EXPECT_DOUBLE_EQ(axis.observed_order, 2);
+  const double extrapolated = values.back() + axis.correction;
+  EXPECT_DOUBLE_EQ(extrapolated, 0);
+  EXPECT_DOUBLE_EQ(axis.uncertainty, .0625);
+  EXPECT_DOUBLE_EQ(sequence(0), -1.5625);
+  EXPECT_GT(std::abs(extrapolated - sequence(0)), axis.uncertainty);
 }
 
 TEST(DiscreteDivReferenceAxis, OscillationIsNotAsymptoticAndGetsTheEnvelope) {
