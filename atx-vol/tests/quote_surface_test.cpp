@@ -1220,9 +1220,12 @@ QuoteSliceConfig native_repair_config() {
   return config;
 }
 
-TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCleared) {
+void expect_native_calendar_repair_uses_retained_family(QuoteSliceDeamConfirmKernel confirm,
+                                                        bool batch = true) {
   const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
-  const QuoteSliceConfig config = native_repair_config();
+  auto config = native_repair_config();
+  config.channel.deam_confirm_kernel = confirm;
+  config.channel.deam_native_batch = batch;
   auto fit = fit_quote_slice(c.market, c.quotes, config);
   ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
   ASSERT_GT(fit->diagnostics.deam.family_builds, 0u);
@@ -1250,19 +1253,26 @@ TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCle
   }
   EXPECT_LT(repair.result().al_price_calls, reference.result().al_price_calls);
   EXPECT_GT(repair.result().reimply_native_roots, 0u);
-  EXPECT_EQ(repair.result().reimply_batch_lanes, c.quotes.size());
-  EXPECT_EQ(repair.result().reimply_batch_hits, c.quotes.size());
-  if (simd::use_avx2()) EXPECT_GT(repair.result().reimply_batch_avx2_calls, 0u);
+  EXPECT_EQ(repair.result().reimply_batch_lanes, batch ? c.quotes.size() : 0u);
+  EXPECT_EQ(repair.result().reimply_batch_hits, batch ? c.quotes.size() : 0u);
+  if (batch && simd::use_avx2()) EXPECT_GT(repair.result().reimply_batch_avx2_calls, 0u);
   EXPECT_LE(repair.result().reimply_native_max_bound_iv, 1.0e-7);
-  RecordProperty("repair_al", repair.result().al_price_calls);
-  RecordProperty("search_al", reference.result().al_price_calls);
-  RecordProperty("native_roots", repair.result().reimply_native_roots);
-  RecordProperty("batch_lanes", repair.result().reimply_batch_lanes);
-  RecordProperty("batch_hits", repair.result().reimply_batch_hits);
-  RecordProperty("batch_confirm_hits", repair.result().reimply_batch_confirm_hits);
-  RecordProperty("batch_lane_ns", repair.result().reimply_batch_lane_ns);
-  RecordProperty("batch_family_ns", repair.result().reimply_batch_family_ns);
-  RecordProperty("batch_confirm_ns", repair.result().reimply_batch_confirm_ns);
+  if (confirm == QuoteSliceDeamConfirmKernel::Fast) {
+    EXPECT_GT(repair.result().reimply_native_fast_confirms, 0u);
+  } else {
+    EXPECT_EQ(repair.result().reimply_native_fast_confirms, 0u);
+  }
+  testing::Test::RecordProperty("repair_al", repair.result().al_price_calls);
+  testing::Test::RecordProperty("search_al", reference.result().al_price_calls);
+  testing::Test::RecordProperty("native_roots", repair.result().reimply_native_roots);
+  testing::Test::RecordProperty("native_fallbacks", repair.result().reimply_native_fallbacks);
+  testing::Test::RecordProperty("fast_confirms", repair.result().reimply_native_fast_confirms);
+  testing::Test::RecordProperty("batch_lanes", repair.result().reimply_batch_lanes);
+  testing::Test::RecordProperty("batch_hits", repair.result().reimply_batch_hits);
+  testing::Test::RecordProperty("batch_confirm_hits", repair.result().reimply_batch_confirm_hits);
+  testing::Test::RecordProperty("batch_lane_ns", repair.result().reimply_batch_lane_ns);
+  testing::Test::RecordProperty("batch_family_ns", repair.result().reimply_batch_family_ns);
+  testing::Test::RecordProperty("batch_confirm_ns", repair.result().reimply_batch_confirm_ns);
   for (std::size_t i = 0; i < c.quotes.size(); ++i) {
     const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
     ASSERT_TRUE(answer);
@@ -1291,6 +1301,18 @@ TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCle
     EXPECT_LE(hi - lo, 1.0e-11);
     EXPECT_NEAR(answer->volatility, 0.5 * (lo + hi), 1.0e-7) << i;
   }
+}
+
+TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCleared) {
+  expect_native_calendar_repair_uses_retained_family(QuoteSliceDeamConfirmKernel::Accurate);
+}
+
+TEST(QuoteSliceChannel, NativeCalendarRepairRetainsTheConfiguredFastConfirmKernel) {
+  expect_native_calendar_repair_uses_retained_family(QuoteSliceDeamConfirmKernel::Fast);
+}
+
+TEST(QuoteSliceChannel, NativeScalarRepairRetainsTheConfiguredFastConfirmKernel) {
+  expect_native_calendar_repair_uses_retained_family(QuoteSliceDeamConfirmKernel::Fast, false);
 }
 
 TEST(QuoteSliceChannel, NativeRepairBatchScalarPublicationIsBitIdentical) {

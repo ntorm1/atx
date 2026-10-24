@@ -46,6 +46,7 @@ struct QuoteSliceReimplyContext {
   };
   std::shared_ptr<const DeAmSigmaFamilies> families;
   std::array<std::uint64_t, 13> model{};
+  std::optional<AlOpts> confirm_opts;
   bool batch_enabled = false;
   std::array<std::shared_ptr<const sigma_q_family_detail::PremiumTable>, 2> tables;
   // At most one current answer per node side, replaced at publication. Queries read
@@ -1180,6 +1181,8 @@ void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
   auto context = std::make_shared<QuoteSliceReimplyContext>();
   context->families = cache->hold_families();
   context->model = reimply_model_key(fit);
+  context->confirm_opts = config.channel.deam_confirm_kernel == QuoteSliceDeamConfirmKernel::Fast
+      ? std::optional<AlOpts>{al_fast_profile(fit.al_opts)} : fit.al_opts;
   context->batch_enabled = config.channel.deam_native_batch;
   // One immutable tensor snapshot per side; shared across calendar trial/publication
   // contexts. No table construction or allocation is needed by subsequent queries.
@@ -1272,7 +1275,7 @@ std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
     const auto &table = context->tables[side == Side::Call ? 0u : 1u];
     iv_native_prepare_lanes(*family, table.get(), requests, part, counts != nullptr, work);
     iv_native_prepare_acceptance(*family, context->families->q_envelope(side), requests,
-        part, fit.al_opts, table != nullptr && simd::use_avx2(), counts != nullptr, work);
+        part, context->confirm_opts, table != nullptr && simd::use_avx2(), counts != nullptr, work);
     for (std::size_t j = 0; j < where.size(); ++j) prepared[where[j]] = part[j];
   }
   if (counts != nullptr) {
@@ -1916,6 +1919,7 @@ void remember_reimplied_nodes(QuoteSliceFit &fit, std::span<const QuoteSliceQuot
   auto context = std::make_shared<QuoteSliceReimplyContext>();
   context->families = fit.reimply_context->families;
   context->model = fit.reimply_context->model;
+  context->confirm_opts = fit.reimply_context->confirm_opts;
   context->batch_enabled = fit.reimply_context->batch_enabled;
   context->tables = fit.reimply_context->tables;
   const auto nodes = fit.prices->nodes();
@@ -3554,6 +3558,9 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
   gate.qfamily_native = true;
   gate.native_route = true;
   gate.reference_budget = &no_reference;
+  // Fast is the configured arithmetic profile of the SAME scheme. K3's confirm
+  // uses its explicit price-error bound when deciding the cold target's root sides.
+  gate.confirm_opts = context->confirm_opts;
   gate.prepared = prepared;
   const FamilyEnvelopeScope envelope(context->families->q_envelope(side));
   IvPremiumStats stats;
@@ -3567,6 +3574,9 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
       stats.acceptance.bound_iv >= 0.0 && stats.acceptance.bound_iv <= opts.tol;
   if (auto *const counts = counters::fit_timing::current_counts()) {
     ++counts->reimply_native_attempts;
+    if (stats.confirm_profile == AlProfile::Fast) {
+      counts->reimply_native_fast_confirms += stats.confirm_solves;
+    }
     if (stats.batch_lane_hit) ++counts->reimply_batch_hits;
     if (stats.batch_confirm_hit) ++counts->reimply_batch_confirm_hits;
     if (accepted) {
