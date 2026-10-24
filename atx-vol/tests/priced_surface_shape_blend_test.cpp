@@ -21,6 +21,7 @@
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // SurfaceRef
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/backtest/priced_surface_view.hpp"
+#include "atx/vol/api/fitting/spline_curve.hpp"   // SplineVolParams
 #include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp" // EssviParams
@@ -38,6 +39,8 @@ using atx::vol::PricedSurface;
 using atx::vol::PricedSurfaceView;
 using atx::vol::PricingContext;
 using atx::vol::SliceContext;
+using atx::vol::SplineVolCurve;
+using atx::vol::SplineVolParams;
 using atx::vol::SurfaceArchiveItem;
 using atx::vol::SurfaceArchiveV2;
 using atx::vol::SurfaceRef;
@@ -109,6 +112,47 @@ private:
   auto built = atx::vol::write_surface_archive_v2(items);
   EXPECT_TRUE(built.has_value()) << (built.has_value() ? "" : built.error().to_string());
   return built.has_value() ? std::move(*built) : std::vector<std::byte>{};
+}
+
+// A two-pillar SplineVol surface (the one curve kind that reports
+// `is_extrapolated`): hand-built knots, data-supported standardized range
+// [-1.5, 1.2] (asymmetric, so a sign slip shows), ATM 24% / 22%.
+constexpr std::array<double, 2> kSplineT{0.25, 0.5};
+constexpr std::array<double, 2> kSplineAtm{0.24, 0.22};
+constexpr double kSplineZLo = -1.5;
+constexpr double kSplineZHi = 1.2;
+
+[[nodiscard]] PricedSurface make_spline_surface() {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (std::size_t i = 0; i < kSplineT.size(); ++i) {
+    const double T = kSplineT[i];
+    const double F = kSpot * std::exp((kRate - kCarry) * T);
+    SplineVolParams p;
+    p.atm_vol = kSplineAtm[i];
+    p.z = {-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0};
+    p.mult = {1.34, 1.21, 1.09, 1.0, 0.95, 0.93, 0.94};
+    p.z_lo_valid = kSplineZLo;
+    p.z_hi_valid = kSplineZHi;
+    cs.push(std::make_unique<SplineVolCurve>(std::move(p), T, F, std::exp(-kRate * T)));
+    ctx.push_back(SliceContext{T, F, 0.0, kCarry, 20, 0});
+  }
+  PricingContext pc;
+  pc.S = kSpot;
+  pc.r = kRate;
+  pc.now_ts_ns = 1'790'000'000'000'000'000LL;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = atx::vol::al_fast_opts();
+  pc.uid = 8;
+  return PricedSurface::create(std::move(cs), std::move(ctx), pc).value();
+}
+
+// The data-supported log-moneyness edges of spline pillar i.
+[[nodiscard]] double spline_k_hi(std::size_t i) noexcept {
+  return kSplineZHi * kSplineAtm[i] * std::sqrt(kSplineT[i]);
+}
+[[nodiscard]] double spline_k_lo(std::size_t i) noexcept {
+  return kSplineZLo * kSplineAtm[i] * std::sqrt(kSplineT[i]);
 }
 
 // 20 strikes x 10 tenors = 200 grid points, spanning short-end extrapolation,
@@ -247,4 +291,58 @@ TEST(PricedSurfaceShapeBlend, ViewMatchesOwned) {
   // Parametric slices never claim a data-free wing.
   EXPECT_FALSE(ps.moneyness_extrapolated(20.0, 0.31));
   EXPECT_FALSE(view->moneyness_extrapolated(20.0, 0.31));
+}
+
+// The TRUE branch of the best-effort moneyness provenance: on a SplineVol surface
+// `moneyness_extrapolated` is the OR of the bracketing slices' data-free wings,
+// identically on the owned surface and on a zero-copy view of its archived copy.
+TEST(PricedSurfaceShapeBlend, MoneynessExtrapolatedOnSplineWing) {
+  const PricedSurface ps = make_spline_surface();
+  ASSERT_EQ(ps.kind_at(0), VolCurveKind::SplineVol);
+  auto arch = SurfaceArchiveV2::open(archive_of(ps, "spl"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto view = arch->map_symbol("spl");
+  ASSERT_TRUE(view.has_value()) << view.error().to_string();
+  ASSERT_EQ(view->kind_at(1), VolCurveKind::SplineVol);
+  const auto strike = [&](double k, double T) { return ps.forward_at(T) * std::exp(k); };
+  const auto both = [&](double K, double T) {
+    const bool owned = ps.moneyness_extrapolated(K, T);
+    EXPECT_EQ(owned, view->moneyness_extrapolated(K, T)) << "parity K=" << K << " T=" << T;
+    EXPECT_EQ(owned, SurfaceRef{ps}.moneyness_extrapolated(K, T));
+    return owned;
+  };
+
+  // Exact pillar 0: its own range decides, both wings.
+  const double T0 = kSplineT[0];
+  EXPECT_FALSE(both(strike(0.0, T0), T0));
+  EXPECT_FALSE(both(strike(0.9 * spline_k_hi(0), T0), T0));
+  EXPECT_FALSE(both(strike(0.9 * spline_k_lo(0), T0), T0));
+  EXPECT_TRUE(both(strike(1.1 * spline_k_hi(0), T0), T0));
+  EXPECT_TRUE(both(strike(1.1 * spline_k_lo(0), T0), T0));
+
+  // Interior T: the OR of both pillars. Pillar 1's edge sits further out than
+  // pillar 0's, so a k between them is extrapolated on pillar 0 only -> true.
+  constexpr double Tq = 0.37;
+  ASSERT_LT(spline_k_hi(0), spline_k_hi(1));
+  EXPECT_FALSE(both(strike(0.5 * spline_k_hi(0), Tq), Tq));
+  EXPECT_TRUE(both(strike(0.5 * (spline_k_hi(0) + spline_k_hi(1)), Tq), Tq));
+  EXPECT_TRUE(both(strike(1.2 * spline_k_hi(1), Tq), Tq));
+  EXPECT_TRUE(both(strike(1.2 * spline_k_lo(1), Tq), Tq));
+
+  // Past the last pillar: pillar 1 alone serves.
+  constexpr double T_long = 0.8;
+  EXPECT_FALSE(both(strike(0.5 * (spline_k_hi(0) + spline_k_hi(1)), T_long), T_long));
+  EXPECT_TRUE(both(strike(1.2 * spline_k_hi(1), T_long), T_long));
+
+  // A grid: owned == view everywhere, and both answers occur.
+  std::size_t n_true = 0;
+  std::size_t n_false = 0;
+  for (const double T : kGridT) {
+    for (std::size_t j = 0; j < 20; ++j) {
+      (both(grid_K(j), T) ? n_true : n_false) += 1;
+    }
+  }
+  EXPECT_GT(n_true, 20u);
+  EXPECT_GT(n_false, 20u);
+  EXPECT_FALSE(both(-1.0, 0.3)); // invalid K answers false, never a guess
 }
