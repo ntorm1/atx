@@ -3,6 +3,7 @@
 
 #include "pricing/american_detail.hpp"
 #include "pricing/american_greek_availability.hpp"
+#include "pricing/american_greek_stencil.hpp"
 
 #include <array>
 #include <atomic>
@@ -5014,36 +5015,59 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     c->bnd.xmax = c->base_xmax;
     return price;
   };
-  auto EV = [&](double dS, double dsig, double dr, double dT) -> double {
-    return call_fast ? Pcall(dS, dsig, dr, dT)
-                     : (put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT));
+  std::array<detail::AmericanGreekSample, 17> evidence{};
+  auto EV = [&](double dS, double dsig, double dr, double dT, std::size_t sample_index) -> double {
+    const double value = call_fast ? Pcall(dS, dsig, dr, dT)
+                                   : (put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT));
+    double boundary = std::numeric_limits<double>::quiet_NaN();
+    const double rate = call_fast ? q : r+dr, yield = call_fast ? r+dr : q;
+    const bool boundary_required = (call_fast || put_fast) && T+dT > 1e-12 && sigma+dsig > 1e-8 &&
+                                   classify_regime(rate, yield) == ExerciseRegime::American;
+    if (boundary_required) {
+      for (std::size_t i = 0; i < n_memo; ++i) {
+        const auto &entry = memo[i];
+        if (entry.ok && entry.bnd.n >= 2 && entry.dsig == dsig && entry.dr == dr &&
+            entry.dT == dT) {
+          boundary = call_fast
+              ? al_boundary_at_expiry(entry.bnd.y[entry.bnd.n-1u], al_xmax_put(S+dS, q, r+dr))
+              : al_boundary_at_expiry(entry.bnd);
+          break;
+        }
+      }
+    }
+    evidence[sample_index] = detail::american_greek_sample(value, S+dS, K, side,
+                                                          boundary, boundary_required);
+    return value;
   };
 
   // Base mark: EXACT unbumped args — bit-identical to fair_value()'s own call.
-  const double p0 = EV(0.0, 0.0, 0.0, 0.0);
+  const double p0 = EV(0.0, 0.0, 0.0, 0.0, 0);
 
   // Spot stencils.
-  const double p_Sp = EV(+hS, 0.0, 0.0, 0.0);
-  const double p_Sm = EV(-hS, 0.0, 0.0, 0.0);
+  const double p_Sp = EV(+hS, 0.0, 0.0, 0.0, 1);
+  const double p_Sm = EV(-hS, 0.0, 0.0, 0.0, 2);
   // Vol stencils.
-  const double p_vp = EV(0.0, +hv, 0.0, 0.0);
-  const double p_vm = EV(0.0, -hv, 0.0, 0.0);
+  const double p_vp = EV(0.0, +hv, 0.0, 0.0, 3);
+  const double p_vm = EV(0.0, -hv, 0.0, 0.0, 4);
   // Rate stencils (one-sided forward when the down-bump exits the American regime).
-  const double p_rp = EV(0.0, 0.0, +hr, 0.0);
-  const double p_rm = rho_forward ? p0 : EV(0.0, 0.0, -hr, 0.0);
+  const double p_rp = EV(0.0, 0.0, +hr, 0.0, 5);
+  const double p_rm = rho_forward ? p0 : EV(0.0, 0.0, -hr, 0.0, 6);
+  if (rho_forward) evidence[6] = evidence[0];
   // Time stencils (one-sided forward near expiry).
-  const double p_Tp = EV(0.0, 0.0, 0.0, +hT);
-  const double p_Tm = near_expiry ? p0 : EV(0.0, 0.0, 0.0, -hT);
+  const double p_Tp = EV(0.0, 0.0, 0.0, +hT, 7);
+  const double p_Tm = near_expiry ? p0 : EV(0.0, 0.0, 0.0, -hT, 8);
+  if (near_expiry) evidence[8] = evidence[0];
   // Vanna cross (spot x vol), central.
-  const double p_SpVp = EV(+hS, +hv, 0.0, 0.0);
-  const double p_SpVm = EV(+hS, -hv, 0.0, 0.0);
-  const double p_SmVp = EV(-hS, +hv, 0.0, 0.0);
-  const double p_SmVm = EV(-hS, -hv, 0.0, 0.0);
+  const double p_SpVp = EV(+hS, +hv, 0.0, 0.0, 9);
+  const double p_SpVm = EV(+hS, -hv, 0.0, 0.0, 10);
+  const double p_SmVp = EV(-hS, +hv, 0.0, 0.0, 11);
+  const double p_SmVm = EV(-hS, -hv, 0.0, 0.0, 12);
   // Charm cross (spot x time); one-sided in T near expiry.
-  const double p_SpTp = EV(+hS, 0.0, 0.0, +hT);
-  const double p_SmTp = EV(-hS, 0.0, 0.0, +hT);
-  const double p_SpTm = near_expiry ? p_Sp : EV(+hS, 0.0, 0.0, -hT);
-  const double p_SmTm = near_expiry ? p_Sm : EV(-hS, 0.0, 0.0, -hT);
+  const double p_SpTp = EV(+hS, 0.0, 0.0, +hT, 13);
+  const double p_SmTp = EV(-hS, 0.0, 0.0, +hT, 14);
+  const double p_SpTm = near_expiry ? p_Sp : EV(+hS, 0.0, 0.0, -hT, 15);
+  const double p_SmTm = near_expiry ? p_Sm : EV(-hS, 0.0, 0.0, -hT, 16);
+  if (near_expiry) { evidence[15] = evidence[1]; evidence[16] = evidence[2]; }
 
   if (failed) {
     return Err(std::move(first_err));
@@ -5068,6 +5092,18 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   out.charm = -(p_SpTp - p_SpTm - p_SmTp + p_SmTm) / (2.0 * hS * dT_den);
   detail::mark_american_greek_fields(out, GreekFieldMask::All,
                                       AmericanGreekReason::ComputedEstimate);
+  const auto spot = detail::american_greek_stencil({evidence[0], evidence[1], evidence[2]});
+  const auto vol = detail::american_greek_stencil({evidence[0], evidence[3], evidence[4]});
+  const std::array<detail::AmericanGreekStencil, 8> stencils{
+      spot, spot, vol,
+      detail::american_greek_stencil({evidence[0], evidence[7], evidence[8]}),
+      detail::american_greek_stencil({evidence[0], evidence[5], evidence[6]}),
+      detail::american_greek_stencil(
+          {evidence[0], evidence[9], evidence[10], evidence[11], evidence[12]}),
+      vol,
+      detail::american_greek_stencil(
+          {evidence[0], evidence[13], evidence[14], evidence[15], evidence[16]})};
+  detail::apply_american_greek_stencils(out, stencils, side);
   return Ok(out);
 }
 
@@ -5232,21 +5268,30 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
   // the internal put at spot = K (the fixed call strike), strike = S2. The in-place
   // rescale is safe: every px sets K + xmax before pricing, and no boundary is warm-
   // reused here (all five are solved cold above), so there is no stale-seed hazard.
+  std::array<detail::AmericanGreekSample, 13> evidence{};
+  std::array<detail::AmericanGreekStencil, 8> stencils{};
   const auto px = [&](AlBoundary &b, const AlWorkspace &w, double S2, double sig2,
-                      double r2) -> double {
+                      double r2, std::size_t sample_index) -> double {
+    double value = 0.;
     if (is_call) {
       b.K = S2;
       b.xmax = al_xmax_put(S2, /*r=*/q, /*q=*/r2);
-      return al_put_price_from_boundary(b, w, /*spot=*/K, /*strike=*/S2, T, sig2,
-                                        /*r=*/q, /*q=*/r2);
+      value = al_put_price_from_boundary(b, w, /*spot=*/K, /*strike=*/S2, T, sig2,
+                                          /*r=*/q, /*q=*/r2);
+    } else {
+      value = al_put_price_from_boundary(b, w, S2, K, T, sig2, r2, q);
     }
-    return al_put_price_from_boundary(b, w, S2, K, T, sig2, r2, q);
+    evidence[sample_index] = detail::american_greek_sample(value, S2, K, side,
+                                                          al_boundary_at_expiry(b));
+    return value;
   };
 
   // Spot stencils on the base boundary (exact — boundary independent of S). v0/vSp/vSm
   // (price/delta/gamma) always; the wide S+/-2h speed stencils only for charm.
-  const double v0 = px(b0, w0, S, sigma, r);
-  const double vSp = px(b0, w0, S + hS, sigma, r), vSm = px(b0, w0, S - hS, sigma, r);
+  const double v0 = px(b0, w0, S, sigma, r, 0);
+  const double vSp = px(b0, w0, S + hS, sigma, r, 1), vSm = px(b0, w0, S - hS, sigma, r, 2);
+  stencils[0] = stencils[1] = stencils[3] =
+      detail::american_greek_stencil({evidence[0], evidence[1], evidence[2]});
 
   AmericanGreeks out; // unrequested greeks stay 0 (default-initialised)
   out.price = v0;
@@ -5254,18 +5299,23 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
   out.gamma = (vSp - 2.0 * v0 + vSm) / (hS * hS);
   if (need_vega) {
     // Vol stencils on the re-solved sigma+/- boundaries (incl. the vanna cross).
-    const double vvp = px(bvp, wvp, S, sigma + hv, r), vvm = px(bvm, wvm, S, sigma - hv, r);
-    const double vSpVp = px(bvp, wvp, S + hS, sigma + hv, r);
-    const double vSmVp = px(bvp, wvp, S - hS, sigma + hv, r);
-    const double vSpVm = px(bvm, wvm, S + hS, sigma - hv, r);
-    const double vSmVm = px(bvm, wvm, S - hS, sigma - hv, r);
+    const double vvp = px(bvp, wvp, S, sigma + hv, r, 3), vvm = px(bvm, wvm, S, sigma - hv, r, 4);
+    const double vSpVp = px(bvp, wvp, S + hS, sigma + hv, r, 5);
+    const double vSmVp = px(bvp, wvp, S - hS, sigma + hv, r, 6);
+    const double vSpVm = px(bvm, wvm, S + hS, sigma - hv, r, 7);
+    const double vSmVm = px(bvm, wvm, S - hS, sigma - hv, r, 8);
     out.vega = (vvp - vvm) / (2.0 * hv);
     out.volga = (vvp - 2.0 * v0 + vvm) / (hv * hv);
     out.vanna = (vSpVp - vSpVm - vSmVp + vSmVm) / (4.0 * hS * hv);
+    stencils[2] = stencils[6] =
+        detail::american_greek_stencil({evidence[0], evidence[3], evidence[4]});
+    stencils[5] = detail::american_greek_stencil(
+        {evidence[0], evidence[5], evidence[6], evidence[7], evidence[8]});
   }
   if (need_rho) {
-    const double vrp = px(brp, wrp, S, sigma, r + hr), vrm = px(brm, wrm, S, sigma, r - hr);
+    const double vrp = px(brp, wrp, S, sigma, r + hr, 9), vrm = px(brm, wrm, S, sigma, r - hr, 10);
     out.rho = (vrp - vrm) / (2.0 * hr);
+    stencils[4] = detail::american_greek_stencil({evidence[0], evidence[9], evidence[10]});
   }
 
   // theta / charm from the continuation-region PDE. In the exercise region the
@@ -5273,26 +5323,28 @@ american_greeks_al_core(double S, double K, double T, double sigma, double r, do
   // there the intrinsic (K - S for a put, S - K for a call) has no time value, so
   // theta = charm = 0. The PDE relations below are in the ORIGINAL option's (S,r,q)
   // and are side-agnostic given the correct V/delta/gamma/speed — no sign flip. theta
-  // rides the base boundary (v0/delta/gamma), so it is always available; charm's speed
+  // rides the base boundary (v0/delta/gamma); admission follows below. Charm's speed
   // term needs the wide base spot stencils, gated on need_charm.
-  const double intr0 = is_call ? (S - K) : (K - S);
-  const bool exercised = (v0 <= intr0 + 1.0e-9 * K) && (intr0 > 0.0);
+  const bool exercised = evidence[0].exercised;
   out.theta = exercised
                   ? 0.0
                   : r * v0 - (r - q) * S * out.delta - 0.5 * sigma * sigma * S * S * out.gamma;
   if (need_charm) {
+    const double vS2p = px(b0, w0, S + 2.0 * hS, sigma, r, 11);
+    const double vS2m = px(b0, w0, S - 2.0 * hS, sigma, r, 12);
     if (exercised) {
       out.charm = 0.0;
     } else {
-      const double vS2p = px(b0, w0, S + 2.0 * hS, sigma, r);
-      const double vS2m = px(b0, w0, S - 2.0 * hS, sigma, r);
       // speed = d3V/dS3 (5-point), for charm = d(theta)/dS.
       const double speed = (vS2p - 2.0 * vSp + 2.0 * vSm - vS2m) / (2.0 * hS * hS * hS);
       out.charm = r * out.delta - (r - q) * (out.delta + S * out.gamma) -
                   0.5 * sigma * sigma * (2.0 * S * out.gamma + S * S * speed);
     }
+    stencils[7] = detail::american_greek_stencil(
+        {evidence[0], evidence[1], evidence[2], evidence[11], evidence[12]});
   }
   detail::mark_american_greek_fields(out, requested, AmericanGreekReason::ComputedEstimate);
+  detail::apply_american_greek_stencils(out, stencils, side);
   return Ok(out);
 }
 
@@ -5599,28 +5651,12 @@ Result<AssignmentRisk> assignment_risk(double S, double K, double T, double sigm
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// C1.7 (additive-only; see FILE-OWNERSHIP RULE in the 07-09 sprint doc) — a
-// vega-ONLY mirror of american_greeks_al's vega branch just above, declared in
-// american.hpp. Reuses the identical guard chain, step size, and sigma+/-
-// boundary re-solve + centered difference, so the result is bit-identical to
-// `american_greeks_al(...).vega` whenever both take the native analytic
-// route: same `al_rate`/T/sigma degenerate guard, same put r-hr<=0 regime
-// guard, same `hv`, same `solve`/`px` arithmetic (the rate-bump `dr` term the
-// bundle's shared `solve` lambda carries is always 0.0 for the sigma+/-
-// stencils, so dropping the parameter here is exact, not approximate: r+0.0
-// is r bit-for-bit). Falls back to american_greeks_fd(...).vega — the SAME
-// call greeks_analytic() itself forwards on these branches — whenever the
-// bundle would.
-//
-// Cost: 0 boundary solves on the degenerate/European-regime fallback (routes
-// straight to the FD bundle, same as the full bundle would), else 2 (sigma+,
-// sigma-) instead of the full bundle's 5 (base + sigma+/- + r+/-). The base
-// (b0) and rate (r+/-hr) boundary solves are NOT attempted here, so unlike
-// the bundle this function's fallback trigger does not observe a b0- or
-// r+/-hr-only collapse (bvp/bvm both convergent) — see `american_vega_al`'s
-// doc comment in american.hpp for why this is the deliberate, disclosed scope
-// of the additive kernel (not silently swept under a tolerance) and why it was
-// not observed on the fitted-surface parity grid.
+// Two-solve endpoint Vega estimate. The sigma endpoints retain the full bundle's
+// pricing arithmetic, but no center boundary is solved here. Endpoint regime
+// evidence can therefore differ from the bundle's center-inclusive evidence.
+// Both exercised endpoints supply zero; mixed/nonfinite evidence refuses the
+// estimate. The existing FD fallback additionally requires its Vega support bit.
+// This is availability of a numerical estimate, not a derivative error bound.
 Result<double> american_vega_al(double S, double K, double T, double sigma, double r, double q,
                                 Side side, const std::optional<AlOpts> &opts) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
@@ -5633,6 +5669,9 @@ Result<double> american_vega_al(double S, double K, double T, double sigma, doub
         S, K, T, sigma, r, q, side, AmericanMethod::AndersenLake, opts, /*warm_start=*/false);
     if (!g) {
       return Err(g.error());
+    }
+    if (!detail::american_greeks_support(*g, GreekFieldMask::Vega)) {
+      return Err(ErrorCode::Unavailable, "vega stencil");
     }
     return Ok(g->vega);
   };
@@ -5670,7 +5709,16 @@ Result<double> american_vega_al(double S, double K, double T, double sigma, doub
   };
   const double vvp = px(bvp, wvp, sigma + hv);
   const double vvm = px(bvm, wvm, sigma - hv);
-  return Ok((vvp - vvm) / (2.0 * hv));
+  const auto stencil = detail::american_greek_stencil({
+      detail::american_greek_sample(vvp, S, K, side, al_boundary_at_expiry(bvp)),
+      detail::american_greek_sample(vvm, S, K, side, al_boundary_at_expiry(bvm))});
+  if (stencil == detail::AmericanGreekStencil::Exercised) return Ok(0.);
+  if (stencil != detail::AmericanGreekStencil::Continuation) {
+    return Err(ErrorCode::Unavailable, "vega stencil");
+  }
+  const double estimate = (vvp - vvm) / (2.0 * hv);
+  if (!std::isfinite(estimate)) return Err(ErrorCode::Unavailable, "vega stencil");
+  return Ok(estimate);
 }
 // ─────────────────────────────────────────────────────────────────────────
 
