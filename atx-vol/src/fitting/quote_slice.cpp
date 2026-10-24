@@ -4197,9 +4197,18 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
     }
     const auto candidate = [&] {
       const ReimplyWorkScope work(counters::fit_timing::ReimplyStage::PriceCandidate);
-      if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_fast_attempts;
-      return american_implied_vol_price_candidate(price, fit.market.spot, strike,
-          fit.market.variance_years, fit.diagnostics.effective_rate, q_effective, side, opts, *budget);
+      auto *const counts = counters::fit_timing::current_counts();
+      if (counts != nullptr) ++counts->reimply_fast_attempts;
+      IvPriceCandidateStats stats;
+      const auto result = american_implied_vol_price_candidate(price, fit.market.spot, strike,
+          fit.market.variance_years, fit.diagnostics.effective_rate, q_effective, side, opts, *budget,
+          counts != nullptr ? &stats : nullptr);
+      if (counts != nullptr) {
+        counts->reimply_proposal_stops += stats.stopped_early ? 1u : 0u;
+        counts->reimply_proposal_roots += stats.accepted_early ? 1u : 0u;
+        counts->reimply_proposal_retries += stats.retried_full_search ? 1u : 0u;
+      }
+      return result;
     }();
     if (candidate) {
       if (auto *const counts = counters::fit_timing::current_counts()) ++counts->reimply_fast_roots;

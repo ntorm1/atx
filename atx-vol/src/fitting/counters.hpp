@@ -1189,6 +1189,9 @@ struct FitTimingCounters {
   std::uint32_t reimply_price_rejections{0};
   std::uint32_t reimply_fast_attempts{0};
   std::uint32_t reimply_fast_roots{0};
+  std::uint32_t reimply_proposal_stops{0};
+  std::uint32_t reimply_proposal_roots{0};
+  std::uint32_t reimply_proposal_retries{0};
   std::uint32_t reimply_seed_attempts{0};
   std::uint32_t reimply_seed_roots{0};
   // Explicit monetary-policy candidates: never counted as strict K3 roots.
