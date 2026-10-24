@@ -157,3 +157,11 @@ finite mark. Receipts are `repair-iv/greek-portfolio-{red,first,scoped,final}.*`
 `greek-batch-migration.*`, and `greek-portfolio-hygiene.log`. No fit or Greek
 latency claim, derivative budget, or native-adjoint/cached accuracy qualification
 is inferred from these checks.
+
+The aggregate-overflow follow-up normalizes nonfinite sums to NaN and refuses
+their availability. Signed and gross Vega share one bit: if either overflows,
+both become unavailable, even when offsetting signed contributions cancel.
+Independent PV and risk remain usable. A runtime regression reproduced the
+bucket-grand false support; the final tests also cover actual large finite
+positions and signed overflow. All 100 portfolio/seed tests and three owning
+PCH-off objects pass. Receipts are `repair-iv/greek-portfolio-overflow-*`.

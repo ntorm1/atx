@@ -530,6 +530,11 @@ void initialize_price_totals(PriceTotals &t, GreekFieldMask requested) noexcept 
 }
 
 void refuse_total_field(PriceTotals &t, std::size_t i, AmericanGreekReason reason) noexcept {
+  if (i < kTotalGreekMembers.size()) t.*kTotalGreekMembers[i] = kNaN;
+  else t.pv = kNaN;
+  // Signed and gross Vega share one availability bit. Neither may remain a
+  // plausible finite exposure when the other has become unrepresentable.
+  if (i == 2u) t.abs_vega = kNaN;
   t.supported = static_cast<GreekFieldMask>(static_cast<std::uint32_t>(t.supported) &
                                            ~(std::uint32_t{1} << i));
   t.reasons[i] = detail::american_greek_supplied_reason(reason) ||
@@ -559,6 +564,8 @@ void add_priced_row(PriceTotals &t, const AmericanGreeks &g, double pv,
     }
     if (field == GreekFieldMask::Vega) {
       t.abs_vega = has_field(t.supported, field) ? t.abs_vega + std::fabs(contribution) : kNaN;
+      if (!std::isfinite(t.abs_vega) && has_field(t.supported, field))
+        refuse_total_field(t, i, AmericanGreekReason::Nonfinite);
     }
   }
   ++t.n_priced;
@@ -652,18 +659,10 @@ struct TargetRiskPx {
 // The I6 skew-adjusted-delta lane guard: this contract's (already omega-blended)
 // VegaSlope, or nullopt when it is NOT finite.
 //
-// `skew_adjusted_delta` makes `delta + vega_slope * vega` the published delta
-// column AND `PriceTotals::delta`, and `reduce_price_totals` sums Ok lanes on
-// STATUS alone. `priced_surface_skew_slope` legitimately returns NaN on a lane
-// whose central FD stencil steps off the servable/representable strike axis (a
-// deep wing) even though the MARK and every Greek on that lane are perfectly
-// finite -- so an unchecked slope let one such lane NaN the whole book's delta
-// while still reading Ok. A nullopt therefore demotes the lane to NumericError at
-// the caller's Ok-stamp, exactly as a non-finite requested Greek does: the lane is
-// NaN-isolated and excluded from every total. Deliberately NOT a silent fallback
-// to the UNADJUSTED delta -- that would publish a different economic quantity than
-// the caller requested under a column it cannot distinguish, the same reason
-// PriceTotals reports NaN rather than 0.0 for a statistic it did not compute.
+// The adjusted delta needs a finite slope even when the mark and raw Greeks
+// are available. An absent slope refuses only that requested delta and its
+// aggregate; the price and independent risks remain available. Substituting the
+// unadjusted delta would silently change the requested economic quantity.
 [[nodiscard]] std::optional<double> finite_vega_slope(const SurfaceRef &surf, double K, double T,
                                                       const StickyParams &sticky) noexcept {
   const double slope = priced_surface_skew_slope(surf, K, T);
@@ -2904,7 +2903,9 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
     if (!std::isfinite(g.pv)) refuse_total_field(g, 8u, AmericanGreekReason::Nonfinite);
     for (std::size_t j = 0; j < kTotalGreekMembers.size(); ++j) {
       const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << j);
-      if (has_field(g.supported, field) && !std::isfinite(g.*kTotalGreekMembers[j]))
+      if (has_field(g.supported, field) &&
+          (!std::isfinite(g.*kTotalGreekMembers[j]) ||
+           (field == GreekFieldMask::Vega && !std::isfinite(g.abs_vega))))
         refuse_total_field(g, j, AmericanGreekReason::Nonfinite);
     }
     *grand = g;

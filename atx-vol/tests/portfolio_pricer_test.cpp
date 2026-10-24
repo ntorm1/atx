@@ -4283,6 +4283,93 @@ TEST(PortfolioPricer, PartialGreeksPreservePriceAndRejectIncompleteAggregate) {
   EXPECT_DOUBLE_EQ(narrowed->total.pv, frame->total.pv);
 }
 
+TEST(PortfolioPricer, AggregateOverflowRefusesOnlyAffectedRiskAndPreservesPrice) {
+  const PricedSurface surface = make_essvi(1, 3);
+  const auto probe = surface.greeks(100.0, 0.15, Side::Call, QueryExecution::Configured);
+  ASSERT_TRUE(probe.has_value());
+  ASSERT_GT(probe->vega, 0.0);
+  const double weight = (0.1 * std::numeric_limits<double>::max()) / probe->vega;
+  ASSERT_TRUE(std::isfinite(weight * probe->price));
+  for (bool offset : {true, false}) {
+    SCOPED_TRACE(offset);
+    std::vector<Position> positions;
+    for (std::uint64_t i = 0; i < 12u; ++i)
+      positions.push_back({i, {1, 100.0, 0.15, Side::Call},
+                           offset && i % 2u != 0u ? -weight : weight, 1.0});
+    auto portfolio = Portfolio::create(positions);
+    ASSERT_TRUE(portfolio.has_value());
+    const PortfolioPricer pricer(std::move(*portfolio));
+    const auto frame = pricer.price(set_of({&surface}));
+    ASSERT_TRUE(frame.has_value());
+    for (std::size_t i = 0; i < frame->size(); ++i) {
+      ASSERT_EQ(frame->status[i], PriceStatus::Ok) << i;
+      ASSERT_TRUE(std::isfinite(frame->vega[i])) << i;
+    }
+    if (offset) EXPECT_DOUBLE_EQ(frame->vega[0] + frame->vega[1], 0.0);
+    EXPECT_TRUE(std::isnan(frame->total.vega));
+    EXPECT_TRUE(std::isnan(frame->total.abs_vega));
+    EXPECT_FALSE(has_field(frame->total.supported, GreekFieldMask::Vega));
+    EXPECT_EQ(frame->total.reasons[2], AmericanGreekReason::Nonfinite);
+    EXPECT_TRUE(std::isfinite(frame->total.pv));
+    EXPECT_TRUE(has_field(frame->total.supported, GreekFieldMask::Price));
+    EXPECT_TRUE(std::isfinite(frame->total.delta));
+    EXPECT_TRUE(has_field(frame->total.supported, GreekFieldMask::Delta));
+    EXPECT_EQ(frame->total.n_ok, 12u); // rows are individually complete
+    EXPECT_EQ(frame->total.n_priced, 12u);
+
+    PortfolioWorkspace workspace;
+    const auto totals = pricer.price_totals(set_of({&surface}),
+                                          PriceFieldMask::FullGreeks, workspace);
+    ASSERT_TRUE(totals.has_value());
+    expect_totals_bit_identical(*totals, frame->total);
+  }
+}
+
+TEST(PortfolioPricer, BucketGrandOverflowRefusesGrossVegaDespiteSignedCancellation) {
+  const PricedSurface first = make_essvi(1, 3);
+  const PricedSurface second = make_essvi(2, 3);
+  const std::vector<Position> positions{
+      {1, {1, 100.0, 0.15, Side::Call}, 1.0, 1.0},
+      {2, {1, 100.0, 0.15, Side::Call}, -1.0, 1.0},
+      {3, {2, 100.0, 0.15, Side::Call}, 1.0, 1.0},
+      {4, {2, 100.0, 0.15, Side::Call}, -1.0, 1.0}};
+  auto portfolio = Portfolio::create(positions);
+  ASSERT_TRUE(portfolio.has_value());
+  const PortfolioPricer pricer(std::move(*portfolio));
+  auto frame = pricer.price(set_of({&first, &second}));
+  ASSERT_TRUE(frame.has_value());
+  // Isolate the reducer with finite supplied row risks. Each two-row bucket
+  // has finite gross Vega; only the grand gross sum overflows.
+  const double large = 0.3 * std::numeric_limits<double>::max();
+  for (std::size_t i = 0; i < frame->size(); ++i) {
+    ASSERT_EQ(frame->status[i], PriceStatus::Ok);
+    frame->vega[i] = i % 2u == 0u ? large : -large;
+  }
+  for (bool offset : {true, false}) {
+    SCOPED_TRACE(offset);
+    if (!offset) for (double &vega : frame->vega) vega = large;
+    PriceTotals grand{};
+    const auto buckets = reduce_risk_buckets(*frame, pricer.portfolio(),
+                                            RiskBucketKey::ByUnderlier, &grand);
+    ASSERT_TRUE(buckets.has_value());
+    ASSERT_EQ(buckets->size(), 2u);
+    for (const auto &bucket : *buckets) {
+      EXPECT_TRUE(std::isfinite(bucket.totals.vega));
+      EXPECT_TRUE(std::isfinite(bucket.totals.abs_vega));
+      EXPECT_TRUE(has_field(bucket.totals.supported, GreekFieldMask::Vega));
+    }
+    EXPECT_TRUE(std::isnan(grand.vega));
+    EXPECT_TRUE(std::isnan(grand.abs_vega));
+    EXPECT_FALSE(has_field(grand.supported, GreekFieldMask::Vega));
+    EXPECT_EQ(grand.reasons[2], AmericanGreekReason::Nonfinite);
+    EXPECT_TRUE(std::isfinite(grand.pv));
+    EXPECT_TRUE(std::isfinite(grand.delta));
+    EXPECT_TRUE(has_field(grand.supported, GreekFieldMask::Price));
+    EXPECT_TRUE(has_field(grand.supported, GreekFieldMask::Delta));
+    EXPECT_EQ(grand.n_priced, 4u);
+  }
+}
+
 TEST(PortfolioPricer, PartialZeroWeightRiskAndMissingModelHaveExplicitCoverage) {
   const PricedSurface normal = make_essvi(1, 3);
   const PricedSurface extreme = make_long_dated(2);

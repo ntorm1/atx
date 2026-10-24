@@ -528,6 +528,8 @@ inline constexpr double kPriceColumnNaN = std::numeric_limits<double>::quiet_NaN
 // A missing requested risk on any nonzero-weight priced row makes that aggregate
 // NaN/unsupported. Other risk fields and PV survive. Unpriced rows are excluded;
 // n_priced must equal the position count before treating PV as a complete book.
+// Nonfinite aggregate sums are NaN/unsupported. Net and gross Vega share the
+// Vega availability bit: overflow of either makes both unavailable.
 struct PriceTotals {
   double pv{0.0};
   double delta{0.0};
