@@ -60,10 +60,11 @@ class PriceReferenceTests(unittest.TestCase):
 
     def test_invalid_grid_and_models_do_not_produce_prices(self):
         group = dict(K=100., T=1., sigma=.2, r=.05, q=0., side='put', spots=[100.])
-        for options in [dict(nx=1), dict(nx=100), dict(nt=0), dict(domain_scale=.5)]:
+        for options in [dict(nx=1), dict(nx=100), dict(nt=0), dict(domain_scale=.5), dict(domain_scale=True)]:
             with self.assertRaises(ValueError):
                 price_group(group, **options)
-        for field, value in [('sigma', 0.), ('r', math.nan), ('T', -1.), ('spots', [math.inf])]:
+        for field, value in [('sigma', 0.), ('r', math.nan), ('T', -1.),
+                             ('spots', [math.inf]), ('spots', [True]), ('spots', ['100'])]:
             with self.assertRaises(ValueError):
                 price_group(dict(group, **{field: value}))
         with self.assertRaises(ValueError):

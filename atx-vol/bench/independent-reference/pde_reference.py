@@ -86,11 +86,16 @@ def price_group(group, *, nx=1025, nt=512, domain_scale=1.0, american=True):
         raise ValueError('This reference does not support discrete cash dividends')
     if isinstance(nx, bool) or not isinstance(nx, int) or nx < 33 or nx % 2 != 1 or \
             isinstance(nt, bool) or not isinstance(nt, int) or nt < 4 or \
+            isinstance(domain_scale, bool) or not isinstance(domain_scale, (int, float)) or \
             not math.isfinite(domain_scale) or domain_scale < 1.:
         raise ValueError('Require odd nx>=33, nt>=4 and domain_scale>=1')
     strike, maturity, sigma, rate, carry = (group[k] for k in ['K', 'T', 'sigma', 'r', 'q'])
     scalars = [strike, maturity, sigma, rate, carry]
-    spots = np.asarray(group['spots'], dtype=float)
+    raw_spots = group['spots']
+    if not isinstance(raw_spots, list) or any(isinstance(v, bool) or
+            not isinstance(v, (int, float)) or not math.isfinite(v) for v in raw_spots):
+        raise ValueError('Spots must be explicit finite numbers')
+    spots = np.asarray(raw_spots, dtype=float)
     if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in scalars) or \
             strike <= 0 or maturity <= 0 or sigma <= 0 or spots.ndim != 1 or not len(spots) or \
             not np.isfinite(spots).all() or np.any(spots <= 0) or group.get('side', 'put') not in ['put', 'call']:
