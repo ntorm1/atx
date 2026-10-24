@@ -165,3 +165,36 @@ dividend-paying SPY surface. [Primary paper](https://arxiv.org/pdf/1301.5467).
 
 The root must still verify the real candidate reaches the original full objective.
 Neither the feasible LP nor the native projection microbenchmark is that result.
+
+## Executed combined baseline, before joint recovery integration
+
+`acceptance/combined-before-joint-audit-v1/` contains a completed native audit,
+receipt, predictions and `verification.json`. It used the combined C4/native
+candidate plus bounded carry normalization, before the new joint solver and
+terminal-floor recovery. Binary SHA256:
+`bdcc6d103dcfb07d182f3c40a5540c47b2b18001d2c332e2c9ccf4e7040a71a6`.
+Prediction SHA256:
+`1475253faac77aeb50b47f235df9fe4f4bf72e144c4368933c89339598e42e94`.
+
+This baseline **fails acceptance**: 27/33 slices and 10,362/12,866 rows served;
+10,258 contained, or 98.9963328% containment among served rows. The six refused
+expiries are 20742, 20745, 20746, 20777, 20805 and 20833, all calendar refusals.
+Bounded carry normalization recovers 20875 and changes exactly one strike with
+maximum price-change bound `1.3233227929e-7` USD.
+
+The actual API oracle finds 48 terminal-floor violations: 20 nodes on 20741 and
+15 on 20749 (max approximately `5.4e-5` USD), four nodes on 21533 and nine on
+21568 (max $0.779517). The other independently checked shape, affine, calendar,
+between-node/API consistency constraints pass on represented support. The
+2,504 missing rows still fail completeness. These observations motivate enforcing
+terminal lower bounds at **every** projected node, while widening boxes only for
+the 15 direct input conflicts. The audit's approximately 144-second fit/reprice
+clock includes expensive validation calls and is **not a performance result**.
+
+Focused verification of the harness: 10 independent Python oracle tests pass;
+seven native CLI tests covering the audit, normalization and existing common-spot
+behavior pass. The benchmark target builds with `vol-rel`. Negative cases include
+withheld-price leakage, between-node disagreement, missing union queries, false
+identified price-only volatility, nonadjacent calendar crossings, discounted
+terminal floors under nonzero carry, two workers, a multi-CPU process mask and
+an unexpected expiry fanout. ThinLTO performance qualification is still pending.
