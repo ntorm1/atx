@@ -2,8 +2,9 @@
 
 Wave-3 lane P2 (2026-10-24). Two binary stores on the PersistFile (ATXVPF) container, both
 little-endian, CRC-32C framed, published atomically and never rewritten in place. Byte layout:
-`docs/storage/PERSIST_HISTORY_FORMAT.md`. (This is a separate page because lane P1's
-`docs/persist.md` did not exist on the lane-P2 branch; integration may fold it in.)
+`docs/storage/PERSIST_HISTORY_FORMAT.md`. The container itself (framing, verify levels, the
+directory / manifest pattern, market-state stores) is lane P1's: `docs/persist.md` and
+`docs/storage/PERSIST_FORMAT.md`.
 
 ## Surface timeline — uid-major fitted-surface history
 
