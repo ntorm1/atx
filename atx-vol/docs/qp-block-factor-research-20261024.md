@@ -174,3 +174,40 @@ Primary motivation and API contracts:
 [Eigen sparse interfaces](https://eigen.tuxfamily.org/dox/group__CholmodSupport__Module.html).
 The replay source/README lives on the isolated research branch named above.
 No published paper establishes this library's measured performance.
+
+## Baseline x86-64 build control
+
+The same frozen source `e578ddf1` was independently archived and built with
+`RUSTFLAGS=-C target-cpu=x86-64`, release ThinLTO and two build jobs. This removes
+the original archive's global x86-64-v3 code-generation requirement. The pinned
+pulp 0.22.3 dependency uses runtime V3 detection with a scalar fallback; faer
+retains explicit sequential execution. The [pulp API](https://docs.rs/pulp/0.22.3/pulp/)
+and [faer paper](https://github.com/sarah-quinones/faer-rs/blob/main/paper.md)
+describe that dispatch design. Source inspection agrees with the pinned closure.
+
+All six Rust controls pass. The exact 35-system/70-direction replay supplies all
+directions without factor failure. The C++ projection/refusal run passes 36
+tests with one optional external raw-box skip; full normalized SPY is supplied.
+Its fingerprint remains `12375883024027022137` with 35 factors, 70 directions
+and zero refusals. A fresh full SPY run passes all 13 independent actual-API
+gates and preserves prediction SHA256
+`560da64113e2727373aaa5a08e9a095a10634216d149b569789a4b8d1cba39f0`.
+
+The archived static library SHA256 is
+`7ca48b33de6c46d6b0c4cfc66bc8621bb693aac2681b8f1a150ae1c6c7f6c2ce`;
+the development executable is
+`ebc4ba287d11973c8f3a1564c10eedabaa4545f2cf5b267b5aa0991dbfbcca1d`.
+Evidence is `qp-faer-portable-v1/`, including build logs, replay, projection,
+API receipt and verification. This host supports AVX2, so this is a baseline
+build control, not execution validation on hardware without AVX2. No new timing
+campaign or production promotion follows.
+
+A conservative notice bundle retains all 58 third-party Cargo registry packages,
+including build-time dependencies. Eleven packages omitted root notices from
+their published archive; their notices were retrieved from the exact packaged
+source commits, not a moving branch. The manifest pins every notice hash and
+origin, including Unicode's additional notice. Its SHA256 is
+`08502efc9ebfc3f7de8ad431d459608a5dc162fe2a69b710b180d06d7f2007b5`.
+Toolchain/runtime distribution notices and final deployment review remain open.
+The initial incomplete notice inventory and malformed unquoted CMake path are
+retained beside the successful follow-ups; neither affected numerical evidence.
