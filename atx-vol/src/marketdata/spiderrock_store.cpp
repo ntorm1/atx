@@ -138,17 +138,43 @@ constexpr std::array<bool, kNumCols> kRequired{true,  true,  true,  false, false
                                                true,  true,  false, false, false,
                                                false, false, false, false};
 
+// Vendor sentinels the ingest may leave in place: -99 on any numeric column (the
+// oracle store nulls it on bidIV / askIV / error only) and -9.99 on sdiv (seen on
+// the 2026-10-14 drop). A sentinel reads as NULL: it drops the row on a required
+// column and becomes NaN on an optional one.
+constexpr double kSentinel = -99.0;
+constexpr double kSdivSentinelCeiling = -9.98;
+
+[[nodiscard]] bool is_sentinel(std::size_t col, double v) noexcept {
+  return v == kSentinel || (col == kSdiv && v <= kSdivSentinelCeiling);
+}
+
 enum IntCol : std::size_t { kYr = 0, kMn, kDy, kNumIntCols };
 constexpr std::array<std::string_view, kNumIntCols> kIntNames{"okey_yr", "okey_mn", "okey_dy"};
+
+// Row filters read from OPTIONAL columns: the licensed intraday drop's exercise
+// style (absent from the synthetic and the older oracle store, where every row is
+// American) and the option root (a root other than the underlier's ticker is an
+// adjusted / non-standard deliverable whose (expiry, side, strike) key collides with
+// the standard contract's). An absent column filters nothing.
+constexpr std::string_view kExTypeName = "exType";
+constexpr std::string_view kOptionRootName = "okey_tk";
+
+struct RowFilters {
+  bool american_only{true};
+  bool standard_roots_only{true};
+};
 
 struct ColumnIndex {
   int tk{-1};
   int cp{-1};
+  int ex_type{-1};      // >= 0 only when the column exists AND american_only is set
+  int okey_tk{-1};      // >= 0 only when the column exists AND standard_roots_only is set
   std::vector<int> all; // projection, flat schema: arrow field index == parquet column
 };
 
 [[nodiscard]] Result<ColumnIndex> resolve_columns(const arrow::Schema &schema,
-                                                  const std::string &file) {
+                                                  const std::string &file, RowFilters filters) {
   ColumnIndex ix;
   auto find = [&](std::string_view name) -> Result<int> {
     const int idx = schema.GetFieldIndex(std::string{name});
@@ -169,6 +195,15 @@ struct ColumnIndex {
     ATX_TRY(const int idx, find(name));
     (void)idx;
   }
+  auto optional = [&](bool wanted, std::string_view name) {
+    const int idx = wanted ? schema.GetFieldIndex(std::string{name}) : -1;
+    if (idx >= 0) {
+      ix.all.push_back(idx);
+    }
+    return idx;
+  };
+  ix.ex_type = optional(filters.american_only, kExTypeName);
+  ix.okey_tk = optional(filters.standard_roots_only, kOptionRootName);
   return Ok(std::move(ix));
 }
 
@@ -179,7 +214,7 @@ struct OpenedFile {
   ColumnIndex cols;
 };
 
-[[nodiscard]] Result<OpenedFile> open_file(const fs::path &path) {
+[[nodiscard]] Result<OpenedFile> open_file(const fs::path &path, RowFilters filters) {
   OpenedFile f;
   f.path = path.string();
   auto in = arrow::io::ReadableFile::Open(f.path);
@@ -196,7 +231,7 @@ struct OpenedFile {
   if (!st.ok()) {
     return Err(from_arrow(st, "spiderrock store: schema of " + f.path));
   }
-  ATX_TRY(f.cols, resolve_columns(*schema, f.path));
+  ATX_TRY(f.cols, resolve_columns(*schema, f.path, filters));
   f.meta = f.reader->parquet_reader()->metadata();
   return Ok(std::move(f));
 }
@@ -268,6 +303,47 @@ struct OpenedFile {
   return std::nullopt;
 }
 
+// exType == "American" (ASCII case-insensitive). A NULL is not American.
+[[nodiscard]] bool is_american(const arrow::Array &ex_type, std::int64_t i) noexcept {
+  if (ex_type.IsNull(i)) {
+    return false;
+  }
+  constexpr std::string_view kAmerican = "american";
+  const std::string_view v = string_at(ex_type, i);
+  if (v.size() != kAmerican.size()) {
+    return false;
+  }
+  for (std::size_t k = 0; k < v.size(); ++k) {
+    const char c = (v[k] >= 'A' && v[k] <= 'Z') ? static_cast<char>(v[k] - 'A' + 'a') : v[k];
+    if (c != kAmerican[k]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The optional filter columns of one decoded row group (null = column absent or
+// filter off). Both must be string columns (checked by the caller).
+struct FilterArrays {
+  const arrow::Array *ex_type{nullptr};
+  const arrow::Array *okey_tk{nullptr};
+};
+
+enum class FilterVerdict : std::uint8_t { Pass, NonAmerican, NonStandardRoot };
+
+// Row `i` (non-null ticker `tk`) against the optional filters: exType first, then
+// the option root (a NULL root cannot be judged and passes).
+[[nodiscard]] FilterVerdict row_filter(const FilterArrays &f, std::string_view tk,
+                                       std::int64_t i) noexcept {
+  if (f.ex_type != nullptr && !is_american(*f.ex_type, i)) {
+    return FilterVerdict::NonAmerican;
+  }
+  if (f.okey_tk != nullptr && !f.okey_tk->IsNull(i) && string_at(*f.okey_tk, i) != tk) {
+    return FilterVerdict::NonStandardRoot;
+  }
+  return FilterVerdict::Pass;
+}
+
 // ── Underlier admission ─────────────────────────────────────────────────────
 
 // nullopt = admit every ticker; otherwise a SORTED, unique ticker set.
@@ -307,30 +383,59 @@ using Admitted = std::optional<std::vector<std::string>>;
   return it != a->end() && std::string_view{*it} <= hi;
 }
 
-// Counts the non-null tickers of one row group into `counts`.
+// Counts the non-null tickers of one row group into `counts`, over the rows that
+// pass the optional filters: the filters precede the top-N count.
 [[nodiscard]] Status count_group_tickers(const OpenedFile &f, int g,
                                          std::map<std::string, std::int64_t, std::less<>> &counts) {
-  auto t = f.reader->ReadRowGroup(g, std::vector<int>{f.cols.tk});
+  std::vector<int> cols{f.cols.tk};
+  if (f.cols.ex_type >= 0) {
+    cols.push_back(f.cols.ex_type);
+  }
+  if (f.cols.okey_tk >= 0) {
+    cols.push_back(f.cols.okey_tk);
+  }
+  auto t = f.reader->ReadRowGroup(g, cols);
   if (!t.ok()) {
     return Err(from_arrow(t.status(), "spiderrock store: read tickers of " + f.path));
   }
-  const std::shared_ptr<arrow::ChunkedArray> col = (*t)->column(0);
-  for (const std::shared_ptr<arrow::Array> &chunk : col->chunks()) {
-    if (!is_string_type(*chunk)) {
-      return Err(ErrorCode::InvalidArgument,
-                 "spiderrock store: undSecKey_tk is not a string column in " + f.path);
+  auto combined = (*t)->CombineChunks(arrow::default_memory_pool());
+  if (!combined.ok()) {
+    return Err(from_arrow(combined.status(), "spiderrock store: combine " + f.path));
+  }
+  const std::shared_ptr<arrow::Table> table = *std::move(combined);
+  if (table->num_rows() == 0) {
+    return Ok();
+  }
+  // Column order follows `cols` (the projection order is the output order).
+  const arrow::Array *tk_arr = table->column(0)->chunk(0).get();
+  FilterArrays filters;
+  int next = 1;
+  if (f.cols.ex_type >= 0) {
+    filters.ex_type = table->column(next++)->chunk(0).get();
+  }
+  if (f.cols.okey_tk >= 0) {
+    filters.okey_tk = table->column(next)->chunk(0).get();
+  }
+  const bool strings = is_string_type(*tk_arr) &&
+                       (filters.ex_type == nullptr || is_string_type(*filters.ex_type)) &&
+                       (filters.okey_tk == nullptr || is_string_type(*filters.okey_tk));
+  if (!strings) {
+    return Err(ErrorCode::InvalidArgument,
+               "spiderrock store: undSecKey_tk/exType/okey_tk is not a string column in " + f.path);
+  }
+  for (std::int64_t i = 0; i < tk_arr->length(); ++i) {
+    if (tk_arr->IsNull(i)) {
+      continue;
     }
-    for (std::int64_t i = 0; i < chunk->length(); ++i) {
-      if (chunk->IsNull(i)) {
-        continue;
-      }
-      const std::string_view tk = string_at(*chunk, i);
-      auto it = counts.find(tk);
-      if (it == counts.end()) {
-        it = counts.emplace(std::string{tk}, 0).first;
-      }
-      ++it->second;
+    const std::string_view tk = string_at(*tk_arr, i);
+    if (row_filter(filters, tk, i) != FilterVerdict::Pass) {
+      continue;
     }
+    auto it = counts.find(tk);
+    if (it == counts.end()) {
+      it = counts.emplace(std::string{tk}, 0).first;
+    }
+    ++it->second;
   }
   return Ok();
 }
@@ -382,6 +487,7 @@ struct GroupArrays {
   std::shared_ptr<arrow::Table> table; // keeps every array below alive
   const arrow::Array *tk{nullptr};
   const arrow::Array *cp{nullptr};
+  FilterArrays filters{}; // optional exType / okey_tk
   std::array<const arrow::Array *, kNumIntCols> ints{};
   std::array<const arrow::DoubleArray *, kNumCols> nums{};
 };
@@ -418,6 +524,18 @@ struct GroupArrays {
   if (!is_string_type(*a.tk) || !is_string_type(*a.cp)) {
     return Err(bad_type("undSecKey_tk/okey_cp", "a string", f.path));
   }
+  if (f.cols.ex_type >= 0) {
+    ATX_TRY(a.filters.ex_type, single_chunk(*a.table, kExTypeName, f.path));
+    if (!is_string_type(*a.filters.ex_type)) {
+      return Err(bad_type(kExTypeName, "a string", f.path));
+    }
+  }
+  if (f.cols.okey_tk >= 0) {
+    ATX_TRY(a.filters.okey_tk, single_chunk(*a.table, kOptionRootName, f.path));
+    if (!is_string_type(*a.filters.okey_tk)) {
+      return Err(bad_type(kOptionRootName, "a string", f.path));
+    }
+  }
   for (std::size_t c = 0; c < kNumIntCols; ++c) {
     ATX_TRY(a.ints[c], single_chunk(*a.table, kIntNames[c], f.path));
     if (!is_int_type(*a.ints[c])) {
@@ -435,7 +553,14 @@ struct GroupArrays {
   return Ok(std::move(a));
 }
 
-enum class RowVerdict : std::uint8_t { Admitted, NotSelected, Null, Bad };
+enum class RowVerdict : std::uint8_t {
+  Admitted,
+  NotSelected,
+  NonAmerican,
+  NonStandardRoot,
+  Null,
+  Bad,
+};
 
 // Per-load staging: rows are appended with a LOCAL ticker index in `uid`, remapped
 // to table uids (interned in ascending ticker order) once the partition is read.
@@ -493,7 +618,7 @@ struct Decoder {
     }
   }
   for (std::size_t c = 0; c < kNumCols; ++c) {
-    if (kRequired[c] && a.nums[c]->IsNull(i)) {
+    if (kRequired[c] && (a.nums[c]->IsNull(i) || is_sentinel(c, a.nums[c]->Value(i)))) {
       return true;
     }
   }
@@ -502,7 +627,12 @@ struct Decoder {
 
 void append_row(const GroupArrays &a, std::int64_t i, std::uint32_t local, double strike,
                 std::int64_t expiry, Side side, SpiderRockBucket &o) {
-  auto num = [&](NumCol c) { return a.nums[c]->IsNull(i) ? kNaN : a.nums[c]->Value(i); };
+  bool null_vendor = false;
+  auto num = [&](NumCol c) {
+    const bool null_cell = a.nums[c]->IsNull(i) || is_sentinel(c, a.nums[c]->Value(i));
+    null_vendor = null_vendor || null_cell; // only optional columns can reach here NULL
+    return null_cell ? kNaN : a.nums[c]->Value(i);
+  };
   o.uid.push_back(local);
   o.strike.push_back(strike);
   o.expiry_ns.push_back(expiry);
@@ -520,6 +650,7 @@ void append_row(const GroupArrays &a, std::int64_t i, std::uint32_t local, doubl
   o.ddiv.push_back(num(kDdiv));
   o.bid.push_back(num(kBid));
   o.ask.push_back(num(kAsk));
+  o.rows_null_vendor += null_vendor ? 1 : 0;
 }
 
 [[nodiscard]] RowVerdict decode_row(const GroupArrays &a, std::int64_t i, Decoder &d) {
@@ -527,6 +658,14 @@ void append_row(const GroupArrays &a, std::int64_t i, std::uint32_t local, doubl
     return RowVerdict::Null;
   }
   const std::string_view tk = string_at(*a.tk, i);
+  switch (row_filter(a.filters, tk, i)) { // before admission: the filters precede top-N
+  case FilterVerdict::Pass:
+    break;
+  case FilterVerdict::NonAmerican:
+    return RowVerdict::NonAmerican;
+  case FilterVerdict::NonStandardRoot:
+    return RowVerdict::NonStandardRoot;
+  }
   if (!admits(d.admitted, tk)) {
     return RowVerdict::NotSelected;
   }
@@ -557,6 +696,12 @@ void count_verdict(RowVerdict v, SpiderRockBucket &o) noexcept {
     break;
   case RowVerdict::NotSelected:
     ++o.rows_not_selected;
+    break;
+  case RowVerdict::NonAmerican:
+    ++o.dropped_non_american;
+    break;
+  case RowVerdict::NonStandardRoot:
+    ++o.dropped_nonstandard_root;
     break;
   case RowVerdict::Null:
     ++o.rows_dropped_null;
@@ -724,7 +869,8 @@ Result<SpiderRockBucket> load_spiderrock_bucket(const SpiderRockStoreSpec &spec,
   std::vector<OpenedFile> files;
   files.reserve(paths.size());
   for (const fs::path &p : paths) {
-    ATX_TRY(OpenedFile f, open_file(p));
+    ATX_TRY(OpenedFile f,
+            open_file(p, RowFilters{spec.american_only, spec.standard_roots_only}));
     files.push_back(std::move(f));
   }
   ATX_TRY(const Admitted admitted, admitted_set(spec, files));

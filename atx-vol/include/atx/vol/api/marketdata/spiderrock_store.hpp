@@ -31,8 +31,9 @@
 //            store: a row with a NULL srVol or a non-finite required input is
 //            counted and dropped, never priced.
 //
-// Strings in the real store are large_utf8 (polars); both utf8 and large_utf8 are
-// read (tools/oracle_cohort_reader.cpp rules).
+// Strings in the polars-written oracle store are large_utf8 and in the partitioned
+// intraday drop (2026-10-14) plain utf8; both are read (tools/oracle_cohort_reader.cpp
+// rules).
 //
 // Vendor Greek UNITS (CONVENTIONS.md resolved map): de / ga are per unit of spot,
 // ve is per vol POINT (= dP/dsigma * kSpiderRockVegaScale), th is per business day
@@ -73,6 +74,21 @@ struct SpiderRockStoreSpec {
   std::vector<std::string> underliers; // undSecKey_tk values; empty => all (then max_underliers)
   std::size_t max_underliers{0};       // 0 => no cap; else the top-N by row count in the bucket
   TimeSpec time{};                     // the clock T is measured on (Calendar365 default)
+  // ── Lane C additions (appended) ──
+  // Keep only exType == "American" rows when the partition has an `exType` column
+  // (the licensed intraday drop does; the synthetic and older oracle stores do not,
+  // and then every row is American). Applied BEFORE the top-N row count, so
+  // European / Forward-framework index products (SPX, NDX, XSP, RUT, ...) never enter
+  // a top-N universe: the risk kernel is American-on-spot and would fail vendor parity
+  // on them by construction. Dropped rows are counted in `dropped_non_american`.
+  bool american_only{true};
+  // Keep only rows whose option root `okey_tk` equals the underlier ticker when the
+  // partition has an `okey_tk` column. A different root is an adjusted / non-standard
+  // deliverable: its (expiry, side, strike) key collides with the standard contract's
+  // (bucket 1000 of 2026-10-14: 16,355 colliding keys, all distinct roots) and its
+  // price is not a function of the underlier's spot. Applied before the top-N count;
+  // counted in `dropped_nonstandard_root`. A NULL root passes.
+  bool standard_roots_only{true};
 };
 
 // One bucket decoded to SoA (rows sorted by (uid, expiry_ns, side, strike)).
@@ -107,8 +123,22 @@ struct SpiderRockBucket {
   // including whole row groups pruned by the ticker statistics; not part of
   // rows_dropped_*: they were never candidates. Every row of the partition is
   // counted once: rows_read == size() + rows_dropped_null + rows_dropped_bad_input
-  // + rows_not_selected (a NULL ticker counts as rows_dropped_null).
+  // + rows_not_selected + dropped_non_american (a NULL ticker counts as
+  // rows_dropped_null; a pruned row group counts as rows_not_selected).
   std::int64_t rows_not_selected{0};
+  // Rows dropped by SpiderRockStoreSpec::american_only (exType != "American",
+  // including a NULL exType), counted before underlier admission.
+  std::int64_t dropped_non_american{0};
+  // KEPT rows with at least one optional vendor / carry cell (srPrc, de, ga, th, ve,
+  // sdiv, ddiv, bidPrc, askPrc) NULL or a vendor sentinel (-99 anywhere, sdiv <=
+  // -9.98), carried as NaN. A sentinel in a required column drops the row as
+  // rows_dropped_null. Not part of the rows_read identity (the rows are kept).
+  std::int64_t rows_null_vendor{0};
+  // Rows dropped by SpiderRockStoreSpec::standard_roots_only (okey_tk != the
+  // underlier ticker), counted before underlier admission; part of the identity:
+  // rows_read == size() + rows_dropped_null + rows_dropped_bad_input +
+  //              rows_not_selected + dropped_non_american + dropped_nonstandard_root.
+  std::int64_t dropped_nonstandard_root{0};
 };
 
 // Vendor-unit scales (see "Vendor Greek UNITS" above): ve = vega * kSpiderRockVegaScale,

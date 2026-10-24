@@ -22,9 +22,11 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -94,6 +96,10 @@ struct Row {
   bool null_srvol = false;
   bool null_uprc = false;
   bool null_tk = false;
+  // Written only when write_partition(licensed_extras): the 2026-10-14 drop's
+  // exercise style and option root (empty root = the underlier ticker).
+  std::string ex_type = "American";
+  std::string root;
 };
 
 struct NumField {
@@ -108,7 +114,8 @@ constexpr NumField kNumFields[] = {
     {"bidPrc", &Row::bidPrc},  {"askPrc", &Row::askPrc},
 };
 
-void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool large_strings) {
+void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool large_strings,
+                     bool licensed_extras = false, std::int64_t row_group_rows = 3) {
   ASSERT_TRUE(fs::create_directories(dir) || fs::is_directory(dir));
   std::vector<std::shared_ptr<arrow::Field>> fields;
   std::vector<std::shared_ptr<arrow::Array>> arrays;
@@ -139,6 +146,18 @@ void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool lar
   add_string("okey_cp", [](const Row &r) { return r.cp; }, [](const Row &) { return false; });
   if (::testing::Test::HasFatalFailure()) {
     return;
+  }
+  if (licensed_extras) { // the licensed intraday drop's exType / okey_tk columns
+    add_string("exType", [](const Row &r) { return r.ex_type; },
+               [](const Row &r) { return r.ex_type.empty(); });
+    if (::testing::Test::HasFatalFailure()) {
+      return;
+    }
+    add_string("okey_tk", [](const Row &r) { return r.root.empty() ? r.tk : r.root; },
+               [](const Row &) { return false; });
+    if (::testing::Test::HasFatalFailure()) {
+      return;
+    }
   }
   auto add_i64 = [&](const char *name, std::int64_t Row::*f) {
     arrow::Int64Builder b;
@@ -183,7 +202,7 @@ void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool lar
   auto out = arrow::io::FileOutputStream::Open((dir / "data.parquet").string());
   ASSERT_TRUE(out.ok());
   const arrow::Status st = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *out,
-                                                      /*chunk_size=*/3);
+                                                      row_group_rows);
   ASSERT_TRUE(st.ok()) << st.ToString();
   ASSERT_TRUE((*out)->Close().ok());
 }
@@ -280,6 +299,29 @@ TEST(SpiderRockStore, DropsNullAndBadRowsCounted) {
   EXPECT_EQ(b->vendor_T[0], 0.1);
   EXPECT_EQ(b->bid[0], 2.4);
   EXPECT_EQ(b->ask[0], 2.6);
+}
+
+TEST(SpiderRockStore, VendorSentinelsReadAsNull) {
+  std::vector<Row> rows(4);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rows[i].strike = 100.0 + static_cast<double>(i);
+  }
+  rows[1].srVol = -99.0; // required-column sentinel: dropped as null
+  rows[2].sdiv = -9.99;  // the drop's sdiv sentinel: kept, carried as NaN
+  rows[3].de = -99.0;    // optional-column sentinel: kept, carried as NaN
+  const fs::path root = fresh_dir("sentinel");
+  write_partition(bucket_dir(root, "2026-10-14", "1000"), rows, false);
+  ASSERT_FALSE(HasFatalFailure());
+  UnderlierTable table;
+  const auto b = atx::vol::load_spiderrock_bucket(spec_for(root, "2026-10-14"), "1000", table);
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(b->rows_dropped_null, 1);
+  ASSERT_EQ(b->size(), 3u);
+  EXPECT_EQ(b->rows_null_vendor, 2);
+  EXPECT_EQ(b->sdiv[0], 0.01);
+  EXPECT_TRUE(std::isnan(b->sdiv[1]));
+  EXPECT_TRUE(std::isnan(b->vendor_delta[2]));
+  EXPECT_EQ(b->vendor_delta[1], 0.5);
 }
 
 TEST(SpiderRockStore, SortsByKey) {
@@ -393,6 +435,182 @@ TEST(SpiderRockStore, TopNUnderliersIsDeterministic) {
   EXPECT_EQ(c->size(), 8u);
   EXPECT_EQ(t3.find("AAA"), 1u);
   EXPECT_EQ(t3.find("DDD"), 2u);
+}
+
+TEST(SpiderRockStore, AmericanOnlyFiltersBeforeTopN) {
+  std::vector<Row> rows;
+  auto add = [&](const char *tk, const char *ex_type, int n) {
+    for (int i = 0; i < n; ++i) {
+      Row r;
+      r.tk = tk;
+      r.ex_type = ex_type;
+      r.strike = 50.0 + i;
+      rows.push_back(r);
+    }
+  };
+  add("SPX", "European", 9); // the most rows, but European: never in the top-N
+  add("AAA", "American", 4);
+  add("BBB", "American", 3);
+  add("CCC", "American", 2);
+  add("MIX", "European", 3);
+  add("MIX", "", 1);         // NULL exType: not American
+  add("MIX", "american", 2); // case-insensitive
+  const fs::path root = fresh_dir("american");
+  write_partition(bucket_dir(root, "2026-10-14", "1000"), rows, /*large=*/false, true,
+                  /*row_group_rows=*/1024); // one group: no ticker-stats pruning
+  ASSERT_FALSE(HasFatalFailure());
+
+  SpiderRockStoreSpec spec = spec_for(root, "2026-10-14");
+  spec.max_underliers = 2;
+  UnderlierTable table;
+  const auto b = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(table.size(), 2u);
+  EXPECT_NE(table.find("AAA"), 0u);
+  EXPECT_NE(table.find("BBB"), 0u);
+  EXPECT_EQ(table.find("SPX"), 0u);
+  EXPECT_EQ(b->size(), 7u);
+  EXPECT_EQ(b->dropped_non_american, 13);
+  EXPECT_EQ(b->rows_not_selected, 4); // CCC and MIX's 2 American rows: outside the top-2
+  EXPECT_EQ(b->rows_read, static_cast<std::int64_t>(b->size()) + b->rows_dropped_null +
+                              b->rows_dropped_bad_input + b->rows_not_selected +
+                              b->dropped_non_american);
+
+  // american_only = false admits every exercise style (and the top-N sees SPX).
+  spec.american_only = false;
+  UnderlierTable all;
+  const auto c = atx::vol::load_spiderrock_bucket(spec, "1000", all);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_NE(all.find("SPX"), 0u);
+  EXPECT_EQ(c->dropped_non_american, 0);
+}
+
+TEST(SpiderRockStore, StandardRootsOnlyDropsAdjustedRoots) {
+  auto make = [](const char *tk, const char *root, double strike) {
+    Row r;
+    r.tk = tk;
+    r.root = root;
+    r.strike = strike;
+    return r;
+  };
+  // AAA1 is an adjusted root: its 100 call collides with AAA's 100 call key.
+  const std::vector<Row> rows = {make("AAA", "AAA", 100.0), make("AAA", "AAA1", 100.0),
+                                 make("AAA", "AAA1", 105.0), make("BBB", "BBB", 50.0)};
+  const fs::path root = fresh_dir("roots");
+  write_partition(bucket_dir(root, "2026-10-14", "1000"), rows, /*large=*/true, true, 1024);
+  ASSERT_FALSE(HasFatalFailure());
+
+  SpiderRockStoreSpec spec = spec_for(root, "2026-10-14");
+  UnderlierTable table;
+  const auto b = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(b->size(), 2u);
+  EXPECT_EQ(b->dropped_nonstandard_root, 2);
+  EXPECT_EQ(b->strike, (std::vector<double>{100.0, 50.0}));
+  EXPECT_EQ(b->rows_read, static_cast<std::int64_t>(b->size()) + b->rows_dropped_null +
+                              b->rows_dropped_bad_input + b->rows_not_selected +
+                              b->dropped_non_american + b->dropped_nonstandard_root);
+
+  spec.standard_roots_only = false;
+  UnderlierTable all;
+  const auto c = atx::vol::load_spiderrock_bucket(spec, "1000", all);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_EQ(c->size(), 4u);
+  EXPECT_EQ(c->dropped_nonstandard_root, 0);
+}
+
+// ── SpiderRockStoreReal: the licensed store, env-gated ──────────────────────
+//
+// Skipped unless ATX_VOL_SPIDERROCK_STORE names the partitioned store root (the
+// dir holding date=2026-10-14/). Reads bucket 1000 twice (uncapped, then top-100)
+// and builds the state. Never runs in a lane without the licensed data.
+
+// The store root from ATX_VOL_SPIDERROCK_STORE; empty when unset (the _dupenv_s form
+// on Windows, as american_discrete_div_reference_matrix_test.cpp reads its switch).
+[[nodiscard]] std::string real_store_root() {
+#if defined(_WIN32)
+  char *value = nullptr;
+  std::size_t size = 0U;
+  std::string root;
+  if (::_dupenv_s(&value, &size, "ATX_VOL_SPIDERROCK_STORE") == 0 && value != nullptr) {
+    root = value;
+  }
+  std::free(value);
+  return root;
+#else
+  const char *value = std::getenv("ATX_VOL_SPIDERROCK_STORE");
+  return value != nullptr ? std::string(value) : std::string();
+#endif
+}
+
+TEST(SpiderRockStoreReal, LoadsBucket1000) {
+  const std::string root = real_store_root();
+  if (root.empty()) {
+    GTEST_SKIP() << "ATX_VOL_SPIDERROCK_STORE unset (licensed store not configured)";
+  }
+  using Clock = std::chrono::steady_clock;
+  auto ms_since = [](Clock::time_point t0) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+  };
+  SpiderRockStoreSpec spec;
+  spec.store_root = root;
+  spec.date = "2026-10-14";
+  UnderlierTable t_all;
+  Clock::time_point t0 = Clock::now();
+  const auto full = atx::vol::load_spiderrock_bucket(spec, "1000", t_all);
+  const double full_ms = ms_since(t0);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+  std::printf("[real 1000 uncapped] load %.1f ms: read=%lld kept=%zu null=%lld bad=%lld "
+              "non_american=%lld nonstandard_root=%lld not_selected=%lld null_vendor=%lld "
+              "uids=%zu\n",
+              full_ms, static_cast<long long>(full->rows_read), full->size(),
+              static_cast<long long>(full->rows_dropped_null),
+              static_cast<long long>(full->rows_dropped_bad_input),
+              static_cast<long long>(full->dropped_non_american),
+              static_cast<long long>(full->dropped_nonstandard_root),
+              static_cast<long long>(full->rows_not_selected),
+              static_cast<long long>(full->rows_null_vendor), t_all.size());
+  EXPECT_GT(full->size(), 1'500'000u);
+  EXPECT_GT(full->dropped_non_american, 0);
+  EXPECT_EQ(full->rows_read, static_cast<std::int64_t>(full->size()) + full->rows_dropped_null +
+                                 full->rows_dropped_bad_input + full->rows_not_selected +
+                                 full->dropped_non_american + full->dropped_nonstandard_root);
+
+  spec.max_underliers = 100;
+  UnderlierTable table;
+  t0 = Clock::now();
+  const auto top = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+  const double top_ms = ms_since(t0);
+  ASSERT_TRUE(top.has_value()) << top.error().to_string();
+  BucketStateReport report;
+  t0 = Clock::now();
+  const auto st = atx::vol::market_state_from_bucket(*top, TimeSpec{}, &report);
+  const double state_ms = ms_since(t0);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  std::printf("[real 1000 top-100] load %.1f ms, state %.1f ms: kept=%zu null=%lld bad=%lld "
+              "non_american=%lld not_selected=%lld | uids=%zu marks=%zu expiry_rows=%zu "
+              "uids_with_divs=%zu max_ddiv_spread=%.6g dup_marks=%zu bad_sigma=%zu\n",
+              top_ms, state_ms, top->size(), static_cast<long long>(top->rows_dropped_null),
+              static_cast<long long>(top->rows_dropped_bad_input),
+              static_cast<long long>(top->dropped_non_american),
+              static_cast<long long>(top->rows_not_selected), report.n_uids, report.n_marks,
+              report.n_expiry_rows, report.n_uids_with_divs, report.max_ddiv_spread,
+              report.n_duplicate_marks, report.n_rows_bad_sigma);
+  EXPECT_GE(report.n_uids, 100u);
+  EXPECT_GT(top->dropped_non_american, 0);
+  EXPECT_GT(report.n_uids_with_divs, 0u);
+  EXPECT_EQ(report.n_duplicate_marks, 0u) << "standard roots only: keys must not collide";
+  ASSERT_EQ(st->marks.size(), st->underliers.size());
+  for (const auto &m : st->marks) {
+    EXPECT_GE(m.sigma.size(), 100u) << "uid " << m.uid;
+    for (std::size_t i = 1; i < m.sigma.size(); ++i) {
+      const auto prev = std::make_tuple(m.expiry_ns[i - 1], static_cast<int>(m.side[i - 1]),
+                                        m.strike[i - 1]);
+      const auto cur =
+          std::make_tuple(m.expiry_ns[i], static_cast<int>(m.side[i]), m.strike[i]);
+      ASSERT_LT(prev, cur) << "uid " << m.uid << " row " << i;
+    }
+  }
 }
 
 // ── SyntheticStore ──────────────────────────────────────────────────────────
@@ -571,6 +789,25 @@ TEST(SyntheticStore, SeedIsReproducible) {
     EXPECT_EQ(fa, fb) << "same seed, bucket " << bucket;
     EXPECT_NE(fa, fc) << "different seed, bucket " << bucket;
   }
+}
+
+// The full benchmark-size store (100 uids x 8 expiries x 25 strikes x 2 sides x 11
+// buckets = 440k rows). Disabled: it is a timing receipt, not a gate. Run with
+//   atx-vol-risk-slice --gtest_also_run_disabled_tests
+//                      --gtest_filter=SyntheticStore.DISABLED_FullSizeGenerationTiming
+TEST(SyntheticStore, DISABLED_FullSizeGenerationTiming) {
+  const fs::path root = fresh_dir("fullsize");
+  SyntheticStoreReport report;
+  const auto st =
+      atx::vol::write_synthetic_spiderrock_store(SyntheticSpiderRockSpec{}, root.string(), report);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  std::printf("[synthetic full-size] rows=%zu files=%zu failures=%zu total=%.3f s pricing=%.3f s\n",
+              report.rows_written, report.files_written, report.pricing_failures, report.seconds,
+              report.pricing_seconds);
+  EXPECT_EQ(report.rows_written, 440000u);
+  EXPECT_EQ(report.pricing_failures, 0u);
+  std::error_code ec;
+  fs::remove_all(root, ec);
 }
 
 // ── BucketState ─────────────────────────────────────────────────────────────
