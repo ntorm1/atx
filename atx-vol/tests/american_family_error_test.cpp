@@ -10,6 +10,7 @@
 #include <optional>
 #include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
@@ -421,6 +422,74 @@ TEST(AmericanFamilyError, EnvelopeScopeNestsChecksIdentityAndIsThreadLocal) {
     EXPECT_EQ(current_family_envelope(&a.family), nullptr);
   }
   EXPECT_EQ(current_family_envelope(&b.family), nullptr);
+}
+
+TEST(AmericanFamilyError, EnvelopeRejectsChangedPreparationAtTheSameFamilyAddress) {
+  const FamilyCase c{100.0, 0.5, 0.04, 0.010, 0.012, Side::Put, 0.05, 1.2, 4};
+  for (const unsigned change : {0u, 1u, 2u, 3u}) {
+    SCOPED_TRACE(change);
+    Built b(c);
+    Built replacement(c);
+    ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    const auto old = atx::vol::build_family_error_envelope(b.family);
+    ASSERT_TRUE(old.covered());
+    const atx::vol::FamilyEnvelopeScope scope(&old);
+    ASSERT_EQ(atx::vol::current_family_envelope(&b.family), &old);
+    if (change == 0u) {
+      // Same geometry, domain and counts; only the interpolation axis changed.
+      ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q,
+                                   atx::vol::AlSigmaFamilyAxis::Sigma));
+    } else if (change == 1u) {
+      b.geometry.prepare(c.T, 0.08, 0.011);
+      ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    } else if (change == 2u) {
+      atx::vol::AlOpts options;
+      options.n_collocation = 8;
+      options.n_quad_price = 48; // same premium order as the original nullopt scheme
+      b.geometry.prepare(c.T, c.r, 0.011, options);
+      ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    } else {
+      // A local revision of one per family would collide after move assignment.
+      replacement.geometry.prepare(c.T, 0.08, 0.011);
+      ASSERT_TRUE(replacement.family.prepare(c.sigma_lo, c.sigma_hi, 16,
+                                             c.q_lo, c.q_hi, c.n_q));
+      b.family = std::move(replacement.family);
+    }
+    const auto stale = atx::vol::family_price_bounded(b.family, old, c.S, c.S, 0.3, 0.011);
+    ASSERT_EQ(stale.status, AlSigmaQFamilyStatus::Ok);
+    EXPECT_FALSE(std::isfinite(stale.bound_usd));
+    EXPECT_EQ(atx::vol::current_family_envelope(&b.family), nullptr);
+    const auto fresh = atx::vol::build_family_error_envelope(b.family);
+    ASSERT_TRUE(fresh.covered());
+    const auto valid = atx::vol::family_price_bounded(b.family, fresh, c.S, c.S, 0.3, 0.011);
+    EXPECT_TRUE(std::isfinite(valid.bound_usd));
+    EXPECT_EQ(stale.price, valid.price); // invalidating a certificate never changes pricing
+    std::printf("[envelope preparation] change %u stale %.17g fresh %.17g\n",
+                change, stale.bound_usd, valid.bound_usd);
+  }
+}
+
+TEST(AmericanFamilyError, EnvelopeRejectsGeometryInvalidationAndFailedReprepare) {
+  const FamilyCase c{100.0, 0.5, 0.04, 0.010, 0.012, Side::Put, 0.05, 1.2, 4};
+  Built b(c);
+  ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+  const auto old = atx::vol::build_family_error_envelope(b.family);
+  ASSERT_TRUE(old.covered());
+  const atx::vol::FamilyEnvelopeScope scope(&old);
+  b.geometry.prepare(c.T, 0.08, 0.011);
+  EXPECT_EQ(atx::vol::current_family_envelope(&b.family), nullptr);
+  EXPECT_FALSE(atx::vol::build_family_error_envelope(b.family).covered());
+  EXPECT_EQ(atx::vol::family_price_bounded(b.family, old, c.S, c.S, 0.3, 0.011).status,
+            AlSigmaQFamilyStatus::GeometryRePrepared);
+  ASSERT_FALSE(b.family.prepare(0.3, 0.1, 16, c.q_lo, c.q_hi, c.n_q));
+  EXPECT_EQ(atx::vol::current_family_envelope(&b.family), nullptr);
+  EXPECT_FALSE(atx::vol::build_family_error_envelope(b.family).covered());
+  EXPECT_EQ(atx::vol::family_price_bounded(b.family, old, c.S, c.S, 0.3, 0.011).status,
+            AlSigmaQFamilyStatus::NotPrepared);
+  ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+  EXPECT_FALSE(std::isfinite(
+      atx::vol::family_price_bounded(b.family, old, c.S, c.S, 0.3, 0.011).bound_usd));
+  EXPECT_EQ(atx::vol::current_family_envelope(&b.family), nullptr);
 }
 
 // The near-exercise probe point: spot sits on the family's boundary now at the returned

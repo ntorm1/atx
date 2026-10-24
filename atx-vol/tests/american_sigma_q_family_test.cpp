@@ -852,7 +852,7 @@ TEST(AlSigmaQFamily, StateBytesIsPinned) {
   // sized EXACTLY at prepare(): n_boundary (12, the Reference scheme) x n_q x n_sigma
   // doubles — (12, 4) = 4,608 B and (16, 4) = 6,144 B of tensor where L2h-b held a fixed
   // 32 x 8 x 16 = 32,768 B. The memory budget a caller provisions per (expiry, side).
-  constexpr std::size_t kBlock = 1864; // measured sizeof(State)
+  constexpr std::size_t kBlock = 1872; // sizeof(State), including 8-byte prepared-tensor identity
   const AlExpiryGeometry g = prepare_al_geometry(0.0682, 0.04496, 0.0016);
   AlSigmaQFamily f(g, Side::Put, 772.99);
   EXPECT_EQ(f.state_bytes(), kBlock); // nothing prepared yet

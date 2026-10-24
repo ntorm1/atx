@@ -132,6 +132,7 @@ struct ValidatedErrorEnvelope {
   FamilyErrorDomain domain{};
   // The family it was built for (identity check; observed, not owned) and its node counts.
   const AlSigmaQFamily *family = nullptr;
+  std::uint64_t preparation_stamp = 0; // binds this envelope to the exact prepared tensor
   std::uint16_t n_sigma = 0;
   std::uint16_t n_q = 0;
   // bound_y[i]: sup over the domain of |y_family - y_A| at premium quadrature node i (the

@@ -313,9 +313,11 @@ ValidatedErrorEnvelope build_family_error_envelope(const AlSigmaQFamily &f) noex
   env.bound_y.fill(kInf);
   env.y_lo.fill(0.0);
   const StatePtr st = QFamilyAccess::state(f);
-  if (st == nullptr || !f.prepared() || st->ws == nullptr || st->series == nullptr) {
+  if (st == nullptr || !f.prepared() || st->g == nullptr ||
+      st->g->generation != st->generation || st->ws == nullptr || st->series == nullptr) {
     return uncovered(env, FamilyEnvelopeStatus::NotPrepared);
   }
+  env.preparation_stamp = st->preparation_stamp;
   env.domain = FamilyErrorDomain{st->sigma_lo, st->sigma_hi, st->q_lo, st->q_hi, st->grid.T,
                                  st->side};
   env.n_sigma = st->n_sigma;
@@ -411,7 +413,8 @@ FamilyBoundedPrice family_price_bounded(const AlSigmaQFamily &f, const Validated
   amer::AlBoundary bnd = st->grid;
   st->interpolate(sigma, q, bnd);
   out.price = st->price_on(bnd, S, K, sigma, q); // == f.price(S, K, sigma, q).price
-  if (!env.covered() || env.family != &f || env.n_quad != st->ws->n_quad_price ||
+  if (!env.covered() || env.family != &f || env.preparation_stamp != st->preparation_stamp ||
+      env.n_quad != st->ws->n_quad_price ||
       env.n_sigma != st->n_sigma || env.n_q != st->n_q || env.domain.sigma_lo != st->sigma_lo ||
       env.domain.sigma_hi != st->sigma_hi || env.domain.q_lo != st->q_lo ||
       env.domain.q_hi != st->q_hi || env.domain.T != st->grid.T || env.domain.side != st->side) {
@@ -519,7 +522,10 @@ FamilyEnvelopeScope::~FamilyEnvelopeScope() { t_family_envelope = previous_; }
 
 const ValidatedErrorEnvelope *current_family_envelope(const AlSigmaQFamily *family) noexcept {
   const ValidatedErrorEnvelope *env = t_family_envelope;
-  if (env == nullptr || family == nullptr || env->family != family || !family->prepared() ||
+  if (env == nullptr || family == nullptr || env->family != family) return nullptr;
+  const StatePtr st = QFamilyAccess::state(*family);
+  if (st == nullptr || !st->ok || st->g == nullptr || st->g->generation != st->generation ||
+      env->preparation_stamp != st->preparation_stamp ||
       env->n_sigma != family->n_sigma() || env->n_q != family->n_q() ||
       env->domain.sigma_lo != family->sigma_lo() || env->domain.sigma_hi != family->sigma_hi() ||
       env->domain.q_lo != family->q_lo() || env->domain.q_hi != family->q_hi()) {

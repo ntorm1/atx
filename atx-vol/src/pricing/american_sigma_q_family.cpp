@@ -48,6 +48,10 @@ using sigma_q_family_detail::kMaxQNodes;
 
 namespace {
 
+// Identity only, never a publication fence: prepare is exclusive and the resulting
+// state is immutable. A process-wide stamp also distinguishes replacement by move.
+std::atomic<std::uint64_t> g_family_preparation_stamp{0};
+
 // andersen_lake's error for a failed node solve (the mapping AlSigmaFamily's
 // node_solve_error and american.cpp's al_solve_status_error use; both are file-local).
 [[nodiscard]] Status node_solve_error(amer::AlSolveStatus st) {
@@ -608,6 +612,7 @@ Status AlSigmaQFamily::prepare(double sigma_lo, double sigma_hi, std::uint16_t n
   if (check == AlSigmaQFamilyCheck::OffNode) {
     st.check = st.measure_self_check(work->geo, work->solve);
   }
+  st.preparation_stamp = g_family_preparation_stamp.fetch_add(1u, std::memory_order_relaxed) + 1u;
   st.ok = true;
   discard.keep = true;
   return Ok();

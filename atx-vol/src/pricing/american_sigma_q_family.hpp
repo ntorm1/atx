@@ -136,6 +136,7 @@ struct AlSigmaQFamily::State {
   // ── set by prepare() ──
   bool ok = false;
   std::uint64_t generation = 0; // the geometry's generation at prepare()
+  std::uint64_t preparation_stamp = 0; // process-unique successful preparation; moves with state
   AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma;
   double sigma_lo = 0.0;
   double sigma_hi = 0.0;
