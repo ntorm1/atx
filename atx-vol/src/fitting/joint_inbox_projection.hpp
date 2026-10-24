@@ -8,6 +8,11 @@
 
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 
+namespace atx::vol::research {
+class JointRowObserver;
+struct JointRowRawSource;
+}
+
 namespace atx::vol::detail {
 
 // One expiry, in increasing maturity order. Boxes are exact hard price bounds;
@@ -102,6 +107,8 @@ project_joint_in_box(std::span<const JointInboxSlice> slices,
                      std::size_t max_iterations = 100,
                      JointInboxDiagnostics *diagnostics = nullptr,
                      JointInboxProfile *profile = nullptr,
-                     JointDirectionMode mode = JointDirectionMode::Compiled);
+                     JointDirectionMode mode = JointDirectionMode::Compiled,
+                     research::JointRowObserver *observer = nullptr,
+                     const research::JointRowRawSource *raw_census = nullptr);
 
 } // namespace atx::vol::detail

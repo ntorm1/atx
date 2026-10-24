@@ -21,6 +21,7 @@
 #include "quote_bench_data.hpp"
 #include "quote_bench_acceptance.hpp"
 #include "quote_bench_candidate_capture.hpp"
+#include "quote_bench_joint_row_census.hpp"
 
 #include <algorithm>
 #include <array>
@@ -63,6 +64,7 @@ struct Arguments {
   std::filesystem::path report;
   std::filesystem::path progress;
   std::filesystem::path candidate_capture;
+  std::filesystem::path joint_row_census;
   std::string curve;
   std::string policy{"auto"};
   std::string model{"quote-slice"};
@@ -135,6 +137,7 @@ Arguments arguments(int argc, char **argv) {
                    "[--inverse-replay auto|scalar|avx2]\n"
                    "[--acceptance-audit] (offline final API proof; not a timing run)\n"
                    "[--candidate-capture fresh.json] (explicit research build; one-worker offline capture)\n"
+                   "[--joint-row-census fresh.json] (explicit research build; one full projection)\n"
                    "Defaults: --policy auto --dividends funding-pv. "
                    "Quality/min-quotes flags require explicit --curve. "
                    "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
@@ -182,6 +185,7 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--report") args.report = value;
     else if (key == "--progress") args.progress = value;
     else if (key == "--candidate-capture") args.candidate_capture = value;
+    else if (key == "--joint-row-census") args.joint_row_census = value;
     else if (key == "--curve") args.curve = value;
     else if (key == "--policy") args.policy = value;
     else if (key == "--model") args.model = value;
@@ -219,6 +223,26 @@ Arguments arguments(int argc, char **argv) {
         same_file(args.candidate_capture, args.report) ||
         (args.policy != "auto" && same_file(args.candidate_capture, args.policy)))
       throw std::runtime_error("candidate capture paths must differ from inputs, policy and outputs");
+  }
+  if (seen.contains("--joint-row-census")) {
+    if (args.joint_row_census.empty() || args.model != "quote-slice" || !args.curve.empty() ||
+        args.policy == "auto" || args.reps != 1U || atx_auto_worker_count() != 1U ||
+        !args.timing_detail || !args.cold_reset || args.acceptance_audit || args.deam_audit ||
+        args.inverse_replay || !args.candidate_capture.empty() || !args.progress.empty() ||
+        args.report.empty())
+      throw std::runtime_error("joint row census requires one rep/worker, explicit graded policy, "
+          "timing-detail, cold-reset and report; no other capture/audit/replay");
+    if (!research::joint_row_census_compiled())
+      throw std::runtime_error("joint row census requires ATX_VOL_JOINT_ROW_CENSUS_RESEARCH build");
+    if (detail::joint_centrality_compiled() || reimply_candidate_batch_enabled() ||
+        reimply_seed_kernel() != IvPriceSeedKernel::ScalarReference)
+      throw std::runtime_error("joint row census requires ordinary projection and scalar proof modes");
+    for (const auto &path : {args.joint_row_census, args.output, args.report})
+      if (std::filesystem::exists(path))
+        throw std::runtime_error("joint row census requires fresh output paths");
+    if (same_file(args.joint_row_census, args.input) || same_file(args.joint_row_census, args.output) ||
+        same_file(args.joint_row_census, args.report) || same_file(args.joint_row_census, args.policy))
+      throw std::runtime_error("joint row census paths must differ from inputs, policy and outputs");
   }
   if (args.model != "quote-slice" && args.model != "common-markov") {
     throw std::runtime_error("--model must be quote-slice or common-markov");
@@ -2863,7 +2887,7 @@ int main(int argc, char **argv) {
     if (args.affinity) pin_fit_worker(args);
     times.setup_s = bench::seconds_between(main_entry, Clock::now());
     Json provenance = Json::object();
-    if (!args.progress.empty() || !args.candidate_capture.empty()) {
+    if (!args.progress.empty() || !args.candidate_capture.empty() || !args.joint_row_census.empty()) {
       const auto &selected_policy = args.progress.empty() ? args.policy : args.common_policy;
       provenance = {{"input", std::filesystem::weakly_canonical(args.input).string()},
           {"input_sha256", quote_bench::file_sha256(args.input)},
@@ -2908,6 +2932,8 @@ int main(int argc, char **argv) {
     std::vector<research::IvCandidateCaptureRecord> candidate_records;
     std::vector<research::IvCandidateCacheLifetime> candidate_caches;
     std::unique_ptr<research::IvCandidateCapture> candidate_capture;
+    std::optional<quote_bench_joint_row_census::Owner> row_census;
+    if (!args.joint_row_census.empty()) row_census.emplace();
     if (!args.candidate_capture.empty()) {
       candidate_records.resize(capture_capacity);
       candidate_caches.resize(capture_capacity);
@@ -2916,6 +2942,11 @@ int main(int argc, char **argv) {
     const double capture_setup_s = bench::seconds_between(capture_setup, Clock::now());
     const auto compute_start = Clock::now();
     const auto predictions = [&] {
+      if (row_census) {
+        const research::JointRowCaptureScope scope(row_census->recorder->observer());
+        // Capture admission/setup failure invalidates evidence, never the fit.
+        return run_reps(args, rows, stats, bench_report);
+      }
       if (!candidate_capture) return run_reps(args, rows, stats, bench_report);
       const research::IvCandidateCaptureScope capture_scope(*candidate_capture);
       if (!capture_scope.attached()) throw std::runtime_error("Candidate capture scope refused");
@@ -2940,6 +2971,9 @@ int main(int argc, char **argv) {
     bench_report["build_info"]["price_candidate_capture"] = {
         {"cmake_option", "ATX_VOL_CAPTURE_PRICE_CANDIDATES"},
         {"enabled", research::iv_candidate_capture_enabled()}};
+    bench_report["build_info"]["joint_row_census"] = {
+        {"cmake_option", "ATX_VOL_JOINT_ROW_CENSUS_RESEARCH"},
+        {"enabled", research::joint_row_census_compiled()}};
     bench_report["process_identity"] = bench::process_identity_json();
     if (candidate_capture) {
       bench_report["timing_qualifying"] = false;
@@ -2965,6 +2999,35 @@ int main(int argc, char **argv) {
           {"sha256", quote_bench::file_sha256(args.candidate_capture)}, {"timing_qualifying", false}};
       bench_report["timing_qualifying"] = false;
     }
+    bool row_capture_failed = false;
+    if (row_census) {
+      bench_report["timing_qualifying"] = false;
+      const auto export_start = Clock::now();
+      Json captured = quote_bench_joint_row_census::report(*row_census->recorder);
+      captured["input_sha256"] = quote_bench::file_sha256(args.input);
+      captured["policy_sha256"] = quote_bench::file_sha256(args.policy);
+      if (captured["input_sha256"] != provenance["input_sha256"] ||
+          captured["policy_sha256"] != provenance["policy_sha256"])
+        throw std::runtime_error("Input or policy changed during joint row census");
+      captured["prediction_sha256"] = quote_bench::file_sha256(args.output);
+      captured["executable_sha256"] = provenance["executable_sha256"];
+      captured["build_info"] = bench_report["build_info"];
+      captured["process_identity"] = bench_report["process_identity"];
+      captured["requested_capacity"] = quote_bench_joint_row_census::limits;
+      captured["capture_setup_s"] = capture_setup_s;
+      captured["fit_report"] = bench_report;
+      captured["slice_counters"] = stats.graded_stats;
+      row_capture_failed = !row_census->recorder->observer().valid();
+      quote_bench_joint_row_census::write(args.joint_row_census, captured);
+      row_census.reset(); // Include owned storage destruction in the observation clock.
+      bench_report["joint_row_census"] = {{"valid", !row_capture_failed},
+          {"path", std::filesystem::absolute(args.joint_row_census).string()},
+          {"sha256", quote_bench::file_sha256(args.joint_row_census)},
+          {"setup_s", capture_setup_s},
+          {"export_and_destroy_s", bench::seconds_between(export_start, Clock::now())},
+          {"capture_through_export_and_destroy_s", bench::seconds_between(capture_setup, Clock::now())},
+          {"timing_qualifying", false}};
+    }
     stats.bench = std::move(bench_report);
     write_report(std::cout, args, rows.size(), stats);
     if (!args.report.empty()) {
@@ -2974,7 +3037,7 @@ int main(int argc, char **argv) {
       report.close();
       if (!report) throw std::runtime_error("Timing report write failed");
     }
-    return candidate_capture && !candidate_capture->valid() ? 2 : 0;
+    return (candidate_capture && !candidate_capture->valid()) || row_capture_failed ? 2 : 0;
   } catch (const std::exception &error) {
     std::cerr << "quote-bench: " << error.what() << '\n';
     return 1;
