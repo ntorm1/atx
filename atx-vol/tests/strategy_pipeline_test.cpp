@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -310,6 +311,26 @@ TEST(StrategyPipelineScenarioAvailability, RequiresOnlyActualComponentShockField
   const auto zero_shock = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
   ASSERT_TRUE(zero_shock);
   EXPECT_DOUBLE_EQ(zero_shock->total_pnl, 0.);
+}
+
+TEST(StrategyPipelineScenarioAvailability, FiniteInactiveCrossTermsCannotOverflow) {
+  ScenarioRiskInput input{Position{1u,{1u,100.,.25,Side::Call},1.,1.},1e200,{}};
+  auto &g=input.greeks_per_share;
+  g.delta=1e-200; g.gamma=0.; g.vanna=g.charm=1e200;
+  detail::mark_american_greek_fields(g,GreekFieldMask::Delta|GreekFieldMask::Gamma,
+                                    AmericanGreekReason::ComputedEstimate);
+  ConditionalComponentScenario scenario;
+  scenario.index_uid=1u; scenario.index_spot_pct=1.;
+  const auto result=conditional_component_scenario_pnl(std::span(&input,1),scenario);
+  ASSERT_TRUE(result);
+  EXPECT_DOUBLE_EQ(result->total_pnl,1.);
+  // A normal finite same-kernel control retains exact result bits.
+  input.spot=100.; g.delta=.5; g.gamma=.01;
+  scenario.index_spot_pct=.01;
+  const auto ordinary=conditional_component_scenario_pnl(std::span(&input,1),scenario);
+  ASSERT_TRUE(ordinary);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(ordinary->total_pnl),
+            std::bit_cast<std::uint64_t>(scenario_taylor_leg(g,1.,0.,0.,0.)));
 }
 
 TEST(StrategyPipelineIntent, GeneratesVersionedResearchOnlyTargetMinusCurrentDeltasInStableOrder) {

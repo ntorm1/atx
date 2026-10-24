@@ -455,9 +455,10 @@ resolving each component's own spot/volatility shocks. A nonzero spot shock
 requires Delta/Gamma, volatility requires Vega/Volga, time requires Theta,
 rate requires Rho, and active cross terms require Vanna or Charm. Missing active
 supply returns Unavailable; finite unstamped zeros are not risk evidence.
-Nonfinite inactive operands are replaced with zero before the unchanged public
-Taylor kernel, preventing NaN times zero from poisoning a supported result.
-Finite operands and the kernel's operation order remain unchanged. Price is not
+Inactive operands are replaced with zero before the unchanged public Taylor
+kernel. Clearing only nonfinite inputs is insufficient: a finite unused cross
+Greek can overflow with a large active spot shock before multiplying by zero.
+Active operands and the kernel's operation order remain unchanged. Price is not
 a Taylor input. Exact zero positions or zero shocks contribute exact zero.
 
 The actual consumer regression is runtime RED for default-zero acceptance and
@@ -467,3 +468,12 @@ cross PnL, and zero identities. Ten focused strategy/quant integration tests
 and two owning PCH-off objects pass (repair-iv/greek-conditional-*). This private
 helper changes no public result layout or Greek accuracy contract; scenario-grid
 Exact eligibility and per-cell availability remain the next component.
+
+
+Review caught that finite-inactive overflow in the initial conditional helper.
+The actual consumer regression now pins Delta=1e-200, Gamma=0, spot shock1e200,
+unused Vanna/Charm=1e200 to finite PnL1. A normal finite control compares exact
+result bits against the original public kernel. Runtime RED is retained; the
+corrected stack passes all11 scoped strategy/quant tests and two owning PCH-off
+objects (repair-iv/greek-conditional-inactive-*). Active sensitivity admission is
+unchanged. The initial helper is not promoted independently of this correction.

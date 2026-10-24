@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -29,9 +28,9 @@ namespace atx::vol::detail {
   return fields;
 }
 
-// Caller first checks supply for scenario_taylor_fields. Clear only nonfinite
-// inactive operands so NaN*0 cannot poison an otherwise supported scenario.
-// Finite operands and the public kernel's arithmetic order remain unchanged.
+// Caller first checks supply for scenario_taylor_fields. Clear every inactive
+// operand: even a finite unused cross Greek can overflow before its final zero
+// multiplier. Active operands and the public kernel's order stay unchanged.
 [[nodiscard]] inline double scenario_taylor_active_leg(const AmericanGreeks &g, double dS,
                                                        double dvol, double dt, double dr) noexcept {
   const auto fields = scenario_taylor_fields(dS, dvol, dt, dr);
@@ -39,7 +38,7 @@ namespace atx::vol::detail {
   for (std::size_t i = 0; i < 8u; ++i) {
     const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
     double &value = operands.*kAmericanGreekMembers[i];
-    if (!has_field(fields, field) && !std::isfinite(value))
+    if (!has_field(fields, field))
       value = 0.;
   }
   return scenario_taylor_leg(operands, dS, dvol, dt, dr);
