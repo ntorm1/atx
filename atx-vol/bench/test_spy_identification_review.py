@@ -154,5 +154,67 @@ class ReviewedIdentificationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class AlternativeSolutionIdentificationTests(unittest.TestCase):
+    """User-authorized numerical freedom still needs actual floor evidence."""
+
+    def fixture(self):
+        return ReviewedIdentificationTests().fixture()
+
+    def check(self, values, contract="economic-floor-identification-v2"):
+        prices, eligibility, report, rows, _ = values
+        return audit.identification_coverage(prices, eligibility, contract=contract,
+                                             report=report, rows=rows)
+
+    def move_targets(self, values, fraction=0.25):
+        fixture = audit.read_json(audit.identification_review.REVIEW_FIXTURE)
+        for query, node, item in zip(values[4]["queries"], values[4]["nodes"], fixture["contracts"]):
+            proof = item["cold_proof"]
+            target = proof["zero_vol_supremum"] + fraction * proof["band"]
+            query["price"] = query["served_price"] = node["call"] = target
+
+    def test_different_valid_floor_targets_pass_without_reproducing_old_solution(self):
+        values = self.fixture()
+        self.move_targets(values)
+        result = self.check(values)
+        self.assertTrue(result["coverage_passed"], result)
+        self.assertEqual(result["reviewed_accepted_row_ids"], [27418697, 27419115])
+        self.assertFalse(self.check(values, "reviewed-feasible-floor-v1")["coverage_passed"])
+
+    def test_solver_and_representation_metadata_do_not_pin_the_old_implementation(self):
+        values = self.fixture()
+        self.move_targets(values)
+        values[4].update(method="bounded_row_generation", record_attached=True,
+                         cold_fit_fallback="ordinary_full")
+        values[2]["policy_definition"]["graded"]["cold_fit"] = "alternative_feasible"
+        self.assertTrue(self.check(values)["coverage_passed"])
+
+    def test_floor_classification_is_not_expanded_to_the_economic_price_budget(self):
+        values = self.fixture()
+        self.move_targets(values, fraction=2.0)
+        self.assertFalse(self.check(values)["coverage_passed"])
+
+    def test_input_model_and_actual_publication_remain_bound(self):
+        for mutate in (lambda v: v[3][0].update(ask=656.0),
+                       lambda v: v[4]["market"].update(rate=0.05),
+                       lambda v: v[4]["carry_curve"][0].update(continuous_yield=0.0),
+                       lambda v: v[4]["nodes"][0].update(call=650.0),
+                       lambda v: v[4]["queries"][0].update(served_price=650.0),
+                       lambda v: v[4]["queries"][0].update(reason="low_vega"),
+                       lambda v: v[4]["queries"][0].update(volatility=0.005),
+                       lambda v: v[4]["queries"][0].update(price=float("nan"))):
+            values = self.fixture()
+            self.move_targets(values)
+            mutate(values)
+            self.assertFalse(self.check(values)["coverage_passed"])
+
+    def test_no_additional_demotions_or_count_loss(self):
+        for mutate in (lambda v: v[0]["price_only_row_ids"].append(999),
+                       lambda v: v[0].update(identified_rows_checked=12182)):
+            values = self.fixture()
+            self.move_targets(values)
+            mutate(values)
+            self.assertFalse(self.check(values)["coverage_passed"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,9 @@
-"""Pinned, audit-only review of two changed-target FloorVol classifications.
+"""Audit-only evidence for two reviewed FloorVol classifications.
 
 This module is never imported by fitting. The immutable baseline remains the
 strict diagnostic; the explicit reviewed contract is a separate proof, not a
-general permission to demote rows near a floor.
+general permission to demote rows near a floor. The economic v2 contract checks
+the candidate's actual target against that floor, not an earlier fitted price.
 """
 import hashlib
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 
 FROZEN_CONTRACT = "frozen-wave1-v1"
 REVIEWED_CONTRACT = "reviewed-feasible-floor-v1"
+ECONOMIC_CONTRACT = "economic-floor-identification-v2"
 REVIEW_FIXTURE = Path(__file__).with_name("fixtures") / "spy-reviewed-feasible-floor-v1.json"
 REVIEW_CANONICAL_SHA256 = "f25179157477e1c3e2e8f6eaf65ab1388715a290592a191588952fb73baea0db"
 
@@ -45,7 +47,8 @@ def one(items, predicate):
     return matches[0] if len(matches) == 1 else None
 
 
-def prove_transition(item, report, rows, zero_bounds):
+def prove_transition(item, report, rows, zero_bounds, contract=REVIEWED_CONTRACT):
+    alternative_target = contract == ECONOMIC_CONTRACT
     expected_row, expected_query = item["raw_row"], item["expected_query"]
     row_id, strike = expected_row["row_id"], expected_row["strike"]
     row = one(rows, lambda value: value.get("row_id") == row_id)
@@ -56,8 +59,17 @@ def prove_transition(item, report, rows, zero_bounds):
     entries = [entry for snapshot in report.get("graded_stats", {}).get(
         "acceptance_audit", {}).get("snapshots", []) for entry in snapshot]
     entry = one(entries, lambda value: value.get("chain_id") == row["chain_id"])
-    if entry is None or not same_model(entry, item["entry"]):
+    expected_entry = item["entry"]
+    if alternative_target:
+        # Preserve the financial problem for which the cold floor proof holds,
+        # without prescribing the algorithm, representation or fallback path.
+        expected_entry = {key: expected_entry[key] for key in
+                          ("chain_id", "market", "bounds", "dividend_model")}
+    if entry is None or not same_model(entry, expected_entry):
         return "published_model_or_method_mismatch", None
+    if alternative_target and (entry.get("fit_status") != "success" or
+                               entry.get("grade") not in ("A", "B")):
+        return "unsuccessful_published_fit", None
     carry = one(entry.get("carry_curve", []), lambda value: value.get("strike") == strike)
     if not same_model(carry, item["carry_point"]):
         return "published_carry_mismatch", None
@@ -68,10 +80,15 @@ def prove_transition(item, report, rows, zero_bounds):
     scale = max(1.0, row["spot"], strike)
     for key, expected in expected_query.items():
         actual = query.get(key)
-        matches = within_roundoff(actual, expected, scale) if key in ("price", "served_price") \
-            else key in query and type(actual) is type(expected) and actual == expected
+        if alternative_target and key in ("price", "served_price"):
+            matches = finite_number(actual)
+        else:
+            matches = within_roundoff(actual, expected, scale) if key in ("price", "served_price") \
+                else key in query and type(actual) is type(expected) and actual == expected
         if not matches:
             return "actual_query_or_target_mismatch", None
+    if alternative_target and not within_roundoff(query["served_price"], query["price"], scale):
+        return "actual_query_publication_mismatch", None
     node = one(entry.get("nodes", []), lambda value: value.get("strike") == strike)
     if node is None or not within_roundoff(node.get("call"), query["price"], scale):
         return "published_node_target_mismatch", None
@@ -88,7 +105,7 @@ def prove_transition(item, report, rows, zero_bounds):
     proof = item["cold_proof"]
     old, target = proof["old_price"], query["price"]
     allowance = 32 * math.ulp(1.0) * scale
-    if not (row["ask"] < terminal_floor and abs(old - target) < 1e-7 and
+    if not (row["ask"] < terminal_floor and (alternative_target or abs(old - target) < 1e-7) and
             zero - allowance <= target <= zero + band and old > zero + band and
             proof["old_sigma"] > 0.005 and proof["old_search_iv"] == proof["old_sigma"] and
             proof["old_search_status"] == 0 and proof["old_exercise_class"] == 0 and
@@ -98,10 +115,15 @@ def prove_transition(item, report, rows, zero_bounds):
             within_roundoff(proof["cold_price_at_sigma_floor"], zero, scale) and
             within_roundoff(proof["ceiling"], ceiling, scale) and
             within_roundoff(proof["band"], band) and
-            within_roundoff(proof["new_price"], target, scale)):
+            (alternative_target or within_roundoff(proof["new_price"], target, scale))):
         return "reviewed_floor_proof_mismatch", None
+    budget = min(0.001, 0.01 * (row["ask"] - row["bid"]))
+    if alternative_target and abs(target - proof["cold_price_at_sigma_floor"]) > budget + allowance:
+        return "floor_representative_exceeds_economic_budget", None
     return None, {"row_id": row_id, "old_target": old, "old_sigma": proof["old_sigma"],
         "new_target": target, "target_shift_usd": target - old,
+        "prior_target_identity_required": not alternative_target,
+        "economic_budget_usd": budget,
         "zero_vol_supremum": zero, "zero_vol_band_usd": band,
         "cold_price_at_sigma_floor": proof["cold_price_at_sigma_floor"],
         "raw_ask": row["ask"], "terminal_floor": terminal_floor,
@@ -109,12 +131,17 @@ def prove_transition(item, report, rows, zero_bounds):
         "iv_lower": query["iv_lower"], "iv_upper": query["iv_upper"], "method": entry["method"]}
 
 
-def reviewed_transitions(new_ids, eligibility, report, rows, zero_bounds):
+def reviewed_transitions(new_ids, eligibility, report, rows, zero_bounds,
+                         contract=REVIEWED_CONTRACT):
     result = {"accepted_row_ids": [], "proofs": [], "failures": [],
               "fixture_canonical_sha256": REVIEW_CANONICAL_SHA256,
               "roundoff_rule": "32*epsilon*max(1,spot,strike,abs(actual),abs(expected)); "
-                               "original raw observations and classification metadata are exact"}
+                               "original raw observations and classification metadata are exact",
+              "contract": contract,
+              "prior_target_identity_required": contract != ECONOMIC_CONTRACT}
     try:
+        if contract not in (REVIEWED_CONTRACT, ECONOMIC_CONTRACT):
+            raise ValueError("unknown_review_contract")
         fixture = json.loads(REVIEW_FIXTURE.read_text(encoding="utf-8-sig"))
         if canonical_sha256(fixture) != REVIEW_CANONICAL_SHA256:
             raise ValueError("review_fixture_hash_mismatch")
@@ -126,15 +153,15 @@ def reviewed_transitions(new_ids, eligibility, report, rows, zero_bounds):
         if not isinstance(report, dict):
             raise ValueError("missing_actual_api_evidence")
         policy = report.get("policy_definition", {}).get("graded", {})
-        if policy.get("cold_fit") != "joint_feasible_mid" or \
-                policy.get("terminal_floor_recovery") is not True:
+        if contract == REVIEWED_CONTRACT and (policy.get("cold_fit") != "joint_feasible_mid" or
+                                              policy.get("terminal_floor_recovery") is not True):
             raise ValueError("review_policy_mismatch")
         expected = {item["raw_row"]["row_id"]: item for item in fixture["contracts"]}
         for row_id in new_ids:
             if row_id not in expected:
                 result["failures"].append({"row_id": row_id, "kind": "unreviewed_new_price_only"})
                 continue
-            reason, proof = prove_transition(expected[row_id], report, rows, zero_bounds)
+            reason, proof = prove_transition(expected[row_id], report, rows, zero_bounds, contract)
             if reason:
                 result["failures"].append({"row_id": row_id, "kind": reason})
             else:

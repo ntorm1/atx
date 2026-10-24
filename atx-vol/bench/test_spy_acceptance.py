@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import spy_acceptance as audit
 
@@ -427,6 +428,22 @@ class ColdNodePriceOracleTests(unittest.TestCase):
             self.assertEqual(economic["schema"], "atx-vol-spy-acceptance-v3")
             self.assertEqual(len(economic["checks"]), 13)
             self.assertTrue(economic["checks"]["identified_node_target_floor_semantics"])
+            # Each timed solution uses its own actual API payload and files,
+            # with the same financial gates as the standalone audit.
+            own = audit.verify_solution(report, receipt, directory / "predictions.csv",
+                directory / "native.json", rows, eligibility,
+                audit.RAW_SPREAD_PRICE_CONTRACT, audit.FROZEN_CONTRACT)
+            self.assertEqual(own["checks"], economic["checks"])
+            bad = copy.deepcopy(report)
+            bad_query = bad["graded_stats"]["acceptance_audit"]["snapshots"][0][0]["queries"][0]
+            bad_query["price"] += 1.0
+            audit.write_json(directory / "different-native.json", bad)
+            bad_receipt = dict(receipt, report_sha256=audit.sha256(directory / "different-native.json"))
+            invalid = audit.verify_solution(bad, bad_receipt, directory / "predictions.csv",
+                directory / "different-native.json", rows, eligibility,
+                audit.RAW_SPREAD_PRICE_CONTRACT, audit.FROZEN_CONTRACT)
+            self.assertFalse(invalid["correctness_passed"])
+            self.assertFalse(invalid["checks"]["every_eligible_prediction_matches_actual_api"])
             # Missing new evidence cannot reuse a historical 12-gate pass.
             del query["cold_node"]["price_at_floor"]
             (directory / "native.json").write_text(json.dumps(report))
@@ -566,11 +583,12 @@ class ColdClockOracleTests(unittest.TestCase):
         predictions = self.directory / "predictions.csv"
         predictions.write_text("same actual predictions\n", encoding="utf-8")
         prediction_hash = audit.sha256(predictions)
-        self.receipt = {"binary_sha256": "binary", "input_sha256": "input",
-                        "policy_sha256": "policy", "predictions_sha256": prediction_hash}
+        self.receipt = {"binary_sha256": "b" * 64, "input_sha256": "a" * 64,
+                        "policy_sha256": "c" * 64, "predictions_sha256": prediction_hash}
         self.report = {"policy_definition": {"test_policy": True}}
-        manifest = {"binary": {"sha256": "binary"}, "input": {"sha256": "input"},
-                    "policy": {"sha256": "policy"}, "predictions_sha256": prediction_hash,
+        manifest = {"binary": {"sha256": self.receipt["binary_sha256"]},
+                    "input": {"sha256": self.receipt["input_sha256"]},
+                    "policy": {"sha256": self.receipt["policy_sha256"]}, "predictions_sha256": prediction_hash,
                     "predictions_identical": True, "fast_math": False, "source": {"dirty": False},
                     "trials_ok": 100, "trials_requested": 100, "trials": []}
         for index in range(count):
@@ -642,7 +660,140 @@ class ColdClockOracleTests(unittest.TestCase):
     def test_changed_prediction_file_cannot_pass_saved_hash(self):
         manifest = self.timing_fixture()
         (self.directory / "predictions.csv").write_text("changed\n", encoding="utf-8")
-        self.assertFalse(self.checks(manifest)["same_predictions"])
+        self.assertFalse(self.checks(manifest)["prediction_artifacts_verified"])
+
+    def different_solution(self):
+        manifest = self.timing_fixture()
+        path = self.directory / "different-valid-solution.csv"
+        path.write_text("a different numerical solution requiring its own proof\n", encoding="utf-8")
+        manifest["predictions_identical"] = False
+        manifest["trials"][1].update(predictions=path.name, predictions_sha256=audit.sha256(path))
+        return manifest
+
+    def test_valid_different_solutions_do_not_require_identical_prediction_hashes(self):
+        manifest = self.different_solution()
+        checked = []
+
+        def validate(trial, native, predictions):
+            checked.append(trial["trial"])
+            self.assertEqual(audit.sha256(predictions), trial["predictions_sha256"])
+            self.assertEqual(native["bench"]["process_identity"], trial["process_identity"])
+            return True  # This unit isolates dispatch; the real validator runs every API gate.
+
+        checks = audit.cold_timing_checks(manifest, self.directory, self.receipt, self.report,
+                                          solution_validator=validate)
+        self.assertTrue(all(checks.values()), checks)
+        self.assertEqual(checked, [2])
+
+    def test_changed_solution_requires_its_own_successful_qualification(self):
+        manifest = self.different_solution()
+        for validator in (None, lambda *args: False, lambda *args: {"passed": True}):
+            checks = audit.cold_timing_checks(manifest, self.directory, self.receipt, self.report,
+                                              solution_validator=validator)
+            self.assertFalse(checks["every_solution_qualified"])
+
+    def post_fit_fixture(self):
+        manifest = self.timing_fixture(count=1)
+        trial = manifest["trials"][0]
+        native = audit.read_json(self.directory / trial["report"])
+        marker = {"schema": "atx-vol-post-fit-api-proof-v1",
+            "phase": "after_cold_publication_and_fit_snapshots",
+            "cold_clock_contract": "retained_surface_publication_v1",
+            "same_retained_instance": True, "audit_completed": True, "failure_reason": "",
+            "attempted_snapshot_count": 1, "retained_snapshot_count": 1, "serialized_snapshot_count": 1,
+            "attempted_member_count": 2, "retained_member_count": 2, "serialized_member_count": 2,
+            "attempted_chain_ids": [10, 11], "retained_chain_ids": [10, 11],
+            "serialized_chain_ids": [10, 11], "unsupported_chain_ids": [], "missing_owner_chain_ids": [],
+            "graded_surface_fit_invocations_before": 1, "graded_surface_fit_invocations_after": 1,
+            "refit_count": 0, "input_sha256": self.receipt["input_sha256"],
+            "policy_sha256": self.receipt["policy_sha256"], "executable_sha256": self.receipt["binary_sha256"],
+            "prediction_sha256": trial["predictions_sha256"], "audit_s": 0.01,
+            "retained_owner_destruction_s": 0.001, "retained_snapshot_capacity": 1,
+            "retained_member_capacity": 2, "retained_fit_capacity": 2,
+            "retention_setup_in_cold": True, "retained_owner_released_after_audit": True}
+        native["bench"]["post_fit_acceptance_audit"] = marker
+        native["graded_stats"] = {"acceptance_audit": {"schema": "atx-vol-final-api-audit-v1",
+            "phase": "post_fit", "timing_qualifying": False,
+            "snapshots": [[{"chain_id": 10}, {"chain_id": 11}]]}}
+        return manifest, trial, native, marker
+
+    def save_trial(self, trial, native):
+        path = self.directory / trial["report"]
+        path.write_text(json.dumps(native), encoding="utf-8")
+        trial["report_sha256"] = audit.sha256(path)
+
+    def test_post_fit_proof_marker_joins_ownership_phase_and_own_artifacts(self):
+        _, trial, native, _ = self.post_fit_fixture()
+        self.assertTrue(all(audit.post_fit_proof_checks(native, trial, self.receipt).values()))
+        mutations = {"schema": "other", "phase": "inside_fit", "cold_clock_contract": "other",
+            "same_retained_instance": False, "audit_completed": False, "failure_reason": "missing",
+            "attempted_snapshot_count": 2, "retained_snapshot_count": True,
+            "serialized_snapshot_count": 0, "attempted_member_count": 1, "retained_member_count": 0,
+            "serialized_member_count": 1, "attempted_chain_ids": [10, 10],
+            "retained_chain_ids": [10], "serialized_chain_ids": [10, 12],
+            "unsupported_chain_ids": [10], "missing_owner_chain_ids": [11],
+            "graded_surface_fit_invocations_before": 0, "graded_surface_fit_invocations_after": 2,
+            "refit_count": 1, "input_sha256": "0" * 64, "policy_sha256": "0" * 64,
+            "executable_sha256": "0" * 64, "prediction_sha256": "0" * 64,
+            "audit_s": float("nan"), "retained_owner_destruction_s": -1,
+            "retained_snapshot_capacity": 0, "retained_member_capacity": 1, "retained_fit_capacity": True,
+            "retention_setup_in_cold": False, "retained_owner_released_after_audit": False}
+        for field, value in mutations.items():
+            bad = copy.deepcopy(native)
+            bad["bench"]["post_fit_acceptance_audit"][field] = value
+            with self.subTest(field=field):
+                self.assertFalse(all(audit.post_fit_proof_checks(bad, trial, self.receipt).values()))
+        for field, value in (("phase", "inline"), ("snapshots", [[{"chain_id": 10}]])):
+            bad = copy.deepcopy(native)
+            bad["graded_stats"]["acceptance_audit"][field] = value
+            self.assertFalse(all(audit.post_fit_proof_checks(bad, trial, self.receipt).values()))
+
+    def test_marked_trial_requires_own_full_proof_even_when_predictions_match(self):
+        manifest, trial, native, _ = self.post_fit_fixture()
+        self.save_trial(trial, native)
+        for validator, expected in ((None, False), (lambda *args: False, False), (lambda *args: True, True)):
+            checks = audit.cold_timing_checks(manifest, self.directory, self.receipt, self.report,
+                                              solution_validator=validator)
+            self.assertTrue(checks["native_reports_verified"])
+            self.assertEqual(checks["every_solution_qualified"], expected)
+        # The lifetime change must be explicit and consistent across a campaign.
+        legacy = copy.deepcopy(native)
+        del legacy["bench"]["post_fit_acceptance_audit"]
+        del legacy["graded_stats"]
+        legacy["bench"]["process_identity"] = {"pid": 999, "creation_filetime": "999"}
+        other = dict(trial, trial=2, report="legacy.json", process_identity=legacy["bench"]["process_identity"])
+        self.save_trial(other, legacy)
+        manifest["trials"].append(other)
+        checks = audit.cold_timing_checks(manifest, self.directory, self.receipt, self.report,
+                                          solution_validator=lambda *args: True)
+        self.assertFalse(checks["consistent_cold_clock_contract"])
+
+    def test_qualify_dispatches_each_marked_trial_to_full_solution_verifier(self):
+        manifest, trial, native, _ = self.post_fit_fixture()
+        self.save_trial(trial, native)
+        audit.write_json(self.directory / "native.json", self.report)
+        audit.write_json(self.directory / "receipt.json", self.receipt)
+        audit.write_json(self.directory / "cold.json", manifest)
+        args = SimpleNamespace(input=self.directory / "input.csv", audit_dir=self.directory,
+            command="qualify", cold_manifest=self.directory / "cold.json", build_cache=None,
+            accuracy_contract=audit.RAW_SPREAD_PRICE_CONTRACT,
+            identification_contract=audit.ECONOMIC_IDENTIFICATION_CONTRACT)
+        for own_passes in (True, False):
+            baseline = {"correctness_passed": True, "checks": {}, "goal_achieved": False}
+            own = {"correctness_passed": own_passes, "checks": {"own_financial_gate": own_passes}}
+            with patch.object(audit, "load_quotes", return_value=[]), \
+                 patch.object(audit, "verify_solution", side_effect=[baseline, own]) as validator:
+                result = audit.verify(args, {})
+                self.assertEqual(validator.call_count, 2)
+                actual = validator.call_args.args
+                self.assertEqual(actual[0], native)
+                self.assertEqual(actual[1]["report_sha256"], trial["report_sha256"])
+                self.assertEqual(actual[2], self.directory / trial["predictions"])
+                self.assertEqual(actual[3], self.directory / trial["report"])
+                self.assertEqual(actual[-2:], (args.accuracy_contract, args.identification_contract))
+                self.assertEqual(result["timing_checks"]["every_solution_qualified"], own_passes)
+                self.assertEqual(result["timed_solution_verifications"][0]["checks"], own["checks"])
+                self.assertFalse(result["goal_achieved"])  # One synthetic trial is never 100.
 
     def test_process_launch_identity_must_match_native_kernel_identity(self):
         manifest = self.timing_fixture()
