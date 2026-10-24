@@ -67,6 +67,20 @@ if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
 endif()
 
+option(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH "Build isolated joint centrality controls" OFF)
+if(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH)
+    set(JOINT_CENTRALITY_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-centrality")
+    add_executable(atx-vol-joint-centrality-tests
+        ${JOINT_CENTRALITY_RESEARCH_DIR}/corrector.cpp
+        ${JOINT_CENTRALITY_RESEARCH_DIR}/tests.cpp)
+    target_link_libraries(atx-vol-joint-centrality-tests PRIVATE
+        Eigen3::Eigen GTest::gtest_main atx_warnings)
+    add_test(NAME atx-vol-joint-centrality COMMAND atx-vol-joint-centrality-tests)
+    set_tests_properties(atx-vol-joint-centrality PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+        LABELS "atx_vol_research")
+endif()
+
 # Explicit private research target; no kernel is linked into the production library.
 option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
 if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
