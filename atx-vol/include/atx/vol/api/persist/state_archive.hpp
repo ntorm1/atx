@@ -54,6 +54,8 @@ enum class MarketStateSection : std::uint32_t {
   TermCarry = 4,     // ExpiryCarry rows (direct POD)
   CashDivs = 5,      // DividendEvent rows (direct POD)
   YieldPillars = 6,  // (t_years, zero_rate) f64 pairs
+  UidTable = 7,      // POD 8 B per uid (Lane P1 addition): the writer's whole uid -> ticker
+                     // table, so a store build can replay its uid assignment (optional)
   Strike = 16,       // f64 per mark
   Expiry = 17,       // i64 per mark
   Side = 18,         // u8 per mark, validated in {0, 1}
@@ -98,7 +100,7 @@ struct YieldCurvePillars {
 struct MarketStateWriteInput {
   const MarketStateStorage *storage{nullptr};
   // tickers_by_uid[uid - 1] names uid (UnderlierTable::tickers()); a uid past the end
-  // is stored with an empty ticker.
+  // is stored with an empty ticker. The whole table is also stored (section UidTable).
   std::span<const std::string> tickers_by_uid{};
   // Empty, or one per `storage->marks` entry (same order).
   std::span<const MarkExtrasColumns> extras{};
@@ -118,7 +120,7 @@ struct MarketStateWriteInput {
 
 // Encode one state into a complete PersistFile image (deterministic: the same input
 // gives the same bytes). InvalidArgument on a null storage, inconsistent column
-// lengths, a uid listed twice, unsorted or duplicate marks, a side byte outside
+// lengths, a uid listed twice, unsorted marks, a side byte outside
 // {0, 1}, a yield pointer that does not point into `storage->yield_curves`, missing /
 // non-reproducing pillars, a view-backed or foreign-uid surface, or an oversized
 // date / bucket string. The round trip is canonical: rows come back sorted by uid.
@@ -154,7 +156,7 @@ public:
   ~MarketStateArchive();
 
   [[nodiscard]] const MarketState &state() const noexcept;
-  // "" when the uid is absent.
+  // The ticker of a uid of the state, else of the stored uid table; "" when absent.
   [[nodiscard]] std::string_view ticker(std::uint32_t uid) const noexcept;
   [[nodiscard]] MarkExtras extras(std::uint32_t uid) const noexcept;
   [[nodiscard]] std::uint64_t source_fingerprint() const noexcept;
@@ -171,6 +173,8 @@ public:
   // The loader counters stored at encode (zeros when none were given).
   [[nodiscard]] BucketStateReport report() const noexcept;
   [[nodiscard]] std::size_t n_marks() const noexcept;
+  // Entries of the stored uid table (uids 1..n; 0 when the writer gave none).
+  [[nodiscard]] std::uint32_t uid_table_size() const noexcept;
 
 private:
   struct Impl;

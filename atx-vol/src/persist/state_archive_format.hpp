@@ -92,6 +92,12 @@ struct YieldPillar {
   double zero_rate{};
 };
 
+// One uid of the writer's uid table (row i names uid i + 1).
+struct UidTableRow {
+  std::uint32_t offset{}; // into Strings
+  std::uint32_t length{};
+};
+
 struct SurfaceIndexRow {
   std::uint32_t uid{};
   std::uint32_t reserved{};
@@ -174,6 +180,10 @@ inline constexpr PersistFieldSpec kPillarFields[] = {
     ATX_PERSIST_FIELD(YieldPillar, t_years),
     ATX_PERSIST_FIELD(YieldPillar, zero_rate),
 };
+inline constexpr PersistFieldSpec kUidTableFields[] = {
+    ATX_PERSIST_FIELD(UidTableRow, offset),
+    ATX_PERSIST_FIELD(UidTableRow, length),
+};
 inline constexpr PersistFieldSpec kSurfaceIndexFields[] = {
     ATX_PERSIST_FIELD(SurfaceIndexRow, uid),
     ATX_PERSIST_FIELD(SurfaceIndexRow, reserved),
@@ -187,6 +197,8 @@ static_assert(kPersistPod<Meta> && sizeof(Meta) == 256);
 static_assert(kPersistPod<UnderlierRow> && sizeof(UnderlierRow) == 96);
 static_assert(kPersistPod<YieldPillar> && sizeof(YieldPillar) == 16);
 static_assert(kPersistPod<SurfaceIndexRow> && sizeof(SurfaceIndexRow) == 16);
+static_assert(kPersistPod<UidTableRow> && sizeof(UidTableRow) == 8);
+static_assert(persist_fields_tile(kUidTableFields, sizeof(UidTableRow)));
 static_assert(sizeof(ExpiryCarry) == 32 && sizeof(DividendEvent) == 16);
 static_assert(persist_fields_tile(kMetaFields, sizeof(Meta)));
 static_assert(persist_fields_tile(kUnderlierFields, sizeof(UnderlierRow)));
@@ -214,6 +226,8 @@ inline constexpr PersistSectionSpec kSchema[] = {
      kDividendFields, true},
     {sec(MarketStateSection::YieldPillars), 1, PersistDType::Pod, sizeof(YieldPillar),
      "yield-pillars", kPillarFields, true},
+    {sec(MarketStateSection::UidTable), 1, PersistDType::Pod, sizeof(UidTableRow), "uid-table",
+     kUidTableFields, false},
     {sec(MarketStateSection::Strike), 1, PersistDType::F64, 8, "strike", {}, true},
     {sec(MarketStateSection::Expiry), 1, PersistDType::I64, 8, "expiry-ns", {}, true},
     {sec(MarketStateSection::Side), 1, PersistDType::U8, 1, "side", {}, true},

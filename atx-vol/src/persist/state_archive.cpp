@@ -92,6 +92,7 @@ struct Encoded {
   std::array<std::vector<double>, kExtras> extras;
   std::vector<sf::SurfaceIndexRow> surface_index;
   std::vector<std::byte> surface_archive;
+  std::vector<sf::UidTableRow> uid_table;
 };
 
 // The stored curve's pillars, proven: a curve rebuilt from them must reproduce the
@@ -293,6 +294,11 @@ void fill_meta(const MarketStateWriteInput &in, sf::Meta &m) {
     out.rows.push_back(row);
   }
   if (PersistOutcome ok = add_surfaces(in, out); !ok) return tl::unexpected(ok.error());
+  for (const std::string &t : in.tickers_by_uid) {
+    out.uid_table.push_back({static_cast<std::uint32_t>(out.strings.size()),
+                             static_cast<std::uint32_t>(t.size())});
+    out.strings += t;
+  }
   out.meta.n_underliers = out.rows.size();
   out.meta.n_marks = out.sigma.size();
   out.meta.n_term_carry = out.carry.size();
@@ -339,6 +345,10 @@ PersistResult<std::vector<std::byte>> encode_market_state(const MarketStateWrite
   s.push_back(section_of(MS::CashDivs, PersistDType::Pod, sizeof(DividendEvent), true, bytes_of(e.divs)));
   s.push_back(section_of(MS::YieldPillars, PersistDType::Pod, sizeof(sf::YieldPillar), true,
                          bytes_of(e.pillars)));
+  if (!e.uid_table.empty()) {
+    s.push_back(section_of(MS::UidTable, PersistDType::Pod, sizeof(sf::UidTableRow), false,
+                           bytes_of(e.uid_table)));
+  }
   s.push_back(section_of(MS::Strike, PersistDType::F64, 8, true, bytes_of(e.strike)));
   s.push_back(section_of(MS::Expiry, PersistDType::I64, 8, true, bytes_of(e.expiry)));
   s.push_back(section_of(MS::Side, PersistDType::U8, 1, true, bytes_of(e.side)));
@@ -388,6 +398,7 @@ struct ArchiveCore {
   std::span<const DividendEvent> divs;
   std::span<const sf::YieldPillar> pillars;
   std::span<const sf::SurfaceIndexRow> surface_index;
+  std::span<const sf::UidTableRow> uid_table;
   std::vector<YieldCurve> curves;
   std::vector<std::uint32_t> curve_of_row; // index into curves, kPersistNone without one
   std::vector<UnderlierState> underliers;
@@ -482,6 +493,11 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
       return ok;
     }
   }
+  if (f.entry(sec(MS::UidTable)) != nullptr) {
+    auto table = f.typed<sf::UidTableRow>(sec(MS::UidTable));
+    if (!table) return tl::unexpected(table.error());
+    a.uid_table = *table;
+  }
   if (m.n_surfaces != 0u) {
     auto idx = column<sf::SurfaceIndexRow>(f, MS::SurfaceIndex, m.n_surfaces);
     if (!idx) return tl::unexpected(idx.error());
@@ -526,6 +542,11 @@ template <class T> [[nodiscard]] PersistOutcome ok_of(const PersistResult<T> &r)
     }
   }
   if (cursor != a.sigma.size()) return persist_error(S::IndexBounds, u, cursor);
+  for (std::size_t j = 0; j < a.uid_table.size(); ++j) {
+    if (!in_range(a.uid_table[j].offset, a.uid_table[j].length, a.strings.size())) {
+      return persist_error(S::IndexBounds, sec(MS::UidTable), j);
+    }
+  }
   for (std::size_t j = 0; j < a.surface_index.size(); ++j) {
     const sf::SurfaceIndexRow &s = a.surface_index[j];
     const sf::UnderlierRow *r = a.row_of(s.uid);
@@ -683,8 +704,16 @@ PersistResult<MarketStateArchive> MarketStateArchive::open_bytes(std::span<const
 const MarketState &MarketStateArchive::state() const noexcept { return impl_->state; }
 
 std::string_view MarketStateArchive::ticker(std::uint32_t uid) const noexcept {
-  const sf::UnderlierRow *r = impl_->row_of(uid);
-  return r == nullptr ? std::string_view{} : impl_->strings.substr(r->ticker_offset, r->ticker_length);
+  const ArchiveCore &a = *impl_;
+  if (const sf::UnderlierRow *r = a.row_of(uid); r != nullptr) {
+    return a.strings.substr(r->ticker_offset, r->ticker_length);
+  }
+  if (uid == 0 || uid > a.uid_table.size()) return {};
+  return a.strings.substr(a.uid_table[uid - 1].offset, a.uid_table[uid - 1].length);
+}
+
+std::uint32_t MarketStateArchive::uid_table_size() const noexcept {
+  return static_cast<std::uint32_t>(impl_->uid_table.size());
 }
 
 MarkExtras MarketStateArchive::extras(std::uint32_t uid) const noexcept {
