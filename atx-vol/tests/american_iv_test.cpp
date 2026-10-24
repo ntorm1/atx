@@ -1883,6 +1883,61 @@ TEST(AmericanIvNonMonotone, ColdSeedFloorCacheIsLazyAndPreservesHelperDecisions)
   }
 }
 
+TEST(AmericanIvNonMonotone, ColdSeedFloorCacheRetainsEachSideAcrossAlternation) {
+  using namespace atx::vol;
+  IvPriceSeedFloorCache cache;
+  for (const double strike : {90.0, 100.0, 110.0}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto cold = andersen_lake(100, strike, .5, kIvMin, .04, .01, side);
+      const auto reused = cache.price(100, strike, .5, .04, .01, side, std::nullopt);
+      ASSERT_TRUE(cold && reused);
+      EXPECT_TRUE(same_double(*cold, *reused));
+    }
+  }
+  // One call boundary at spot=100 and three distinct put boundaries at strike.
+  EXPECT_EQ(cache.preparations(), 4u);
+  EXPECT_EQ(cache.hits(), 2u);
+  // A failed preparation cannot invalidate the retained call key.
+  EXPECT_FALSE(cache.price(100, 100, .5, -.02, -.01, Side::Call, std::nullopt));
+  ASSERT_TRUE(cache.price(100, 105, .5, .04, .01, Side::Call, std::nullopt));
+  EXPECT_EQ(cache.preparations(), 4u);
+  EXPECT_EQ(cache.hits(), 3u);
+}
+
+TEST(AmericanIvNonMonotone, PriceCandidatesPreserveDecisionsWithSharedColdFloor) {
+  using namespace atx::vol;
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  for (const auto kernel : {IvPriceProposalKernel::Fast, IvPriceProposalKernel::ScreenThenFast}) {
+    IvPriceSeedFloorCache cache;
+    for (const double strike : {90.0, 100.0, 110.0}) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        const double target = cold_al(100, strike, .5, .3, .04, .01, side);
+        IvPriceCandidateStats original_stats, reused_stats;
+        const auto original = american_implied_vol_price_candidate(target, 100, strike, .5,
+            .04, .01, side, opts, .001, &original_stats, kernel);
+        const auto reused = american_implied_vol_price_candidate(target, 100, strike, .5,
+            .04, .01, side, opts, .001, &reused_stats, kernel, &cache);
+        ASSERT_TRUE(original && reused);
+        EXPECT_TRUE(same_double(*original, *reused));
+        EXPECT_EQ(original_stats.stopped_early, reused_stats.stopped_early);
+        EXPECT_EQ(original_stats.accepted_early, reused_stats.accepted_early);
+        EXPECT_EQ(original_stats.retried_full_search, reused_stats.retried_full_search);
+        EXPECT_EQ(original_stats.screen_attempted, reused_stats.screen_attempted);
+        EXPECT_EQ(original_stats.screen_stopped_early, reused_stats.screen_stopped_early);
+        EXPECT_EQ(original_stats.screen_accepted, reused_stats.screen_accepted);
+      }
+    }
+    EXPECT_EQ(cache.preparations(), 4u);
+    EXPECT_GE(cache.hits(), 2u);
+    for (const double budget : {0.0, .001}) {
+      const double floor = cold_al(100, 100, .5, kIvMin, .04, .01, Side::Call);
+      EXPECT_FALSE(american_implied_vol_price_candidate(floor, 100, 100, .5, .04, .01,
+          Side::Call, opts, budget, nullptr, kernel, &cache));
+    }
+  }
+}
+
 TEST(AmericanIvNonMonotone, PriceBudgetEarlyProposalCutsShortExpirySearchWork) {
   namespace led = atx::vol::counters::ledger;
   IvOpts opts;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -8,7 +9,7 @@
 
 namespace atx::vol {
 
-// Preparation-local owner of one exact cold reporting-floor boundary. It is lazy:
+// Operation-local owner of one exact cold reporting-floor boundary per side. It is lazy:
 // a refused candidate never prepares a floor. No family approximation, rescaling,
 // external geometry lifetime, or cross-request global state is involved.
 class IvPriceSeedFloorCache {
@@ -23,7 +24,7 @@ public:
   [[nodiscard]] std::uint64_t hits() const noexcept { return hits_; }
 private:
   struct State;
-  std::unique_ptr<State> state_;
+  std::array<std::unique_ptr<State>, 2> states_;
   std::uint64_t preparations_ = 0;
   std::uint64_t hits_ = 0;
 };
@@ -66,10 +67,13 @@ enum class IvPriceProposalKernel { Fast, ScreenThenFast };
 // original complete Fast search before typed fallback.
 // Zero/invalid budgets and unsupported Search controls return nullopt. Stats are
 // reset on entry, including refusal. No public/default Search behavior changes.
+// An optional operation-local cache reuses the exact cold floor in every candidate
+// branch; omission retains the original cold solve and no cache is retained.
 [[nodiscard]] std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats = nullptr,
-    IvPriceProposalKernel proposal_kernel = IvPriceProposalKernel::ScreenThenFast) noexcept;
+    IvPriceProposalKernel proposal_kernel = IvPriceProposalKernel::ScreenThenFast,
+    IvPriceSeedFloorCache *floor_cache = nullptr) noexcept;
 
 // Checks an externally prepared sigma with the same cold price/exercise/slope
 // acceptance as price_candidate, without any inverse iteration or fallback.
