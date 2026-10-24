@@ -1,0 +1,14 @@
+[
+  "g000-put-03",
+  "g000-call-03",
+  "g001-call-03",
+  "g008-put-02",
+  "g010-put-03",
+  "g011-put-02",
+  "g017-put-03",
+  "g042-call-06",
+  "zero_rate_closed_form-put-03",
+  "negative_rate_european-put-03",
+  "double_boundary_diagnostic-put-03",
+  "sigma-family-near-edge-put-00"
+]
