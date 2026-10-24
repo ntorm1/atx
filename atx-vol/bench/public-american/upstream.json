@@ -1,0 +1,60 @@
+{
+  "repository": "https://github.com/simu-ai/american_put",
+  "commit": "e7d138093e69fa8cdd6ce7dc7c3371d2899f87f4",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "3134666172bff0ffed424efc097ab362633b90c78abc6412af7635b8fdb583cd",
+      "bytes": 1075
+    },
+    {
+      "path": "README.md",
+      "sha256": "0e411f4e3467f94675eb561697e8ae93a63a13dd536168985ff35a45018634de",
+      "bytes": 5700
+    },
+    {
+      "path": "constants.hpp",
+      "sha256": "c77a7d3b2a6d7faf7812552521ead36e81e7ffbb2ca84ca3b8f26bf8e92bf083",
+      "bytes": 1015
+    },
+    {
+      "path": "quadrature.hpp",
+      "sha256": "5a93b0522e61baf3e029f5a0aacf3190449bcedfd85ff0fca593495a0acbefdb",
+      "bytes": 5784
+    },
+    {
+      "path": "math_utils.hpp",
+      "sha256": "00cc3289c10069006347099ca1d7b046cf7ab4dab17241b6ed7acb17b812ba6e",
+      "bytes": 805
+    },
+    {
+      "path": "black_scholes.hpp",
+      "sha256": "7e12d3d1b94d0d4c88e9008a8bae83d5ce43e6fbdd1ec9a9400b18381426f7d6",
+      "bytes": 2829
+    },
+    {
+      "path": "boundary_init.hpp",
+      "sha256": "e0361b3d02836ba8ae11856115ff189540703fe397ae4212f750e0472c6ebb43",
+      "bytes": 4270
+    },
+    {
+      "path": "fast_put.hpp",
+      "sha256": "45dd37a7e3a9e25cf167ebbda55bd30548c453d397e27a8dd3a398084780908f",
+      "bytes": 10000
+    },
+    {
+      "path": "test_table2.cpp",
+      "sha256": "cdf56f6916d58eb41f8e23bdcf6846dd6b42692dccfc642b73a5c024c6152d7e",
+      "bytes": 6169
+    },
+    {
+      "path": "test_fast_put.cpp",
+      "sha256": "51fd2ade1adc68a6f17cfd3b8225cc17d837cd9c8ccecafd8cc1bc9e31a7c834",
+      "bytes": 2827
+    }
+  ],
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025 Thijs van den Berg",
+  "commit_date": "2025-12-18T16:23:42Z",
+  "source_policy": "External cache only; no upstream files distributed with shipping atx-vol"
+}

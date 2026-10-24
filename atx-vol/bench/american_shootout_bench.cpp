@@ -1,15 +1,14 @@
-// American price / IV shootout: µs/op-vs-error frontier for the Andersen-Lake
-// engine across a standardized option grid, measured against the published
-// Andersen-Lake-Offengenden (ALO) SOTA envelope.
+// American price / IV microbenchmark for the in-repo Andersen-Lake engine.
+// The accuracy columns compare against a finer in-house configuration of the
+// same algorithm: a correlated reference, not an independent American oracle.
 //
-//   Reference: L. Andersen, M. Lake, D. Offengenden, "High-Performance American
-//   Option Pricing", SSRN 2547027 (2015) — the QuantLib QdFpAmericanEngine basis.
-//   Envelope (their Table figures, single American option, modern x86 core):
-//     ~10–22 µs/op for a price at the accurate preset, ~60 µs for a full American
-//     implied-vol inversion. This harness reports where atx-vol's Andersen-Lake
-//     engine stands on that frontier at three cost/accuracy tiers plus the IV
-//     inversion, with an accuracy column measured against the highest-accuracy
-//     in-repo scheme.
+// Historical context: Andersen, Lake and Offengenden, "High-Performance American
+// Option Pricing", SSRN 2547027 (revised 2016), report their pricing/IV experiments
+// on a 2 GHz processor with Visual C++ 2013. Their grids, tolerances and setup
+// accounting differ from this harness. Those historical timings do not establish
+// a modern hardware frontier or an apples-to-apples performance claim here.
+// Use the isolated bench/public-american comparator for pinned public-source
+// comparisons with explicit cold/prepared clocks and reference limitations.
 //
 // Sub-Sprint A, Task A3 (infrastructure). Self-gating: a check_benchmark_names.py
 // CTest pins the registered row names so the shootout cannot silently drop a tier

@@ -1019,6 +1019,36 @@ if(ATX_BUILD_TOOLS)
     target_compile_definitions(atx-vol-bench-clocks PRIVATE
         "ATX_VOL_BENCH_CXX_FLAGS=\"${_atx_bench_flags}\""
         "ATX_VOL_BENCH_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\"")
+    # Isolated public comparator: opt-in, hash-pinned local sources; no download,
+    # vendoring, or external include/link dependency in the shipping atx-vol target.
+    set(ATX_VOL_PUBLIC_AMERICAN_PUT_DIR "" CACHE PATH "Pinned simu-ai AmericanPut source cache")
+    if(ATX_VOL_PUBLIC_AMERICAN_PUT_DIR)
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/bench/public-american/upstream.json" _atx_public_manifest)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/bench/public-american/upstream.json")
+        string(JSON _atx_public_count LENGTH "${_atx_public_manifest}" files)
+        math(EXPR _atx_public_last "${_atx_public_count} - 1")
+        foreach(_atx_public_i RANGE 0 ${_atx_public_last})
+            string(JSON _atx_public_path GET "${_atx_public_manifest}" files ${_atx_public_i} path)
+            string(JSON _atx_public_expected GET "${_atx_public_manifest}" files ${_atx_public_i} sha256)
+            set(_atx_public_file "${ATX_VOL_PUBLIC_AMERICAN_PUT_DIR}/${_atx_public_path}")
+            if(NOT EXISTS "${_atx_public_file}")
+                message(FATAL_ERROR "Missing pinned public comparator source: ${_atx_public_file}")
+            endif()
+            file(SHA256 "${_atx_public_file}" _atx_public_actual)
+            if(NOT _atx_public_actual STREQUAL _atx_public_expected)
+                message(FATAL_ERROR "Hash mismatch in public comparator source: ${_atx_public_file}")
+            endif()
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_atx_public_file}")
+        endforeach()
+        add_executable(atx-vol-public-american-comparator bench/public-american/comparator_main.cpp)
+        target_include_directories(atx-vol-public-american-comparator SYSTEM PRIVATE
+            "${ATX_VOL_PUBLIC_AMERICAN_PUT_DIR}")
+        target_compile_definitions(atx-vol-public-american-comparator PRIVATE
+            "ATX_PUBLIC_COMPARATOR_IPO=$<BOOL:${CMAKE_INTERPROCEDURAL_OPTIMIZATION}>")
+        target_link_libraries(atx-vol-public-american-comparator PRIVATE atx-vol-bench-clocks
+            atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    endif()
     # Independent IV comparator (lane B0): brackets each served row's American IV root
     # with the cold reference pricer by bisection (no Newton, no family) and tabulates
     # the continuous-carry price error at the served IV.
