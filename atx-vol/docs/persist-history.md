@@ -88,7 +88,13 @@ between leaves an orphan, never a dangling entry.
   survives a power loss. A `Flush` `finish()` first flushes every segment the writer sealed at
   `Publish`, so once it returns the whole run is durable. That flush needs write access to the
   files: while a reader holds one mapped, `finish()` returns `Busy`, changes nothing and can be
-  retried.
+  retried. A reader that keeps the run mapped makes that `Busy` indefinite. For runs read while
+  they are written, set `seal_durability = Flush` (then `finish()` has nothing earlier to flush),
+  or close the readers before `finish()`.
+- POSIX only: the `Flush` path also fsyncs the directory after each rename. If that fsync fails,
+  the seal reports `IoError` although the manifest may already list the segment. The writer's
+  next seal then finds a row it did not record and refuses (`SegmentMismatch`: the writer is
+  lost), and the run stays consistent (the manifest lists only complete files).
 
 The writer never starts a thread. A caller that wants a `Flush` seal off its hot path runs the
 appends (or `finish()`) on its own thread.
@@ -116,6 +122,11 @@ manifest write lives in this lane (`risk_run_archive_publish.cpp`, byte-compatib
 PersistDirectory's) because `PersistDirectory::publish` can add or replace only one key;
 `PersistDirectory::replace_all` was deferred (ruling 2026-10-24). Superseded files stay on disk
 (a reader may still map them); removing them is offline gc.
+
+When nothing would change, compaction is a no-op that returns 1. That is the case for a
+one-segment run that re-frames to its own bytes: a run compacted again at the same codec and
+level, or a writer's lone segment. It publishes no file and no manifest row (so a live writer
+keeps owning the run) and flushes nothing (the file keeps the durability it was sealed with).
 
 Accepted deviation: **the cold tier decodes at open, serially.** P1's container decodes every
 zstd section at open on one thread: 253–335 ms for ~119 MB of compressed sections (the full

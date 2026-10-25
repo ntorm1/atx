@@ -57,8 +57,16 @@ inline constexpr std::string_view kRiskRunSalt = "ATXVRR01";
 //            power loss after it returns cannot leave the flushed manifest naming an
 //            unflushed segment. That flush needs write access to the files: while a
 //            reader holds one open without write sharing (a mapping), finish() returns
-//            Busy, changes nothing and may be retried. A size-triggered Flush seal
-//            makes only its own segment and the manifest durable.
+//            Busy, changes nothing and may be retried. A reader that keeps the run
+//            mapped makes that Busy indefinite: for runs read while they are written,
+//            set seal_durability = Flush (finish() then has nothing earlier to flush),
+//            or close the readers before finish(). A size-triggered Flush seal makes
+//            only its own segment and the manifest durable.
+//            POSIX only: the Flush path also fsyncs the directory after each rename. If
+//            that fsync fails, the seal reports IoError although the manifest may
+//            already list the segment; the writer's next seal then finds a row it did
+//            not record and refuses (SegmentMismatch: the writer is lost), and the run
+//            stays consistent (the manifest lists only complete files).
 // The writer never starts a thread: a caller that wants a Flush seal off its hot path
 // runs the appending (or finish()) on its own thread.
 enum class SealDurability : std::uint8_t { Publish = 0, Flush = 1 };
@@ -191,8 +199,13 @@ private:
 // compared). Compact only finished runs: if a writer is still live, a seal it lands
 // during the compaction makes the compaction refuse, and a compaction that lands first
 // makes the writer's next seal refuse (SINGLE WRITER above), losing its unsealed steps.
-// The superseded files stay on disk (a reader may still map them); removing them is
-// offline gc. The 3-argument form seals with SealDurability::Flush.
+// When nothing would change (the run is one segment that re-frames to its own bytes:
+// compacted again at the same codec and level, or a writer's lone segment) the call
+// publishes nothing and returns 1: no superseded file, no new manifest row, so a live
+// writer keeps owning the run, and nothing is flushed (the file keeps the durability
+// it was sealed with). The superseded files of a real compaction stay on disk (a
+// reader may still map them); removing them is offline gc. The 3-argument form seals
+// with SealDurability::Flush.
 [[nodiscard]] PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec codec,
                                                           int level);
 [[nodiscard]] PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec codec,
