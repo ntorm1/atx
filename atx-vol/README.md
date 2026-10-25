@@ -77,10 +77,12 @@ shape. See the [time-knot contract](sprints/2026-10-16-american-markov-time-knot
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
 | Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
 | Risk engine — market state & book | `api/risk/market_state.hpp`, `risk_book.hpp`, `risk_frame.hpp`, `risk_types.hpp` | One market environment (spot, per-expiry carry, per-contract marks, optional surfaces) and a deduplicated book of options + shares prepared into (uid, expiry, side) groups; SoA Greek frame with routes, flags, status |
-| Risk engine — kernels & explain | `api/risk/risk_kernel.hpp`, `pnl_explain.hpp` | Sigma-family kernel with typed cold fallback (or cold per-contract kernel) → one frame per state; eight-term Taylor explain between frames (vega split in standardized moneyness), shares as delta-one legs, `RiskStream`; ≤ 2 ulp identities, bit-identical across thread counts |
+| Risk engine — kernels & explain | `api/risk/risk_kernel.hpp`, `pnl_explain.hpp` | Sigma-family kernel with an adaptive node count, family economics and a typed cold fallback (or cold per-contract kernel) → one frame per state; eight-term Taylor explain plus a carry axis between frames (vega split in standardized moneyness, per-expiry clock override), shares as delta-one legs, `RiskStream`; ≤ 2 ulp identities, bit-identical across thread counts. Tool `atx-vol-risk-bench` ([`docs/risk-engine.md`](docs/risk-engine.md), [`docs/risk-bench.md`](docs/risk-bench.md)) |
 | Risk engine — projection | `api/risk/strike_coord.hpp`, `theo_contract.hpp` | Strike ↔ log-moneyness ↔ K/S ↔ standardized moneyness ↔ delta (Forward / Spot / American), ShapeBlend tenor interpolation with typed extrapolation flags; theoretical contracts at relative maturities and fixed-TTE / fixed-moneyness series across historical surfaces |
-| Risk engine — historical VaR | `api/risk/historical_var.hpp` | One-period VaR / ES over (base, shifted) state pairs for a book of theoretical templates, with the Greek attribution of the tail |
-| SpiderRock intraday store | `api/marketdata/spiderrock_store.hpp` | `date=<d>/bucket_et=<HHMM>/` parquet partitions → SoA bucket → `MarketStateStorage` (American exercise, standard roots, per-expiry carry medians); SpiderRock-shaped synthetic store for data-free runs |
+| Risk engine — historical VaR | `api/risk/historical_var.hpp` | One-period VaR / ES over (base, shifted) state pairs for a book of theoretical templates, with the Greek attribution of the tail; `dispersion_book_var` runs on it ([`docs/historical-var.md`](docs/historical-var.md)) |
+| SpiderRock intraday store | `api/marketdata/spiderrock_store.hpp` | `date=<d>/bucket_et=<HHMM>/` parquet partitions → SoA bucket → `MarketStateStorage` (American exercise, Spot price framework, standard roots; the vendor's per-expiry `years` clock; call-implied or published per-expiry carry, optionally sticky across buckets); SpiderRock-shaped synthetic store for data-free runs |
+| Binary persistence | `api/persist/persist_format.hpp`, `persist_file.hpp`, `state_archive.hpp` | ATXVPF container (CRC32C framing, per-kind schema fingerprints, optional zstd + byte shuffle, Framing / Lazy / Full / Paranoid verify, no allocation after open) with an atomic `PersistDirectory` manifest; `MarketState` archives served zero-copy from the mapping and a fingerprinted SpiderRock state store (a top-100 bucket opens in ~11 ms vs ~1.3 s from Parquet). Tool `atx-vol-state-store` ([`docs/persist.md`](docs/persist.md)) |
+| Persisted history | `api/persist/surface_timeline.hpp`, `risk_run_archive.hpp` | `SurfaceTimeline`: uid-major fitted-surface history over verbatim ATXVSA2 records, bit-exact views that feed `project_series`; RiskRun archive: recorded `RiskFrame` / `ExplainResult` / `HistoricalVarResult` segments, zero-copy reopen, bit-exact compaction into a zstd cold tier. Tool `atx-vol-history-store` ([`docs/persist-history.md`](docs/persist-history.md)) |
 | Surface archive | `surface_archive.hpp` | ATXVSA2 (magic `ATXVSA20`) binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
 | Batch kernels | `batch.hpp` | SoA batch B76 price/value+vega/from-lnfk, IV, Greeks, eSSVI-w. Price, value+vega, Greeks and eSSVI-w **runtime-dispatch to 4-lane AVX2** on an AVX2 host (`n ≥ 4`; eSSVI-w `n ≥ 16`), so they agree with the scalar kernel to the SIMD gate (~1e-6 abs + 1e-7 rel; ~1e-5 abs on the fused `vega` column; eSSVI ~1e-12), **not bit-for-bit**; from-lnFK and IV have no vector route and stay scalar-backed and bit-exact |
@@ -587,9 +589,13 @@ auto result = historical_var(book, pairs, config).value();
 ```
 
 VaR / ES are nearest-rank loss quantiles over the admitted scenarios. A template
-that does not resolve on a base state is counted, not fatal; a scenario with
-excluded premium above `max_excluded_premium_frac · |pv_base|` is dropped from the
-quantiles. Results are bit-identical for any thread count. Semantics, failure
+that does not resolve on a base state is counted, not fatal. A scenario is
+admitted only when at least one leg is in the totals, every excluded leg's
+premium is known and the excluded premium is strictly below
+`max_excluded_premium_frac · |pv_base|` (default 0: any exclusion drops it); a
+clock that refuses an expiry drops only that scenario, while a structural error
+(a workspace or frame bound to another book) fails the call. `tail_mean` includes
+the carry axis. Results are bit-identical for any thread count. Semantics, failure
 policy, threading and the migration table from the deleted `var.hpp` /
 `historical_projection.hpp` pipeline: [`docs/historical-var.md`](docs/historical-var.md).
 

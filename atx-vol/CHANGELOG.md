@@ -5,28 +5,6 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
-### NEW — persisted history: surface timelines and risk-run archives (`api/persist/`, lane P2)
-
-Two PersistFile (ATXVPF) kinds behind the frozen `surface_timeline.hpp` / `risk_run_archive.hpp`.
-`SurfaceTimeline` (`.atxstl`, one file per UTC month) holds VERBATIM ATXVSA2 surface records behind
-a `(uid, ts)` index: `range()` is allocation-free, `view()` verifies the record's own payload CRC and
-builds the view over the same bytes as the partition, so history views are bit-exact by
-construction; `SurfaceTimelineStore::build_from_surface_db` merges SurfaceDb partitions into period
-generations and `collect()` feeds `project_series` (bit-equal to owned surfaces). `RiskRunWriter`
-records RiskFrame / ExplainResult / HistoricalVarResult steps into immutable `seg-*.atxrr`
-segments (`segment_bytes`, default 16 MiB) behind a manifest, each seal at a `SealDurability`
-(`RiskRunOptions::seal_durability`,
-default `Publish` = temp + rename, no flush; `finish_durability`, default `Flush` = Publish +
-FlushFileBuffers). `RiskRunArchive` reopens them zero-copy and adds `step_info` /
-`materialize_frame` / `materialize_explain` / `n_var` / `var` (owned, validated copies);
-`compact_risk_run` merges bit-exactly, optionally into a zstd + byte-shuffle cold tier, refusing
-(`SegmentMismatch`) when a segment was published meanwhile (an overload takes the durability; the
-3-argument form is `Flush`). Schema fingerprints refuse any layout
-drift (RiskRun pinned `0x07b280ae55b35c46` after lane E's re-pin; an `ExplainTotals` / `FrameCounters` change is a compile
-error in `src/persist/risk_run_format.hpp` first). Tool `atx-vol-history-store` (timeline build |
-inspect | bench, riskrun inspect | bench). Docs: `docs/persist-history.md`,
-`docs/storage/PERSIST_HISTORY_FORMAT.md`.
-
 ### NEW — risk engine: streaming P&L explain, strike/maturity projection, SpiderRock bench (`api/risk/`)
 
 A new public module `include/atx/vol/api/risk/` (Tier-B) and `api/marketdata/spiderrock_store.hpp`.
@@ -46,9 +24,20 @@ timestamp and projects fixed-TTE / fixed-moneyness series across historical surf
 Tool `atx-vol-risk-bench` + `scripts/spiderrock_intraday_to_store.py` run the 10k-option / 100-underlier
 / 100-share 10:00–15:00 explain over the SpiderRock 30-minute store (licensed or synthetic); the loader
 filters to American exercise and standard option roots. Docs: `docs/risk-engine.md`, `docs/risk-bench.md`,
-design `docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md`.
+design `docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md`, sprint note
+`sprints/2026-10-24-risk-engine-sprint.md`.
 
-Lane E (design D22 / D23) adds, all additive: `ExpiryCarry::T_override` (NaN = the `TimeSpec`;
+Lane A2 (family-kernel economics) adds, all additive except one default: `FamilyKernelPolicy`
+gains an adaptive node count (`n_sigma` is now the ceiling; `n_sigma_min` 5, `sigma_node_spacing`
+0.06, and a short-tenor floor `short_box_tau` 0.3 y / `n_sigma_min_short` 4), family economics
+(`family_economics`, `family_node_cost_us` 73, `cold_lane_cost_us` 270: a group whose family
+cannot amortize is priced cold-analytic and flagged `RiskFlag::FamilyUneconomic`) and
+`dynamic_schedule` (default on); the `sigma_box_pad` default moves 0.25 → 0.05. `RiskFlag::ShortTenor`
+and `FrameCounters::{family_nodes, uneconomic_rows, short_tenor_rows}` are appended. The shipped
+policy holds the 1e-6 family-vs-cold price gate on both bench stores with bit-identical results
+across thread counts; `atx-vol-risk-bench` exposes every knob (`docs/risk-bench.md`).
+
+Lane E (vendor clock, carry axis, sticky carry mode; design D22 / D23) adds, all additive: `ExpiryCarry::T_override` (NaN = the `TimeSpec`;
 finite ⇒ > 0, else `InvalidArgument`) is THE T of its expiry for both kernels and the explain
 (dt = the contract's own `T_base − T_shifted` whenever either state overrides the expiry; with no
 override the explain is bit-unchanged, digest pin `0x5660a61510ac3e32`); the SpiderRock loader
@@ -123,6 +112,78 @@ difference rather than a one-period P&L.
   - `var_report`: use the per-uid buckets of `explain` per scenario; there is no packaged report.
   - `var_validation`: Kupiec / Christoffersen have no replacement.
   - Full table: `docs/historical-var.md`.
+
+### NEW — binary persistence: the ATXVPF container and a SpiderRock-derived MarketState store
+
+A risk run's market input no longer has to be rebuilt from Parquet every time. A new public
+module `api/persist/` (lane P1 of the wave-3 persistence sprint; spec
+`docs/storage/PERSIST_FORMAT.md`, guide `docs/persist.md`):
+
+- **ATXVPF (`PersistFile`)** — one container for every persisted kind: 256-byte header,
+  64-byte section entries, 64-byte aligned payloads, 4096-byte file size, 64-byte footer;
+  CRC32C on the header, section table, every section (stored and raw), the footer and the whole
+  file; a constexpr schema fingerprint per kind (FNV-1a/64 + fmix64 over a field-level schema
+  table, so moving or resizing a field refuses old files instead of misreading them); optional
+  zstd + byte shuffle per section; verify levels Framing / Lazy / Full / Paranoid; mapped or
+  one-read access; no allocation after open. 43 crafted corruptions (including resealed
+  tables claiming 2^44 / 2^64 decoded bytes and an 18-byte frame consistently claiming 2^32,
+  refused before any allocation) are each refused with their own `PersistStatus`.
+- **`PersistDirectory`** — a manifest of kind Manifest plus `persist.lock`: publish is
+  file-then-manifest (temp + flush + rename), readers resolve keys only through the manifest,
+  file names are canonical (no traversal), orphans of an interrupted publish are skipped.
+- **MarketState archive (`.atxms`)** — one `MarketStateStorage` per file, optionally with the
+  per-mark selection extras and embedded fitted surfaces. `MarketStateArchive::open` serves a
+  `MarketState` whose marks, term carry and dividends are spans into the mapping; yield curves
+  are stored from the new `YieldCurve::pillars()` and rebuilt bit-equal at open. 41 bytes per
+  mark core, +56 extras.
+- **State store** — `build_state_store_from_spiderrock` / `StateStore`: a fingerprinted,
+  derived cache of the Parquet ingest (rebuilt when the loader conventions version, the library
+  version, the store spec or any source file changes), with uids identical to one serial load
+  even though buckets load in parallel, and byte-identical rebuilds.
+- **Tool `atx-vol-state-store`** — `build | inspect | verify | bench | synth`.
+
+Measured on the licensed day 2026-10-14 (bucket 1000, warm): the top-100 book (367,664 marks,
+35.7 MB) opens with Full verification and serves its state in 11.1 ms p50 against 1.35 s for
+the Parquet load + state build (121x; Framing 2.3 ms). The uncapped book (1.94 M marks,
+189.6 MB) opens Full in 67.5 ms p50 against 1.65 s, over the 60 ms target, so the default opens
+verify Full only up to 64 MiB (`kMarketStateFullVerifyMaxBytes`) and Framing above it: the
+uncapped book opens in 16.2 ms by default, Full / Paranoid on request. Encode + publish per
+bucket: 0.086 s (top-100) and 0.43 s (uncapped). Rebuilds of all 11 buckets are sha256-identical
+across `--parallel 1` / `--parallel 2` and repeated runs, and a `RiskStream` explain over the 11
+archived states is bit-equal to the Parquet-built states on all 10 transitions.
+
+**Existing callers.** None change. The module is additive; `zstd` is linked PRIVATE to
+`atx-vol`. `YieldCurve` gains an additive `pillars()` accessor (it now also keeps the zero rates
+`create` was given); `disc` / `zero` are unchanged. `atx-vol-state-store` has no compiled-in
+output root: `--out` or `ATX_VOL_PERSIST_ROOT`. `--state-store` wiring in the risk bench is a
+later integration item.
+
+### NEW — persisted history: surface timelines and risk-run archives (`api/persist/`, lane P2)
+
+Two PersistFile (ATXVPF) kinds behind the frozen `surface_timeline.hpp` / `risk_run_archive.hpp`.
+`SurfaceTimeline` (`.atxstl`, one file per UTC month) holds VERBATIM ATXVSA2 surface records behind
+a `(uid, ts)` index: `range()` is allocation-free, `view()` verifies the record's own payload CRC and
+builds the view over the same bytes as the partition, so history views are bit-exact by
+construction; `SurfaceTimelineStore::build_from_surface_db` merges SurfaceDb partitions into period
+generations and `collect()` feeds `project_series` (bit-equal to owned surfaces). `RiskRunWriter`
+records RiskFrame / ExplainResult / HistoricalVarResult steps into immutable `seg-*.atxrr`
+segments (`segment_bytes`, default 16 MiB) behind a manifest, each seal at a `SealDurability`
+(`RiskRunOptions::seal_durability`,
+default `Publish` = temp + rename, no flush; `finish_durability`, default `Flush` = Publish +
+FlushFileBuffers). `RiskRunArchive` reopens them zero-copy and adds `step_info` /
+`materialize_frame` / `materialize_explain` / `n_var` / `var` (owned, validated copies);
+`compact_risk_run` merges bit-exactly, optionally into a zstd + byte-shuffle cold tier, refusing
+(`SegmentMismatch`) when a segment was published meanwhile (an overload takes the durability; the
+3-argument form is `Flush`; compact finished runs only). One writer per run directory, enforced
+through the manifest: `create` refuses a directory that already lists a run, and a seal publishes
+only while the manifest still ends with this writer's last row (else `SegmentMismatch`; a listed
+key is never replaced, `DuplicateKey`), so a second writer is refused instead of splicing its
+segments. A `Flush` `finish()` also flushes the earlier `Publish` segments (`Busy` while a reader
+maps one). Schema fingerprints refuse any layout
+drift (RiskRun pinned `0x07b280ae55b35c46` after lane E's re-pin; an `ExplainTotals` / `FrameCounters` change is a compile
+error in `src/persist/risk_run_format.hpp` first). Tool `atx-vol-history-store` (timeline build |
+inspect | bench, riskrun inspect | bench). Docs: `docs/persist-history.md`,
+`docs/storage/PERSIST_HISTORY_FORMAT.md`.
 
 ### NEW — coupled calendar feasibility and explicit terminal-floor recovery
 
@@ -6379,48 +6440,3 @@ real source yet); the S3 trainer and purged-CV/embargo validation harness
   units, the refusal-reason sum, full row-accounting closure, and absence of
   membership. `mode_b_smoke_tune` now runs the worktree-local binary instead of
   a bare PATH lookup.
-
-### NEW — binary persistence: the ATXVPF container and a SpiderRock-derived MarketState store
-
-A risk run's market input no longer has to be rebuilt from Parquet every time. A new public
-module `api/persist/` (lane P1 of the wave-3 persistence sprint; spec
-`docs/storage/PERSIST_FORMAT.md`, guide `docs/persist.md`):
-
-- **ATXVPF (`PersistFile`)** — one container for every persisted kind: 256-byte header,
-  64-byte section entries, 64-byte aligned payloads, 4096-byte file size, 64-byte footer;
-  CRC32C on the header, section table, every section (stored and raw), the footer and the whole
-  file; a constexpr schema fingerprint per kind (FNV-1a/64 + fmix64 over a field-level schema
-  table, so moving or resizing a field refuses old files instead of misreading them); optional
-  zstd + byte shuffle per section; verify levels Framing / Lazy / Full / Paranoid; mapped or
-  one-read access; no allocation after open. 42 crafted corruptions (including resealed
-  tables claiming 2^44 / 2^64 decoded bytes, refused before any allocation) are each refused
-  with their own `PersistStatus`.
-- **`PersistDirectory`** — a manifest of kind Manifest plus `persist.lock`: publish is
-  file-then-manifest (temp + flush + rename), readers resolve keys only through the manifest,
-  file names are canonical (no traversal), orphans of an interrupted publish are skipped.
-- **MarketState archive (`.atxms`)** — one `MarketStateStorage` per file, optionally with the
-  per-mark selection extras and embedded fitted surfaces. `MarketStateArchive::open` serves a
-  `MarketState` whose marks, term carry and dividends are spans into the mapping; yield curves
-  are stored from the new `YieldCurve::pillars()` and rebuilt bit-equal at open. 41 bytes per
-  mark core, +56 extras.
-- **State store** — `build_state_store_from_spiderrock` / `StateStore`: a fingerprinted,
-  derived cache of the Parquet ingest (rebuilt when the loader conventions version, the library
-  version, the store spec or any source file changes), with uids identical to one serial load
-  even though buckets load in parallel, and byte-identical rebuilds.
-- **Tool `atx-vol-state-store`** — `build | inspect | verify | bench | synth`.
-
-Measured on the licensed day 2026-10-14 (bucket 1000, warm): the top-100 book (367,664 marks,
-35.7 MB) opens with Full verification and serves its state in 11.1 ms p50 against 1.35 s for
-the Parquet load + state build (121x; Framing 2.3 ms). The uncapped book (1.94 M marks,
-189.6 MB) opens Full in 67.5 ms p50 against 1.65 s, over the 60 ms target, so the default opens
-verify Full only up to 64 MiB (`kMarketStateFullVerifyMaxBytes`) and Framing above it: the
-uncapped book opens in 16.2 ms by default, Full / Paranoid on request. Encode + publish per
-bucket: 0.086 s (top-100) and 0.43 s (uncapped). Rebuilds of all 11 buckets are sha256-identical
-across `--parallel 1` / `--parallel 2` and repeated runs, and a `RiskStream` explain over the 11
-archived states is bit-equal to the Parquet-built states on all 10 transitions.
-
-**Existing callers.** None change. The module is additive; `zstd` is linked PRIVATE to
-`atx-vol`. `YieldCurve` gains an additive `pillars()` accessor (it now also keeps the zero rates
-`create` was given); `disc` / `zero` are unchanged. `atx-vol-state-store` has no compiled-in
-output root: `--out` or `ATX_VOL_PERSIST_ROOT`. `--state-store` wiring in the risk bench is a
-later integration item.
