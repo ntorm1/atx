@@ -688,7 +688,8 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
   };
   std::vector<RaSectionData> sections;
   sections.push_back(encode_schedule_section("trade_schedule", schedule));
-  sections.push_back(encode_backtest_section("backtest", backtest));
+  ATX_TRY(RaSectionData backtest_section, encode_backtest_section("backtest", backtest));
+  sections.push_back(std::move(backtest_section));
   sections.push_back(encode_reconciliation_section(reconciliation));
   sections.push_back(encode_contract_marks_section(reconciliation));
   sections.push_back(encode_meta_section(spec, meta_extra));
@@ -1147,7 +1148,8 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
       {"economics_rev", std::to_string(kBacktestEconomicsRev)},
   };
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section(projected_section, backtest));
+  ATX_TRY(RaSectionData backtest_section, encode_backtest_section(projected_section, backtest));
+  sections.push_back(std::move(backtest_section));
   if (!skip_divergence) {
     sections.push_back(build_mark_divergence_section(divergence_arena));
   }

@@ -94,3 +94,40 @@ recorded individual Python-file hashes. The source includes the strict boolean
 and string input guards. Each group retains all prices, policy iterations,
 complementarity residuals and time/space/domain refinements. Roughly 152 seconds
 per group is offline reference-generation cost, not a production latency claim.
+
+## Isolated residual-correction primitive
+
+`lcp_correction.solve_obstacle_control` defaults to the original obstacle solver.
+Its explicit `mode="one_correction"` experiment performs one binary64 residual
+correction after each selected-policy solve, then checks the original unscaled
+complementarity equations at the unchanged tolerance. It is not wired into any
+PDE or Greek runner. The [prospective plan](zero-rate-lcp-correction-plan-v1.md)
+was frozen before implementation; the [primitive report](zero-rate-lcp-correction-primitive-v1.md)
+records tests, work limits, captured-stage vectors and the remaining review gate.
+
+```powershell
+python -m unittest -v test_lcp_correction test_pde_reference.ObstacleTests
+```
+
+The captured fixture is a synthetic zero-rate put's single obstacle stage,
+containing only six input arrays. Its original failure and historical reference
+decisions remain unchanged. Passing this primitive does not authorize replacing
+the default solver or rerunning a full Greek pilot.
+
+The separate [twelve-request harness](zero-rate-lcp-twelve-harness-v1.md) is now
+implemented for source review. It requires explicit `--mode one_correction`,
+the exact historical v2 baseline and clean source. Its new schema retains all
+twelve requests, all stage work and all 714 other corpus contracts as uncomputed.
+It cannot update historical decisions or substitute for a complete144 experiment.
+The fixed twelve requests have not executed at this source checkpoint.
+
+The subsequent reviewed run at `8f4f8124` completed once: eight requests compute
+and four retain typed refusals at the original tolerance. Both coarse-time
+requests recover, but neither Greek is promoted. The
+[complete result](../../docs/independent-lcp-control-20261024.md) retains every
+outcome, actual work and four failed-stage arrays; no full144 run followed.
+
+The subsequent [saved-system residual audit](../../docs/independent-lcp-residual-diagnosis-20261024.md)
+checks all 65,532 rows at 100 digits and with exact rational arithmetic. All four
+remain over tolerance; no PDE or linear solve was run. Policy cycling remains
+unproven because the saved snapshots contain no iteration history.

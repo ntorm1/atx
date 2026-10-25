@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -10,6 +11,7 @@
 
 #include "atx/vol/api/analytics/scenario_grid.hpp"
 #include "backtest/strategy_pipeline.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 namespace {
@@ -54,6 +56,8 @@ namespace {
   value.volga = volga;
   value.rho = rho;
   value.charm = charm;
+  // These tests explicitly supply all nine numeric inputs, including zeros.
+  detail::mark_american_greek_fields(value, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
   return value;
 }
 
@@ -140,11 +144,13 @@ TEST(StrategyPipelineConstruction,
 }
 
 TEST(StrategyPipelineRisk, AggregatesRiskAndSupportsClampOrReject) {
+  // Binary-exact Gamma inputs preserve strict cancellation under both fused
+  // and separately rounded products; decimal .02/.01 are not exact in binary.
   const std::vector<PositionRiskInput> inputs = {
       PositionRiskInput{Position{2u, OptionContract{2u, 100.0, 0.25, Side::Put}, -1.0, 100.0},
-                        greeks(3.0, -0.4, 0.02, 2.0, -0.1)},
+                        greeks(3.0, -0.4, 0.03125, 2.0, -0.1)},
       PositionRiskInput{Position{1u, OptionContract{1u, 100.0, 0.25, Side::Call}, 2.0, 100.0},
-                        greeks(5.0, 0.5, 0.01, 3.0, -0.2)},
+                        greeks(5.0, 0.5, 0.015625, 3.0, -0.2)},
   };
   const auto risk = aggregate_strategy_risk(inputs);
   ASSERT_TRUE(risk);
@@ -177,6 +183,32 @@ TEST(StrategyPipelineRisk, AggregatesRiskAndSupportsClampOrReject) {
   limits.action = ScalarRiskBreachAction::Clamp;
   limits.max_abs_delta = std::numeric_limits<double>::quiet_NaN();
   EXPECT_FALSE(apply_scalar_risk_overlay(*risk, scenarios, limits));
+}
+
+TEST(StrategyPipelineRiskAvailability, DefaultOrRefusedValuesCannotSupplyRequestedRisk) {
+  PositionRiskInput input;
+  input.position = Position{1u, OptionContract{1u, 100., .25, Side::Call}, 1., 100.};
+  // The old finite-only gate accepted every untouched zero as supplied risk.
+  EXPECT_FALSE(aggregate_strategy_risk(std::span(&input, 1)));
+  auto &g = input.greeks_per_share;
+  g = greeks(4., .5, .02, 3., -.1);
+  constexpr auto fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+  g.requested = g.supported = fields;
+  g.reasons.fill(AmericanGreekReason::NotRequested);
+  for (const auto i : {0u, 1u, 2u, 3u, 8u}) g.reasons[i] = AmericanGreekReason::ComputedEstimate;
+  // Scalar risk consumes only these five axes; unrelated unavailable fields
+  // must not prevent a complete requested aggregate.
+  g.rho = g.vanna = g.volga = g.charm = std::numeric_limits<double>::quiet_NaN();
+  const auto valid = aggregate_strategy_risk(std::span(&input, 1));
+  ASSERT_TRUE(valid);
+  EXPECT_DOUBLE_EQ(valid->delta, 50.);
+  EXPECT_DOUBLE_EQ(valid->gamma, 2.);
+  EXPECT_DOUBLE_EQ(valid->vega, 300.);
+  EXPECT_DOUBLE_EQ(valid->theta, -10.);
+  EXPECT_DOUBLE_EQ(valid->gross_notional, 400.);
+  g.reasons[1] = AmericanGreekReason::StencilCrossing; // finite value is insufficient
+  EXPECT_FALSE(aggregate_strategy_risk(std::span(&input, 1)));
 }
 
 TEST(StrategyPipelineScenario,
@@ -221,6 +253,84 @@ TEST(StrategyPipelineScenario,
 
   scenario.components.push_back(ComponentShockModel{2u, 1.0, 0.0, 1.0, 0.0});
   EXPECT_FALSE(conditional_component_scenario_pnl(inputs, scenario));
+}
+
+TEST(StrategyPipelineScenarioAvailability, RequiresOnlyActualComponentShockFields) {
+  ScenarioRiskInput input{Position{1u, {2u, 100., .25, Side::Call}, 1., 100.}, 100., {}};
+  ConditionalComponentScenario scenario;
+  scenario.index_uid = 1u;
+  scenario.index_spot_pct = .01;
+  scenario.index_vol_bump = .02;
+  scenario.components = {ComponentShockModel{2u, 1., 0., 0., 0.}};
+  // Component volatility does not move even though the index volatility does.
+  const auto unknown = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  EXPECT_FALSE(unknown);
+  if (!unknown)
+    EXPECT_EQ(unknown.error().code(), ErrorCode::Unavailable);
+  auto &g = input.greeks_per_share;
+  g.delta = .5;
+  g.gamma = .01;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Delta | GreekFieldMask::Gamma,
+                                     AmericanGreekReason::ComputedEstimate);
+  g.price = g.vega = g.theta = g.rho = g.vanna = g.volga = g.charm =
+      std::numeric_limits<double>::quiet_NaN();
+  const auto supplied = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(supplied);
+  EXPECT_DOUBLE_EQ(supplied->total_pnl, 50.5);
+  ASSERT_EQ(supplied->by_uid.size(), 1u);
+  EXPECT_DOUBLE_EQ(supplied->by_uid[0].pnl, 50.5);
+  scenario.components[0].residual_vol_bump = .01;
+  const auto missing_vol = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  EXPECT_FALSE(missing_vol);
+  if (!missing_vol)
+    EXPECT_EQ(missing_vol.error().code(), ErrorCode::Unavailable);
+  g.vega = 2.;
+  g.volga = 4.;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vega | GreekFieldMask::Volga,
+                                     AmericanGreekReason::ComputedEstimate);
+  const auto missing_cross = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  EXPECT_FALSE(missing_cross); // both pure axes do not supply their Vanna cross term
+  if (!missing_cross)
+    EXPECT_EQ(missing_cross.error().code(), ErrorCode::Unavailable);
+  g.vanna = .25;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vanna,
+                                     AmericanGreekReason::ComputedEstimate);
+  scenario.components[0].residual_vol_bump = .125;
+  const auto cross = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(cross);
+  EXPECT_NEAR(cross->total_pnl, 81.75, 1e-12);
+  input.greeks_per_share = {};
+  input.position.qty = 0.;
+  const auto zero_weight = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(zero_weight);
+  EXPECT_DOUBLE_EQ(zero_weight->total_pnl, 0.);
+  input.position.qty = 1.;
+  input.greeks_per_share = {};
+  scenario.index_spot_pct = scenario.index_vol_bump = 0.;
+  scenario.components[0].residual_vol_bump = 0.;
+  const auto zero_shock = conditional_component_scenario_pnl(std::span(&input, 1), scenario);
+  ASSERT_TRUE(zero_shock);
+  EXPECT_DOUBLE_EQ(zero_shock->total_pnl, 0.);
+}
+
+TEST(StrategyPipelineScenarioAvailability, FiniteInactiveCrossTermsCannotOverflow) {
+  ScenarioRiskInput input{Position{1u,{1u,100.,.25,Side::Call},1.,1.},1e200,{}};
+  auto &g=input.greeks_per_share;
+  g.delta=1e-200; g.gamma=0.; g.vanna=g.charm=1e200;
+  detail::mark_american_greek_fields(g,GreekFieldMask::Delta|GreekFieldMask::Gamma,
+                                    AmericanGreekReason::ComputedEstimate);
+  ConditionalComponentScenario scenario;
+  scenario.index_uid=1u; scenario.index_spot_pct=1.;
+  const auto result=conditional_component_scenario_pnl(std::span(&input,1),scenario);
+  ASSERT_TRUE(result);
+  EXPECT_DOUBLE_EQ(result->total_pnl,1.);
+  // A normal finite same-kernel control retains exact result bits.
+  input.spot=100.; g.delta=.5; g.gamma=.01;
+  scenario.index_spot_pct=.01;
+  const auto ordinary=conditional_component_scenario_pnl(std::span(&input,1),scenario);
+  ASSERT_TRUE(ordinary);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(ordinary->total_pnl),
+            std::bit_cast<std::uint64_t>(scenario_taylor_leg(g,1.,0.,0.,0.)));
 }
 
 TEST(StrategyPipelineIntent, GeneratesVersionedResearchOnlyTargetMinusCurrentDeltasInStableOrder) {

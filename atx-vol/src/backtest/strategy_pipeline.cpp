@@ -14,6 +14,8 @@
 
 #include "atx/vol/api/analytics/scenario_grid.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
+#include "pricing/american_greek_availability.hpp"
+#include "analytics/scenario_greek_availability.hpp"
 
 namespace atx::vol {
 
@@ -37,12 +39,6 @@ namespace {
 [[nodiscard]] bool valid_contract(const OptionContract &contract) noexcept {
   return contract.uid != 0u && finite(contract.K) && contract.K > 0.0 && finite(contract.T) &&
          contract.T > 0.0 && valid_side(contract.side);
-}
-
-[[nodiscard]] bool finite_greeks(const AmericanGreeks &greeks) noexcept {
-  return finite(greeks.delta) && finite(greeks.gamma) && finite(greeks.vega) &&
-         finite(greeks.theta) && finite(greeks.rho) && finite(greeks.vanna) &&
-         finite(greeks.volga) && finite(greeks.charm) && finite(greeks.price);
 }
 
 [[nodiscard]] bool valid_named_position(const NamedPosition &value) noexcept {
@@ -377,10 +373,14 @@ Result<RiskVector> aggregate_strategy_risk(std::span<const PositionRiskInput> po
   for (const PositionRiskInput &input : positions) {
     if (input.position.id == 0u || !valid_contract(input.position.contract) ||
         !finite(input.position.qty) || !finite(input.position.multiplier) ||
-        input.position.multiplier <= 0.0 || !finite_greeks(input.greeks_per_share) ||
+        input.position.multiplier <= 0.0 || !finite(input.greeks_per_share.price) ||
         input.greeks_per_share.price < 0.0) {
       return Err(ErrorCode::InvalidArgument, "strategy_pipeline: invalid position risk input");
     }
+    constexpr auto fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+        GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+    if (!detail::american_greeks_support(input.greeks_per_share, fields))
+      return Err(ErrorCode::Unavailable, "strategy_pipeline: requested risk unavailable");
     ordered.push_back(&input);
   }
   std::sort(ordered.begin(), ordered.end(),
@@ -502,7 +502,7 @@ conditional_component_scenario_pnl(std::span<const ScenarioRiskInput> positions,
     if (input.position.id == 0u || !valid_contract(input.position.contract) ||
         !finite(input.position.qty) || !finite(input.position.multiplier) ||
         input.position.multiplier <= 0.0 || !finite(input.spot) || input.spot <= 0.0 ||
-        !finite_greeks(input.greeks_per_share) || !position_ids.insert(input.position.id).second) {
+        !position_ids.insert(input.position.id).second) {
       return Err(ErrorCode::InvalidArgument,
                  "strategy_pipeline: invalid or duplicate scenario risk input");
     }
@@ -546,9 +546,21 @@ conditional_component_scenario_pnl(std::span<const ScenarioRiskInput> positions,
     }
     const double d_spot = input.spot * spot_pct;
     const double weight = input.position.qty * input.position.multiplier;
+    if (!finite(d_spot) || !finite(vol_bump) || !finite(weight)) {
+      return Err(ErrorCode::InvalidArgument, "strategy_pipeline: component shock overflow");
+    }
+    const auto required =
+        detail::scenario_taylor_fields(d_spot, vol_bump, scenario.dt, scenario.dr);
+    if (weight != 0.0 && required != GreekFieldMask::None &&
+        !detail::american_greeks_support(input.greeks_per_share, required)) {
+      return Err(ErrorCode::Unavailable, "strategy_pipeline: scenario sensitivity unavailable");
+    }
     const double pnl =
-        scenario_taylor_leg(input.greeks_per_share, d_spot, vol_bump, scenario.dt, scenario.dr) *
-        weight;
+        weight == 0.0 || required == GreekFieldMask::None
+            ? 0.0
+            : detail::scenario_taylor_active_leg(input.greeks_per_share, d_spot, vol_bump,
+                                                 scenario.dt, scenario.dr) *
+                  weight;
     if (!finite(pnl)) {
       return Err(ErrorCode::InvalidArgument, "strategy_pipeline: component scenario PnL overflow");
     }

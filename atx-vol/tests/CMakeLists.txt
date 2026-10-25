@@ -25,6 +25,108 @@
 # Those lanes get a `FAIL_REGULAR_EXPRESSION` instead — see each one.
 set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 
+option(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH "Build independent stock-state Gaussian controls" OFF)
+if(ATX_VOL_BUILD_CASH_GAUSSIAN_RESEARCH)
+    set(CASH_GAUSSIAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-gaussian")
+    find_path(ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR
+        NAMES boost/multiprecision/cpp_bin_float.hpp REQUIRED)
+    add_executable(atx-vol-cash-gaussian-research-tests
+        ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp ${CASH_GAUSSIAN_DIR}/stock_pwl_test.cpp
+        ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/event_owner_test.cpp
+        ${CASH_GAUSSIAN_DIR}/semigroup.cpp ${CASH_GAUSSIAN_DIR}/followup_test.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_weights_test.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_local_weights_test.cpp
+        ${CASH_GAUSSIAN_DIR}/stock_cubic.cpp ${CASH_GAUSSIAN_DIR}/stock_cubic_test.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_expectation.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_expectation_test.cpp
+        ${CASH_GAUSSIAN_DIR}/single_cash_call.cpp
+        ${CASH_GAUSSIAN_DIR}/single_cash_call_test.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_dyadic_zero.cpp
+        ${CASH_GAUSSIAN_DIR}/cubic_dyadic_zero_test.cpp)
+    target_link_libraries(atx-vol-cash-gaussian-research-tests PRIVATE
+        atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-cash-gaussian-research-tests SYSTEM PRIVATE
+        ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
+    add_executable(atx-vol-cash-gaussian-pilot ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp
+        ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/pilot.cpp)
+    target_include_directories(atx-vol-cash-gaussian-pilot PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/atx-vol/src)
+    target_link_libraries(atx-vol-cash-gaussian-pilot PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-cash-gaussian-followup ${CASH_GAUSSIAN_DIR}/stock_pwl.cpp
+        ${CASH_GAUSSIAN_DIR}/event_owner.cpp ${CASH_GAUSSIAN_DIR}/semigroup.cpp
+        ${CASH_GAUSSIAN_DIR}/followup.cpp)
+    target_include_directories(atx-vol-cash-gaussian-followup PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/atx-vol/src)
+    target_link_libraries(atx-vol-cash-gaussian-followup PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-cash-cubic-weight-control
+        ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_weights_probe.cpp)
+    target_include_directories(atx-vol-cash-cubic-weight-control SYSTEM PRIVATE
+        ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
+    target_link_libraries(atx-vol-cash-cubic-weight-control PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    add_executable(atx-vol-cash-cubic-local-control
+        ${CASH_GAUSSIAN_DIR}/cubic_weights.cpp ${CASH_GAUSSIAN_DIR}/cubic_local_probe.cpp)
+    target_include_directories(atx-vol-cash-cubic-local-control SYSTEM PRIVATE
+        ${ATX_CASH_GAUSSIAN_BOOST_INCLUDE_DIR})
+    target_link_libraries(atx-vol-cash-cubic-local-control PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+endif()
+
+if(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+    add_executable(atx-vol-joint-row-census-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-row-census/tests.cpp
+        support/alloc_counter.cpp)
+    target_include_directories(atx-vol-joint-row-census-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(atx-vol-joint-row-census-tests PRIVATE
+        atx::vol GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json)
+    add_test(NAME atx-vol-joint-row-census COMMAND atx-vol-joint-row-census-tests)
+    set_tests_properties(atx-vol-joint-row-census PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]" LABELS "atx_vol_research")
+endif()
+
+if(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    add_executable(atx-vol-joint-working-set-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-row-census/working_set_tests.cpp
+        support/alloc_counter.cpp)
+    target_include_directories(atx-vol-joint-working-set-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(atx-vol-joint-working-set-tests PRIVATE
+        atx::vol Eigen3::Eigen GTest::gtest_main atx_warnings nlohmann_json::nlohmann_json)
+    add_test(NAME atx-vol-joint-working-set COMMAND atx-vol-joint-working-set-tests)
+    set_tests_properties(atx-vol-joint-working-set PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]" LABELS "atx_vol_research")
+endif()
+
+option(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH "Build isolated joint centrality controls" OFF)
+if(ATX_VOL_BUILD_JOINT_CENTRALITY_RESEARCH)
+    set(JOINT_CENTRALITY_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-centrality")
+    add_executable(atx-vol-joint-centrality-tests
+        ${JOINT_CENTRALITY_RESEARCH_DIR}/corrector.cpp
+        ${JOINT_CENTRALITY_RESEARCH_DIR}/tests.cpp)
+    target_link_libraries(atx-vol-joint-centrality-tests PRIVATE
+        Eigen3::Eigen GTest::gtest_main atx_warnings)
+    add_test(NAME atx-vol-joint-centrality COMMAND atx-vol-joint-centrality-tests)
+    set_tests_properties(atx-vol-joint-centrality PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+        LABELS "atx_vol_research")
+endif()
+
+if(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+    add_executable(atx-vol-joint-centrality-qp-tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/../bench/joint-centrality/qp_tests.cpp)
+    target_link_libraries(atx-vol-joint-centrality-qp-tests PRIVATE
+        atx::vol Eigen3::Eigen GTest::gtest_main atx_warnings)
+    target_include_directories(atx-vol-joint-centrality-qp-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_test(NAME atx-vol-joint-centrality-qp COMMAND atx-vol-joint-centrality-qp-tests)
+    set_tests_properties(atx-vol-joint-centrality-qp PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
+        LABELS "atx_vol_research")
+endif()
+
 # Explicit private research target; no kernel is linked into the production library.
 option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
 if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
@@ -426,6 +528,13 @@ target_sources(atx-vol-persist-alloc-tests PRIVATE persist_history_alloc_test.cp
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
 # tools target, hence the guard.
 if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-retained-audit-tests quote_bench_retained_audit_test.cpp
+        ../tools/quote_bench_retained_audit.cpp support/alloc_counter.cpp)
+    target_link_libraries(atx-vol-retained-audit-tests PRIVATE
+        atx::vol atx::core atx_warnings GTest::gtest_main nlohmann_json::nlohmann_json)
+    target_include_directories(atx-vol-retained-audit-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME atx-vol-retained-audit COMMAND atx-vol-retained-audit-tests)
+    set_tests_properties(atx-vol-retained-audit PROPERTIES LABELS "atx_vol_tools")
     add_executable(atx-vol-bench-clocks-tests bench_clocks_test.cpp)
     target_link_libraries(atx-vol-bench-clocks-tests
         PRIVATE atx-vol-bench-clocks atx::vol atx::core atx_warnings GTest::gtest_main)

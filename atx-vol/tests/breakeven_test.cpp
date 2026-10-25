@@ -66,6 +66,46 @@ TEST(Breakeven, ReplayFailsClosedWhenExpiryNotLastObservation) {
   EXPECT_FALSE(bev_replay_pnl(p, spec, 0.2, {}, {}).has_value());
 }
 
+TEST(BreakevenAvailability, RefusedDeltaCannotBecomeAnEntryOrRebalanceHedge) {
+  constexpr double ns_per_year = 365.25 * static_cast<double>(kDayNs);
+  const auto remaining = static_cast<std::int64_t>(.0682 * ns_per_year);
+  const double T = static_cast<double>(remaining) / ns_per_year;
+  AlOpts opts = al_fast_profile(std::nullopt);
+  opts.profile = AlProfile::Reference; // exact explicit nullopt-equivalent map
+  BevReplayConfig config;
+  config.al_opts = opts;
+  config.apply_early_exercise = false;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const double S = side == Side::Put ? 772.99 : 811.6395;
+    const double K = side == Side::Put ? 811.6395 : 772.99;
+    const double r = side == Side::Put ? .04496 : .00162193;
+    const double q = side == Side::Put ? .00162193 : .04496;
+    const auto partial = american_greeks_al(S, K, T, .12, r, q, side, opts,
+                                           true, false, false);
+    ASSERT_TRUE(partial);
+    ASSERT_TRUE(has_field(partial->supported, GreekFieldMask::Price));
+    ASSERT_FALSE(has_field(partial->supported, GreekFieldMask::Delta));
+    ASSERT_EQ(partial->reasons[0], AmericanGreekReason::StencilCrossing);
+    const std::vector<BevDayState> entry{{0, S, r, q}, {remaining, S, r, q}};
+    const auto refused_entry = bev_replay_pnl(entry, {K, remaining, side}, .12, {}, config);
+    EXPECT_FALSE(refused_entry);
+    if (!refused_entry) EXPECT_EQ(refused_entry.error().code(), ErrorCode::Unavailable);
+
+    const double entry_spot = side == Side::Put ? 1.1*K : .9*K;
+    const auto initial = american_greeks_al(entry_spot, K, T+1./365.25, .12, r, q, side,
+                                           opts, true, false, false);
+    ASSERT_TRUE(initial);
+    ASSERT_TRUE(has_field(initial->supported, GreekFieldMask::Delta));
+    ASSERT_TRUE(has_field(initial->supported, GreekFieldMask::Vega));
+    const std::vector<BevDayState> rebalance{
+        {0, entry_spot, r, q}, {kDayNs, S, r, q}, {kDayNs+remaining, S, r, q}};
+    const auto refused_rebalance = bev_replay_pnl(
+        rebalance, {K, kDayNs+remaining, side}, .12, {}, config);
+    EXPECT_FALSE(refused_rebalance);
+    if (!refused_rebalance) EXPECT_EQ(refused_rebalance.error().code(), ErrorCode::Unavailable);
+  }
+}
+
 TEST(Breakeven, HedgedPnlAtTrueVolIsSmallOnAverage) {
   // 40 paths, 126 days: mean PnL at sigma_true within the Derman-Kamal noise band.
   double sum = 0.0;

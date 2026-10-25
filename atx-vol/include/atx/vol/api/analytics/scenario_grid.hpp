@@ -50,10 +50,13 @@
 //
 // ## Failed lanes
 //
-// A unique contract whose Greek solve fails (uid missing from `base`, degenerate
-// contract, or a numeric error) is EXCLUDED from every cell and counted ONCE in
-// `n_failed`; the surviving book is priced exactly as if that contract were absent.
-// No NaN ever enters a cell total.
+// Positions without a supported base price retain the explicit exclusion policy.
+// A priced position with partial Greeks remains eligible for Exact repricing;
+// Taylor and Exact-fallback cells require only their active shock sensitivities.
+// Missing active supply makes the cell P&L NaN instead of silently removing that
+// priced position. Per-cell position counts separate contributing, excluded and
+// unavailable rows. Numeric aggregate overflow also makes P&L NaN.
+// The legacy n_ok/n_failed unique counts still describe complete base risk.
 //
 // ## Thread-safety (plan 4.7)
 //
@@ -143,7 +146,8 @@ namespace atx::vol {
 // A unique whose shocked solve Errs / returns non-finite (e.g. a negative-carry
 // corner surfaced by dr, or a boundary collapse) FALLS BACK to its Taylor leg for
 // that cell — the cell's route STAYS Exact — and is counted once in
-// ScenarioGridResult::n_exact_fallback_lanes. No NaN ever enters a cell total.
+// ScenarioGridResult::n_exact_fallback_lanes. Missing active fallback supply makes
+// that cell unavailable (NaN), with per-position coverage reported below.
 // Both MEASURED by ScenarioGrid.MeasureTaylorRadius (scenario_grid_test.cpp).
 inline constexpr double kDefaultTaylorRadiusSpot = 0.03; // fraction of spot
 inline constexpr double kDefaultTaylorRadiusVol = 0.03;  // absolute vol points
@@ -179,14 +183,15 @@ struct ScenarioGridResult {
   std::size_t n_vol{0};
   std::vector<double> pnl;         // book-total P&L per cell (position-scaled)
   std::vector<std::uint8_t> route; // ScenarioRoute per cell
-  std::size_t n_ok{0};             // UNIQUE contracts whose Greek solve succeeded
-  std::size_t n_failed{0};         // UNIQUE contracts excluded from every cell
+  std::size_t n_ok{0};             // UNIQUE contracts whose rows all have complete base risk
+  std::size_t n_failed{0};         // UNIQUE contracts lacking complete base risk
   // (cell × unique) exact re-solves that Erred / went non-finite and fell back to the
-  // unique's Taylor leg for that cell (the cell's route stays Exact). Counted once per
-  // failing unique per Exact cell; 0 whenever routing is disabled or every solve holds.
+  // unique's Taylor fallback for that cell (the route stays Exact). Missing active
+  // fallback sensitivities are unavailable, never zero. Counted once per failing
+  // unique per Exact cell, separately from per-position coverage below.
   std::size_t n_exact_fallback_lanes{0};
   // Number of doubles in the compact Exact-price scratch. This is exactly
-  // (Exact cells × Greek-successful unique contracts), not (all cells × all
+  // (Exact cells × base-priced unique contracts), not (all cells × all
   // uniques); exposed as a stable working-set diagnostic for production-sized grids.
   std::size_t n_exact_price_scratch_slots{0};
 
@@ -219,10 +224,24 @@ struct ScenarioGridResult {
   // Exact, mirroring the option leg's own fallback accounting.
   std::size_t n_deriv_exact_fallback_lanes{0};
 
+  // Additive option-leg coverage. n_priced counts UNIQUE contracts with a
+  // supported base price, including partial-risk contracts. Each vector counts
+  // POSITIONS per cell, in pnl's row-major order; duplicates remain separate.
+  // contributing + excluded + unavailable == input position count for each cell.
+  // Excluded means no usable base price. Unavailable means a priced position
+  // lacks an active sensitivity or its contribution is nonfinite. Any unavailable
+  // row makes pnl NaN; excluded-only cells retain the historical reduced-book
+  // value. Finite contributions can also overflow their aggregate (NaN pnl
+  // without fabricating unavailable rows). None of these fields certify accuracy.
+  std::size_t n_priced{0};
+  std::vector<std::size_t> n_contributing_positions;
+  std::vector<std::size_t> n_excluded_positions;
+  std::vector<std::size_t> n_unavailable_positions;
+
   [[nodiscard]] std::size_t n_cells() const noexcept { return pnl.size(); }
 };
 
-// Drift pins: FOURTEEN fields on the result, TWO on the deriv spec, EIGHT on the
+// Drift pins: EIGHTEEN fields on the result, TWO on the deriv spec, EIGHT on the
 // spec. These three had NO pin at all until Task F-8 round 1, which is how the
 // deriv leg appended five fields to the result without one to update.
 //
@@ -236,7 +255,7 @@ struct ScenarioGridResult {
 // accounting, `scenario_grid_test.cpp`'s comparisons), and an appended field
 // that some of them miss is exactly how a sixth hand-enumerated list goes stale
 // unnoticed.
-static_assert(detail::aggregate_arity_is_v<ScenarioGridResult, 14>,
+static_assert(detail::aggregate_arity_is_v<ScenarioGridResult, 18>,
               "ScenarioGridResult field count changed: update this pin, and check every site "
               "that enumerates the struct by hand.");
 static_assert(detail::aggregate_arity_is_v<ScenarioGridSpec, 8>,
@@ -271,7 +290,7 @@ static_assert(detail::aggregate_arity_is_v<ScenarioGridSpec, 8>,
 // @return InvalidArgument if either axis is empty or a result/scratch/task shape
 //         overflows size_t (or exceeds a vector's element capacity), otherwise the
 //         propagated dedup/price error. An empty book yields an all-zero grid
-//         (n_ok = n_failed = 0).
+//         (all unique and per-cell position counts are zero).
 [[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
                                                        const SurfaceSet &base,
                                                        const ScenarioGridSpec &spec);
@@ -458,7 +477,7 @@ static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
 //         `book.size() - n_deriv_failed`: that subtraction was correct before
 //         the second bucket existed and is silently wrong now.
 //         `n_deriv_ok + n_deriv_failed + n_deriv_missing_sensitivity ==
-//         deriv_book.size()`, always. No NaN enters a cell total.
+//         deriv_book.size()`, always. No NaN enters a derivative-leg cell total.
 [[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
                                                        const std::vector<DerivPosition> &deriv_book,
                                                        const SurfaceSet &base,

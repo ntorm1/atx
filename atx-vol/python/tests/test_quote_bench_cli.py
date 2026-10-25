@@ -58,6 +58,80 @@ def invoke(binary: Path, source: Path, output: Path, *extra: str, env=None):
     )
 
 
+def test_native_post_fit_audit_owns_timed_instance_and_keeps_fit_counters(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                  "serve": {"metadata": True, "floor_price_only": True}}))
+    outputs = {}
+    for name, mode in (("plain", []), ("inline", ["--acceptance-audit"]),
+                       ("post", ["--post-fit-acceptance-audit"])):
+        output, report = tmp_path / (name + ".csv"), tmp_path / (name + ".json")
+        result = invoke(binary, source, output, "--policy", str(policy), "--report", str(report),
+                        "--timing-detail", "--cold-reset", *mode)
+        assert result.returncode == 0, result.stderr
+        outputs[name] = (output.read_bytes(), json.loads(report.read_text()))
+    assert outputs["post"][0] == outputs["plain"][0] == outputs["inline"][0]
+    post = outputs["post"][1]
+    marker = post["bench"]["post_fit_acceptance_audit"]
+    assert marker["schema"] == "atx-vol-post-fit-api-proof-v1"
+    assert marker["phase"] == "after_cold_publication_and_fit_snapshots"
+    assert marker["cold_clock_contract"] == "retained_surface_publication_v1"
+    for key in ("same_retained_instance", "audit_completed", "retention_setup_in_cold",
+                "retained_owner_released_after_audit"):
+        assert marker[key] is True
+    assert marker["refit_count"] == 0
+    assert marker["graded_surface_fit_invocations_before"] == 1
+    assert marker["graded_surface_fit_invocations_after"] == 1
+    for prefix in ("attempted", "retained", "serialized"):
+        assert marker[prefix + "_snapshot_count"] == 1
+        assert marker[prefix + "_member_count"] == 1
+        assert marker[prefix + "_chain_ids"] == [17]
+    assert marker["unsupported_chain_ids"] == marker["missing_owner_chain_ids"] == []
+    for key, path in (("input_sha256", source), ("policy_sha256", policy),
+                      ("executable_sha256", binary), ("prediction_sha256", tmp_path / "post.csv")):
+        assert marker[key] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert marker["audit_s"] > 0
+    assert marker["retained_owner_destruction_s"] >= 0
+    assert post["bench"]["counters"]["solve_ledger"] == (
+        outputs["plain"][1]["bench"]["counters"]["solve_ledger"])
+    assert post["bench"]["counters"]["simd"] == outputs["plain"][1]["bench"]["counters"]["simd"]
+    assert post["graded_stats"]["acceptance_audit"]["phase"] == "post_fit"
+    assert post["graded_stats"]["acceptance_audit"]["snapshots"] == (
+        outputs["inline"][1]["graded_stats"]["acceptance_audit"]["snapshots"])
+    assert "post_fit_acceptance_audit" not in outputs["plain"][1]["bench"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--reps", "2"], ["--acceptance-audit"],
+                                   ["--curve", "essvi"], ["--inverse-replay", "scalar"],
+                                   ["--deam-audit", "--timing-detail"]])
+def test_native_post_fit_audit_rejects_unsupported_mode_before_output(binary, tmp_path, extra):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded"}))
+    output = tmp_path / "output.csv"
+    selected = [] if not extra or "--curve" in extra else ["--policy", str(policy)]
+    result = invoke(binary, source, output, "--report", str(tmp_path / "report.json"),
+                    "--post-fit-acceptance-audit", *selected, *extra)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_native_post_fit_audit_rejects_static_policy_before_output(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1}))
+    output = tmp_path / "output.csv"
+    result = invoke(binary, source, output, "--policy", str(policy),
+                    "--report", str(tmp_path / "report.json"), "--post-fit-acceptance-audit")
+    assert result.returncode != 0
+    assert "admission=graded" in result.stderr
+    assert not output.exists()
+
+
 def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     expected = make_quotes(source)
@@ -2913,3 +2987,86 @@ def test_native_one_spot_types_a_stale_chain(binary, tmp_path, disposition):
         assert {row["status"] for row in far} == {"stale_spot"}
         assert all(row["predicted_price"] == "" for row in far)
         assert report["one_spot"]["chain_status_counts"] == {"rebased": 1, "stale_spot": 1}
+
+
+def test_native_seed_target_tier_matches_linked_library_and_policy_provenance(binary, tmp_path):
+    source, policy = tmp_path / "quotes.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                 "graded": {"certificate": "box"}}))
+    result = invoke(binary, source, tmp_path / "predictions.csv", "--policy", str(policy),
+                    "--timing-detail")
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    expected = os.environ.get("ATX_QUOTE_BENCH_SEED_TIER", "ScalarReference")
+    assert expected in ("ScalarReference", "VectorReferenceEmpirical")
+    provenance = report["policy_definition"]["research_build"]
+    assert provenance == report["bench"]["build_info"]["cold_seed_target"]
+    assert provenance["cmake_option"] == "ATX_VOL_EMPIRICAL_VECTOR_SEEDS"
+    assert provenance["enabled"] is (expected == "VectorReferenceEmpirical")
+    assert provenance["target_kernel"] == expected
+    assert provenance["scalar_audit_reference"] == "AndersenLakeReference"
+    assert len(report["graded_stats"]["slices"]) == 1
+    for entry in report["graded_stats"]["slices"]:
+        timing = entry["timing"]
+        for key in ("reimply_seed_vector_requests", "reimply_seed_vector_packs",
+                    "reimply_seed_vector_lanes", "reimply_seed_vector_roots",
+                    "reimply_seed_vector_hits", "reimply_seed_scalar_fallbacks",
+                    "reimply_seed_vector_ns", "reimply_seed_vector_floor_ns",
+                    "reimply_seed_candidate_ns"):
+            assert type(timing[key]) is int and timing[key] >= 0
+        retries = timing["reimply_seed_vector_retries"]
+        assert set(retries) == {"admitted", "scalar_mode", "unsupported_scope",
+            "nonmonotone_band", "scalar_tail", "kernel_refusal", "exercise_edge",
+            "insufficient_margin", "floor_refusal"}
+        assert all(type(x) is int and x >= 0 for x in retries.values())
+        if expected == "ScalarReference":
+            assert timing["reimply_seed_vector_requests"] == 0
+            assert sum(retries.values()) == 0
+
+
+def test_native_candidate_proof_batch_has_explicit_build_tier_and_complete_counts(binary, tmp_path):
+    source, policy = tmp_path / "quotes.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        original = list(csv.DictReader(stream))
+    puts = [dict(row, row_id=str(int(row["row_id"]) + 1000), is_call="0",
+                 bid=str(float(row["bid"]) + float(row["strike"]) - 100),
+                 ask=str(float(row["ask"]) + float(row["strike"]) - 100)) for row in original]
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(original[0]))
+        writer.writeheader()
+        writer.writerows(original + puts)
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+        "graded": {"certificate": "box", "certificate_box_half_ticks": 0.0,
+                   "cold_fit": "joint_feasible_mid"},
+        "serve": {"floor_price_only": True, "metadata": True},
+        "profiles": [{"name": name, "base": name, "reimply_price_cap": .001,
+                      "reimply_spread_fraction": .01}
+                     for name in ("dense", "ordinary", "sparse")]}))
+    result = invoke(binary, source, tmp_path / "out.csv", "--policy", str(policy), "--timing-detail")
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    tier = report["policy_definition"]["research_build"]["candidate_proof_batch"]
+    assert tier == report["bench"]["build_info"]["cold_seed_target"]["candidate_proof_batch"]
+    enabled = os.environ.get("ATX_QUOTE_BENCH_CANDIDATE_BATCH", "0") == "1"
+    assert tier["cmake_option"] == "ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS"
+    assert tier["enabled"] is enabled
+    assert tier["target_kernel"] == ("VectorReferenceEmpirical" if enabled else "ScalarReference")
+    (entry,) = report["graded_stats"]["slices"]
+    assert entry["method"] == "joint_feasible_mid"
+    timing = entry["timing"]
+    assert timing["reimply_candidate_attempts"] > 0
+    work = timing["reimply_candidate_batch"]
+    assert all(type(value) is int and value >= 0 for value in work.values())
+    if enabled:
+        assert timing["reimply_candidate_batch_calls"] == 1
+        assert timing["reimply_candidate_batch_requests"] == timing["reimply_candidate_attempts"]
+        assert work["screen_proposals"] == timing["reimply_candidate_attempts"]
+        assert work["screen_seeds"] > 0
+        assert work["vector_admitted"] + work["scalar_admitted"] <= work["screen_seeds"]
+        assert work["finalization_ns"] >= work["inclusive_ns"] > 0
+    else:
+        assert timing["reimply_candidate_batch_calls"] == 0
+        assert timing["reimply_candidate_batch_requests"] == 0
+        assert work["screen_proposals"] == 0

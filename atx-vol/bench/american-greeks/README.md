@@ -146,3 +146,21 @@ contributions, not full repricing P&L, hedge guarantees or accepted risk limits.
 Reported wall times include the observer and are always unqualified. Agreement
 at a step identical to the correlated reference's step is not independent
 accuracy evidence; the finer-step and profile drift must remain visible.
+
+The native refinement exporter now emits `atx-american-fd-refinement-v2` with
+`admission_contract=model-regime-v2`. Each live AL sample in a model with no
+early exercise is continuation even if an unfloored Black price rounds to
+intrinsic. Genuine American rate-bump crossings and expiry/zero-volatility
+semantics remain explicit. The reader independently derives the regime from
+each operand's exact model and refuses missing or mismatched version metadata.
+Historical v1 receipts retain their original clamp reconstruction and unchanged
+summary schema; no archived record is rewritten or reclassified.
+
+The original12-case v1 summary (5,184 field requests, including its pinned
+reference) revalidates exactly. A separate development control uses the actual
+BEV zero-carry call and put dual, keeping all96 evaluations,1,632 operands and
+864 field requests. Every bundle supplies mask495 and retains the genuine Rho
+refusal. Thirteen reader tests pass, including the old native receipt and v2
+flag/schema mutants, and the native exporter passes its owning PCH-off check.
+Evidence is `acceptance/greek-european-reader-v2-control/`; this control is not a
+replacement for the frozen715 corpus or an accuracy/latency qualification.

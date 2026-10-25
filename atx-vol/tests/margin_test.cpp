@@ -26,6 +26,8 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -33,6 +35,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/api/backtest/backtest.hpp" // Task B2 commit 2: RunConfig::margin_breach, BacktestResult::margin_required
 #include "atx/vol/api/marketdata/corpus.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "backtest/margin.hpp"
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"
 #include "atx/vol/api/analytics/scenario_grid.hpp"
@@ -191,6 +194,86 @@ TEST(ScenarioMargin, EqualsWorstCellOfPinned2LotBookOnFlatSurface) {
   // or this test is not exercising the worst-cell reduction at all.
   ASSERT_LT(worst, 0.0);
   EXPECT_DOUBLE_EQ(*margin, -worst);
+}
+
+TEST(ScenarioMarginAvailability, MissingPositionCannotDisappearFromWorstLoss) {
+  const auto flat = testkit::make_flat_surface(1u, 100., 100., .20);
+  const auto base = set_of({&flat});
+  const auto pf = Portfolio::create(std::vector<Position>{
+      {1u, {99u, 100., .25, Side::Put}, -1., 100.}});
+  ASSERT_TRUE(pf);
+  const PortfolioPricer pricer(*pf);
+  const auto result = scenario_margin(pricer, base, {});
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
+}
+
+TEST(ScenarioMarginAvailability, PartialPriceAllowsExactButRefusesMissingTaylorRisk) {
+  constexpr double S = 772.99, T = .0682, r = .04496, q = .00162193, sigma = .12;
+  const double F = S * std::exp((r - q) * T);
+  EssviParams params{};
+  params.T = T;
+  params.F = F;
+  params.theta = sigma * sigma * T;
+  params.phi = params.rho = 0.;
+  params.psi = params.p = params.lambda = .5;
+  CurveSurface curves;
+  curves.push(std::make_unique<EssviCurve>(params, std::exp(-r * T)));
+  PricingContext context;
+  context.uid = 1u;
+  context.S = S;
+  context.r = r;
+  context.al_opts = al_fast_profile(std::nullopt);
+  context.al_opts.profile = AlProfile::Reference;
+  auto surface = PricedSurface::create(std::move(curves),
+      {SliceContext{T, F, 0., q, 100u, 1u}}, context);
+  ASSERT_TRUE(surface);
+  const auto base = set_of({&*surface});
+  const auto pf = Portfolio::create(std::vector<Position>{
+      {1u, {1u, 811.6395, T, Side::Put}, -1., 1.}});
+  ASSERT_TRUE(pf);
+  const PortfolioPricer pricer(*pf);
+  MarginScenarioSpec spec;
+  spec.analytic_greeks = true;
+  spec.spot_shock = .001;
+  spec.vol_shock = 0.;
+  const auto taylor = scenario_margin(pricer, base, spec);
+  ASSERT_FALSE(taylor);
+  EXPECT_EQ(taylor.error().code(), ErrorCode::Unavailable);
+  spec.spot_shock = .2;
+  const auto exact = scenario_margin(pricer, base, spec);
+  ASSERT_TRUE(exact) << exact.error().to_string();
+  EXPECT_GT(*exact, 0.);
+}
+
+TEST(ScenarioMarginAvailability, AggregateOverflowCannotDisappearFromWorstLoss) {
+  const auto flat = testkit::make_flat_surface(1u, 100., 100., .20);
+  const auto base = set_of({&flat});
+  ScenarioGridSpec grid_spec;
+  grid_spec.spot_pct = {.2};
+  grid_spec.vol_bump = {0.};
+  const Position unit{1u, {1u, 100., .25, Side::Call}, 1., 1.};
+  const auto probe = scenario_grid({unit}, base, grid_spec);
+  ASSERT_TRUE(probe);
+  ASSERT_GT(probe->pnl[0], 1.);
+  const double weight = (.75 * (std::numeric_limits<double>::max)()) / probe->pnl[0];
+  const std::vector<Position> book{
+      {1u, unit.contract, weight, 1.}, {2u, unit.contract, weight, 1.}};
+  const auto grid = scenario_grid(book, base, grid_spec);
+  ASSERT_TRUE(grid);
+  ASSERT_EQ(grid->n_contributing_positions[0], 2u);
+  ASSERT_EQ(grid->n_excluded_positions[0], 0u);
+  ASSERT_EQ(grid->n_unavailable_positions[0], 0u);
+  ASSERT_TRUE(std::isnan(grid->pnl[0]));
+  const auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf);
+  const PortfolioPricer pricer(*pf);
+  MarginScenarioSpec spec;
+  spec.spot_shock = .2;
+  spec.vol_shock = 0.;
+  const auto result = scenario_margin(pricer, base, spec);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
 }
 
 // An empty book prices to an all-zero scenario grid (scenario_grid.hpp: "An

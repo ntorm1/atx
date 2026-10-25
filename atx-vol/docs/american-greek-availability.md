@@ -369,3 +369,212 @@ shapes and array lifetime remain explicit. The staged native module is SHA256
 bc64fef5a93f3b7abeb79419d359acd9aa4e6d8b6b30ba008268dab536293c47.
 Evidence is repair-iv/greek-tick-python-{red,final,hygiene}.*. This is availability
 propagation only; additive backtest price coverage/carry remains separate.
+
+
+BEV replay now checks supplied Price, Delta and Vega at entry, supplied Price
+before the exercise decision, and supplied Delta before a continuing hedge.
+A typed refusal returns Unavailable; it cannot silently become a no-trade
+comparison against NaN. An exercise exit needs no further hedge Delta. The
+strategy risk reducer requires its actual five inputs (Price, Delta, Gamma,
+Vega, Theta), permitting unavailable unrelated sensitivities while refusing
+finite default zeros without metadata. Manually supplied test bundles now
+explicitly declare their supplied fields.
+
+Runtime RED captured entry and rebalance failures for both put and dual call,
+and strategy acceptance of unstamped zeros/rejection of a complete five-field
+bundle with unrelated NaNs. Five focused consumer tests and five owning PCH-off
+objects pass. Evidence is repair-iv/greek-{bev,strategy}-guard-component.* and
+greek-risk-guard-hygiene.log. This component does not change numerical pricing
+or Greek arithmetic.
+
+Broader checks remain explicitly pending a separate producer correction: a
+zero-rate/yield European call at S=118.744054000552, K=100,
+T=0.0082135523613963042, sigma=0.25 is incorrectly labeled StencilCrossing when
+rounded Black prices straddle intrinsic. The complete 17-operand trace is
+repair-iv/greek-bev-operands.log. The down-rate operand genuinely enters an
+American regime, so its Rho crossing must not be erased. No contract or test
+row is dropped from the denominator. Two other strict numeric pins reproduce
+on the pre-guard production source (28b2ad5d): GoldenPathPnlIsPinned returns
+1.3832639438392142 versus its historical 1.3832639438393373, and the strategy
+cancellation fixture returns Gamma -4.163336342344337e-17 versus zero. Archived
+baseline executables and hashes are in greek-risk-guard-baseline-binaries.json;
+these pins are retained unchanged in this guard component.
+
+
+The strategy cancellation fixture now uses binary-exact Gamma inputs
+0.03125/0.015625, retaining its strict zero assertion and all other risk inputs.
+The prior decimal 0.02/0.01 products allow the final fused accumulation to expose
+-4.163336342344337e-17; the original failure reproduces on the archived pre-guard
+binary and is independently listed as r6 known issue Q0-F26. All nine focused
+strategy/quant integration tests and the owning PCH-off object now pass. The
+BEV golden remains unchanged (r6 Q0-F3); its original first-green deterministic
+pin is not an economic tolerance. No production arithmetic was changed.
+
+
+After the separately reviewed model-regime correction d5537bff, the complete
+BEV denominator is 20 tests: 19 pass and the unchanged historical golden
+Q0-F3 alone fails at exactly the pre-guard value 1.3832639438392142. GBM mean,
+root solving, serial/batch/thread-count equality, poisoned jobs and the genuine
+crossing-Delta refusal all pass. No job, contract or assertion was removed.
+The checkpoint retains this known failure rather than claiming a full release
+pass. Evidence: repair-iv/greek-bev-european.{log,xml}.
+
+
+Carried marks now retain their row status, requested/supported masks and nine
+field reasons with the numeric snapshot. A finite supported price remains a
+usable carry when some risk fields are refused. A complete carried mark can
+also replace a currently refused Greek result without leaving NaN in totals.
+The reusable row frame sizes and forwards metadata for both marks and full
+Greek routes. Price/risk totals are rebuilt in final published row order using
+the same private accumulator as the portfolio pricer, including exact-zero
+weights, signed/gross Vega overflow refusal and separate complete/priced/partial
+counts. This replaces numeric delta adjustments, which cannot undo NaN or
+correct a changed row's availability. Existing complete-risk error gates remain.
+
+A deferred close retains an explicit Vega-supply bit after its carry entry is
+pruned. None/PriceBps costs use the supported carried price; unavailable turnover
+Vega remains NaN. VolTicks costs refuse unavailable carried Vega before it can
+enter cost/cash, preserving the exact-zero-position exception. This is internal
+availability propagation; no public result-column or archive format changed.
+
+Three actual consumer regressions cover partial-price carry and later recovery,
+complete carry replacing refused current Greeks, and partial carry close under
+None/PriceBps/VolTicks. Original RED receipts show the skipped partial carry and
+wrong cost failure. The final 28 focused carry/portfolio/coverage/overflow/bucket
+tests and three owning PCH-off objects pass. Evidence is
+repair-iv/greek-carry-{red,close-red,final,hygiene}.*, with exact source/binary
+hashes in greek-carry-final-receipt.json. One initial control compared an owned
+surface Greek against the archive-backed route; that unrelated rounding mismatch
+was replaced with an exact same-archive control, retaining strict comparison.
+The prelink-controls receipt is explicitly not the final rebuilt-binary gate.
+No new Greek accuracy or latency claim is made.
+
+
+Conditional component scenarios now derive the required Greek fields after
+resolving each component's own spot/volatility shocks. A nonzero spot shock
+requires Delta/Gamma, volatility requires Vega/Volga, time requires Theta,
+rate requires Rho, and active cross terms require Vanna or Charm. Missing active
+supply returns Unavailable; finite unstamped zeros are not risk evidence.
+Inactive operands are replaced with zero before the unchanged public Taylor
+kernel. Clearing only nonfinite inputs is insufficient: a finite unused cross
+Greek can overflow with a large active spot shock before multiplying by zero.
+Active operands and the kernel's operation order remain unchanged. Price is not
+a Taylor input. Exact zero positions or zero shocks contribute exact zero.
+
+The actual consumer regression is runtime RED for default-zero acceptance and
+unrelated-NaN rejection, then covers resolved component shocks that differ from
+the index shock, missing Vanna despite both pure axes being supplied, valid
+cross PnL, and zero identities. Ten focused strategy/quant integration tests
+and two owning PCH-off objects pass (repair-iv/greek-conditional-*). This private
+helper changes no public result layout or Greek accuracy contract; scenario-grid
+Exact eligibility and per-cell availability remain the next component.
+
+
+Review caught that finite-inactive overflow in the initial conditional helper.
+The actual consumer regression now pins Delta=1e-200, Gamma=0, spot shock1e200,
+unused Vanna/Charm=1e200 to finite PnL1. A normal finite control compares exact
+result bits against the original public kernel. Runtime RED is retained; the
+corrected stack passes all11 scoped strategy/quant tests and two owning PCH-off
+objects (repair-iv/greek-conditional-inactive-*). Active sensitivity admission is
+unchanged. The initial helper is not promoted independently of this correction.
+
+
+The option scenario grid now keeps supported base prices eligible for Exact
+repricing even when the base risk bundle is partial. Taylor cells and failed
+Exact reprices require only their actual active shock fields through the same
+private conditional helper. A priced position with missing active supply or a
+nonfinite contribution makes the cell P&L NaN instead of disappearing from its
+denominator. Zero-weight or zero-shock positions retain their exact identity.
+The original Exact accumulation expression is preserved, including its compiler
+contraction; a separate check accounts for a nonfinite position contribution.
+
+`ScenarioGridResult::n_ok`/`n_failed` retain unique-contract complete-risk units;
+all duplicate rows must be complete for their unique to count as complete.
+The additive `n_priced` counts unique contracts with supplied base prices.
+The three new per-cell position counts are `n_contributing_positions`,
+`n_excluded_positions`, and `n_unavailable_positions`. They sum to the input
+position count, retain duplicates, and distinguish absent base prices from
+unavailable active risk. Finite contributions can overflow only their sum: that
+cell is NaN without fabricating an unavailable position. Exact fallback counts
+remain per unique and per Exact cell; compact price scratch now includes every
+base-priced unique. The append-only result arity pin moves from14 to18.
+
+`scenario_margin` refuses Unavailable if any cell excludes a position, has an
+unavailable contribution, or is nonfinite. A partial-price contract can still
+produce valid margin when every active cell has a successful Exact reprice.
+The non-served Python scenario-grid API remains the documented missing-product;
+this correction does not invent a new binding or alter the separate served API.
+Derivative-leg eligibility and its existing counters are unchanged.
+
+Runtime RED retained the actual near-exercise put whose Exact P&L was silently
+zero instead of -115.94892268356153 and whose supplied Rho scenario was zero
+instead of -0.00013608947251242398. A missing-position margin also incorrectly
+returned zero. Final checks pass all46 ScenarioGrid tests and all15 margin,
+Reg-T and engine controls, plus four owning PCH-off objects. Additional controls
+cover duplicate scaled overflow in both row orders, fallback refusal, exact
+zero weight, finite-position aggregate overflow, thread bits and the option/
+derivative wrapper. An intermediate finite-check materialization changed three
+Exact aggregate cells by1-2ULP; its failed receipt is retained, and the original
+strict bitwise oracle passes after restoring the accumulation expression.
+Evidence is repair-iv/greek-{scenario,margin}-{red,green,final}.*,
+greek-scenario-order-{build,green}.log, greek-scenario-hygiene.log, and
+greek-scenario-final-receipt.json. These are availability/consumer fixes, not a
+new Greek accuracy or latency qualification.
+
+
+Backtest results now expose two observed option-position coverage columns:
+`n_priced_marks` counts supplied per-share prices, including rows with partial
+risk; `n_greeks_unavailable` counts only priced rows missing requested risk.
+These are recorded-row state, not block-summed flow. Duplicate positions remain
+separate. Deferred lots, shares and swaps are outside the snapshot option book.
+The existing incomplete-risk counter remains separate. Complete row coverage
+does not certify aggregate risk: summing finite positions can still overflow.
+
+Both new columns must be populated together and row-parallel, with finite
+integer `0 <= n_greeks_unavailable <= n_priced_marks <= UINT32_MAX`. The native
+count limit is tighter than the F64 exact-integer limit `2^53`. An empty pair
+means unknown legacy coverage, not zero. Append preserves the pair and refuses
+known/unknown mixing transactionally when both chunks contain rows. Python
+exports owned arrays and includes both in `to_dict`; `resize` cannot manufacture
+observations and leaves the pair untouched. `BacktestResult` gains two fields,
+with its append-only aggregate arity pin moving from 53 to 55; consumers rebuild.
+
+Persistence uses two optional owned F64 extensions after the frozen archive
+prefix: `date`, `ts_ns`, then 25 F64 columns, or 27 registry columns in total.
+The registry, schema hash and unknown-coverage legacy byte layout are unchanged.
+Both new names are reserved against user signal collisions. The research
+`encode_backtest_section` API now returns `Result<RaSectionData>` and validates
+before constructing the section; its three production callers propagate errors
+with `ATX_TRY`. A sparse in-memory result is allowed by `validate`, but an archive
+section must supply all frozen prefix columns. BacktestDb validates mapped count
+spans and decodes the extensions into their dedicated fields, not signals.
+The pure-Python report archive reader retains them in its documented `extra`
+map for non-registry F64 columns. Frozen TSV/CSV rosters omit this pair; they
+must not be interpreted as evidence of zero or known coverage.
+
+
+Runtime RED receipts captured missing engine counts, missing Python properties,
+ignored paired validation, append dropping coverage, and save/read dropping the
+pair then refusing a normal known continuation. The coherent component passes
+122 native backtest controls, 49 archive/RunDir controls, 26 BacktestDb controls,
+and 105 Python backtest/archive/renderer controls. All eleven changed owning
+translation units compile without PCH. Actual DB build/daily-extension/one-shot
+comparisons require nonempty row-parallel counts and compare both columns.
+A synthetic save/read/append/save/read control also retains them. The initial
+second-save fixture incorrectly supplied an inception-style n-1 step history
+for a continuation; its rejection is retained, and only that fixture was fixed
+to the existing n-step suffix contract. No production validation was relaxed.
+
+Mapped negative controls bypass the high-level encoder, write checksum-valid
+archives, then pass actual mapped spans to the same coverage validator used by
+BacktestDb. They cover both one-sided shapes, fractional counts and partial
+counts exceeding priced counts, with valid known and unknown controls. This is
+a mapped-archive/shared-validator test, not a forged DB manifest identity test.
+Bad-write controls separately prove unchanged manifest generation and saved
+coverage; the original legacy archive golden remains byte-identical.
+Receipts are `repair-iv/greek-backtest-coverage-*`, including the final JSON
+receipt and frozen patch. Python's final run uses staged module SHA256
+`a4a015d80765ac55cd493c2a7f1b7c2e82963f6f7fb6faf7ea9ca089cd3f5575`.
+An optional third-party PyArrow loader emitted Windows diagnostics during the
+renderer controls, while pytest completed all105 with exit0; the complete log
+is retained. This change records availability, not Greek accuracy or latency.

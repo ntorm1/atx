@@ -56,14 +56,20 @@ struct RawPriceDraftResult {
 // slots. On every failure all drafts remain unchanged. No public fit is published.
 [[nodiscard]] JointProjectionResult project_raw_price_drafts(
     std::span<RawPriceDraft> drafts, std::size_t max_iterations = 100,
-    JointInboxDiagnostics *diagnostics = nullptr, JointInboxProfile *profile = nullptr);
+    JointInboxDiagnostics *diagnostics = nullptr, JointInboxProfile *profile = nullptr,
+    JointWorkingSetWork *working = nullptr,
+    JointConstraintMode constraints = JointConstraintMode::Compiled);
 
 // Consumes a successfully projected private draft. Classifies each final node side,
 // builds a genuine ConvexDense curve from identified final OTM observations, then
 // publishes Success with all node prices served off that curve. Every original row
 // remains unadmitted ProjectedPrice with market_iv NaN. On any failure no public fit
 // is returned; the surface caller can atomically fall back to its existing policy.
+// Explicit non-Compiled modes are private comparison controls, never a public
+// fit policy. Compiled consults the default-off research build selection.
+enum class FinalPriceCandidateMode { Compiled, Scalar, BatchScalarProof, BatchVectorProof };
 [[nodiscard]] Result<QuoteSliceFit> finalize_raw_price_draft(
-    RawPriceDraft &&draft, const QuoteSliceConfig &config);
+    RawPriceDraft &&draft, const QuoteSliceConfig &config,
+    FinalPriceCandidateMode candidate_mode = FinalPriceCandidateMode::Compiled);
 
 } // namespace atx::vol::detail

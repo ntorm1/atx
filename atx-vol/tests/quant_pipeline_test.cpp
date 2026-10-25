@@ -19,6 +19,7 @@
 #include "atx/vol/api/fitting/vol_surface.hpp"     // EssviParams
 #include "atx/vol/api/pricing/american.hpp"        // al_fast_opts, AmericanMethod
 #include "atx/vol/api/storage/surface_db.hpp"      // SurfaceDb (vrp-backtest roots)
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 namespace {
@@ -212,6 +213,7 @@ TEST(QuantPipeline, ComposesTargetRiskScenarioClampAndResearchIntent) {
   index_greeks.gamma = 0.01;
   index_greeks.vega = 2.0;
   index_greeks.theta = -0.1;
+  detail::mark_american_greek_fields(index_greeks, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
   AmericanGreeks name_greeks = index_greeks;
   name_greeks.price = 3.0;
   name_greeks.delta = -0.5;
@@ -255,6 +257,7 @@ TEST(QuantPipeline, ImplementationPlanRequiresScenarioEvidence) {
                              Position{1u, OptionContract{1u, 100.0, 0.25, Side::Put}, 2.0, 100.0}};
   AmericanGreeks greeks;
   greeks.price = 5.0;
+  detail::mark_american_greek_fields(greeks, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
   const std::vector<PositionRiskInput> risk = {
       PositionRiskInput{target.position, greeks},
   };
@@ -282,6 +285,8 @@ TEST(QuantPipeline, AlignsImplementationInputsByStableIdAndGreekSnapshot) {
   AmericanGreeks name_greeks;
   name_greeks.price = 3.0;
   name_greeks.delta = -0.5;
+  detail::mark_american_greek_fields(index_greeks, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
+  detail::mark_american_greek_fields(name_greeks, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
 
   const std::vector<PositionRiskInput> reversed_risk = {
       PositionRiskInput{target[1].position, name_greeks},

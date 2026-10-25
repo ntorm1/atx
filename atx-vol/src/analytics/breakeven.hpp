@@ -133,7 +133,11 @@ struct BevReplayResult {
 // `path` longer than the bounded-loop cap (4000 sessions; JPL Rule 2, see the
 // implementation), non-positive `sigma`, or non-positive `spec.strike`;
 // propagates any American-pricer `Err` (e.g. a degenerate boundary solve)
-// unchanged.
+// unchanged. A successful partial Greek bundle is insufficient: entry needs
+// supplied finite Price/Delta/Vega, an intermediate exercise decision needs
+// Price, and a subsequent hedge needs Delta. Missing required fields return
+// Unavailable before they enter cash/hedge arithmetic. Unused Greeks are not
+// required, and an early-exercise exit does not require another hedge Delta.
 //
 // @param path       session closes in chronological order; path[0] is entry,
 //                    path.back() MUST be the expiry observation.

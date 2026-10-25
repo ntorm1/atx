@@ -1,0 +1,78 @@
+{
+  "schema": "atx-frozen-obstacle-stage-v1",
+  "source_arrays_sha256": "7847761f019726977b779b0bfa706bbd4373e6765b4c595eca9f901a7ef99ce5",
+  "source_diagnosis_sha256": "65f34ae0e568bc57f3a80832b4559adf9a5fa82899702ac5ac5c17efcdfbe313",
+  "source_commit": "3fb49fffc40cd9c5adc8e6f040309e0d2749f9ba",
+  "request": {
+    "id": "zero_rate_closed_form-put-03",
+    "model": {
+      "id": "zero_rate_closed_form-put-03",
+      "group": "zero_rate_closed_form",
+      "side": "put",
+      "S": 100.0,
+      "K": 100.0,
+      "T": 1.0,
+      "sigma": 0.2,
+      "r": 0.0,
+      "q": 0.0
+    },
+    "scheme": "dirk_l",
+    "label": "time-coarse",
+    "options": {
+      "nx": 8193,
+      "nt": 256,
+      "domain_scale": 1.0
+    },
+    "status": "refused",
+    "reason": "ArithmeticError",
+    "detail": "Obstacle iteration did not converge: residual=1.532782789581688e-10"
+  },
+  "obstacle_stage": 60,
+  "tolerance": 1e-10,
+  "fixture_sha256": "248d79eb3b112064ece56ff8135129725a734d844699b8939a6adc9d8549f0b5",
+  "arrays": {
+    "lower": {
+      "shape": [
+        8190
+      ],
+      "dtype": "float64",
+      "sha256": "1ecedd78e1acb7bb59036b9c52e6701ecbec49d82abd4eba1775bca36d55e41b"
+    },
+    "diagonal": {
+      "shape": [
+        8191
+      ],
+      "dtype": "float64",
+      "sha256": "4512dd4e5ea5842439caf36ab2ea05d4b28bdfdb9971e36b48d68ad683c65cf5"
+    },
+    "upper": {
+      "shape": [
+        8190
+      ],
+      "dtype": "float64",
+      "sha256": "dc1b04d13a5ee96015397ae1d6c56fd738d4a8f79e82033f5fc934c426288246"
+    },
+    "rhs": {
+      "shape": [
+        8191
+      ],
+      "dtype": "float64",
+      "sha256": "166bce56aa6b6fb10300da76577616e4aa573a9dbd2695e14650b88818db3d00"
+    },
+    "payoff": {
+      "shape": [
+        8191
+      ],
+      "dtype": "float64",
+      "sha256": "3dde67f493259f43376dc3c814798b890f94cc75366b90ef6424ae010a252417"
+    },
+    "initial": {
+      "shape": [
+        8191
+      ],
+      "dtype": "float64",
+      "sha256": "21dadd9f0fe429b700d5644cdb5d257f4192ad1c833b737e8bc848ce9ef1bd16"
+    }
+  },
+  "scope": "Inputs only from captured stage; no output vector or reference decision supplied to solver. Original saved-vector/residual mismatch remains in original evidence."
+}

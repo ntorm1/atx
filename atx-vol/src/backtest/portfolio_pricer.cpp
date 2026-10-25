@@ -3,6 +3,7 @@
 
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"
 
+#include "backtest/price_totals_reduction.hpp"
 #include "backtest/laned_greek_run.hpp" // FIX-5/I1+M3: the SINGLE definition of the Ok-stamp
                                // sweep (detail::requested_greeks_finite) and of the
                                // unrequested-slot normalization the adjoint arm needs.
@@ -509,68 +510,6 @@ struct ContractPx {
     }
   }
   return g;
-}
-
-constexpr std::array<double PriceTotals::*, 8> kTotalGreekMembers{
-    &PriceTotals::delta, &PriceTotals::gamma, &PriceTotals::vega, &PriceTotals::theta,
-    &PriceTotals::rho, &PriceTotals::vanna, &PriceTotals::volga, &PriceTotals::charm};
-
-void initialize_price_totals(PriceTotals &t, GreekFieldMask requested) noexcept {
-  t.requested = t.supported = requested;
-  for (std::size_t i = 0; i < t.reasons.size(); ++i) {
-    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
-    t.reasons[i] = has_field(requested, field) ? AmericanGreekReason::ComputedEstimate
-                                            : AmericanGreekReason::NotRequested;
-  }
-  if (requested == GreekFieldMask::Price) {
-    for (const auto member : kTotalGreekMembers) t.*member = kNaN;
-  } else {
-    t.abs_vega = has_field(requested, GreekFieldMask::Vega) ? 0.0 : kNaN;
-  }
-}
-
-void refuse_total_field(PriceTotals &t, std::size_t i, AmericanGreekReason reason) noexcept {
-  if (i < kTotalGreekMembers.size()) t.*kTotalGreekMembers[i] = kNaN;
-  else t.pv = kNaN;
-  // Signed and gross Vega share one availability bit. Neither may remain a
-  // plausible finite exposure when the other has become unrepresentable.
-  if (i == 2u) t.abs_vega = kNaN;
-  t.supported = static_cast<GreekFieldMask>(static_cast<std::uint32_t>(t.supported) &
-                                           ~(std::uint32_t{1} << i));
-  t.reasons[i] = detail::american_greek_supplied_reason(reason) ||
-                        reason == AmericanGreekReason::NotRequested
-                    ? AmericanGreekReason::Nonfinite : reason;
-}
-
-void add_priced_row(PriceTotals &t, const AmericanGreeks &g, double pv,
-                    PriceStatus status, bool zero_weight) noexcept {
-  t.pv += pv;
-  if (!std::isfinite(t.pv)) refuse_total_field(t, 8u, AmericanGreekReason::Nonfinite);
-  for (std::size_t i = 0; i < kTotalGreekMembers.size(); ++i) {
-    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
-    if (!has_field(t.requested, field)) continue;
-    double &sum = t.*kTotalGreekMembers[i];
-    // An exactly zero position contributes exact zero without requiring the
-    // unavailable per-share derivative. Its row still reports the refusal.
-    const double contribution = zero_weight ? 0.0 : g.*detail::kAmericanGreekMembers[i];
-    if ((!zero_weight && !detail::american_greeks_support(g, field)) ||
-        !std::isfinite(contribution)) {
-      if (has_field(t.supported, field)) refuse_total_field(t, i, g.reasons[i]);
-      sum = kNaN;
-    } else {
-      sum += contribution;
-      if (!std::isfinite(sum) && has_field(t.supported, field))
-        refuse_total_field(t, i, AmericanGreekReason::Nonfinite);
-    }
-    if (field == GreekFieldMask::Vega) {
-      t.abs_vega = has_field(t.supported, field) ? t.abs_vega + std::fabs(contribution) : kNaN;
-      if (!std::isfinite(t.abs_vega) && has_field(t.supported, field))
-        refuse_total_field(t, i, AmericanGreekReason::Nonfinite);
-    }
-  }
-  ++t.n_priced;
-  if (status == PriceStatus::Ok) ++t.n_ok;
-  else ++t.n_greeks_unavailable;
 }
 
 // Per-unique-contract P&L solve result (indexed by the ORIGINAL Portfolio contract
@@ -1148,7 +1087,7 @@ void scatter_rows(std::span<const Position> positions, const Portfolio &pf,
 void reduce_price_totals(std::span<const Position> positions, const Portfolio &pf,
                          std::span<const ContractPx> px, bool want_greeks, bool skew_adjusted_delta,
                          GreekFieldMask requested, PriceTotals &t) {
-  initialize_price_totals(t, requested);
+  detail::initialize_price_totals(t, requested);
   for (std::size_t i = 0; i < positions.size(); ++i) {
     const Position &p = positions[i];
     const ContractPx &c = px[pf.contract_ix(i)];
@@ -1157,7 +1096,7 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
     const AmericanGreeks g = position_greeks(c, w, want_greeks, skew_adjusted_delta, requested);
     const PriceStatus status = detail::american_greeks_support(g, requested)
                                    ? PriceStatus::Ok : PriceStatus::GreeksUnavailable;
-    add_priced_row(t, g, w * c.fair_value, status, w == 0.0);
+    detail::add_priced_row(t, g, w * c.fair_value, status, w == 0.0);
   }
 }
 
@@ -2793,7 +2732,7 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
 
   const auto fresh = [&]() noexcept {
     PriceTotals t{};
-    initialize_price_totals(t, frame.total.requested);
+    detail::initialize_price_totals(t, frame.total.requested);
     if (carry) t.dP_dq = 0.0;
     return t;
   };
@@ -2816,7 +2755,7 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
     const PriceStatus status = detail::american_greeks_support(g, t.requested)
                                    ? PriceStatus::Ok : PriceStatus::GreeksUnavailable;
     const double weight = positions[i].qty * eff_multiplier(positions[i].multiplier);
-    add_priced_row(t, g, frame.pv[i], status, weight == 0.0);
+    detail::add_priced_row(t, g, frame.pv[i], status, weight == 0.0);
     if (carry) t.dP_dq += frame.dP_dq[i];
   };
 
@@ -2897,16 +2836,16 @@ Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, con
       for (std::size_t j = 0; j < g.reasons.size(); ++j) {
         const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << j);
         if (has_field(g.supported, field) && !has_field(b.totals.supported, field))
-          refuse_total_field(g, j, b.totals.reasons[j]);
+          detail::refuse_total_field(g, j, b.totals.reasons[j]);
       }
     }
-    if (!std::isfinite(g.pv)) refuse_total_field(g, 8u, AmericanGreekReason::Nonfinite);
-    for (std::size_t j = 0; j < kTotalGreekMembers.size(); ++j) {
+    if (!std::isfinite(g.pv)) detail::refuse_total_field(g, 8u, AmericanGreekReason::Nonfinite);
+    for (std::size_t j = 0; j < detail::kTotalGreekMembers.size(); ++j) {
       const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << j);
       if (has_field(g.supported, field) &&
-          (!std::isfinite(g.*kTotalGreekMembers[j]) ||
+          (!std::isfinite(g.*detail::kTotalGreekMembers[j]) ||
            (field == GreekFieldMask::Vega && !std::isfinite(g.abs_vega))))
-        refuse_total_field(g, j, AmericanGreekReason::Nonfinite);
+        detail::refuse_total_field(g, j, AmericanGreekReason::Nonfinite);
     }
     *grand = g;
   }

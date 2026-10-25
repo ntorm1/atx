@@ -20,6 +20,7 @@
 #include <pybind11/pybind11.h>
 
 #include "atx/vol/api/backtest/backtest.hpp"
+#include "backtest/mark_coverage.hpp"
 
 namespace atxvol::python {
 
@@ -80,7 +81,15 @@ inline void require_consistent(const atx::vol::BacktestResult &r, const char *wh
   if (!r.n_carried_marks.empty()) {
     check(r.n_carried_marks.size(), "n_carried_marks");
   }
+  const auto coverage = atx::vol::detail::validate_mark_coverage(
+      r.n_priced_marks, r.n_greeks_unavailable, n);
+  if (!coverage) {
+    throw pybind11::value_error(std::string{coverage.error().message()});
+  }
   for (const auto &[name, series] : r.signals) {
+    if (atx::vol::detail::is_mark_coverage_name(name)) {
+      throw pybind11::value_error("BacktestResult signal shadows mark coverage");
+    }
     if (series.size() != n) {
       throw pybind11::value_error(std::string{what} + ": signal '" + name + "' has " +
                                   std::to_string(series.size()) + " entries but 'date' has " +

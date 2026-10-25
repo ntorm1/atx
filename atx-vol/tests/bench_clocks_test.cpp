@@ -25,6 +25,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -47,6 +48,92 @@ constexpr double kTight = 1.0e-12;
 // A cold rep must take at least this share of the first rep's wall: a warm memo hit
 // skips every inversion and runs far faster (documented in docs/benchmark-clocks.md).
 constexpr double kColdRepMinRatio = 0.5;
+
+#if defined(_WIN32)
+TEST(BenchCpuIntervals, BackwardsBusyCannotBeReportedAsIdle) {
+  const bench::CpuSample before{{50}, {100}};
+  const bench::CpuSample after{{49}, {200}};
+  const auto receipt = bench::affinity_json(0U, false, before, after);
+  EXPECT_TRUE(receipt["busy"]["subject_cpu_pct"].is_null());
+  EXPECT_TRUE(receipt["busy"]["system_pct"].is_null());
+}
+
+TEST(BenchCpuIntervals, NonphysicalPeerIntervalInvalidatesSystemShare) {
+  const bench::CpuSample before{{0, 0}, {100, 100}};
+  const bench::CpuSample after{{0, 200}, {200, 200}};
+  const auto receipt = bench::affinity_json(0U, false, before, after);
+  EXPECT_EQ(receipt["busy"]["subject_cpu_pct"], 0.0);
+  EXPECT_TRUE(receipt["busy"]["system_pct"].is_null());
+}
+
+TEST(BenchCpuIntervals, ReceiptRetainsExactCountersAndInvalidCpuHasNoTopology) {
+  const auto top = std::numeric_limits<std::uint64_t>::max();
+  const bench::CpuSample before{{top - 20U}, {top - 10U}};
+  const bench::CpuSample after{{top - 15U}, {top}};
+  const auto receipt = bench::affinity_json(64U, false, before, after);
+  EXPECT_TRUE(receipt["is_pcore"].is_null());
+  EXPECT_TRUE(receipt["smt_siblings"].empty());
+  EXPECT_FALSE(receipt["busy"]["smt_sibling_idle_below_5pct"].get<bool>());
+  EXPECT_TRUE(receipt["busy"]["subject_cpu_pct"].is_null());
+  EXPECT_EQ(receipt["busy"]["system_pct"], 50.0);
+  EXPECT_EQ(receipt["busy"]["interval_policy"], "strict-per-cpu-v1");
+  EXPECT_EQ(receipt["busy"]["before"]["busy_100ns"][0], std::to_string(top - 20U));
+  EXPECT_EQ(receipt["busy"]["after"]["total_100ns"][0], std::to_string(top));
+}
+#endif
+
+TEST(BenchCpuIntervals, ValidCpuAndWeightedSystemSharesUseIntegerDeltas) {
+  const bench::CpuSample before{{20, 30}, {100, 200}};
+  const bench::CpuSample after{{45, 130}, {200, 400}};
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent(before, after, 0U), 25.0);
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent(before, after, 1U), 50.0);
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent(before, after), 100.0 * 125.0 / 300.0);
+  const auto top = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent({{top - 20U}, {top - 10U}},
+                                           {{top - 15U}, {top}}), 50.0);
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent({{0}, {100}}, {{0}, {200}}), 0.0);
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent({{100}, {100}}, {{200}, {200}}), 100.0);
+}
+
+TEST(BenchCpuIntervals, EveryMalformedShapeAndMissingCpuRefuses) {
+  const bench::CpuSample valid{{20, 30}, {100, 200}};
+  for (const bench::CpuSample &invalid :
+       {bench::CpuSample{}, bench::CpuSample{{20, 30}, {}},
+        bench::CpuSample{{20}, {100, 200}}, bench::CpuSample{{20}, {100}}}) {
+    EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(invalid, valid)));
+    EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(valid, invalid)));
+    EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(invalid, valid, 0U)));
+    EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(valid, invalid, 0U)));
+  }
+  EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(valid, valid, 2U)));
+  EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(valid, valid,
+      std::numeric_limits<std::size_t>::max())));
+}
+
+TEST(BenchCpuIntervals, NonphysicalSnapshotsAndIntervalsRefuseWithoutClamping) {
+  const bench::CpuSample before{{50}, {100}};
+  for (const bench::CpuSample &after :
+       {bench::CpuSample{{49}, {200}}, bench::CpuSample{{50}, {99}},
+        bench::CpuSample{{50}, {100}}, bench::CpuSample{{201}, {200}},
+        bench::CpuSample{{160}, {200}}}) {
+    EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(before, after)));
+    EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(before, after, 0U)));
+  }
+  EXPECT_TRUE(std::isnan(bench::cpu_busy_percent({{101}, {100}}, {{102}, {200}})));
+  const bench::CpuSample valid_before{{0, 50}, {100, 100}};
+  const bench::CpuSample peer_backwards{{0, 49}, {200, 200}};
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent(valid_before, peer_backwards, 0U), 0.0);
+  EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(valid_before, peer_backwards, 1U)));
+  EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(valid_before, peer_backwards)));
+}
+
+TEST(BenchCpuIntervals, AggregateCounterOverflowRefuses) {
+  const bench::CpuSample before{{0, 0}, {0, 0}};
+  const bench::CpuSample after{{1, 1}, {std::numeric_limits<std::uint64_t>::max(), 1}};
+  EXPECT_TRUE(std::isfinite(bench::cpu_busy_percent(before, after, 0U)));
+  EXPECT_DOUBLE_EQ(bench::cpu_busy_percent(before, after, 1U), 100.0);
+  EXPECT_TRUE(std::isnan(bench::cpu_busy_percent(before, after)));
+}
 
 TEST(BenchClocks, SummaryUsesTheLinearOrderStatisticRule) {
   const std::array<double, 5> values = {5.0, 1.0, 3.0, 2.0, 4.0};

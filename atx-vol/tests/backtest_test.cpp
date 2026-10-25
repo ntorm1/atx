@@ -20,6 +20,8 @@
 
 #include <gtest/gtest.h>
 
+#include "storage/backtest_db.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic> // plan 5.5 cancellation flag
@@ -741,6 +743,8 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
+  EXPECT_EQ(a.n_priced_marks, b.n_priced_marks);
+  EXPECT_EQ(a.n_greeks_unavailable, b.n_greeks_unavailable);
   ASSERT_EQ(a.step_pnl_total.size(), b.step_pnl_total.size());
   for (std::size_t k = 0; k < a.step_pnl_total.size(); ++k) {
     EXPECT_TRUE(bits_equal(a.step_pnl_total[k], b.step_pnl_total[k])) << k;
@@ -1206,6 +1210,8 @@ TEST(BacktestGreekAvailability, AggregateOverflowFailsEvenWhenEveryRowIsComplete
   ASSERT_TRUE(visible.has_value()) << visible.error().to_string();
   ASSERT_EQ(visible->size(), 1u);
   EXPECT_EQ(visible->n_unpriced_greeks[0], 0.); // no fabricated excluded rows
+  EXPECT_EQ(visible->n_priced_marks, (std::vector<double>{12.}));
+  EXPECT_EQ(visible->n_greeks_unavailable, (std::vector<double>{0.}));
   EXPECT_TRUE(std::isnan(visible->gross_vega[0]));
   const auto guarded = run_backtest(*clock, book, RunConfig{});
   ASSERT_FALSE(guarded.has_value());
@@ -1251,6 +1257,180 @@ TEST(BacktestGreekAvailability, PartialRiskErrorDoesNotClaimTheSurfaceIsMissing)
   ASSERT_FALSE(guarded.has_value());
   EXPECT_NE(guarded.error().message().find("requested risk"), std::string::npos);
   EXPECT_EQ(guarded.error().message().find("no surface"), std::string::npos);
+}
+
+[[nodiscard]] Result<PricedSurface> partial_carry_surface(int day, double spot, std::int64_t expiry,
+                                                          bool truncated) {
+  constexpr double rate = .04496, yield = .00162193;
+  const auto now = kBaseNow + static_cast<std::int64_t>(day) * kDayNs;
+  const double T = static_cast<double>(expiry - now) / kNsPerYear;
+  CurveSurface curves;
+  std::vector<SliceContext> context;
+  for (const double scale :
+       truncated ? std::vector<double>{.25} : std::vector<double>{.5, 1., 1.5}) {
+    const double slice_T = T * scale, forward = spot * std::exp((rate - yield) * slice_T);
+    EssviParams e{};
+    e.T = slice_T;
+    e.F = forward;
+    e.theta = .12 * .12 * (truncated ? T : slice_T);
+    e.phi = e.rho = 0.;
+    e.psi = e.p = e.lambda = .5;
+    curves.push(std::make_unique<EssviCurve>(e, std::exp(-rate * slice_T)));
+    context.push_back({slice_T, forward, 0., yield, 100u, 1u});
+  }
+  PricingContext pricing;
+  pricing.S = spot;
+  pricing.r = rate;
+  pricing.now_ts_ns = now;
+  pricing.uid = kUid;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_profile(std::nullopt);
+  pricing.al_opts.profile = AlProfile::Reference;
+  return PricedSurface::create(std::move(curves), std::move(context), pricing);
+}
+
+TEST(BacktestGreekAvailability, CarryPreservesPartialPriceAndLaterRiskRecovery) {
+  constexpr double strike = 811.6395, tenor = .0682;
+  const auto expiry = kBaseNow + static_cast<std::int64_t>(tenor * kNsPerYear);
+  const auto initial = partial_carry_surface(0, 772.99, expiry, false);
+  const auto truncated = partial_carry_surface(1, 790., expiry, true);
+  const auto recovered = partial_carry_surface(2, 850., expiry, false);
+  ASSERT_TRUE(initial);
+  ASSERT_TRUE(truncated);
+  ASSERT_TRUE(recovered);
+  const double first_T = static_cast<double>(expiry - kBaseNow) / kNsPerYear;
+  const auto first = initial->greeks(strike, first_T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(has_field(first->supported, GreekFieldMask::Price));
+  ASSERT_EQ(first->reasons[1], AmericanGreekReason::StencilCrossing);
+  const double last_T = static_cast<double>(expiry - kBaseNow - 2 * kDayNs) / kNsPerYear;
+  const auto last = recovered->greeks(strike, last_T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(last);
+  ASSERT_EQ(last->supported, GreekFieldMask::All);
+  const auto dir = fresh_dir("greek-partial-carry");
+  const auto clock = Clock::from_manifest(
+      make_manifest({{"2026-08-01", write_one(dir, "2026-08-01", "SPX", *initial)},
+                     {"2026-08-02", write_one(dir, "2026-08-02", "SPX", *truncated)},
+                     {"2026-08-03", write_one(dir, "2026-08-03", "SPX", *recovered)}},
+                    "SPX"));
+  ASSERT_TRUE(clock);
+  PortfolioState book;
+  book.lots.push_back({1u, {kUid, strike, 0., Side::Put}, 1., 100., expiry, 0u, 0.});
+  RunConfig config;
+  config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  config.mark_domain = MarkDomainPolicy::CarryLastMark;
+  const auto result = run_backtest(*clock, book, config);
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->size(), 3u);
+  EXPECT_EQ(result->n_carried_marks[1], 1.);
+  EXPECT_EQ(result->n_unpriced_greeks[0], 1.);
+  EXPECT_EQ(result->n_unpriced_greeks[1], 1.);
+  EXPECT_TRUE(std::isnan(result->gross_vega[0]));
+  EXPECT_TRUE(std::isnan(result->gross_vega[1]));
+  EXPECT_DOUBLE_EQ(result->nav[1], result->nav[0]);
+  EXPECT_EQ(result->n_unpriced_greeks[2], 0.);
+  EXPECT_EQ(result->n_priced_marks, (std::vector<double>{1., 1., 1.}));
+  EXPECT_EQ(result->n_greeks_unavailable, (std::vector<double>{1., 1., 0.}));
+  EXPECT_TRUE(std::isfinite(result->gross_vega[2]));
+  config.mark_domain = MarkDomainPolicy::Extrapolate;
+  const auto control = run_backtest(*clock, book, config);
+  ASSERT_TRUE(control);
+  EXPECT_DOUBLE_EQ(result->gross_vega[2], control->gross_vega[2]);
+}
+
+TEST(BacktestGreekAvailability, CarriedPartialCloseRequiresVegaOnlyForVolatilityCost) {
+  const auto expiry = kBaseNow + kDayNs + static_cast<std::int64_t>(.0682 * kNsPerYear);
+  const auto initial = partial_carry_surface(0, 850., expiry, false);
+  const auto partial = partial_carry_surface(1, 772.99, expiry, false);
+  const auto truncated = partial_carry_surface(2, 790., expiry, true);
+  ASSERT_TRUE(initial);
+  ASSERT_TRUE(partial);
+  ASSERT_TRUE(truncated);
+  const auto dir = fresh_dir("greek-partial-carry-close");
+  const auto clock = Clock::from_manifest(
+      make_manifest({{"2026-08-01", write_one(dir, "2026-08-01", "SPX", *initial)},
+                     {"2026-08-02", write_one(dir, "2026-08-02", "SPX", *partial)},
+                     {"2026-08-03", write_one(dir, "2026-08-03", "SPX", *truncated)}},
+                    "SPX"));
+  ASSERT_TRUE(clock);
+  class OpenThenClose final : public IStrategy {
+  public:
+    explicit OpenThenClose(std::int64_t expiry) : expiry_(expiry) {}
+    Status on_step(const MarketSnapshot &snap, std::size_t step, PortfolioState &book,
+                   std::uint64_t &next_id) override {
+      if (step == 0u) {
+        const auto surface = snap.find(kUid);
+        const double T = static_cast<double>(expiry_ - snap.ts_ns()) / kNsPerYear;
+        const auto price = surface->fair_value(811.6395, T, Side::Put);
+        if (!price)
+          return atx::core::Err(price.error());
+        book.lots.push_back(
+            {next_id++, {kUid, 811.6395, 0., Side::Put}, 1., 100., expiry_, 0u, *price});
+      } else if (step == 2u)
+        book.lots.clear();
+      return atx::core::Ok();
+    }
+
+  private:
+    std::int64_t expiry_;
+  };
+  for (const auto kind : {FrictionModel::SpreadKind::None, FrictionModel::SpreadKind::PriceBps,
+                          FrictionModel::SpreadKind::VolTicks}) {
+    OpenThenClose strategy(expiry);
+    RunConfig config;
+    config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+    config.mark_domain = MarkDomainPolicy::CarryLastMark;
+    config.frictions.spread_kind = kind;
+    const auto result = run_backtest(*clock, strategy, config);
+    if (kind == FrictionModel::SpreadKind::VolTicks) {
+      EXPECT_FALSE(result);
+      if (!result) {
+        EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
+        EXPECT_NE(result.error().message().find("carried Vega"), std::string::npos);
+      }
+    } else {
+      ASSERT_TRUE(result) << result.error().to_string();
+      ASSERT_EQ(result->size(), 3u);
+      EXPECT_EQ(result->n_unpriced_greeks[1], 1.);
+      EXPECT_EQ(result->n_open_lots[2], 0.);
+      EXPECT_EQ(result->n_priced_marks, (std::vector<double>{1., 1., 0.}));
+      EXPECT_EQ(result->n_greeks_unavailable, (std::vector<double>{0., 1., 0.}));
+      EXPECT_TRUE(std::isfinite(result->nav[2]));
+      EXPECT_TRUE(std::isfinite(result->cost[2]));
+      EXPECT_TRUE(std::isnan(result->turnover_vega[2]));
+    }
+  }
+}
+
+TEST(BacktestGreekAvailability, CompleteCarryReplacesRefusedCurrentGreeks) {
+  constexpr double strike = 811.6395;
+  const auto expiry = kBaseNow + kDayNs + static_cast<std::int64_t>(.0682 * kNsPerYear);
+  const auto initial = partial_carry_surface(0, 850., expiry, false);
+  const auto truncated = partial_carry_surface(1, 772.99, expiry, true);
+  ASSERT_TRUE(initial);
+  ASSERT_TRUE(truncated);
+  const double T = static_cast<double>(expiry - kBaseNow - kDayNs) / kNsPerYear;
+  const auto current = truncated->greeks(strike, T, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(current);
+  ASSERT_EQ(current->reasons[2], AmericanGreekReason::StencilCrossing);
+  const auto dir = fresh_dir("greek-complete-carry");
+  const auto clock = Clock::from_manifest(make_manifest(
+      {{"2026-08-01", write_one(dir, "2026-08-01", "SPX", *initial)},
+       {"2026-08-02", write_one(dir, "2026-08-02", "SPX", *truncated)}}, "SPX"));
+  ASSERT_TRUE(clock);
+  PortfolioState book;
+  book.lots.push_back({1u, {kUid, strike, 0., Side::Put}, 1., 100., expiry, 0u, 0.});
+  RunConfig config;
+  config.mark_domain = MarkDomainPolicy::CarryLastMark;
+  const auto result = run_backtest(*clock, book, config);
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->size(), 2u);
+  EXPECT_EQ(result->n_carried_marks[1], 1.);
+  EXPECT_EQ(result->n_unpriced_greeks[1], 0.);
+  EXPECT_TRUE(std::isfinite(result->gross_vega[1]));
+  EXPECT_DOUBLE_EQ(result->gross_vega[1], result->gross_vega[0]);
+  EXPECT_DOUBLE_EQ(result->gross_delta[1], result->gross_delta[0]);
+  EXPECT_DOUBLE_EQ(result->nav[1], result->nav[0]);
 }
 
 TEST(Backtest, FixedBookDuplicateLotIdsFailBeforeArchiveLoadOrPricing) {
@@ -2758,6 +2938,10 @@ TEST(Backtest, Granularity) {
   ASSERT_TRUE(rf.has_value()) << rf.error().to_string();
   ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
   EXPECT_LT(rc->size(), rf->size()); // coarse genuinely downsampled
+  ASSERT_EQ(rc->n_priced_marks.size(), rc->size());
+  ASSERT_EQ(rf->n_priced_marks.size(), rf->size());
+  ASSERT_EQ(rc->n_greeks_unavailable.size(), rc->size());
+  ASSERT_EQ(rf->n_greeks_unavailable.size(), rf->size());
 
   // The FULL-RESOLUTION per-step series is retained at any stride and is bit-for-bit
   // identical between the fine and coarse runs — this is what makes the downsampled
@@ -2803,6 +2987,8 @@ TEST(Backtest, Granularity) {
     ASSERT_LT(fi, rf->size()) << "no fine row at coarse ts row " << j;
     EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;               // cumulative state
     EXPECT_TRUE(bits_equal(rc->gross_vega[j], rf->gross_vega[fi])) << j; // recorded-row state
+    EXPECT_EQ(rc->n_priced_marks[j], rf->n_priced_marks[fi]);
+    EXPECT_EQ(rc->n_greeks_unavailable[j], rf->n_greeks_unavailable[fi]);
     if (j > 0) {
       const double block = rf->nav[fi] - rf->nav[prev_fi];
       EXPECT_NEAR(rc->pnl_total[j], block, tol * (std::fabs(block) + 1.0)) << j;
@@ -3722,6 +3908,76 @@ TEST(BacktestResultShape, SkewedColumnIsRejected) {
 
 // EMPTY-or-row-parallel, not all-or-nothing: a fixture that fills only the
 // columns a fold reads is a legal partial result, and an empty result is legal.
+TEST(BacktestGreekCoverage, RequiresPairedValidCountsAndPreservesUnknownState) {
+  auto result = make_shape_fixture(2u);
+  EXPECT_TRUE(result.n_priced_marks.empty());
+  EXPECT_TRUE(result.n_greeks_unavailable.empty());
+  ASSERT_TRUE(result.validate());
+  result.n_priced_marks = {2., 1.};
+  EXPECT_FALSE(result.validate()); // One-sided coverage is not a known observation.
+  result.n_greeks_unavailable = {1., 0.};
+  ASSERT_TRUE(result.validate());
+  for (const double invalid : {-1., .5, 4294967296., 9007199254740992.,
+                               std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+    result.n_priced_marks[0] = invalid;
+    EXPECT_FALSE(result.validate());
+  }
+  result.n_priced_marks[0] = 4294967295.;
+  result.n_greeks_unavailable[0] = 4294967295.;
+  ASSERT_TRUE(result.validate()); // Largest native count remains exactly representable.
+  result.n_priced_marks[0] = 2.;
+  result.n_greeks_unavailable[0] = 3.;
+  EXPECT_FALSE(result.validate());
+  result.n_greeks_unavailable = {1.};
+  EXPECT_FALSE(result.validate());
+  result.n_greeks_unavailable = {1., 0.};
+  result.signals.emplace_back("n_priced_marks", std::vector<double>{0., 0.});
+  EXPECT_FALSE(result.validate()); // Signals cannot impersonate observed coverage.
+}
+
+TEST(BacktestGreekCoverage, AppendPreservesKnownPairAndRefusesUnknownTransactionally) {
+  auto first = make_shape_fixture(1u);
+  auto next = make_shape_fixture(1u);
+  first.date = {"2026-10-23"};
+  first.ts_ns = {1};
+  next.date = {"2026-10-24"};
+  next.ts_ns = {2};
+  first.signals.clear();
+  next.signals.clear();
+  first.n_priced_marks = {2.};
+  first.n_greeks_unavailable = {1.};
+  next.n_priced_marks = {3.};
+  next.n_greeks_unavailable = {0.};
+  auto combined = first;
+  ASSERT_TRUE(append_backtest_results(combined, next));
+  EXPECT_EQ(combined.n_priced_marks, (std::vector<double>{2., 3.}));
+  EXPECT_EQ(combined.n_greeks_unavailable, (std::vector<double>{1., 0.}));
+  auto unknown = next;
+  unknown.n_priced_marks.clear();
+  unknown.n_greeks_unavailable.clear();
+  auto refused = first;
+  EXPECT_FALSE(append_backtest_results(refused, unknown));
+  EXPECT_EQ(refused.date, first.date);
+  EXPECT_EQ(refused.n_priced_marks, first.n_priced_marks);
+  EXPECT_EQ(refused.n_greeks_unavailable, first.n_greeks_unavailable);
+  auto unknown_prefix = first;
+  unknown_prefix.n_priced_marks.clear();
+  unknown_prefix.n_greeks_unavailable.clear();
+  EXPECT_FALSE(append_backtest_results(unknown_prefix, next));
+  EXPECT_EQ(unknown_prefix.date, first.date);
+  EXPECT_TRUE(unknown_prefix.n_priced_marks.empty());
+  EXPECT_TRUE(unknown_prefix.n_greeks_unavailable.empty());
+  auto malformed = next;
+  malformed.n_greeks_unavailable = {4.};
+  EXPECT_FALSE(append_backtest_results(refused, malformed));
+  EXPECT_EQ(refused.date, first.date);
+  BacktestResult empty;
+  ASSERT_TRUE(append_backtest_results(empty, first));
+  EXPECT_EQ(empty.n_priced_marks, first.n_priced_marks);
+  EXPECT_EQ(empty.n_greeks_unavailable, first.n_greeks_unavailable);
+}
+
 TEST(BacktestResultShape, EmptyColumnsAreLegalPartialResults) {
   BacktestResult sparse;
   for (std::size_t i = 0; i < 4; ++i) {

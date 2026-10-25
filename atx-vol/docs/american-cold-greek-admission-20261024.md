@@ -136,3 +136,40 @@ performed for this component. A fresh metadata-aware corpus receipt is separate
 from these correctness tests.
 
 The [complete715 metadata-aware rerun](american-greek-admission-corpus-20261024.md) now confirms every price/status, reference stencil and family output unchanged: all25,740 requests retained,22 new crossing refusals and562 exact exercised-value corrections. No continuation estimate changed; short-time errors remain unqualified.
+
+## No-early-exercise roundoff correction
+
+A later strict BEV consumer exposed a distinct admission defect for a call with
+`S=118.744054000552`, `K=100`, `T=0.0082135523613963042`, `sigma=.25`, `r=q=0`
+and the explicit legacy Fast scheme (7/16/price0/4, tolerance1e-8, Reference
+arithmetic). The FD continuation samples use unfloored Black prices. The center
+rounds exactly to intrinsic; S+ rounds just below it and S- just above it.
+Treating that comparison as an active exercise clamp falsely refused all eight
+derivatives, although these sample models have no early exercise.
+
+The FD admission now recognizes each live AL sample's actual internal-put carry
+regime before using price/clamp evidence. A European sample remains continuation
+even if its rounded price meets intrinsic. This changes no price, step, solve or
+finite-difference formula. The down-rate sample of the original call genuinely
+enters an American regime and is exercised; Rho therefore remains a typed
+StencilCrossing refusal. Expiry/zero-volatility handling, American boundary and
+active-clamp checks, opaque non-AL paths and all existing field refusals retain
+their prior semantics. Cold/prepared AL and both public SIMD wrapper modes reach
+the corrected FD fallback.
+
+The actual counterexample is runtime RED in `acceptance/greek-european-red.xml`.
+Its put dual and stable European carry interiors form four explicit regression
+models. All17 operands per model are retained, with independent Black price-bit
+checks on each European operand and exact solve/price-call denominators. The
+zero-carry pair supplies all fields except Rho (mask495); interior models supply
+all511. Every supplied field is ComputedEstimate, not an accuracy certificate.
+Original boundary-crossing/deep-exercise, endpoint Vega and invalid/one-sided
+audit controls remain in the focused validation. The complete715 corpus has not
+been rerun for this narrow correction, and its historical receipt is unchanged.
+
+The final15 admission/metadata/FD-audit tests pass; owning production and test
+objects pass with PCH disabled. `acceptance/greek-european-final.xml` contains
+all68 operand records for the four models, and the original17-row pre-fix
+receipt remains at `repair-iv/greek-bev-operands.log`. The G2 refinement reader
+requires a separate versioned admission update before consuming new reports;
+historical v1 evidence must retain its original reconstruction semantics.

@@ -289,6 +289,14 @@ struct CpuSample {
 };
 [[nodiscard]] CpuSample sample_cpus();
 
+// Percentage over a complete, physically valid counter interval; NaN when samples
+// are empty/mismatched, counters decrease, busy exceeds total, or the interval has
+// no elapsed ticks. A null CPU requests the system share and requires every CPU's
+// interval to be valid; checked integer sums refuse overflow. Never clamps invalid
+// counters to zero. This pure helper also permits replay of archived raw samples.
+[[nodiscard]] double cpu_busy_percent(const CpuSample &before, const CpuSample &after,
+                                      std::optional<std::size_t> cpu = std::nullopt) noexcept;
+
 // Pins the process and the calling thread to logical CPU `cpu` (group 0). Throws
 // std::runtime_error when the CPU is absent from the system mask or a call fails.
 // The fit worker is the calling thread when ATX_VOL_FIT_WORKERS resolves to 1.

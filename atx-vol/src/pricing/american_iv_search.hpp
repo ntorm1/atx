@@ -9,6 +9,17 @@
 
 namespace atx::vol {
 
+struct IvPriceSeedFloorSlot {
+  bool prepared = false;
+  double anchor = 0., T = 0., r = 0., q = 0.;
+  Side side = Side::Put;
+  std::optional<AlOpts> opts;
+};
+struct IvPriceSeedFloorSnapshot {
+  std::array<IvPriceSeedFloorSlot, 2> slots;
+  std::uint64_t preparations = 0, hits = 0;
+};
+
 // Operation-local owner of one exact cold reporting-floor boundary per side. It is lazy:
 // a refused candidate never prepares a floor. No family approximation, rescaling,
 // external geometry lifetime, or cross-request global state is involved.
@@ -22,6 +33,8 @@ public:
       double q, Side side, const std::optional<AlOpts> &opts) noexcept;
   [[nodiscard]] std::uint64_t preparations() const noexcept { return preparations_; }
   [[nodiscard]] std::uint64_t hits() const noexcept { return hits_; }
+  // Owned values only; no handle access, pricing, or allocation.
+  [[nodiscard]] IvPriceSeedFloorSnapshot snapshot() const noexcept;
 private:
   struct State;
   std::array<std::unique_ptr<State>, 2> states_;

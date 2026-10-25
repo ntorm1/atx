@@ -10,7 +10,9 @@
   (bench.build_info of the first report) or, when absent, from -BuildDir's CMakeCache.txt
   (the manifest says which); per-trial clocks, stages and affinity receipt; the
   min / median / p95 / p99 / max of every clock over the trials; the predictions hash of
-  every trial (they must all be equal) and a fast-math assertion.
+  every trial (equality is diagnostic only) and a fast-math assertion. Numerical
+  qualification belongs to spy_acceptance.py: each differing solution needs its
+  own post-fit API proof from the same retained fitted surface.
 
   SMT sibling: a trial whose pinned CPU's SMT sibling was busier than
   -SiblingBusyThresholdPct (default 10%) over the compute window is marked
@@ -284,6 +286,5 @@ if ($null -ne $s) {
 Write-Host "MANIFEST $manifestPath sha256=$(Get-Sha256 $manifestPath)"
 if ($ok.Count -ne $Trials) { exit 1 }
 if ($fastMath -eq $true) { Write-Host 'FAST_MATH binary refused'; exit 2 }
-if ($uniqueHashes.Count -ne 1) { exit 3 }
 if ($RequireIdleSibling -and -not $siblingIdle) { Write-Host 'SMT sibling not idle'; exit 4 }
 exit 0

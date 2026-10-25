@@ -28,6 +28,7 @@ identification_review = importlib.util.module_from_spec(_review_spec)
 _review_spec.loader.exec_module(identification_review)
 FROZEN_CONTRACT = identification_review.FROZEN_CONTRACT
 REVIEWED_CONTRACT = identification_review.REVIEWED_CONTRACT
+ECONOMIC_IDENTIFICATION_CONTRACT = identification_review.ECONOMIC_CONTRACT
 
 INPUT_SHA256 = "b3fafd80f09326ce039ebdcfd7c26914ecbeb39817fdd00b35c6d49dcb2bf33e"
 SERVED = {"ok", "ok_price_only"}
@@ -887,7 +888,7 @@ def identification_coverage(prices, eligibility, contract=FROZEN_CONTRACT, repor
     eligibility exclusion. Reviewed transitions require an explicit selected
     contract; the unchanged strict diagnostic always exposes every demotion.
     """
-    if contract not in (FROZEN_CONTRACT, REVIEWED_CONTRACT):
+    if contract not in (FROZEN_CONTRACT, REVIEWED_CONTRACT, ECONOMIC_IDENTIFICATION_CONTRACT):
         raise ValueError("unknown identification contract")
     minimum = eligibility.get("minimum_identified_rows", 1)
     baseline = eligibility.get("identification_baseline")
@@ -899,8 +900,9 @@ def identification_coverage(prices, eligibility, contract=FROZEN_CONTRACT, repor
         minimum > 0 and prices["identified_rows_checked"] >= minimum
     strict_passed = count_passed and not new_price_only
     review = identification_review.reviewed_transitions(
-        new_price_only, eligibility, report, rows, zero_volatility_bounds) \
-        if contract == REVIEWED_CONTRACT else {"accepted_row_ids": [], "failures": [], "proofs": []}
+        new_price_only, eligibility, report, rows, zero_volatility_bounds, contract=contract) \
+        if contract in (REVIEWED_CONTRACT, ECONOMIC_IDENTIFICATION_CONTRACT) else \
+            {"accepted_row_ids": [], "failures": [], "proofs": []}
     return {"contract": contract, "minimum_identified_rows": minimum,
             "identified_rows_checked": prices["identified_rows_checked"],
             "baseline_applied": baseline is not None,
@@ -1071,7 +1073,61 @@ def one_core_trial(trial):
             affinity.get("nested_pools", {}).get("surface_expiry_fanout") == 1)
 
 
-def cold_timing_checks(manifest, directory, receipt, audit_report):
+def post_fit_proof_checks(native, trial, receipt):
+    """Join a post-clock proof to this process's retained surface and own output.
+
+    These are provenance/lifecycle checks. Financial validity still requires
+    verify_solution; a completion marker is never a substitute for that proof.
+    """
+    checks = {key: False for key in ("phase", "ownership", "counts", "members",
+        "no_refit", "artifact_identity", "accounting", "actual_api_payload")}
+    try:
+        marker = native["bench"]["post_fit_acceptance_audit"]
+        payload = native["graded_stats"]["acceptance_audit"]
+        snapshots = payload["snapshots"]
+        checks["phase"] = (marker["schema"] == "atx-vol-post-fit-api-proof-v1" and
+            marker["phase"] == "after_cold_publication_and_fit_snapshots" and
+            marker["cold_clock_contract"] == "retained_surface_publication_v1" and
+            native["bench"]["clocks"]["cold_calibration_s"]["contract"] == marker["cold_clock_contract"])
+        checks["ownership"] = all(marker[key] is True for key in (
+            "same_retained_instance", "audit_completed", "retention_setup_in_cold",
+            "retained_owner_released_after_audit")) and marker["failure_reason"] == "" and \
+            marker["unsupported_chain_ids"] == [] and marker["missing_owner_chain_ids"] == []
+        integer = lambda value: type(value) is int and value >= 0
+        counts = [marker[prefix + "_snapshot_count"] for prefix in ("attempted", "retained", "serialized")]
+        members = [marker[prefix + "_member_count"] for prefix in ("attempted", "retained", "serialized")]
+        ids = [entry["chain_id"] for snapshot in snapshots for entry in snapshot]
+        checks["counts"] = (all(integer(value) for value in counts + members) and
+            counts == [len(snapshots)] * 3 and len(snapshots) > 0 and
+            members == [len(ids)] * 3 and len(ids) > 0)
+        lists = [marker[prefix + "_chain_ids"] for prefix in ("attempted", "retained", "serialized")]
+        checks["members"] = (all(type(values) is list and all(integer(value) for value in values)
+            for values in lists + [ids]) and len(set(ids)) == len(ids) and
+            all(sorted(values) == sorted(ids) for values in lists))
+        before, after = (marker["graded_surface_fit_invocations_" + phase] for phase in ("before", "after"))
+        checks["no_refit"] = (integer(before) and integer(after) and before == after == len(snapshots) and
+            type(marker["refit_count"]) is int and marker["refit_count"] == 0)
+        pairs = (("input_sha256", receipt["input_sha256"]),
+                 ("policy_sha256", receipt["policy_sha256"]),
+                 ("executable_sha256", receipt["binary_sha256"]),
+                 ("prediction_sha256", trial["predictions_sha256"]))
+        checks["artifact_identity"] = all(type(marker[key]) is str and len(marker[key]) == 64 and
+            set(marker[key]) <= set("0123456789abcdef") and marker[key] == expected for key, expected in pairs)
+        capacities = [marker[key] for key in ("retained_snapshot_capacity", "retained_member_capacity",
+                                             "retained_fit_capacity")]
+        checks["accounting"] = (all(integer(value) for value in capacities) and
+            all(value >= required for value, required in zip(capacities, (len(snapshots), len(ids), len(ids)))) and
+            all(type(marker[key]) in (int, float) and math.isfinite(marker[key]) and marker[key] >= 0
+                for key in ("audit_s", "retained_owner_destruction_s")))
+        checks["actual_api_payload"] = (payload["schema"] == "atx-vol-final-api-audit-v1" and
+            payload["phase"] == "post_fit" and payload["timing_qualifying"] is False and
+            type(snapshots) is list and all(type(snapshot) is list for snapshot in snapshots))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return checks
+
+
+def cold_timing_checks(manifest, directory, receipt, audit_report, *, solution_validator=None):
     """Join launcher records to independently hashed native reports and CSVs.
 
     Summary counters are assertions to cross-check, never evidence of trials.
@@ -1086,8 +1142,9 @@ def cold_timing_checks(manifest, directory, receipt, audit_report):
         "same_binary": manifest.get("binary", {}).get("sha256") == receipt["binary_sha256"],
         "same_input": manifest.get("input", {}).get("sha256") == receipt["input_sha256"],
         "same_policy": manifest.get("policy", {}).get("sha256") == receipt["policy_sha256"],
-        "same_predictions": manifest.get("predictions_identical") is True and
-            manifest.get("predictions_sha256") == receipt["predictions_sha256"],
+        "prediction_artifacts_verified": bool(trials),
+        "every_solution_qualified": bool(trials),
+        "consistent_cold_clock_contract": bool(trials),
         "one_pcore": bool(trials), "idle_sibling": bool(trials),
         "fast_math_off": manifest.get("fast_math") is False,
         "all_cold_under1second": bool(trials), "native_reports_verified": bool(trials),
@@ -1096,6 +1153,7 @@ def cold_timing_checks(manifest, directory, receipt, audit_report):
         "source_clean": manifest.get("source", {}).get("dirty") is False,
     }
     trial_ids, report_paths, report_hashes, process_ids = set(), set(), set(), set()
+    clock_contracts = set()
     for trial in trials:
         try:
             native_path = (directory / trial["report"]).resolve(strict=True)
@@ -1118,16 +1176,29 @@ def cold_timing_checks(manifest, directory, receipt, audit_report):
                 identity == trial.get("process_identity")
             trial_ids.add(trial["trial"]); report_paths.add(native_path)
             report_hashes.add(report_hash); process_ids.add(process_id)
+            post_fit = "post_fit_acceptance_audit" in bench
+            valid_post_fit = post_fit and all(post_fit_proof_checks(native, trial, receipt).values())
+            clock_contracts.add("retained_surface_publication_v1" if valid_post_fit else
+                                "invalid_post_fit" if post_fit else "legacy_destroyed_surface_v1")
+            checks["consistent_cold_clock_contract"] &= len(clock_contracts) == 1
             checks["native_reports_verified"] &= (report_hash == trial.get("report_sha256") and
                 native.get("policy_definition") == audit_report.get("policy_definition") and
-                "acceptance_audit" not in native.get("graded_stats", {}) and
+                (valid_post_fit if post_fit else "acceptance_audit" not in native.get("graded_stats", {})) and
+                "candidate_capture" not in bench and bench.get("timing_qualifying", True) is True and
                 bench.get("reps") == 1 and len(reps) == 1 and rep.get("rep") == 1 and
                 rep.get("deam_memo_entries_at_start") == 0)
             checks["all_cold_under1second"] &= (trial.get("exit_code") == 0 and
                 isinstance(cold, (int, float)) and math.isfinite(cold) and 0 < cold < 1 and
                 cold == trial.get("cold_calibration_s"))
-            checks["same_predictions"] &= (sha256(prediction_path) ==
-                trial.get("predictions_sha256") == receipt["predictions_sha256"])
+            prediction_hash = sha256(prediction_path)
+            artifact_verified = prediction_hash == trial.get("predictions_sha256")
+            checks["prediction_artifacts_verified"] &= artifact_verified
+            # Identical bytes permit reuse of an already qualified witness. They
+            # are not required: another solution can supply its own full proof.
+            solution_verified = not post_fit and prediction_hash == receipt["predictions_sha256"]
+            if artifact_verified and (valid_post_fit or not post_fit) and not solution_verified and solution_validator is not None:
+                solution_verified = solution_validator(trial, native, prediction_path) is True
+            checks["every_solution_qualified"] &= artifact_verified and solution_verified
             checks["one_pcore"] &= one_core_trial({"affinity": affinity}) and all(
                 affinity.get(key) == trial.get("affinity", {}).get(key)
                 for key in ("requested_cpu", "pinned", "is_pcore", "current_cpu_at_receipt",
@@ -1143,6 +1214,7 @@ def cold_timing_checks(manifest, directory, receipt, audit_report):
         except (KeyError, TypeError, ValueError, OSError, IndexError):
             checks["native_reports_verified"] = False
             checks["distinct_trial_report_process_evidence"] = False
+            checks["every_solution_qualified"] = False
     return checks
 
 
@@ -1209,24 +1281,21 @@ def raw_model_violations(report, rows):
     return problems
 
 
-def verify(args, eligibility):
-    rows = load_quotes(args.input)
-    audit_dir = args.audit_dir
-    report = read_json(audit_dir / "native.json")
-    receipt = read_json(audit_dir / "receipt.json")
-    predictions = audit_dir / "predictions.csv"
+def verify_solution(report, receipt, predictions, report_path, rows, eligibility,
+                    accuracy_version, identification_version):
+    """Verify one actual surface against its own predictions and financial evidence."""
     metrics = prediction_metrics(rows, predictions, eligibility)
     violations = api_violations(report) + raw_model_violations(report, rows)
     roots = cold_root_audit(report, rows)
-    contract = accuracy_contract(getattr(args, "accuracy_contract", STRICT_IV_CONTRACT))
+    contract = accuracy_contract(accuracy_version)
     prices = cold_price_audit(report, rows, roots)
     floors = cold_floor_audit(report, rows, roots)
     coverage = identification_coverage(prices, eligibility,
-        getattr(args, "identification_contract", FROZEN_CONTRACT), report, rows)
+        identification_version, report, rows)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
         "input_frozen": receipt["input_sha256"] == eligibility["input_sha256"],
-        "audit_report_hash": receipt["report_sha256"] == sha256(audit_dir / "native.json"),
+        "audit_report_hash": receipt["report_sha256"] == sha256(report_path),
         "prediction_hash": receipt["predictions_sha256"] == sha256(predictions),
         "all_eligible_rows_served": metrics["served"] == eligibility["eligible_rows"],
         "all_valid_slices_fully_served": metrics["fully_served_slices"] == eligibility["required_slices"],
@@ -1246,6 +1315,7 @@ def verify(args, eligibility):
     eligible_ids = set(eligibility["eligible_row_ids"])
     row_failures = []
     metadata_failures = []
+    query_indices = {}
     for row in rows:
         if row["row_id"] not in eligible_ids:
             continue
@@ -1254,9 +1324,10 @@ def verify(args, eligibility):
             row_failures.append({"row_id": row["row_id"], "kind": "missing_published_slice"})
             metadata_failures.append({"row_id": row["row_id"], "kind": "missing_published_slice"})
             continue
-        if "_query_index" not in entry:
-            entry["_query_index"] = {(q["strike"], q["side"]): q for q in entry["queries"]}
-        query = entry["_query_index"].get((row["strike"], "call" if row["is_call"] else "put"))
+        if row["chain_id"] not in query_indices:
+            query_indices[row["chain_id"]] = {(q["strike"], q["side"]): q for q in entry["queries"]}
+        query = query_indices[row["chain_id"]].get(
+            (row["strike"], "call" if row["is_call"] else "put"))
         prediction = predicted.get(row["row_id"], {})
         value = float(prediction.get("predicted_price") or "nan")
         if query is None or query["status"] not in ("success", "price_only") or \
@@ -1287,9 +1358,43 @@ def verify(args, eligibility):
                   "Cold Reference price accuracy uses the explicitly versioned contract; local IV "
                   "conditioning estimates do not establish root-error bounds. Identified targets "
                   "must separately clear the zero-volatility band and cold sigma-floor price."}
+    return result
+
+
+def verify(args, eligibility):
+    rows = load_quotes(args.input)
+    report_path = args.audit_dir / "native.json"
+    report = read_json(report_path)
+    receipt = read_json(args.audit_dir / "receipt.json")
+    result = verify_solution(report, receipt, args.audit_dir / "predictions.csv",
+        report_path, rows, eligibility,
+        getattr(args, "accuracy_contract", STRICT_IV_CONTRACT),
+        getattr(args, "identification_contract", FROZEN_CONTRACT))
     if args.command == "qualify":
         manifest = read_json(args.cold_manifest)
-        timing = cold_timing_checks(manifest, args.cold_manifest.parent, receipt, report)
+        verifications = []
+
+        def validate_timed_solution(trial, native, predictions):
+            if not all(post_fit_proof_checks(native, trial, receipt).values()):
+                return False
+            trial_receipt = {"exit_code": trial["exit_code"],
+                "input_sha256": manifest["input"]["sha256"],
+                "report_sha256": trial["report_sha256"],
+                "predictions_sha256": trial["predictions_sha256"]}
+            own = verify_solution(native, trial_receipt, predictions,
+                (args.cold_manifest.parent / trial["report"]).resolve(strict=True), rows, eligibility,
+                getattr(args, "accuracy_contract", STRICT_IV_CONTRACT),
+                getattr(args, "identification_contract", FROZEN_CONTRACT))
+            verifications.append({"trial": trial["trial"], "checks": own["checks"],
+                "correctness_passed": own["correctness_passed"],
+                "report_sha256": trial["report_sha256"],
+                "predictions_sha256": trial["predictions_sha256"]})
+            return own["correctness_passed"]
+
+        timing = cold_timing_checks(manifest, args.cold_manifest.parent, receipt, report,
+                                   solution_validator=validate_timed_solution)
+        result["timed_solution_verifications"] = verifications
+        result["cross_run_solution_identity_required"] = False
         cache = args.build_cache.read_text(encoding="utf-8-sig") if args.build_cache else ""
         timing["thin_lto_build_evidence"] = any(
             line.startswith("CMAKE_INTERPROCEDURAL_OPTIMIZATION:") and line.endswith("=ON")
@@ -1315,11 +1420,12 @@ def main():
     parser.add_argument("--cold-manifest", type=Path)
     parser.add_argument("--build-cache", type=Path)
     parser.add_argument("--accuracy-contract", choices=(STRICT_IV_CONTRACT, RAW_SPREAD_PRICE_CONTRACT),
-                        default=STRICT_IV_CONTRACT,
-                        help="Explicit promotion contract; historical strict IV gate remains the default.")
-    parser.add_argument("--identification-contract", choices=(FROZEN_CONTRACT, REVIEWED_CONTRACT),
-                        default=FROZEN_CONTRACT,
-                        help="Strict frozen coverage by default; reviewed transitions require exact evidence.")
+                        default=RAW_SPREAD_PRICE_CONTRACT,
+                        help="Economic cold-price accuracy by default; strict IV remains a diagnostic option.")
+    parser.add_argument("--identification-contract", choices=(FROZEN_CONTRACT, REVIEWED_CONTRACT,
+                                                            ECONOMIC_IDENTIFICATION_CONTRACT),
+                        default=ECONOMIC_IDENTIFICATION_CONTRACT,
+                        help="Validate actual floor evidence without reproducing a prior fitted target.")
     args = parser.parse_args()
     eligibility = freeze(args.input)
     if args.command == "run-audit":

@@ -135,7 +135,10 @@ struct RiskVector {
 };
 
 // Deterministically aggregate position-scaled risk in ascending position-id
-// order. Duplicate IDs and every non-finite input are rejected.
+// order. Requires explicit finite Price/Delta/Gamma/Vega/Theta availability;
+// untouched zeros and refused fields return Unavailable. Unused derivative
+// fields do not participate. Invalid positions, duplicate IDs, negative price
+// and unrepresentable sums are rejected.
 [[nodiscard]] Result<RiskVector>
 aggregate_strategy_risk(std::span<const PositionRiskInput> positions);
 
@@ -227,6 +230,9 @@ struct ConditionalComponentScenarioResult {
 
 // Apply the same second-order Taylor kernel used by scenario_grid to supplied
 // per-share Greeks, but with a heterogeneous shock per component uid.
+// Each resolved component shock requires only the derivatives with nonzero
+// Taylor coefficients. Missing requested sensitivities return Unavailable;
+// inactive axes may be absent. Exact zero weights/shocks contribute zero.
 [[nodiscard]] Result<ConditionalComponentScenarioResult>
 conditional_component_scenario_pnl(std::span<const ScenarioRiskInput> positions,
                                    const ConditionalComponentScenario &scenario);

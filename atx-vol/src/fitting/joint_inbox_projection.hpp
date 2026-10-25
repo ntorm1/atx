@@ -7,6 +7,12 @@
 #include <span>
 
 #include "atx/vol/api/fitting/american_price_slice.hpp"
+#include "fitting/joint_working_set_work.hpp"
+
+namespace atx::vol::research {
+class JointRowObserver;
+struct JointRowRawSource;
+}
 
 namespace atx::vol::detail {
 
@@ -34,6 +40,12 @@ struct JointInboxDiagnostics {
   bool certificate_passed = false;
 };
 
+// Private research selection. Compiled uses the linked solver's explicit build
+// mode; Original always bypasses optional corrections. An unavailable Centrality
+// selection is InvalidInput, never silently relabeled as an experimental result.
+enum class JointDirectionMode { Compiled, Original, Centrality };
+[[nodiscard]] bool joint_centrality_compiled() noexcept;
+
 // Optional observational profiling, never consulted by the solve. Null profile
 // performs no clock reads. Times are cumulative nanoseconds; iteration includes
 // residual/assembly/factor/direction/update, and total includes all stages.
@@ -57,6 +69,17 @@ struct JointInboxProfile {
   std::size_t factor_nonzeros = 0; // strict lower L; D has one entry per variable
   std::size_t factorizations = 0;
   std::size_t directions = 0;
+  bool centrality_enabled = false;
+  std::uint64_t centrality_setup_ns = 0;
+  std::uint64_t centrality_ns = 0; // nested within iteration/total, never additive
+  std::size_t centrality_attempts = 0, centrality_solves = 0, centrality_accepted = 0;
+  std::size_t centrality_zero_target = 0, centrality_nonfinite = 0;
+  std::size_t centrality_nonimproving = 0, centrality_solve_refused = 0;
+  std::size_t centrality_invalid_target = 0, centrality_input_refusals = 0;
+  std::size_t centrality_setup_refusals = 0, centrality_allocation_refusals = 0;
+  // Reserved/requested numeric payload plus the fixed workspace object;
+  // excludes allocator metadata and existing Newton factor storage.
+  std::size_t centrality_workspace_bytes = 0;
 };
 
 struct TerminalFloorRecovery {
@@ -84,6 +107,12 @@ struct TerminalFloorRecovery {
 project_joint_in_box(std::span<const JointInboxSlice> slices,
                      std::size_t max_iterations = 100,
                      JointInboxDiagnostics *diagnostics = nullptr,
-                     JointInboxProfile *profile = nullptr);
+                     JointInboxProfile *profile = nullptr,
+                     JointDirectionMode mode = JointDirectionMode::Compiled,
+                     research::JointRowObserver *observer = nullptr,
+                     const research::JointRowRawSource *raw_census = nullptr,
+                     JointConstraintMode constraints = JointConstraintMode::Compiled,
+                     JointWorkingSetWork *working = nullptr,
+                     const JointWorkingSetControl *control = nullptr);
 
 } // namespace atx::vol::detail

@@ -25,6 +25,7 @@
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "pricing/american_family_error.hpp" // RootAcceptance (lane K3)
+#include "pricing/american_iv_seed_batch.hpp"
 #include "pricing/american_iv_batch_status.hpp" // K2: the native attempt's typed outcome
 
 namespace atx::vol {
@@ -515,10 +516,17 @@ struct IvPreparedEconomic {
   double price_upper = std::numeric_limits<double>::quiet_NaN();
   double bound_price = std::numeric_limits<double>::infinity();
 };
-// Full cold price/floor/exercise/chord proof at the original solved lane sigma.
-// Separate from a bounded family interval and from strict K3 IV acceptance.
+// Prepared target candidate at the original solved lane sigma. The origin
+// distinguishes full scalar proof from an explicit empirical-vector target;
+// both retain scalar floor/chord requirements and exact request/model keys.
 struct IvPreparedColdSeed {
   bool valid = false;
+  IvPriceSeedKernel kernel = IvPriceSeedKernel::ScalarReference;
+  IvPriceSeedOrigin origin = IvPriceSeedOrigin::None;
+  double allowance = 0.0;
+  double vector_price = std::numeric_limits<double>::quiet_NaN();
+  double vector_boundary = std::numeric_limits<double>::quiet_NaN();
+  AlExerciseClass vector_class = AlExerciseClass::UnsupportedRegime;
   const AlSigmaQFamily *family = nullptr;
   const ValidatedErrorEnvelope *envelope = nullptr;
   std::uint64_t preparation_stamp = 0;
@@ -571,7 +579,10 @@ struct IvNativeBatchWork {
   std::uint64_t cold_seed_roots = 0;
   std::uint64_t cold_seed_floor_preparations = 0;
   std::uint64_t cold_seed_floor_hits = 0;
-  std::uint64_t cold_seed_ns = 0;
+  std::uint64_t cold_seed_ns = 0; // scalar helper work only
+  IvPriceSeedBatchStats seed_vector{};
+  std::array<std::uint64_t, kIvPriceSeedRetryCount> seed_vector_retries{};
+  std::uint64_t seed_candidate_ns = 0; // inclusive packing/destruction, either mode
 };
 
 // Whether premium_root's family-native branch admits the price: finite inputs, strictly
@@ -629,17 +640,20 @@ void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnv
     const IvNativeBatchRequest &request, double budget, const IvPremiumPrepared &prepared,
     const std::optional<AlOpts> &opts) noexcept;
 
-// After economic preparation, try the unchanged full cold seed proof only for
-// eligible bounded refusals. The local floor cache owns all state and dies here.
-// Refusal leaves the caller's original strict K3/native route available.
+// After economic preparation, try eligible bounded refusals. Default mode uses
+// the unchanged full scalar proof; explicit research mode may prepare empirical
+// vector-origin targets, keeping exact scalar floors and complete scalar retries.
+// Owners die here; refusal retains the original strict K3/native route.
 void iv_native_prepare_cold_seeds(const AlSigmaQFamily &f,
     const ValidatedErrorEnvelope *env, std::span<const IvNativeBatchRequest> requests,
     std::span<const double> budgets, std::span<IvPremiumPrepared> out,
-    const std::optional<AlOpts> &opts, bool timed, IvNativeBatchWork &work);
+    const std::optional<AlOpts> &opts, bool timed, IvNativeBatchWork &work,
+    IvPriceSeedKernel kernel = IvPriceSeedKernel::ScalarReference);
 [[nodiscard]] std::optional<double> iv_native_cold_seed_candidate(
     const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
     const IvNativeBatchRequest &request, double budget, const IvPremiumPrepared &prepared,
-    const std::optional<AlOpts> &opts) noexcept;
+    const std::optional<AlOpts> &opts,
+    IvPriceSeedKernel kernel = IvPriceSeedKernel::ScalarReference) noexcept;
 
 // IvOpts-typed inversion under the Premium strategy with optional per-contract memory
 // (nullptr: none). `opts.strategy` is ignored (this IS Premium); every other field

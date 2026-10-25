@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -187,6 +188,8 @@ TEST(BacktestDbSeries, SeriesAndCheckpointRoundTrip) {
   EXPECT_EQ(loaded->backtest.step_pnl_total, input.backtest.step_pnl_total);
   EXPECT_EQ(loaded->backtest.gross_vega_abs, input.backtest.gross_vega_abs);
   EXPECT_EQ(loaded->backtest.nav_liquidation, input.backtest.nav_liquidation);
+  EXPECT_TRUE(loaded->backtest.n_priced_marks.empty());
+  EXPECT_TRUE(loaded->backtest.n_greeks_unavailable.empty());
   ASSERT_EQ(loaded->backtest.signals.size(), 1u);
   EXPECT_EQ(loaded->backtest.signals.front(), input.backtest.signals.front());
   ASSERT_EQ(loaded->checkpoint.portfolio.lots.size(), 1u);
@@ -196,6 +199,91 @@ TEST(BacktestDbSeries, SeriesAndCheckpointRoundTrip) {
   EXPECT_DOUBLE_EQ(loaded->checkpoint.hedge_shares.front().shares, -12.5);
   EXPECT_EQ(loaded->next_cohort, 1u);
   EXPECT_EQ(loaded->sources, input.sources);
+  std::filesystem::remove_all(root);
+}
+
+TEST(BacktestDbSeries, ObservedCoverageSurvivesStoreReadThenKnownAppend) {
+  const auto root = test_root("observed_coverage");
+  auto db = BacktestDb::create(root.string());
+  ASSERT_TRUE(db);
+  const auto value = make_template("coverage");
+  ASSERT_TRUE(db->register_template(value));
+  auto input = make_series(101u);
+  input.backtest.n_priced_marks = {1., 1., 1.};
+  input.backtest.n_greeks_unavailable = {0., 1., 0.};
+  ASSERT_TRUE(db->write_series(value.id, "AAPL", 101u, input));
+  auto loaded = db->load_series(value.id, "AAPL");
+  ASSERT_TRUE(loaded);
+  EXPECT_EQ(loaded->backtest.n_priced_marks, input.backtest.n_priced_marks);
+  EXPECT_EQ(loaded->backtest.n_greeks_unavailable, input.backtest.n_greeks_unavailable);
+  EXPECT_EQ(loaded->backtest.signals, input.backtest.signals);
+  auto continuation = input.backtest;
+  continuation.date = {"2026-01-07", "2026-01-08", "2026-01-09"};
+  continuation.ts_ns = {400, 500, 600};
+  // This suffix has no inception row: every recorded row is a new step.
+  continuation.step_pnl_total = continuation.pnl_total;
+  ASSERT_TRUE(append_backtest_results(loaded->backtest, continuation));
+  EXPECT_EQ(loaded->backtest.n_priced_marks, (std::vector<double>{1., 1., 1., 1., 1., 1.}));
+  EXPECT_EQ(loaded->backtest.n_greeks_unavailable,
+            (std::vector<double>{0., 1., 0., 0., 1., 0.}));
+  loaded->checkpoint.completed_step_index = 5u;
+  loaded->checkpoint.base_ts_ns = 600;
+  for (std::size_t i = 0; i < continuation.size(); ++i) {
+    auto source = input.sources[i];
+    source.date = continuation.date[i];
+    loaded->sources.push_back(std::move(source));
+  }
+  const auto extended_write = db->write_series(value.id, "AAPL", 101u, *loaded);
+  ASSERT_TRUE(extended_write) << (extended_write ? "" : extended_write.error().to_string());
+  auto extended = db->load_series(value.id, "AAPL");
+  ASSERT_TRUE(extended);
+  EXPECT_EQ(extended->backtest.n_priced_marks, loaded->backtest.n_priced_marks);
+  EXPECT_EQ(extended->backtest.n_greeks_unavailable, loaded->backtest.n_greeks_unavailable);
+  std::filesystem::remove_all(root);
+}
+
+TEST(BacktestDbSeries, InvalidObservedCoverageDoesNotPublishOrReplace) {
+  const auto root = test_root("invalid_coverage");
+  auto db = BacktestDb::create(root.string());
+  ASSERT_TRUE(db);
+  const auto value = make_template("coverage");
+  ASSERT_TRUE(db->register_template(value));
+  auto input = make_series(101u);
+  input.backtest.n_priced_marks = {1., 1., 1.};
+  input.backtest.n_greeks_unavailable = {0., 1., 0.};
+  ASSERT_TRUE(db->write_series(value.id, "AAPL", 101u, input));
+  const auto generation = db->generation();
+  const auto rejects_without_publication = [&](const BacktestSeriesData &invalid) {
+    const auto status = db->write_series(value.id, "AAPL", 101u, invalid);
+    ASSERT_FALSE(status);
+    EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(db->generation(), generation);
+    const auto loaded = db->load_series(value.id, "AAPL");
+    ASSERT_TRUE(loaded);
+    EXPECT_EQ(loaded->backtest.n_priced_marks, input.backtest.n_priced_marks);
+    EXPECT_EQ(loaded->backtest.n_greeks_unavailable, input.backtest.n_greeks_unavailable);
+  };
+  auto invalid = input;
+  invalid.backtest.n_priced_marks.clear();
+  rejects_without_publication(invalid);
+  invalid = input;
+  invalid.backtest.n_greeks_unavailable.clear();
+  rejects_without_publication(invalid);
+  for (const double count : {-1., .5, 4294967296., 9007199254740992.,
+                              std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()}) {
+    invalid = input;
+    invalid.backtest.n_priced_marks[0] = count;
+    rejects_without_publication(invalid);
+  }
+  invalid = input;
+  invalid.backtest.n_greeks_unavailable[0] = 2.;
+  rejects_without_publication(invalid);
+  for (const auto name : {"n_priced_marks", "n_greeks_unavailable"}) {
+    invalid = input;
+    invalid.backtest.signals.emplace_back(name, std::vector<double>{1., 1., 1.});
+    rejects_without_publication(invalid);
+  }
   std::filesystem::remove_all(root);
 }
 

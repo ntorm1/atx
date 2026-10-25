@@ -48,6 +48,7 @@
 #include <limits>
 #include <mutex>  // solve ledger registry lock (register/scrape only; never the hot path)
 #include <vector> // solve-ledger per-step trace sink
+#include "fitting/joint_working_set_work.hpp"
 
 namespace atx::vol::counters {
 
@@ -1156,7 +1157,27 @@ inline constexpr const char *kReimplyStageNames[kReimplyStageCount] = {
 static_assert(every_name_present(kReimplyStageNames));
 
 // One chain's counters (the interface later lanes read by name).
+struct CandidateProofBatchCounters {
+  std::uint64_t screen_proposals = 0, screen_seeds = 0, fast_continuations = 0;
+  std::uint64_t allocation_refusals = 0, proof_allocation_refusals = 0;
+  std::uint64_t collection_allocation_fallbacks = 0, setup_allocation_fallbacks = 0;
+  std::uint64_t complete_scalar_fallbacks = 0;
+  std::uint64_t vector_packs = 0, vector_lanes = 0, vector_admitted = 0;
+  std::uint64_t scalar_fallbacks = 0, scalar_admitted = 0;
+  std::uint64_t proof_floor_preparations = 0, proof_floor_hits = 0;
+  std::uint64_t continuation_floor_preparations = 0, continuation_floor_hits = 0;
+  std::uint64_t publication_floor_preparations = 0, publication_floor_hits = 0;
+  std::uint64_t setup_ns = 0, proposal_ns = 0, continuation_ns = 0, inclusive_ns = 0;
+  std::uint64_t proof_ns = 0, vector_ns = 0, scalar_ns = 0, floor_ns = 0;
+  // Entire collection/prefix/proof/Search operation, including owned storage
+  // destruction; overlaps the component clocks and the Certify bucket.
+  std::uint64_t finalization_ns = 0;
+};
+
 struct FitTimingCounters {
+  // Global projection is charged once to the first chain, including failed
+  // attempts. Aggregate totals retain every call; detailed slots are first-call only.
+  atx::vol::detail::JointWorkingSetAggregate joint_working_set;
   std::uint32_t al_price_calls{0};       // AL boundary solves on the fitting thread (every AL
                                          // price, including those inside American IV inversions)
   std::uint32_t al_greeks_calls{0};      // AL full-Greek bundles (any route) on that thread
@@ -1190,6 +1211,9 @@ struct FitTimingCounters {
   // Historical aggregate names: the candidate chain may now begin with Screen.
   std::uint32_t reimply_fast_attempts{0};
   std::uint32_t reimply_fast_roots{0};
+  std::uint32_t reimply_candidate_batch_calls{0};
+  std::uint32_t reimply_candidate_batch_requests{0};
+  CandidateProofBatchCounters reimply_candidate_batch;
   // Fast-only proposal outcomes, after any preceding Screen refusal.
   std::uint32_t reimply_proposal_stops{0};
   std::uint32_t reimply_proposal_roots{0};
@@ -1211,6 +1235,17 @@ struct FitTimingCounters {
   std::uint32_t reimply_cold_seed_floor_preparations{0};
   std::uint32_t reimply_cold_seed_floor_hits{0};
   std::uint64_t reimply_cold_seed_ns{0};
+  // Isolated empirical target arithmetic is never counted as scalar cold proof.
+  std::uint32_t reimply_seed_vector_requests{0};
+  std::uint32_t reimply_seed_vector_packs{0};
+  std::uint32_t reimply_seed_vector_lanes{0};
+  std::uint32_t reimply_seed_vector_roots{0};
+  std::uint32_t reimply_seed_vector_hits{0};
+  std::uint32_t reimply_seed_scalar_fallbacks{0};
+  std::array<std::uint32_t, 9> reimply_seed_vector_retries{};
+  std::uint64_t reimply_seed_vector_ns{0};
+  std::uint64_t reimply_seed_vector_floor_ns{0};
+  std::uint64_t reimply_seed_candidate_ns{0}; // inclusive mode-independent stage
   // RootAcceptanceKind / RootAcceptanceReason, exactly as deam_accept_by_* below.
   std::array<std::uint32_t, 5> reimply_accept_by_kind{};
   std::array<std::uint32_t, 9> reimply_accept_by_reason{};

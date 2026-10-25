@@ -96,6 +96,7 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/american_sigma_q_family_greeks.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
+    src/pricing/american_iv_candidate_capture.cpp
     # K3 (r5): the (sigma, q) family's error envelope and root-acceptance context
     src/pricing/american_family_error.cpp
     src/pricing/dividend.cpp
@@ -369,7 +370,46 @@ target_sources(atx-vol PRIVATE
     ${ATX_VOL_PERSIST_SOURCES}
 )
 
+# Isolated binary experiment. The public policy/default remains scalar unless
+# this explicit build switch is selected; benchmark provenance queries the actual
+# linked fitting implementation, not a separately compiled tool macro.
+option(ATX_VOL_EMPIRICAL_VECTOR_SEEDS "Research-only empirical vector seed targets" OFF)
+if(ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
+    set_property(SOURCE src/fitting/quote_slice.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_EMPIRICAL_VECTOR_SEEDS=1)
+endif()
+
 # ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------
+option(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS "Research-only batched empirical candidate proofs" OFF)
+if(ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS)
+    set_property(SOURCE src/fitting/quote_slice.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS=1)
+endif()
+
+# Private observation only; no reduced solver or numerical dispatch.
+option(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH "Research-only complete joint row observation" OFF)
+target_sources(atx-vol PRIVATE src/fitting/joint_row_census.cpp)
+if(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+    set_property(SOURCE src/fitting/joint_inbox_projection.cpp
+        src/fitting/joint_row_census.cpp src/fitting/raw_price_draft.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_JOINT_ROW_CENSUS_RESEARCH=1)
+endif()
+# Private whole-QP experiment, separately gated from the standalone primitive.
+option(ATX_VOL_JOINT_CENTRALITY_RESEARCH "Research-only joint centrality correction" OFF)
+if(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+    set_property(SOURCE src/fitting/joint_inbox_projection.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_JOINT_CENTRALITY_RESEARCH=1)
+    target_sources(atx-vol PRIVATE bench/joint-centrality/corrector.cpp)
+endif()
+option(ATX_VOL_JOINT_WORKING_SET_RESEARCH "Research-only bounded joint row generation" OFF)
+if(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if(ATX_VOL_JOINT_CENTRALITY_RESEARCH OR ATX_VOL_QP_FAER_RESEARCH_LIBRARY)
+        message(FATAL_ERROR "Joint working set must use original directions and factor backend")
+    endif()
+    set_property(SOURCE src/fitting/joint_inbox_projection.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_JOINT_WORKING_SET_RESEARCH=1)
+endif()
+
 # All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
 # AVX2+FMA intrinsics and get the ISA enabled PER-FILE (NOT library-wide) so the
 # rest of atx-vol stays baseline x86-64 and the binary loads on any CPU. Runtime
@@ -1158,6 +1198,33 @@ if(ATX_BUILD_TOOLS)
         include(bench/quantlib/quantlib.cmake)
     endif()
     option(ATX_VOL_BUILD_GREEK_AUDIT "Build offline Greek corpus diagnostics" OFF)
+    option(ATX_VOL_CAPTURE_COLD_SEEDS "Research-only cold seed CSV observation" OFF)
+    option(ATX_VOL_CAPTURE_PRICE_CANDIDATES "Research-only bounded proposal/proof capture" OFF)
+    if(ATX_VOL_CAPTURE_PRICE_CANDIDATES)
+        set_property(SOURCE src/pricing/american_iv.cpp src/pricing/american_iv_candidate_capture.cpp
+            APPEND PROPERTY COMPILE_DEFINITIONS ATX_VOL_CAPTURE_PRICE_CANDIDATES=1)
+    endif()
+    if(ATX_VOL_CAPTURE_COLD_SEEDS AND ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
+        message(FATAL_ERROR "Scalar cold-seed capture cannot observe an empirical-vector binary")
+    endif()
+    if(ATX_VOL_CAPTURE_COLD_SEEDS)
+        set_property(SOURCE src/pricing/american_iv.cpp APPEND PROPERTY
+            COMPILE_DEFINITIONS ATX_VOL_CAPTURE_COLD_SEEDS=1)
+    endif()
+    option(ATX_VOL_BUILD_COLD_SEED_REPLAY "Build isolated cold Reference seed replay" OFF)
+    if(ATX_VOL_BUILD_COLD_SEED_REPLAY)
+        add_executable(atx-vol-cold-seed-replay bench/cold-seed/replay_main.cpp)
+        target_compile_definitions(atx-vol-cold-seed-replay PRIVATE
+            "ATX_VOL_COLD_SEED_REPLAY_IPO=$<BOOL:${CMAKE_INTERPROCEDURAL_OPTIMIZATION}>")
+        if(MSVC)
+            target_compile_options(atx-vol-cold-seed-replay PRIVATE /arch:AVX2)
+        else()
+            target_compile_options(atx-vol-cold-seed-replay PRIVATE -mavx2 -mfma)
+        endif()
+        target_include_directories(atx-vol-cold-seed-replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(atx-vol-cold-seed-replay PRIVATE atx-vol-bench-clocks
+            atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    endif()
     if(ATX_VOL_BUILD_GREEK_AUDIT)
         add_executable(atx-vol-greek-audit bench/american-greeks/greek_main.cpp)
         target_link_libraries(atx-vol-greek-audit PRIVATE
@@ -1177,6 +1244,7 @@ if(ATX_BUILD_TOOLS)
     target_link_libraries(atx-vol-ddiv-latency PRIVATE atx-vol-bench-clocks atx::vol
         atx::core atx_warnings nlohmann_json::nlohmann_json)
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
+        tools/quote_bench_retained_audit.cpp
         tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp
         tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
     target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings
