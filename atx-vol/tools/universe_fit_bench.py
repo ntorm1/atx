@@ -988,12 +988,31 @@ def failure_table(cards: list[dict]) -> list[dict]:
     return out
 
 
-def group_metrics(rows: pl.DataFrame, cards: list[dict], key: str, labelled: bool) -> list[dict]:
+# Chain-level fields (a chain's shape breaks, probe counts and fit wall) that a row-level band
+# such as moneyness cannot split; they are null there and live in the chain cards.
+CHAIN_LEVEL_FIELDS = ("shape_monotone", "shape_convex", "shape_calendar", "shape_duplicate",
+                      "fit_cpu_s", "rows_per_cpu_s", "chain_wall_us_p50", "chain_wall_us_p99",
+                      "greeks_evaluated", "greeks_refused", "greeks_sanity_fail",
+                      "reprice_mismatch_rows", "reprice_max_abs")
+
+
+def group_metrics(rows: pl.DataFrame, cards: list[dict], key: str, labelled: bool,
+                  row_level: bool = False) -> list[dict]:
+    """Metrics per band. A chain-level band (DTE: one expiry per chain) takes whole chains; a
+    row-level band (moneyness) takes its rows: refusals are recounted from the rows' status and the
+    chain-level fields are null."""
     out = []
     for value in sorted(v for v in rows[key].unique().to_list() if v is not None):
         sub = rows.filter(pl.col(key) == value)
-        chains = set(sub["chain_id"].unique().to_list())
-        out.append({key: value, **metrics(sub, [c for c in cards if c["chain_id"] in chains], labelled)})
+        chains = set(zip(sub["bucket_et"].to_list(), sub["chain_id"].to_list()))
+        mine = [c for c in cards if (c["bucket_et"], c["chain_id"]) in chains]
+        m = metrics(sub, mine, labelled)
+        if row_level:
+            m.update({k: None for k in CHAIN_LEVEL_FIELDS})
+            counts = sub.filter(~pl.col("status").is_in(list(SERVED)))["status"].value_counts()
+            m["refusals"] = dict(sorted((str(r["status"]), int(r["count"]))
+                                        for r in counts.to_dicts()))
+        out.append({key: value, **m})
     return out
 
 
@@ -1116,6 +1135,14 @@ SCORE_ROW_COLUMNS = ("bucket_et", "chain_id", "row_id", "eligible", "served_pric
                      "price_err_spreads", "dte_band", "moneyness_band", "status")
 
 
+def native_cost(native: dict) -> dict:
+    """The native tool's own shard aggregates (present under every policy, unlike graded
+    per-chain timing, which a policy file must request)."""
+    return {k: native.get(k) for k in ("chain_latency_us_p50", "chain_latency_us_p95",
+                                       "chain_latency_us_p99", "fit_and_reprice_seconds",
+                                       "served_rows", "fitted_chains")}
+
+
 def assemble_report(rows: pl.DataFrame, cards: list[dict], infos: list[dict], tier: str,
                     args: argparse.Namespace) -> dict:
     labelled = tier == "labelled-panel"
@@ -1147,12 +1174,13 @@ def assemble_report(rows: pl.DataFrame, cards: list[dict], infos: list[dict], ti
             [c for c in cards if c["bucket_et"] == i["bucket"]], labelled)} for i in infos],
         "by_archetype": archetype_metrics(rows, cards, labelled),
         "by_dte_band": group_metrics(rows, cards, "dte_band", labelled),
-        "by_moneyness_band": group_metrics(rows, cards, "moneyness_band", labelled),
+        "by_moneyness_band": group_metrics(rows, cards, "moneyness_band", labelled, row_level=True),
         "failure_modes": failure_table(cards),
         "worst": worst_lists(cards),
         "run_cost": [{"bucket_et": i["bucket"], "shards": [
-            {"rows": s["rows"], "fit": s.get("fit"), "probe_wall_s": (s.get("probe") or {}).get("process_wall_s")}
-            for s in i["run"]["shards"]]} for i in infos],
+            {"rows": s["rows"], "fit": s.get("fit"), "probe_wall_s": (s.get("probe") or {}).get("process_wall_s"),
+             "native": native_cost(r["native_report"])}
+            for s, r in zip(i["run"]["shards"], i["receipts"])]} for i in infos],
         "chains": sorted(cards, key=chain_key),
     }
     return report
@@ -1299,6 +1327,15 @@ def summary_markdown(reports: list[tuple[dict, list[dict], str]]) -> str:
                 lines.append(f"| {b['bucket_et']} | {_fmt(b['rows'])} | {_fmt(b['chains'])} | "
                              f"{_fmt(b['price_coverage'])} | {_fmt(b['containment'])} | "
                              f"{_fmt(b.get('vol_bp_rmse'))} | {_fmt(b['chain_wall_us_p99'])} |")
+        lines += ["", "### Run cost per shard (unqualified)", "",
+                  "| bucket | rows | fit CPU s | fit wall s | probe wall s | native chain p50 us | "
+                  "native chain p99 us |", "|---|---|---|---|---|---|---|"]
+        for rc in report["run_cost"]:
+            for sh in rc["shards"]:
+                fit, nat = sh.get("fit") or {}, sh.get("native") or {}
+                lines.append(f"| {rc['bucket_et']} | {_fmt(sh['rows'])} | {_fmt(fit.get('process_cpu_s'))} | "
+                             f"{_fmt(fit.get('process_wall_s'))} | {_fmt(sh.get('probe_wall_s'))} | "
+                             f"{_fmt(nat.get('chain_latency_us_p50'))} | {_fmt(nat.get('chain_latency_us_p99'))} |")
         modes = [m for m in report["failure_modes"] if m["chains"]]
         arches = sorted({a for m in modes for a in m["by_archetype"]})
         lines += ["", "### Failure modes (primary, first matching rule)", "",
