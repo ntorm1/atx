@@ -85,8 +85,10 @@ The licensed store `C:\atx-data\spiderrock-30min` is read-only. The output root 
 the environment variable `ATX_VOL_PERSIST_ROOT`; `build`, `bench` and `verify --date` refuse
 (exit 2) when neither is set. There is no compiled-in default: an absolute literal would name a
 directory of whichever machine layout the binary was built for. On the research host the
-sanctioned root is `C:\atx-cache\persist\` (set `ATX_VOL_PERSIST_ROOT` to it). The tool passes conventions version 1
-(`kStateStoreConventionsVersion`, to become `kSpiderRockConventionsVersion` at integration).
+sanctioned root is `C:\atx-cache\persist\` (set `ATX_VOL_PERSIST_ROOT` to it). The tool passes
+the loader's `kSpiderRockConventionsVersion` (3 since lane E: the vendor-years clock and the
+sticky carry mode), so archives built by an older loader are rebuilt, and `inspect` reports
+`conventions v3`. The measured numbers below were taken with conventions version 1.
 
 ## Store layout and rebuild rules
 
@@ -102,7 +104,9 @@ refused with `SchemaMismatch` at open and its buckets are rebuilt by the next `b
 ```
 
 A bucket is rebuilt when its source fingerprint changes: loader conventions version,
-`ATX_VOL_VERSION`, every `SpiderRockStoreSpec` field, the bucket, and the (name, size,
+`ATX_VOL_VERSION`, every `SpiderRockStoreSpec` field (store root, date, underliers,
+max_underliers, the time convention and its five `VolTimeParams`, american_only,
+standard_roots_only, spot_framework_only, carry_mode, clock), the bucket, and the (name, size,
 last-write time) of each source parquet file; or when the extras choice changes or `--force`;
 or when the published file fails a Full verification (the skip check verifies Full at any size:
 it costs ~50 ms against the ~1.8 s load it saves, so payload damage above the 64 MiB

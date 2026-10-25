@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -403,6 +404,102 @@ TEST(PersistStateStore, PayloadDamageWithMatchingFingerprintIsRebuilt) {
   EXPECT_TRUE(slurp(second->front().path) == pristine) << "the repair differs from the first build";
   auto healed = StateStore::open(out.string()).value().open_bucket(spec.date, "1000");
   ASSERT_TRUE(healed.has_value()) << to_string(healed.error().status);
+}
+
+// Lane E review 2: the source fingerprint folds EVERY SpiderRockStoreSpec field (design
+// D11), so building into an existing store with another loader option (here the clock)
+// rebuilds every bucket instead of silently skipping archives built under the default.
+TEST(PersistStateStore, LoaderOptionChangeRebuildsEveryBucket) {
+  const SpiderRockStoreSpec spec = spec_of(shared_store());
+  const auto fp = [](const SpiderRockStoreSpec &x) {
+    return spiderrock_state_source_fingerprint(x, "1000", kConventions).value();
+  };
+  const std::uint64_t base = fp(spec);
+  const auto moved = [&](const char *field, auto &&edit) {
+    SpiderRockStoreSpec x = spec;
+    edit(x);
+    EXPECT_NE(fp(x), base) << field << " is not in the source fingerprint";
+  };
+  // store_root and date select files, so they move the fingerprint only with real files
+  // behind them: bucket 1000 copied (bytes and last-write times) under a second root, once
+  // for the same date and once for another.
+  const fs::path copy_root = fresh_dir("options-src");
+  const fs::path source = fs::path{spec.store_root} / ("date=" + spec.date) / "bucket_et=1000";
+  for (const std::string &day : {spec.date, std::string("2026-01-02")}) {
+    const fs::path dst = copy_root / ("date=" + day) / "bucket_et=1000";
+    fs::create_directories(dst);
+    for (const fs::directory_entry &e : fs::directory_iterator(source)) {
+      fs::copy_file(e.path(), dst / e.path().filename());
+      fs::last_write_time(dst / e.path().filename(), fs::last_write_time(e.path()));
+    }
+  }
+  SpiderRockStoreSpec same_files = spec;
+  same_files.store_root = copy_root.string();
+  EXPECT_NE(fp(same_files), base) << "store_root is not in the source fingerprint";
+  SpiderRockStoreSpec other_day = same_files;
+  other_day.date = "2026-01-02";
+  EXPECT_NE(fp(other_day), fp(same_files)) << "date is not in the source fingerprint";
+  moved("underliers", [](SpiderRockStoreSpec &x) { x.underliers = {"AAA"}; });
+  moved("max_underliers", [](SpiderRockStoreSpec &x) { x.max_underliers = 3; });
+  moved("time.convention", [](SpiderRockStoreSpec &x) {
+    x.time.convention = TimeConvention::VolTime;
+  });
+  moved("time.vol_time", [](SpiderRockStoreSpec &x) { x.time.vol_time.alpha = 0.5; });
+  moved("american_only", [](SpiderRockStoreSpec &x) { x.american_only = !x.american_only; });
+  moved("standard_roots_only", [](SpiderRockStoreSpec &x) {
+    x.standard_roots_only = !x.standard_roots_only;
+  });
+  moved("spot_framework_only", [](SpiderRockStoreSpec &x) {
+    x.spot_framework_only = !x.spot_framework_only;
+  });
+  moved("carry_mode", [](SpiderRockStoreSpec &x) {
+    x.carry_mode = x.carry_mode == SpiderRockCarryMode::Published
+                       ? SpiderRockCarryMode::ImpliedFromCalls
+                       : SpiderRockCarryMode::Published;
+  });
+  moved("clock", [](SpiderRockStoreSpec &x) {
+    x.clock = x.clock == SpiderRockClock::State ? SpiderRockClock::VendorYears
+                                                : SpiderRockClock::State;
+  });
+
+  ASSERT_EQ(spec.clock, SpiderRockClock::VendorYears) << "the test assumes the default clock";
+  const std::vector<std::string> buckets =
+      list_spiderrock_buckets(spec.store_root, spec.date).value();
+  const fs::path out = fresh_dir("options");
+  auto first = build_state_store_from_spiderrock(spec, buckets, options_of(out));
+  ASSERT_TRUE(first.has_value());
+  const auto t_overrides = [&](std::string_view bucket, bool &any_finite, bool &all_nan) {
+    auto a = StateStore::open(out.string()).value().open_bucket(spec.date, bucket);
+    ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+    for (const UnderlierState &u : a->state().underliers()) {
+      for (const ExpiryCarry &c : u.term_carry) {
+        any_finite = any_finite || std::isfinite(c.T_override);
+        all_nan = all_nan && std::isnan(c.T_override);
+      }
+    }
+  };
+  bool vendor_finite = false;
+  bool vendor_nan = true;
+  t_overrides("1000", vendor_finite, vendor_nan);
+  EXPECT_TRUE(vendor_finite) << "the vendor clock should carry the vendor's years";
+
+  SpiderRockStoreSpec state_clock = spec;
+  state_clock.clock = SpiderRockClock::State;
+  auto second = build_state_store_from_spiderrock(state_clock, buckets, options_of(out));
+  ASSERT_TRUE(second.has_value());
+  ASSERT_EQ(second->size(), buckets.size());
+  for (std::size_t k = 0; k < buckets.size(); ++k) {
+    EXPECT_FALSE((*second)[k].skipped) << buckets[k] << " was skipped under another clock";
+    EXPECT_NE((*second)[k].source_fingerprint, (*first)[k].source_fingerprint) << buckets[k];
+    bool finite = false;
+    bool nan = true;
+    t_overrides(buckets[k], finite, nan);
+    EXPECT_TRUE(nan) << buckets[k] << ": the State clock has no T_override";
+  }
+  // ...and the new fingerprint is stable: the same spec again skips every bucket.
+  auto third = build_state_store_from_spiderrock(state_clock, buckets, options_of(out));
+  ASSERT_TRUE(third.has_value());
+  for (const StateStoreBucketReport &r : *third) EXPECT_TRUE(r.skipped) << r.bucket_et;
 }
 
 TEST(PersistStateStore, SelectionBucketFeedsBenchBookSelector) {
