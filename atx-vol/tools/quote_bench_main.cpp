@@ -9,6 +9,7 @@
 #include "atx/vol/api/pricing/dividend.hpp"
 #include "bench_clocks.hpp"
 #include "core/parallel_for.hpp"
+#include "fitting/calendar_walk_work.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/joint_inbox_projection.hpp"
 #include "fitting/reimply_seed_mode.hpp"
@@ -916,6 +917,17 @@ void add_ladder_fields(const QuoteSurfaceSlice &slice, Json &entry) {
   entry["outside_quotes"] = slice.outside_quotes;
 }
 
+Json calendar_walk_json(const atx::vol::detail::CalendarWalkWork &work) {
+  return {{"schema", "atx-vol-calendar-walk-work-v1"},
+          {"clock_scope", "pair_setup_and_walk_excludes_view_capture"},
+          {"exclusive_fit_bucket", false},
+          {"attempted_pairs", work.attempted_pairs},
+          {"overlapping_pairs", work.overlapping_pairs},
+          {"knots", work.knots}, {"midpoints", work.midpoints},
+          {"side_comparisons", work.side_comparisons},
+          {"node_advances", work.node_advances}, {"wall_ns", work.wall_ns}};
+}
+
 // --timing-detail: one chain's fit timing counters (exclusive wall per bucket, plus
 // the inclusive repair-rung cross-cut).
 Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
@@ -1050,6 +1062,8 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"certification_passes", t.certification_passes},
           {"channel_solves", t.channel_solves}, {"jacobian_evals", t.jacobian_evals},
           {"rung_attempts", t.rung_attempts}, {"calendar_pairs", t.calendar_pairs},
+          {"calendar_certificate", calendar_walk_json(t.calendar_certificate)},
+          {"calendar_publication", calendar_walk_json(t.calendar_publication)},
           {"projections", t.projections}, {"iv_newton_iters", t.iv_newton_iters},
           {"al_by_bucket", std::move(al_by_bucket)},
           {"repair_rung_visits", t.repair_rung_visits}, {"repair_rung_us", t.repair_rung_us},

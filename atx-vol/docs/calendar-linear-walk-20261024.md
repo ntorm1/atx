@@ -54,6 +54,15 @@ Without a current recorder there is no clock read or diagnostic write. The
 private helper also accepts a direct optional work sink for focused controls.
 The quote-benchmark serializer is intentionally left to the integration owner.
 
+The subsequent integration adds both groups to each slice's timing JSON with
+schema `atx-vol-calendar-walk-work-v1`, an explicit pair-only clock scope and
+`exclusive_fit_bucket=false`. A two-expiry, 104-row native CLI control verifies
+the actual knot/midpoint/side/cursor counts and that later retained-instance
+proof does not contaminate the cold-fit counters. Its first execution failed
+on the missing JSON group; the implemented report passes that control and all
+eight existing post-fit controls. The combined affected native closure passes
+101 cases. These small controls are separate from full-SPY qualification.
+
 The frozen normalized raw input's strike topology has 33 slices/6,433 unique
 nodes and 528 overlapping pairs. Independently enumerating the closed unions
 gives 102,645 knots and 102,117 midpoints. A complete unmasked pass would make
