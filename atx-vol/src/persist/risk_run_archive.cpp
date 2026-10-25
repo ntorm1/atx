@@ -1463,6 +1463,17 @@ PersistResult<std::size_t> compact_risk_run(std::string_view dir, PersistCodec c
   }
   auto image = build_segment(p, codec, codec == PersistCodec::None ? 3 : level, 4);
   if (!image) return tl::unexpected(image.error());
+  // Nothing would change (one segment that re-frames to its own bytes: a run compacted
+  // again at the same codec / level, or a writer's lone segment): publish nothing — no
+  // superseded file, no new manifest row, so a live writer keeps owning the run. Nothing
+  // is flushed either: the file keeps the durability it was sealed with.
+  if (reader->n_segments() == 1u && seen->entries().size() == 1u) {
+    const std::span<const std::byte> have = reader->segment(0).bytes();
+    if (have.size() == image->size() &&
+        std::memcmp(have.data(), image->data(), have.size()) == 0) {
+      return std::size_t{1};
+    }
+  }
   const auto records = static_cast<std::uint32_t>(
       std::min<std::uint64_t>(p.meta.n_steps, std::numeric_limits<std::uint32_t>::max()));
   if (PersistOutcome ok = publish_compacted(dir, seen->entries(), *image, records, durability);

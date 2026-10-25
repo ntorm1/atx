@@ -236,8 +236,9 @@ manifest changed since it was read (`SegmentMismatch`: every entry's seq and fil
 compared), publishes the merged file under a fresh name and replaces the manifest with its
 single entry (§2.1a; `PersistDirectory::replace_all` was deferred, so this is the compaction
 contract). A seal landing during the compaction makes the compaction refuse; a compaction landing
-first makes the live writer's next seal refuse (§2.1a), so compact finished runs only. The
-superseded segment files stay on disk
+first makes the live writer's next seal refuse (§2.1a), so compact finished runs only. A
+one-segment run whose merged image equals its own bytes (same codec and level) is left untouched
+(no publish, no flush; returns 1). The superseded segment files stay on disk
 (they may be mapped; offline gc removes them). Compressed sections are decoded and CRC-verified
 at open by the container, so nothing allocates after open on either tier.
 

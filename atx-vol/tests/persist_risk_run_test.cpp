@@ -552,7 +552,8 @@ TEST(PersistRiskRun, CompactionIsBitExact) {
     EXPECT_EQ(a->step_info(k).value().segment, 0u) << k;
     if (k > 0) expect_explain_equal(a->materialize_explain(k).value(), rec.explains[k - 1], k);
   }
-  // Compacting a one-segment run is a rewrite of the same columns.
+  // Compacting a one-segment run at the same codec changes nothing (a no-op: see
+  // CompactionOfAnUnchangedSegmentIsANoOp).
   ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::None, 0).value(), 1u);
   auto again = RiskRunArchive::open(dir.string());
   ASSERT_TRUE(again.has_value());
@@ -687,6 +688,7 @@ TEST(PersistRiskRun, RecordedRiskStreamMatchesLiveTotals) {
   ASSERT_TRUE(w->append_frame(stream.current()).has_value());
   std::vector<ExplainTotals> live;
   std::vector<std::vector<double>> live_pnl;
+  std::vector<std::vector<double>> live_carry; // lane E's per-leg carry axis
   for (std::size_t k = 1; k < states.size(); ++k) {
     auto r = stream.step(states[k]->state);
     ASSERT_TRUE(r.has_value()) << r.error().to_string();
@@ -694,6 +696,7 @@ TEST(PersistRiskRun, RecordedRiskStreamMatchesLiveTotals) {
     ASSERT_TRUE(w->append_explain(**r).has_value());
     live.push_back((*r)->total);
     live_pnl.push_back((*r)->pnl_total);
+    live_carry.push_back((*r)->pnl_carry);
     EXPECT_GT((*r)->total.n_ok, 0u) << k;
   }
   ASSERT_TRUE(w->finish().has_value());
@@ -706,7 +709,15 @@ TEST(PersistRiskRun, RecordedRiskStreamMatchesLiveTotals) {
     ASSERT_NE(a->totals(k), nullptr) << k;
     EXPECT_TRUE(same_pod(*a->totals(k), live[k - 1])) << "step " << k;
     EXPECT_TRUE(same_bytes(a->explain(RiskExplainColumn::PnlTotal, k), live_pnl[k - 1])) << k;
+    // The carry column round-trips per leg, bit for bit...
+    EXPECT_TRUE(same_bytes(a->explain(RiskExplainColumn::PnlCarry, k), live_carry[k - 1])) << k;
   }
+  // ... and on real carry movement: the day's carry re-marks give at least one leg a
+  // non-zero pnl_carry (an all-zero column would not prove the round trip).
+  const bool carry_moved = std::any_of(live_carry.begin(), live_carry.end(), [](const auto &v) {
+    return std::any_of(v.begin(), v.end(), [](double x) { return x != 0.0; });
+  });
+  EXPECT_TRUE(carry_moved) << "the synthetic SpiderRock day must move some leg's carry";
   // The day's P&L re-summed from the archive in step order equals the live sum.
   double day_live = 0.0;
   double day_disk = 0.0;
@@ -1146,4 +1157,67 @@ TEST(PersistRiskRun, FlushFinishFlushesEarlierPublishSegments) {
   auto a = RiskRunArchive::open(dir.string());
   ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
   expect_archive_matches(*a, rec);
+}
+
+TEST(PersistRiskRun, CompactionOfAnUnchangedSegmentIsANoOp) {
+  const Market market = make_market(3);
+  RiskRunOptions one;
+  one.segment_bytes = 1;
+  const auto n_files = [](const fs::path &d) {
+    std::size_t n = 0;
+    for (const auto &e : fs::directory_iterator(d)) n += e.is_regular_file() ? 1u : 0u;
+    return n;
+  };
+  const auto newest = [](const fs::path &d) {
+    return PersistDirectory::open(d.string()).value().entries().front();
+  };
+
+  // A compacted run compacted again at the same codec: nothing is republished.
+  const fs::path dir = fresh_dir("noop");
+  const Recorded rec = record_run(market, dir, one);
+  ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::None, 0).value(), 3u);
+  const PersistManifestEntry before = newest(dir);
+  const std::size_t files = n_files(dir);
+  ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::None, 0).value(), 1u);
+  EXPECT_EQ(manifest_size(dir), 1u);
+  EXPECT_EQ(newest(dir).seq, before.seq);
+  EXPECT_EQ(newest(dir).file_crc32c, before.file_crc32c);
+  EXPECT_EQ(n_files(dir), files) << "a no-op leaves no superseded file";
+  // A codec change does change the bytes, so it publishes; the same level again does not.
+  ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::Zstd, 3).value(), 1u);
+  const PersistManifestEntry cold = newest(dir);
+  EXPECT_NE(cold.seq, before.seq);
+  ASSERT_EQ(compact_risk_run(dir.string(), PersistCodec::Zstd, 3).value(), 1u);
+  EXPECT_EQ(newest(dir).seq, cold.seq);
+  auto a = RiskRunArchive::open(dir.string());
+  ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+  expect_archive_matches(*a, rec);
+
+  // A live writer's lone sealed segment: the no-op compaction leaves the writer owning
+  // the run, so its next seal and finish() go through.
+  const fs::path live = fresh_dir("noop-live");
+  RiskStream stream(market.book, RiskKernel::family(), RiskNeeds{}, ExplainOptions{});
+  auto w = RiskRunWriter::create(live.string(), stream.prepared(), one);
+  ASSERT_TRUE(w.has_value());
+  Recorded lrec;
+  ASSERT_TRUE(stream.start(market.states[0]->state).has_value());
+  ASSERT_TRUE(w->append_frame(stream.current()).has_value());
+  lrec.frames.push_back(stream.current());
+  for (std::size_t k = 1; k < market.states.size(); ++k) {
+    auto r = stream.step(market.states[k]->state);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(w->append_frame(stream.current()).has_value()) << k;
+    ASSERT_TRUE(w->append_explain(**r).has_value()) << k;
+    lrec.frames.push_back(stream.current());
+    lrec.explains.push_back(**r);
+    if (k == 1) {
+      ASSERT_EQ(manifest_size(live), 1u);
+      ASSERT_EQ(compact_risk_run(live.string(), PersistCodec::None, 0).value(), 1u);
+    }
+  }
+  lrec.leg_ids = lrec.explains.front().id;
+  ASSERT_TRUE(w->finish().has_value());
+  auto b = RiskRunArchive::open(live.string());
+  ASSERT_TRUE(b.has_value()) << to_string(b.error().status);
+  expect_archive_matches(*b, lrec);
 }
