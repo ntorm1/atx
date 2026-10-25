@@ -173,10 +173,12 @@ only when the kernel is single-threaded; one workspace is re-bound per scenario 
 
 - **Market states:** `build_state_store_from_spiderrock` writes each bucket's `MarketStateStorage`
   as an ATXVPF `.atxms` file (fingerprinted by the loader conventions version, library version,
-  store spec and source files); `StateStore::open_bucket` serves a `MarketState` whose marks, term
-  carry (incl. `T_override`) and dividends are spans into the mapping — top-100 bucket ≈ 11 ms vs
-  ≈ 1.3 s from Parquet, and a `RiskStream` explain over archived states is bit-equal to
-  Parquet-built ones. Keep the archive alive while the state is in use. See
+  store spec and source files — the spec's `clock`, `carry_mode` and `spot_framework_only` are not
+  folded in yet, so keep one spec per store root); `StateStore::open_bucket` serves a
+  `MarketState` whose marks, term carry (incl. `T_override`) and dividends are spans into the
+  mapping — top-100 bucket ≈ 11 ms vs ≈ 1.3 s from Parquet, and a `RiskStream` explain over
+  archived states is bit-equal to Parquet-built ones. Keep the archive alive while the state is
+  in use. See
   [`persist.md`](persist.md) (tool `atx-vol-state-store`, verify levels, lifetime rules).
 - **Risk runs and surface history:** `RiskRunWriter` records `RiskFrame` / `ExplainResult` /
   `HistoricalVarResult` steps into immutable segments (21 explain columns incl. `pnl_carry`);
