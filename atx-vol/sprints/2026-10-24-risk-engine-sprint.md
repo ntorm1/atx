@@ -2,7 +2,7 @@
 
 Branch `feat/vol-risk-engine-20261024` (pool-1), base `main @ 96cd56db`; frozen API on
 `feat/vol-risk-base-20261024 @ 7b26e69e`; `main @ 163c4f8d` merged in session 2 (`c534bfca`).
-Integration tip at writing: `1defdc7c` (+ these docs). Run id `risk-20261024`. Design of record (D1–D23, status
+Integration tip at writing: `825d06b1` (+ these docs). Run id `risk-20261024`. Design of record (D1–D23, status
 log): `docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md`. Research brief:
 `atx-vol/docs/2026-10-24-pnl-explain-research-brief.md`. Working state (gitignored):
 `.superpowers/sdd/2026-10-24-risk-engine/` — `HANDOFF.md`, `progress.md`, `lane-*-{brief,report,review-N}.md`,
@@ -14,7 +14,7 @@ be merged into the worktree, then the worktree into local main, no push; a trial
 4956 / 5005, the 49 failures outside the sprint's code pending attribution (§9). Pending at writing:
 that attribution; the final quiet-host perf runs and the
 `bench/baselines/i7-1260p-clang18-avx2-risk-bench-{synthetic,spiderrock-2026-10-14}.json` pins (not yet
-committed); lane P2's last minor round; lane F (in flight). **Every timing below is UNQUALIFIED**
+committed); lane F (in flight). **Every timing below is UNQUALIFIED**
 (host shared with 2–4 concurrent build / bench lanes, 2–97 % CPU) unless the row says otherwise.
 
 ## 1. Ask
@@ -38,8 +38,8 @@ robustness benchmark.
 | A2 | family-kernel economics (perf) | `lane/A2-perf-20261024` (36) | `01bc9d5b` + `7250759c` | `08f74513`, `a015f4f5` |
 | D | historical VaR rebuild, old pipeline deleted | `lane/D-risk-20261024` (30) | `935d9de4` → `47689a41` | `7b099ab7` … `3279a480` |
 | E | vendor clock, carry axis, sticky carry mode | `lane/E-clock-20261024` (34) | `11a1fafa` → `1b76ac2d` | `a3ec196d` |
-| P1 | PersistFile container, MarketState store | `feat/vol-persist-20261024` (6) | `c6440860` → `1463158b` | `b23a36c0` … `7daeb614` |
-| P2 | SurfaceTimeline, RiskRun archive | `feat/vol-persist-p2-20261024` (8) | `83cf911d` → `399bb097` | `595a0291`, `cb13dd3a` (+ `1defdc7c`) |
+| P1 | PersistFile container, MarketState store | `feat/vol-persist-20261024` (6) | `c6440860` → `1463158b` → `98e0e0fc` | `b23a36c0` … `7daeb614`, `268b78fc` |
+| P2 | SurfaceTimeline, RiskRun archive | `feat/vol-persist-p2-20261024` (8) | `83cf911d` → `399bb097` → `c9ffdb3f` | `595a0291`, `cb13dd3a` (+ `1defdc7c`), `825d06b1` |
 | F | universe fit / price / risk robustness | `feat/vol-fitbench-20261024` (7) | in flight (`b6782ca8`) | — |
 
 ## 3. What shipped
@@ -111,7 +111,8 @@ one helper `risk_detail::expiry_T` (kernel, carry, explain dt); `SpiderRockClock
 `PersistDirectory` manifest + `persist.lock`, MarketState archive `.atxms`, fingerprinted state store
 `build_state_store_from_spiderrock` / `StateStore`, tool `atx-vol-state-store`
 (`build | inspect | verify | bench | synth`), additive `YieldCurve::pillars()`, WriterLock delete-pending
-retry (`src/storage/writer_lock.cpp`). Details in §6.
+retry (`src/storage/writer_lock.cpp`); `98e0e0fc` folds every `SpiderRockStoreSpec` field into the source
+fingerprint and builds at conventions version 3. Details in §6.
 
 **P2 — persisted history** (`lane-P2-report.md`). `SurfaceTimeline` (`.atxstl`, verbatim ATXVSA2 records
 behind a (uid, ts) index, monthly periods), `RiskRunWriter` / `RiskRunArchive` / `compact_risk_run`
@@ -119,7 +120,9 @@ behind a (uid, ts) index, monthly periods), `RiskRunWriter` / `RiskRunArchive` /
 BLOCKED `83cf911d` (§8); the fix `399bb097` (wrap-safe VarIndex / step / column checks, one writer per
 run directory enforced through the manifest tail, timeline manifest rows cross-checked against their
 files, a `Flush` `finish()` also flushes the earlier `Publish` segments) passed review 2 and is merged
-(`cb13dd3a`; the dead `publish_segment` declaration dropped in `1defdc7c`).
+(`cb13dd3a`; the dead `publish_segment` declaration dropped in `1defdc7c`); its last round `c9ffdb3f`
+(non-zero `pnl_carry` round trip, no-op compaction of an unchanged segment, durability docs) is merged
+(`825d06b1`).
 
 **F — in flight.** Universe fit / price / risk robustness benchmark (`wave3-fit-robustness-design.md` §4,
 `lane-F-brief.md`): `tools/universe_fit_bench.py`, `atx-vol-fit-risk-probe` (every served fit row priced
@@ -195,7 +198,7 @@ FRTB-style quality (diagnostic, D9): per-step Spearman 0.986–0.997 / KS 0.003�
 | container ATXVPF (`PersistFile`) | any | per kind: FNV-1a/64 + fmix64 over a field-level schema table | 256 B header, 64 B section entries, 64 B-aligned payloads, 4096 B file size, 64 B footer; CRC32C on header, table, every section (stored + raw), footer, file; optional zstd + byte shuffle per section; verify Framing / Lazy / Full / Paranoid; no allocation after open; 43 crafted corruptions each refused with its own `PersistStatus` |
 | `PersistDirectory` | manifest + `persist.lock` | — | file-then-manifest publish (temp + flush + rename); keys ≤ 15 bytes; canonical names, no traversal |
 | MarketState archive | `.atxms` | `0xb9738a6408b9ba89` (was `0x2e40ab410db4469d` before `T_override`) | marks / term carry / dividends served as spans into the mapping; 41 B per mark core + 56 extras; default verify Full ≤ 64 MiB, Framing above (`kMarketStateFullVerifyMaxBytes`) |
-| state store | `<root>/…/bucket_et=HHMM-g<seq>.atxms` | source fingerprint (conventions version, `ATX_VOL_VERSION`, the P1-era store spec fields, every parquet's name / size / mtime; not yet `clock` / `carry_mode` / `spot_framework_only`, §10) | rebuilds sha256-identical 11/11 × 3 at `--parallel 1/2`; uids equal to one serial load |
+| state store | `<root>/…/bucket_et=HHMM-g<seq>.atxms` | source fingerprint (conventions version — 3 since `98e0e0fc` —, `ATX_VOL_VERSION`, every `SpiderRockStoreSpec` field incl. `clock` / `carry_mode` / `spot_framework_only`, every parquet's name / size / mtime) | rebuilds sha256-identical 11/11 × 3 at `--parallel 1/2`; uids equal to one serial load |
 | SurfaceTimeline | `<YYYY-MM>-g<seq12>.atxstl` | `0x8e3c8cc7c33a7ea1` | verbatim ATXVSA2 records; views bit-exact to the partition's |
 | RiskRun | `seg-*.atxrr` + manifest | `0x07b280ae55b35c46` (was `0xc881a1e8c5e87255` before `pnl_carry`) | 16 frame + 21 explain f64 columns, narrow route / flag / status, Pod buckets / VaR; `segment_bytes` 16 MiB default |
 
@@ -256,11 +259,11 @@ recorded 11-state stream 0.10 ms per step, reopened totals bit-equal.
 | D | `019e8fa6` (code `935d9de4`) | APPROVE | 7 minors (premium-0 exclusions admitted, structural errors swallowed, NaN into the sort, …) → `8f84ceef` |
 | D | `8f84ceef` | APPROVE | 4 minors (verifier trusts `admitted`, strictness unwitnessed, clock-refusal path untested) → `47689a41` |
 | E | `11a1fafa` (gated `35b174d0`) | APPROVE | I-1 major (merge `3b32e070` breaks persist static_asserts), I-2..I-4, 2 doc minors → `1b76ac2d` |
-| E | `1b76ac2d` (re-pin) | APPROVE | 3 minors: the state-store source fingerprint omits clock / carry_mode / spot_framework_only; `pnl_carry` round-trips only zeros in the RiskRun test; no post-merge perf receipt |
+| E | `1b76ac2d` (re-pin) | APPROVE | 3 minors: the state-store source fingerprint omitted clock / carry_mode / spot_framework_only (→ P1 `98e0e0fc`); `pnl_carry` round-tripped only zeros (→ P2 `c9ffdb3f`); no post-merge perf receipt (→ the final quiet-host run) |
 | P1 | `c6440860` | BLOCK | zstd `raw_length` 2^44 → `std::bad_alloc` escapes `open()` (CLI 0xC0000409); default verify still Full; 4 minors |
 | P1 | `da206ba8` | APPROVE | blocker closed (160 fuzz runs clean, WriterLock red/green proven); 2 minors → `1463158b` |
 | P2 | `83cf911d` | BLOCK | `check_var` u64 count wrap → `std::length_error` / OOB subspan; single-writer contract unenforced; 3 minors → `399bb097` |
-| P2 | `399bb097` | APPROVE | 409 fuzz runs clean, concurrency races all refused correctly; 3 minors (a `Flush` `finish()` is `Busy` while any reader maps a segment; POSIX post-rename fsync error marks the writer lost; dead `publish_segment` declaration → `1defdc7c`) → last round requested |
+| P2 | `399bb097` | APPROVE | 409 fuzz runs clean, concurrency races all refused correctly; 3 minors (a `Flush` `finish()` is `Busy` while any reader maps a segment; POSIX post-rename fsync error marks the writer lost; dead `publish_segment` declaration → `1defdc7c`) → `c9ffdb3f`, orchestrator-merged |
 | F | — | — | not yet submitted |
 
 Integration gates (pool-1, vol-rel, `-DATX_VOL_RISK_E2E=ON`): `08f74513` risk 124/124, umbrella 10/10;
@@ -269,7 +272,7 @@ Integration gates (pool-1, vol-rel, `-DATX_VOL_RISK_E2E=ON`): `08f74513` risk 12
 `595a0291` did not build (P2 pinned the pre-A2 `FrameCounters`); `1b76ac2d` (E) risk 153, persist 58,
 dispersion 77, HistoricalVar 16, umbrella 10, hygiene clean, licensed 1000→1030 bit-equal at sym-rel 0.4074 %;
 `7daeb614` qualification: configure + 19 slice / tool targets + `atx-vol-tests` built, `atx_vol_fast` 4956 / 5005
-(§9); gates on `1defdc7c` running at writing. The session-2 claim "regression 246/246 at `c534bfca`" was made
+(§9); gates on the `825d06b1` tip pending at writing. The session-2 claim "regression 246/246 at `c534bfca`" was made
 on STALE slice binaries and is withdrawn (ledger trap).
 
 ## 9. Known reds outside the sprint
@@ -306,11 +309,10 @@ on STALE slice binaries and is withdrawn (ledger trap).
 - `PersistDirectory::replace_all` (compaction writes its own manifest under the lock today).
 - Async / parallel verify and decode (uncapped Full CRC ≈ 51 ms single-stream; cold-tier decode serial;
   3-way interleaved CRC32C not taken); async seal.
-- `tools/state_store_main.cpp` passes conventions version 1 (`TODO(integration)`: `kSpiderRockConventionsVersion`,
-  now 3), and the state-store source fingerprint omits the spec's clock / carry_mode / spot_framework_only
-  (lane E review 2: a library build with a non-default spec into a root built with the defaults would skip
-  every bucket and serve the default-spec states; the tool uses the default spec, so no caller is hit
-  today); `--state-store` input for `atx-vol-risk-bench`.
+- `--state-store` input for `atx-vol-risk-bench` (archived states feeding the bench). Resolved during the
+  sprint, not deferred: the `tools/state_store_main.cpp` conventions-version TODO (now
+  `kSpiderRockConventionsVersion` = 3) and the source fingerprint's missing clock / carry_mode /
+  spot_framework_only fields (`98e0e0fc`, `PersistStateStore.LoaderOptionChangeRebuildsEveryBucket`).
 - Flagged to the user: the bench's top-100 srVol marks may include vol-sota validation names (it fits nothing,
   judged low risk); `C:\atx-data2` (empty, guard-protected) to delete by hand.
 
