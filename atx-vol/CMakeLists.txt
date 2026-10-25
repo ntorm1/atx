@@ -1394,6 +1394,13 @@ if(ATX_BUILD_TOOLS)
     target_link_libraries(atx-vol-state-store PRIVATE atx::vol atx::core atx_warnings)
     add_executable(atx-vol-history-store tools/history_store_main.cpp)
     target_link_libraries(atx-vol-history-store PRIVATE atx::vol atx::core atx_warnings)
+    # Lane F (wave 3, 2026-10-24): price and Greek every served row of a quote-slice fit run
+    # through the risk engine on the fitter's shadow clock (docs/universe-fit-bench.md).
+    # fit_risk_probe.cpp is the engine-linked core, also compiled into atx-vol-tests.
+    add_executable(atx-vol-fit-risk-probe
+        tools/fit_risk_probe_main.cpp
+        tools/fit_risk_probe.cpp)
+    target_link_libraries(atx-vol-fit-risk-probe PRIVATE atx::vol atx::core atx_warnings)
 
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only

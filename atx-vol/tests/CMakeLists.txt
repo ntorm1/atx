@@ -590,6 +590,7 @@ add_executable(atx-vol-tests
     arb_test.cpp
     risk_book_test.cpp
     risk_historical_var_test.cpp
+    risk_fit_probe_test.cpp          # lane F (wave 3): fit -> risk-engine probe (risk slice)
     risk_kernel_test.cpp
     risk_market_state_test.cpp
     risk_pnl_explain_test.cpp
@@ -890,6 +891,11 @@ add_executable(atx-vol-tests
 # so RiskBench* exercises the shipped TU. Its engine driver (tools/risk_bench.cpp)
 # references the risk engine and joins only under ATX_VOL_RISK_E2E below.
 target_sources(atx-vol-tests PRIVATE ../tools/risk_bench_core.cpp)
+# Lane F (wave 3): the engine-linked core of atx-vol-fit-risk-probe (tools/fit_risk_probe.cpp;
+# header tools/fit_risk_probe.hpp) compiles in as a support source, so FitRiskProbe.* (risk
+# slice) exercises the shipped TU. Unlike risk_bench.cpp it needs no option: the risk engine
+# is part of the atx-vol library that every slice links.
+target_sources(atx-vol-tests PRIVATE ../tools/fit_risk_probe.cpp)
 
 # The END-TO-END bench test (RiskBenchE2E.*) drives run_risk_bench over a synthetic
 # store; it needs the risk engine (lane A's src/risk/*) linked, so it is compiled
