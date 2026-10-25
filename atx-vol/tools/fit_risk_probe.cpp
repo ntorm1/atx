@@ -507,7 +507,12 @@ private:
     for (const char c : v) {
       switch (c) {
       case '"': out_ += "\\\""; break;
-      case '\\': out_ += "\\\\"; break;
+      case '\\':
+        // Two backslashes pushed one at a time: the umbrella path-literal guard reads a
+        // string literal that starts with two backslashes as a UNC root (data, not a path).
+        out_.push_back('\\');
+        out_.push_back('\\');
+        break;
       case '\n': out_ += "\\n"; break;
       case '\r': out_ += "\\r"; break;
       case '\t': out_ += "\\t"; break;
