@@ -26,6 +26,7 @@
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "fitting/publication_seam.hpp" // ScopedPublicationInjection (review m1 test seam)
+#include "fitting/counters.hpp"
 
 namespace atx::vol {
 namespace {
@@ -1332,6 +1333,117 @@ TEST(QuoteSliceCalendarParity, ARaisedCallRaisesItsPutToTheAffineBound) {
                                << (report->findings.empty()
                                        ? "-"
                                        : to_string(report->findings.front().kind));
+}
+
+} // namespace
+} // namespace atx::vol
+
+namespace atx::vol {
+namespace {
+
+QuoteSliceFit walk_fixture(double years, double shift) {
+  QuoteSliceFit fit;
+  fit.market = {100., years, years, .03, .01, 0.};
+  fit.fit_status = QuoteSliceFitStatus::Success;
+  fit.diagnostics.effective_rate = .03;
+  fit.diagnostics.effective_yield = .01;
+  fit.diagnostics.discount = std::exp(-.03 * years);
+  std::array<AmericanPriceNode, 5> nodes{{{80., 22., 2.}, {90., 14., 4.},
+      {100., 8., 8.}, {110., 4., 14.}, {120., 2., 22.}}};
+  for (auto &node : nodes) { node.call += shift; node.put += shift; }
+  auto prices = AmericanPriceSlice::create(nodes, {100., 1., 1., 100., 100.});
+  EXPECT_TRUE(prices);
+  if (prices) fit.prices = std::move(*prices);
+  return fit;
+}
+
+TEST(QuoteSlicePublication, LinearWalkRetainsAll528PairsAndFocusedWork) {
+  namespace timing = counters::fit_timing;
+  std::vector<QuoteSliceFit> fits;
+  fits.reserve(33);
+  for (std::size_t i = 0; i < 33; ++i) {
+    fits.push_back(walk_fixture(.1+.01*static_cast<double>(i), .01*static_cast<double>(i)));
+  }
+  std::vector<QuoteSlicePublicationSlice> views;
+  for (const auto &fit : fits) views.push_back({&fit, {}});
+  QuoteSlicePublicationConfig config;
+  config.dense_points = 0;
+  config.identification = false;
+  for (const std::size_t focus : {kQuoteSlicePublicationAll, std::size_t{16}}) {
+    config.focus = focus;
+    timing::ChainRecorder recorder;
+    const std::size_t pairs = focus == kQuoteSlicePublicationAll ? 528 : 32;
+    {
+      const timing::ChainScope scope(&recorder);
+      const auto report = validate_published_representation(views, config);
+      ASSERT_TRUE(report);
+      EXPECT_TRUE(report->clean());
+      EXPECT_EQ(report->calendar_pairs, pairs);
+    }
+    const auto &work = recorder.counts.calendar_publication;
+    EXPECT_EQ(work.attempted_pairs, pairs);
+    EXPECT_EQ(work.overlapping_pairs, pairs);
+    EXPECT_EQ(work.knots, 5*pairs);
+    EXPECT_EQ(work.midpoints, 4*pairs);
+    EXPECT_EQ(work.side_comparisons, 18*pairs);
+    EXPECT_EQ(work.node_advances, 8*pairs);
+    EXPECT_GT(work.wall_ns, 0u);
+    EXPECT_EQ(recorder.counts.calendar_certificate.attempted_pairs, 0u);
+  }
+}
+
+TEST(QuoteSlicePublication, LinearWalkFindingsMatchOriginalServedApiWithMasksAndRefusals) {
+  namespace timing = counters::fit_timing;
+  auto early = walk_fixture(.1, .02), late = walk_fixture(.2, 0.);
+  const std::array<QuoteSlicePublicationSlice, 2> slices{{{&early, {}}, {&late, {}}}};
+  QuoteSlicePublicationConfig config;
+  config.dense_points = 0;
+  config.identification = false;
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    if (variant == 1) early.withheld_nodes = {0, 1, 2, 0, 0};
+    if (variant == 2) early.withheld_nodes = {0}; // malformed: serves nothing
+    if (variant == 3) {
+      early.withheld_nodes.clear();
+      early.fit_status = QuoteSliceFitStatus::FitFailure;
+    }
+    std::vector<QuoteSlicePublicationFinding> expected;
+    std::size_t sides = 0;
+    // Independently reproduce the old API queries, including midpoint allowance.
+    for (std::size_t i = 0; i < 9; ++i) {
+      const double k = 80. + 5.*static_cast<double>(i);
+      const double upper = (i % 2u) ? k+5. : k;
+      const double tolerance = 1.0e-8+1.0e-9*std::max(100., upper);
+      for (Side side : {Side::Call, Side::Put}) {
+        const auto a = served_quote_slice_price(early, k, side);
+        const auto b = served_quote_slice_price(late, k, side);
+        if (!a || !b) continue;
+        ++sides;
+        const double excess = *a-*b-tolerance;
+        if (excess > 0.) expected.push_back({QuoteSlicePublicationViolation::Calendar,
+            0, 1, kQuoteSlicePublicationAll, side, k, excess});
+      }
+    }
+    timing::ChainRecorder recorder;
+    {
+      const timing::ChainScope scope(&recorder);
+      const auto report = validate_published_representation(slices, config);
+      ASSERT_TRUE(report);
+      ASSERT_EQ(report->findings.size(), expected.size());
+      for (std::size_t i = 0; i < expected.size(); ++i) {
+        const auto &a = report->findings[i], &b = expected[i];
+        EXPECT_EQ(a.kind, b.kind);
+        EXPECT_EQ(a.expiry, b.expiry);
+        EXPECT_EQ(a.other, b.other);
+        EXPECT_EQ(a.side, b.side);
+        EXPECT_EQ(a.strike, b.strike);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(a.excess), std::bit_cast<std::uint64_t>(b.excess));
+      }
+    }
+    const auto &work = recorder.counts.calendar_publication;
+    EXPECT_EQ(work.knots, 5u);
+    EXPECT_EQ(work.midpoints, 4u);
+    EXPECT_EQ(work.side_comparisons, sides);
+  }
 }
 
 } // namespace

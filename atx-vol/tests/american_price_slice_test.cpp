@@ -16,6 +16,8 @@
 
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "fitting/price_slice_walk.hpp"
+#include "fitting/counters.hpp"
 
 namespace {
 
@@ -972,3 +974,191 @@ TEST(AmericanPriceSlice, JointCalendarProjectionLeavesAnOrderedPairBitForBit) {
 }
 
 } // namespace
+
+TEST(AmericanPriceWalk, CursorPreservesScalarPriceBitsAndExactMaskSupport) {
+  using namespace atx::vol::detail;
+  const auto nodes = clean_nodes();
+  auto slice = AmericanPriceSlice::create(nodes, kBounds);
+  ASSERT_TRUE(slice);
+  const std::array<std::uint8_t, 5> mask{0, 1, 2, 0, 0};
+  PriceSliceCursor cursor({slice->nodes(), mask});
+  for (const double k : {80., 85., 90., 95., 100., 105., 110., 115., 120.}) {
+    const auto point = cursor.at(k);
+    ASSERT_TRUE(point.available) << k;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(point.call),
+              std::bit_cast<std::uint64_t>(*slice->price(k, Side::Call)));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(point.put),
+              std::bit_cast<std::uint64_t>(*slice->price(k, Side::Put)));
+    const unsigned expected = k == 95. ? 0u :
+        (k >= 85. && k <= 90. ? 2u : (k >= 100. && k <= 105. ? 1u : 3u));
+    EXPECT_EQ(point.served, expected) << k;
+  }
+}
+
+TEST(AmericanPriceWalk, MergeRetainsUnionKnotsMidpointsAndLinearWork) {
+  using namespace atx::vol::detail;
+  const std::array<AmericanPriceNode, 3> early{{{80., 22., 2.}, {100., 8., 8.},
+                                             {120., 2., 22.}}};
+  const std::array<AmericanPriceNode, 3> late{{{90., 14., 4.}, {110., 4., 14.},
+                                            {130., 1., 31.}}};
+  CalendarWalkWork work;
+  PriceSlicePairWalk walk({early, {}}, {late, {}}, true, &work);
+  ASSERT_TRUE(walk.overlaps());
+  const std::array<double, 7> strikes{90., 95., 100., 105., 110., 115., 120.};
+  const std::array<double, 7> allowances{90., 100., 100., 110., 110., 120., 120.};
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    const auto point = walk.next();
+    ASSERT_TRUE(point);
+    EXPECT_EQ(point->strike, strikes[i]);
+    EXPECT_EQ(point->allowance_strike, allowances[i]);
+    EXPECT_EQ(point->midpoint, (i % 2u) != 0u);
+    EXPECT_EQ(point->early.served, 3u);
+    EXPECT_EQ(point->late.served, 3u);
+  }
+  EXPECT_FALSE(walk.next());
+  EXPECT_EQ(work.attempted_pairs, 1u);
+  EXPECT_EQ(work.overlapping_pairs, 1u);
+  EXPECT_EQ(work.knots, 4u);
+  EXPECT_EQ(work.midpoints, 3u);
+  EXPECT_LE(work.node_advances, early.size() + late.size());
+}
+
+TEST(AmericanPriceWalk, InvalidAndBackwardRequestsCannotCorruptLaterBrackets) {
+  using namespace atx::vol::detail;
+  const auto nodes = clean_nodes();
+  PriceSliceCursor cursor({nodes, {}});
+  EXPECT_TRUE(cursor.at(85.).available);
+  for (const double invalid : {0., 130., std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN(), 80.}) {
+    EXPECT_FALSE(cursor.at(invalid).available);
+  }
+  EXPECT_EQ(cursor.at(100.).call, 8.);
+  const std::array<std::uint8_t, 1> wrong_mask{0};
+  PriceSliceCursor malformed({nodes, wrong_mask});
+  EXPECT_EQ(malformed.at(90.).served, 0u);
+  EXPECT_EQ(malformed.at(95.).served, 0u);
+  PriceSliceCursor disabled({nodes, {}, false});
+  EXPECT_FALSE(disabled.at(100.).available);
+  PriceSliceCursor empty({{}, {}});
+  EXPECT_FALSE(empty.at(100.).available);
+}
+
+TEST(AmericanPriceWalk, MidpointRoundingAndOverflowRetainTheHistoricalVisitSequence) {
+  using namespace atx::vol::detail;
+  for (const double lower : {1., 1.0e308}) {
+    const double upper = std::nextafter(lower, std::numeric_limits<double>::infinity());
+    const std::array<AmericanPriceNode, 2> nodes{{{lower, -0., 1.}, {upper, 2., 3.}}};
+    CalendarWalkWork work;
+    PriceSlicePairWalk walk({nodes, {}}, {nodes, {}}, true, &work);
+    const auto first = walk.next(), midpoint = walk.next(), last = walk.next();
+    ASSERT_TRUE(first && midpoint && last);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(first->early.call),
+              std::bit_cast<std::uint64_t>(-0.));
+    EXPECT_EQ(midpoint->strike, 0.5 * (lower + upper));
+    EXPECT_EQ(midpoint->early.available, std::isfinite(midpoint->strike));
+    if (std::isfinite(midpoint->strike)) {
+      EXPECT_EQ(midpoint->strike, lower);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(midpoint->early.call),
+                std::bit_cast<std::uint64_t>(-0.));
+    }
+    EXPECT_TRUE(last->early.available);
+    EXPECT_EQ(last->early.call, 2.);
+    EXPECT_EQ(work.knots, 2u);
+    EXPECT_EQ(work.midpoints, 1u);
+    EXPECT_FALSE(walk.next());
+  }
+}
+
+TEST(AmericanPriceWalk, UnequalNestedTouchingAndDisjointDomainsMatchBinarySearchReference) {
+  using namespace atx::vol::detail;
+  const std::array<std::vector<double>, 7> grids{{{}, {70., 80.}, {80., 90., 120.},
+      {85., 90., 95.}, {80., 90., 100., 110., 120.}, {120., 130.}, {140., 160.}}};
+  const auto make = [](const auto &strikes) {
+    std::vector<AmericanPriceNode> nodes;
+    for (double k : strikes) nodes.push_back({k, 10000./k, k*k/1000.});
+    return nodes;
+  };
+  const auto reference = [](const auto &nodes, double k, bool call) {
+    const auto it = std::lower_bound(nodes.begin(), nodes.end(), k,
+        [](const auto &node, double strike) { return node.strike < strike; });
+    const auto value = [call](const auto &node) { return call ? node.call : node.put; };
+    if (it->strike == k || it == nodes.begin()) return value(*it);
+    const auto &left = *(it-1);
+    return std::lerp(value(left), value(*it), (k-left.strike)/(it->strike-left.strike));
+  };
+  for (const auto &a : grids) for (const auto &b : grids) {
+    const auto first = make(a), second = make(b);
+    for (const bool mids : {false, true}) {
+      CalendarWalkWork work;
+      PriceSlicePairWalk walk({first, {}}, {second, {}}, mids, &work);
+      std::vector<double> knots;
+      if (!a.empty() && !b.empty()) {
+        const double lo = std::max(a.front(), b.front()), hi = std::min(a.back(), b.back());
+        for (const auto &grid : {a, b}) for (double k : grid) {
+          if (lo <= k && k <= hi) knots.push_back(k);
+        }
+        std::sort(knots.begin(), knots.end());
+        knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
+      }
+      std::vector<double> points;
+      for (std::size_t i = 0; i < knots.size(); ++i) {
+        points.push_back(knots[i]);
+        if (mids && i+1u < knots.size()) points.push_back(0.5*(knots[i]+knots[i+1u]));
+      }
+      for (double k : points) {
+        const auto p = walk.next();
+        ASSERT_TRUE(p);
+        EXPECT_EQ(p->strike, k);
+        for (const bool call : {true, false}) {
+          EXPECT_EQ(std::bit_cast<std::uint64_t>(call ? p->early.call : p->early.put),
+                    std::bit_cast<std::uint64_t>(reference(first, k, call)));
+          EXPECT_EQ(std::bit_cast<std::uint64_t>(call ? p->late.call : p->late.put),
+                    std::bit_cast<std::uint64_t>(reference(second, k, call)));
+        }
+      }
+      EXPECT_FALSE(walk.next());
+      EXPECT_EQ(work.knots, knots.size());
+      EXPECT_EQ(work.midpoints, mids && !knots.empty() ? knots.size()-1u : 0u);
+      EXPECT_LE(work.node_advances, a.size()+b.size());
+    }
+  }
+}
+
+TEST(AmericanPriceWalk, CertificatePreservesAllowanceDecisionsAndCountsActualEarlyRefusal) {
+  namespace timing = atx::vol::counters::fit_timing;
+  const auto far = AmericanPriceSlice::create(clean_nodes(), kBounds);
+  ASSERT_TRUE(far);
+  const double tol = 1.0e-8 + 1.0e-9 * 100.;
+  for (const double shift : {0., std::nextafter(tol, 0.), tol,
+                             std::nextafter(tol, 1.), 2.*tol}) {
+    auto nodes = clean_nodes();
+    for (auto &node : nodes) { node.call += shift; node.put += shift; }
+    const auto near = AmericanPriceSlice::create(nodes, kBounds);
+    ASSERT_TRUE(near);
+    bool expected = true;
+    std::size_t points = 0, sides = 0;
+    for (const auto &node : nodes) {
+      ++points;
+      for (Side side : {Side::Call, Side::Put}) {
+        ++sides;
+        if (*near->price(node.strike, side) - *far->price(node.strike, side) >
+            1.0e-8 + 1.0e-9 * std::max(100., node.strike)) { expected = false; break; }
+      }
+      if (!expected) break;
+    }
+    timing::ChainRecorder recorder;
+    {
+      const timing::ChainScope scope(&recorder);
+      EXPECT_EQ(check_american_calendar(*near, *far).has_value(), expected);
+    }
+    const auto &work = recorder.counts.calendar_certificate;
+    EXPECT_EQ(work.attempted_pairs, 1u);
+    EXPECT_EQ(work.overlapping_pairs, 1u);
+    EXPECT_EQ(work.knots, points);
+    EXPECT_EQ(work.midpoints, 0u);
+    EXPECT_EQ(work.side_comparisons, sides);
+    EXPECT_GT(work.wall_ns, 0u);
+    EXPECT_EQ(check_american_calendar(*near, *far).has_value(), expected); // unarmed
+    EXPECT_EQ(work.attempted_pairs, 1u);
+  }
+}

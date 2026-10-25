@@ -43,6 +43,7 @@
 #include <array>  // solve-ledger per-thread block (always on) + gated exact counters
 #include <atomic>
 #include <chrono>
+#include "fitting/calendar_walk_work.hpp"
 #include <cstddef> // std::size_t -- every_name_present's array-bound parameter
 #include <cstdint>
 #include <limits>
@@ -1187,6 +1188,8 @@ struct FitTimingCounters {
                                          // (native: Newton steps; family: refits of the family)
   std::uint32_t rung_attempts{0};        // per-expiry fits the surface fitter ran for the chain
   std::uint32_t calendar_pairs{0};       // check_american_calendar pairs charged to the chain
+  // Actual pair walks (including early refusal), separate from the legacy count above.
+  atx::vol::detail::CalendarWalkWork calendar_certificate, calendar_publication;
   std::uint32_t projections{0};          // project_in_channel calls
   std::uint32_t iv_newton_iters{0};      // American IV inversion iterations (solve ledger)
   // Repaired/query prices accelerated on the fit's retained native family. A fallback

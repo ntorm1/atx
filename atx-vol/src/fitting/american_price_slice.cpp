@@ -13,6 +13,8 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "fitting/counters.hpp"
+#include "fitting/price_slice_walk.hpp"
 
 namespace atx::vol {
 namespace {
@@ -1193,43 +1195,27 @@ JointProjectionResult project_calendar_joint_bounded(std::span<const JointPriceS
 }
 
 Status check_american_calendar(const AmericanPriceSlice &earlier, const AmericanPriceSlice &later) {
+  auto *counts = counters::fit_timing::current_counts();
+  auto *work = counts ? &counts->calendar_certificate : nullptr;
+  detail::CalendarWalkTimer timer(work);
   const auto first = earlier.nodes();
   const auto second = later.nodes();
+  detail::PriceSlicePairWalk walk({first, {}}, {second, {}}, false, work);
   if (first.empty() || second.empty()) {
     return Err(ErrorCode::InvalidArgument, "American calendar: empty or moved-from slice");
   }
-  const double lo = std::max(first.front().strike, second.front().strike);
-  const double hi = std::min(first.back().strike, second.back().strike);
-  if (hi < lo) {
-    return Ok();
-  }
   const double spot = std::max(earlier.bounds().spot, later.bounds().spot);
-  // Both node sets are already sorted and validated. A merge visits every
-  // possible extremum of the piecewise affine calendar spread, once each.
-  std::size_t i = 0u;
-  std::size_t j = 0u;
-  while (i < first.size() || j < second.size()) {
-    const double strike =
-        j == second.size() || (i < first.size() && first[i].strike <= second[j].strike)
-            ? first[i++].strike
-            : second[j++].strike;
-    if (i < first.size() && first[i].strike == strike) {
-      ++i;
-    }
-    if (j < second.size() && second[j].strike == strike) {
-      ++j;
-    }
-    if (strike < lo || strike > hi) {
-      continue;
-    }
+  while (const auto point = walk.next()) {
+    const double strike = point->strike;
     const double tol = price_tolerance(spot, strike);
     for (const Side side : {Side::Call, Side::Put}) {
-      const auto near_price = earlier.price(strike, side);
-      const auto far_price = later.price(strike, side);
-      if (!near_price || !far_price) {
+      if (!point->early.available || !point->late.available) {
         return Err(ErrorCode::Internal, "American calendar: overlap price unavailable");
       }
-      if (*near_price - *far_price > tol) {
+      if (work) ++work->side_comparisons;
+      const double near_price = side == Side::Call ? point->early.call : point->early.put;
+      const double far_price = side == Side::Call ? point->late.call : point->late.put;
+      if (near_price - far_price > tol) {
         return Err(ErrorCode::InvalidArgument,
                    "American calendar: later " + std::string(side == Side::Call ? "call" : "put") +
                        " price decreases at strike " + std::to_string(strike));
