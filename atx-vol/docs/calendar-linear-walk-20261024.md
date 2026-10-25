@@ -6,6 +6,42 @@ prices, tolerance, support or outer expiry-pair selection. Base:
 `e000b9dd2e3b82189c64c1685a9ed33d5b25f5d1`. The separate cash builder remains
 frozen at `7a1b1299`; no cash reference or six-option outcome ran in this lane.
 
+## Integrated SPY result
+
+One full-SPY invocation at combined source
+`cf2b0983c6d0194feb7384cfd4ee86f3e1c0b3ed` passes all 13 financial checks and
+eight retained-instance checks. All 33 valid expiries and 12,866 eligible rows
+are served; 12,851 remain inside the original boxes (99.8834%). The original
+full projection is selected and all experimental pricing/solver switches are
+OFF. The candidate qualifies its own actual surface; matching historical
+prediction bytes is diagnostic only.
+
+| Actual native work | Joint certificate | Publication validation |
+|---|---:|---:|
+| Attempted / overlapping pairs | 528 / 528 | 528 / 528 |
+| Union knots | 102,645 | 102,645 |
+| Midpoints | 0 | 102,117 |
+| Side comparisons | 205,290 | 409,524 |
+| Interpolation cursor advances | 188,229 | 188,229 |
+| Pair-clock milliseconds, diagnostic | 2.5749 | 9.9017 |
+
+The actual counts agree with the earlier topology calculation. The clocks are
+inclusive pair setup/walk attribution, excluding publication's one-time view
+capture; they are nested within the existing fit buckets and are not added to
+the cold total. This establishes complete work accounting, not distinct pair
+identity from aggregate counts alone; unchanged all-pair loops and the actual
+API proof supply the other checks.
+
+The full cold clock is 1.7614329 s and later proof generation is 19.7914762 s.
+Worker count one and P-core 6 affinity are verified, but sibling activity was
+48.25% and aggregate activity 66.47%, on the non-IPO build. No qualified speed
+ratio or 100 ms claim follows. The archived executable SHA256 is
+`42a6952b32c0fcdec33b60f47f8e4607cb532514bcb55ae3f4e136993a1656c9`.
+The [own-output evidence](C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/integrated-research-r11/calendar-post-fit-audit/result.json)
+and adjacent archive, native report, verifiers and launch receipt retain the
+single invocation. Native report SHA256:
+`b05925d51cefd9c95d7a77b4d1a2113eaa863f8bf537cab5ccba9e08f08b07fa`.
+
 ## Preserved checks
 
 `check_american_calendar` already merged union knots, but made four binary-search
