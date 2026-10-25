@@ -58,6 +58,67 @@ def invoke(binary: Path, source: Path, output: Path, *extra: str, env=None):
     )
 
 
+def test_native_calendar_walk_counts_describe_cold_work_before_post_fit_proof(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        reader = csv.DictReader(stream)
+        fields, template = reader.fieldnames, list(reader)
+    rows = []
+    for chain, years, expiry in ((17, 0.5, 21000), (23, 1.0, 21183)):
+        for original in template:
+            strike = float(original["strike"])
+            sigma_t = 0.3 * math.sqrt(years)
+            d1 = math.log(100.0 / strike) / sigma_t + 0.5 * sigma_t
+            call = (100.0 * 0.5 * math.erfc(-d1 / math.sqrt(2.0))
+                    - strike * 0.5 * math.erfc(-(d1 - sigma_t) / math.sqrt(2.0)))
+            for side, price in ((1, call), (0, call + strike - 100.0)):
+                row = dict(original, row_id=len(rows), chain_id=chain, is_call=side,
+                           bid=price - 0.01, ask=price + 0.01, years=years,
+                           years_calendar=years, expiry_days=expiry)
+                rows.append(row)
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+        "graded": {"cold_fit": "joint_feasible_mid", "certificate": "box",
+                   "certificate_box_half_ticks": 0.0, "publication": "validate"},
+        "serve": {"floor_price_only": True, "metadata": True}}))
+    observed = {}
+    for mode, extra in (("plain", []), ("post", ["--post-fit-acceptance-audit"])):
+        report = tmp_path / (mode + ".json")
+        result = invoke(binary, source, tmp_path / (mode + ".csv"), "--policy", str(policy),
+                        "--report", str(report), "--timing-detail", "--cold-reset", *extra,
+                        env=dict(os.environ, ATX_VOL_FIT_WORKERS="1"))
+        assert result.returncode == 0, result.stderr
+        native = json.loads(report.read_text())
+        assert native["served_rows"] == 104
+        assert len(native["graded_stats"]["slices"]) == 2
+        observed[mode] = {}
+        for group in ("calendar_certificate", "calendar_publication"):
+            parts = [s["timing"][group] for s in native["graded_stats"]["slices"]]
+            for part in parts:
+                assert part["schema"] == "atx-vol-calendar-walk-work-v1"
+                assert part["clock_scope"] == "pair_setup_and_walk_excludes_view_capture"
+                assert part["exclusive_fit_bucket"] is False
+            work = {key: sum(part[key] for part in parts) for key in (
+                "attempted_pairs", "overlapping_pairs", "knots", "midpoints",
+                "side_comparisons", "node_advances", "wall_ns")}
+            assert work["attempted_pairs"] == work["overlapping_pairs"] >= 1
+            pairs = work["overlapping_pairs"]
+            assert work["knots"] == 26 * pairs
+            assert work["midpoints"] == (25 * pairs if group == "calendar_publication" else 0)
+            assert work["side_comparisons"] == 2 * (work["knots"] + work["midpoints"])
+            assert work["node_advances"] == 50 * pairs
+            assert work.pop("wall_ns") > 0
+            observed[mode][group] = work
+        if mode == "post":
+            assert native["bench"]["post_fit_acceptance_audit"]["audit_completed"] is True
+    assert observed["plain"] == observed["post"]
+
+
 def test_native_post_fit_audit_owns_timed_instance_and_keeps_fit_counters(binary, tmp_path):
     source = tmp_path / "quotes.csv"
     make_quotes(source)

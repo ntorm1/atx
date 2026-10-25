@@ -99,11 +99,19 @@ SHA `fa6a7b410bd110ffe5d6866c41bac1b570d425122d58ab7fe67d6d7eb3dacf90`.
 
 ## Active work and decision gates
 
+D has now passed its own complete SPY correctness audit at `cf2b0983`: all
+13+8 gates, 33/33 valid expiries and 12,866/12,866 eligible rows. Both native
+walks visit all 528 pairs. Diagnostic pair clocks are 2.5749 ms for joint
+certification and 9.9017 ms for publication; the full fit is 1.7614329 s on a
+busy host with the non-IPO build. See the [actual result](calendar-linear-walk-20261024.md).
+This completes the component's whole-fit correctness gate. Quiet ThinLTO
+comparison and the 100-process qualification remain outstanding.
+
 | Lane | Immediate work | Evidence required before a whole-SPY candidate |
 |---|---|---|
 | Projection | Classify saved violations and binding rows; implement small expiry subproblems with earlier-expiry constraints and a full joint fallback | Exact row/domain semantics, infeasible greedy cases, transactional output, actual work counters, fresh source review |
 | Identification | Private economic-policy family preparation for 1-3 day expiries; retain the public 3-day guard and the existing 16-node grid/probes | Refusal reasons, floor/low-vega behavior, raw-spread budgets, scoped regressions, explicit research switches |
-| Calendar validation | Replace repeated union allocation/sort and point binary searches with monotone cursor walks | Nested/disjoint domains, exact-hit support allowances, knots versus midpoint semantics, all-pair and point counts |
+| Calendar validation | Linear walk integrated and own-SPY correctness passed; preserve it in subsequent combined candidates | Qualified timing remains open; actual 528-pair counts are retained |
 | Integration | Preserve negative outcomes, maintain default controls, join each changed candidate to its own proof | 13 financial + 8 lifecycle gates, source/binary/input receipt and one-core provenance |
 
 Warm continuation of the unsuccessful working set is held while A2/A3 is

@@ -16,6 +16,8 @@
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "fitting/quote_slice_nodes.hpp"
+#include "fitting/counters.hpp"
+#include "fitting/price_slice_walk.hpp"
 
 namespace atx::vol {
 
@@ -156,7 +158,13 @@ class Checker {
 public:
   Checker(std::span<const QuoteSlicePublicationSlice> slices,
           const QuoteSlicePublicationConfig &config, QuoteSlicePublicationReport &report)
-      : slices_(slices), config_(config), report_(report) {}
+      : slices_(slices), config_(config), report_(report) {
+    views_.reserve(slices.size());
+    for (const auto &slice : slices) {
+      views_.push_back({slice.fit->prices->nodes(), slice.fit->withheld_nodes,
+                       slice.fit->fit_status == QuoteSliceFitStatus::Success});
+    }
+  }
 
   void slice(std::size_t s) {
     const QuoteSliceFit &fit = *slices_[s].fit;
@@ -173,29 +181,26 @@ public:
     // a earlier, b later (the caller orders them).
     const QuoteSliceFit &early = *slices_[a].fit;
     const QuoteSliceFit &late = *slices_[b].fit;
-    const auto first = early.prices->nodes();
-    const auto second = late.prices->nodes();
-    const double lo = std::max(first.front().strike, second.front().strike);
-    const double hi = std::min(first.back().strike, second.back().strike);
-    if (hi < lo) return;
+    auto *counts = counters::fit_timing::current_counts();
+    auto *work = counts ? &counts->calendar_publication : nullptr;
+    detail::CalendarWalkTimer timer(work);
+    detail::PriceSlicePairWalk walk(views_[a], views_[b], true, work);
+    if (!walk.overlaps()) return;
     ++report_.calendar_pairs;
-    std::vector<double> knots;
-    knots.reserve(first.size() + second.size());
-    for (const AmericanPriceNode &node : first) {
-      if (node.strike >= lo && node.strike <= hi) knots.push_back(node.strike);
-    }
-    for (const AmericanPriceNode &node : second) {
-      if (node.strike >= lo && node.strike <= hi) knots.push_back(node.strike);
-    }
-    std::sort(knots.begin(), knots.end());
-    knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
     const double spot = std::max(early.prices->bounds().spot, late.prices->bounds().spot);
-    for (std::size_t i = 0; i < knots.size(); ++i) {
-      calendar_point(a, b, knots[i], allowance(spot, knots[i]));
-      if (i + 1u < knots.size()) {
-        // The spread is affine between union knots; the midpoint tests that the served
-        // interpolation is too, at the tolerance of the segment's larger strike.
-        calendar_point(a, b, 0.5 * (knots[i] + knots[i + 1u]), allowance(spot, knots[i + 1u]));
+    while (const auto point = walk.next()) {
+      const double tol = allowance(spot, point->allowance_strike);
+      const unsigned common = point->early.served & point->late.served;
+      for (const Side side : {Side::Call, Side::Put}) {
+        if ((common & (side == Side::Call ? 1u : 2u)) == 0u) continue;
+        if (work) ++work->side_comparisons;
+        const double near = side == Side::Call ? point->early.call : point->early.put;
+        const double far = side == Side::Call ? point->late.call : point->late.put;
+        const double crossing = near - far - tol;
+        if (crossing > 0.0) {
+          add(QuoteSlicePublicationViolation::Calendar, a, side, point->strike, crossing,
+              kQuoteSlicePublicationAll, b);
+        }
       }
     }
   }
@@ -359,24 +364,10 @@ private:
     }
   }
 
-  void calendar_point(std::size_t a, std::size_t b, double k, double tol) {
-    const QuoteSliceFit &early = *slices_[a].fit;
-    const QuoteSliceFit &late = *slices_[b].fit;
-    for (const Side side : {Side::Call, Side::Put}) {
-      const auto near = served_quote_slice_price(early, k, side);
-      const auto far = served_quote_slice_price(late, k, side);
-      if (!near || !far) continue;
-      const double crossing = *near - *far - tol;
-      if (crossing > 0.0) {
-        add(QuoteSlicePublicationViolation::Calendar, a, side, k, crossing,
-            kQuoteSlicePublicationAll, b);
-      }
-    }
-  }
-
   std::span<const QuoteSlicePublicationSlice> slices_;
   const QuoteSlicePublicationConfig &config_;
   QuoteSlicePublicationReport &report_;
+  std::vector<detail::PriceSliceView> views_; // local borrow, never retained by any fit
 };
 
 [[nodiscard]] Status validate_inputs(std::span<const QuoteSlicePublicationSlice> slices,
